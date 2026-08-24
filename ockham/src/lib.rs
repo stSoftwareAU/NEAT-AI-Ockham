@@ -20,7 +20,7 @@
 //! | mean-activation ablation + cleanup | [`ablation`] | #4 |
 //! | exact IDENTITY collapse | [`collapse`] | #5 |
 //! | seeded sampled sweep | [`sweep`] | #6 |
-//! | full scoring + bundles | later | #7 |
+//! | full scoring + bundles | [`promote`] | #7 |
 //! | iterative 45-minute loop | later | #8 |
 //! | population re-entry | later | #9 |
 //! | economics report | later | #10 |
@@ -36,6 +36,7 @@ pub mod corpus;
 pub mod fixtures;
 pub mod incumbent;
 pub mod log;
+pub mod promote;
 pub mod run;
 pub mod scorer;
 pub mod stats;
@@ -51,6 +52,7 @@ pub use config::{
 };
 pub use corpus::{CorpusInfo, corpus_info};
 pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
+pub use promote::{FullOutcome, evaluate_full};
 pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
 pub use stats::{ActivationStats, NeuronStats, ensure_activation_stats};
