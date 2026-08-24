@@ -148,6 +148,7 @@ by Ockham itself.
 | `--min-improvement` | `1e-6` | Strict full-corpus improvement required to accept. |
 | `--max-experiments` | _(none)_ | Optional cap in addition to the wall-clock budget. |
 | `--max-consecutive-scorer-failures` | `3` | Abort after this many consecutive scorer failures. |
+| `--global-champion` | _(none)_ | Latest global champion JSON; compared to Ockham best at re-entry. |
 
 Issue #2 loads the supplied creature through NEAT-AI-core, requires
 `forwardOnly: true`, copies it into `workspace/` and scores a full-corpus
@@ -175,6 +176,7 @@ NEAT-AI-Ockham/
 │       ├── sweep.rs           # seeded random sweep + 5% screen
 │       ├── promote.rs         # full-score winners + bundles
 │       ├── journal.rs         # experiments.jsonl
+│       ├── reentry.rs         # population re-entry vs global champion
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs

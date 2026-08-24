@@ -31,6 +31,8 @@ pub struct OckhamConfig {
     pub scorer_path: PathBuf,
     /// Extra scorer arguments passed verbatim.
     pub scorer_args: Vec<String>,
+    /// Optional latest global champion JSON to compare at re-entry (Issue #9).
+    pub global_champion: Option<PathBuf>,
     /// Wall-clock budget.
     pub timeout: Duration,
     /// Maximum experiments (`None` = until timeout).
@@ -57,6 +59,7 @@ impl Default for OckhamConfig {
             output_dir: ".".into(),
             scorer_path: "rust_scorer".into(),
             scorer_args: Vec::new(),
+            global_champion: None,
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
             max_experiments: None,
             seed: None,
@@ -104,6 +107,7 @@ impl OckhamConfig {
             output_dir: self.output_dir.clone(),
             scorer: self.scorer_path.clone(),
             scorer_args: self.scorer_args.clone(),
+            global_champion: self.global_champion.clone(),
             timeout_seconds: self.timeout.as_secs(),
             max_experiments: self.max_experiments,
             seed: self.seed,
@@ -133,6 +137,8 @@ pub struct ConfigReport {
     pub scorer: PathBuf,
     /// Extra scorer arguments.
     pub scorer_args: Vec<String>,
+    /// Optional latest global champion path.
+    pub global_champion: Option<PathBuf>,
     /// Wall-clock budget in seconds.
     pub timeout_seconds: u64,
     /// Optional experiment cap.

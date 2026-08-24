@@ -22,7 +22,7 @@
 //! | seeded sampled sweep | [`sweep`] | #6 |
 //! | full scoring + bundles | [`promote`] | #7 |
 //! | iterative 45-minute loop | [`run`], [`journal`] | #8 |
-//! | population re-entry | later | #9 |
+//! | population re-entry | [`reentry`] | #9 |
 //! | economics report | later | #10 |
 
 #![warn(missing_docs)]
@@ -38,6 +38,7 @@ pub mod incumbent;
 pub mod journal;
 pub mod log;
 pub mod promote;
+pub mod reentry;
 pub mod run;
 pub mod scorer;
 pub mod stats;

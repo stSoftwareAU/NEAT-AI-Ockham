@@ -62,3 +62,9 @@ All notable changes to NEAT-AI-Ockham are recorded here. The format follows
   until the wall-clock budget, an empty permutation, or consecutive
   scorer failures. An accepted local win recomputes activation statistics
   and restarts the sweep. The global champion is not consulted here.
+
+- Re-score Ockham best against the current global champion before population
+  re-entry ([#9](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/9)).
+  A fresh same-call full-corpus comparison writes
+  `population-candidate.json` only when Ockham has positive authoritative
+  headroom. Local `best.json` is always preserved.
