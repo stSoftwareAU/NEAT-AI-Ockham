@@ -25,3 +25,11 @@ All notable changes to NEAT-AI-Ockham are recorded here. The format follows
   Mean, variance, mean-abs, min and max are accumulated in `f64` with
   memory bounded by hidden-neuron count, cached by creature checksum +
   corpus identity + format version, and never used as an acceptance score.
+
+- Mean-activation neuron ablation with recursive exact cleanup
+  ([#4](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/4)).
+  A hidden neuron is removed from an incumbent clone after folding
+  `mean × weight` into ordinary downstream biases; dead-output chains and
+  known-squash constant neurons then fold exactly. Typed/aggregate cases
+  fail closed. The incumbent is never mutated; only `creature.validate()`
+  candidates are emitted.
