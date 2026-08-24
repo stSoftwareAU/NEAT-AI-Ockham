@@ -169,6 +169,7 @@ NEAT-AI-Ockham/
 │       ├── incumbent.rs       # immutable forward-only load + checksum
 │       ├── corpus.rs          # training-data identity / streaming
 │       ├── baseline.rs        # full-corpus scorer baseline
+│       ├── stats.rs           # hidden-neuron activation statistics
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs

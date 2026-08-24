@@ -18,3 +18,10 @@ All notable changes to NEAT-AI-Ockham are recorded here. The format follows
   ([#2](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/2)).
   Recurrent creatures are rejected; the source file is never written;
   pruning is not attempted unless this gate passes.
+
+- Stream full-corpus hidden-neuron activation statistics through the
+  NEAT-AI-core compiled forward pass
+  ([#3](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/3)).
+  Mean, variance, mean-abs, min and max are accumulated in `f64` with
+  memory bounded by hidden-neuron count, cached by creature checksum +
+  corpus identity + format version, and never used as an acceptance score.
