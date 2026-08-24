@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use neat_ai_ockham::config::{
     DEFAULT_CANDIDATE_COUNT, DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES, DEFAULT_MIN_IMPROVEMENT,
     DEFAULT_SCREEN_SAMPLE_RATE, DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
@@ -18,7 +18,10 @@ use neat_ai_ockham::{ExternalScorer, establish_run, log};
 #[command(name = "neat_ai_ockham")]
 #[command(about = "Experimental pruning optimiser for already-fit NEAT-AI creatures")]
 #[command(version)]
+#[command(subcommand_negates_reqs = true)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// Source creature JSON (never modified).
     creature: Option<PathBuf>,
     /// Training corpus directory of `.bin` files.
@@ -62,8 +65,39 @@ struct Cli {
     global_champion: Option<PathBuf>,
 }
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Summarise one or more `experiments.jsonl` journals.
+    Report {
+        /// Journal files.
+        journals: Vec<PathBuf>,
+    },
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(Command::Report { journals }) = cli.command {
+        if journals.is_empty() {
+            eprintln!("usage: neat_ai_ockham report <experiments.jsonl> [...]");
+            return ExitCode::FAILURE;
+        }
+        return match neat_ai_ockham::summarise(&journals) {
+            Ok(report) => match serde_json::to_string_pretty(&report) {
+                Ok(json) => {
+                    println!("{json}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("cannot serialise report: {e}");
+                    ExitCode::FAILURE
+                }
+            },
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let (Some(creature), Some(training_data)) = (cli.creature.clone(), cli.training_data.clone())
     else {
         eprintln!(

@@ -23,7 +23,7 @@
 //! | full scoring + bundles | [`promote`] | #7 |
 //! | iterative 45-minute loop | [`run`], [`journal`] | #8 |
 //! | population re-entry | [`reentry`] | #9 |
-//! | economics report | later | #10 |
+//! | economics report | [`report`] | #10 |
 
 #![warn(missing_docs)]
 
@@ -39,6 +39,7 @@ pub mod journal;
 pub mod log;
 pub mod promote;
 pub mod reentry;
+pub mod report;
 pub mod run;
 pub mod scorer;
 pub mod stats;
@@ -55,6 +56,7 @@ pub use config::{
 pub use corpus::{CorpusInfo, corpus_info};
 pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
 pub use promote::{FullOutcome, evaluate_full};
+pub use report::{Report, summarise};
 pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
 pub use stats::{ActivationStats, NeuronStats, ensure_activation_stats};

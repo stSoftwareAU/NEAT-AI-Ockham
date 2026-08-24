@@ -68,3 +68,8 @@ All notable changes to NEAT-AI-Ockham are recorded here. The format follows
   A fresh same-call full-corpus comparison writes
   `population-candidate.json` only when Ockham has positive authoritative
   headroom. Local `best.json` is always preserved.
+
+- Add an Ockham `report` command that summarises pruning economics from
+  `experiments.jsonl` ([#10](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/10)).
+  The report compounds tiny accepted steps into cumulative gain rather than
+  showing only the final score.

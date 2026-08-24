@@ -7,12 +7,12 @@
 use std::io::Write;
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::incumbent::now_unix;
 
 /// One journal event.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record", rename_all = "camelCase")]
 pub enum Event {
     /// Run started after the baseline gate.

@@ -127,6 +127,7 @@ independent experiment.
 
 ```bash
 neat_ai_ockham <creature.json> <training-data-dir> [OPTIONS]
+neat_ai_ockham report <experiments.jsonl> [...]
 neat_ai_ockham --help
 neat_ai_ockham --version
 ```
@@ -177,6 +178,7 @@ NEAT-AI-Ockham/
 │       ├── promote.rs         # full-score winners + bundles
 │       ├── journal.rs         # experiments.jsonl
 │       ├── reentry.rs         # population re-entry vs global champion
+│       ├── report.rs          # experiments.jsonl summary
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs
