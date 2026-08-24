@@ -46,6 +46,50 @@ pub fn recurrent_flagged_creature_json(inputs: usize, outputs: usize) -> String 
     neat_core::creature_to_json_pretty(&creature).unwrap()
 }
 
+/// Hidden IDENTITY neuron `h1` between one input and one output.
+///
+/// `h1` computes `IDENTITY(bias + weight * input-0)` and feeds the output
+/// with weight 1. Used to pin activation-statistics arithmetic.
+pub fn hidden_identity_creature(bias: f64, weight: f64) -> CreatureExport {
+    CreatureExport {
+        input: 1,
+        output: 1,
+        neurons: vec![
+            NeuronExport {
+                id: None,
+                neuron_type: "hidden".into(),
+                uuid: "h1".into(),
+                bias,
+                squash: Some("IDENTITY".into()),
+            },
+            NeuronExport {
+                id: None,
+                neuron_type: "output".into(),
+                uuid: "output-0".into(),
+                bias: 0.0,
+                squash: Some("IDENTITY".into()),
+            },
+        ],
+        synapses: vec![
+            SynapseExport {
+                from_uuid: "input-0".into(),
+                to_uuid: "h1".into(),
+                weight,
+                synapse_type: None,
+            },
+            SynapseExport {
+                from_uuid: "h1".into(),
+                to_uuid: "output-0".into(),
+                weight: 1.0,
+                synapse_type: None,
+            },
+        ],
+        semantic_version: Some("4.0.0".into()),
+        forward_only: true,
+        memetic: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -13,6 +13,7 @@ use crate::config::OckhamConfig;
 use crate::corpus::corpus_info;
 use crate::incumbent::{IncumbentMeta, load_incumbent};
 use crate::scorer::DirectoryScorer;
+use crate::stats::{ActivationStats, ensure_activation_stats};
 use crate::{crate_version, log};
 
 /// Result of a baseline-only run.
@@ -27,6 +28,8 @@ pub struct BaselineRun {
     pub incumbent: IncumbentMeta,
     /// Authoritative full-corpus scorer baseline. Larger `score` is better.
     pub baseline: AuthoritativeBaseline,
+    /// Hidden-neuron activation statistics (proposal machinery only).
+    pub activation: ActivationStats,
     /// Optimisation status (`deferred` until later issues).
     pub optimisation: &'static str,
 }
@@ -75,6 +78,25 @@ pub fn establish_run(
         baseline.score, baseline.error
     ));
 
+    let activation = ensure_activation_stats(
+        &incumbent,
+        &config.training_data,
+        &corpus,
+        &workspace,
+        crate::stats::DEFAULT_CHUNK_RECORDS,
+    )?;
+    log::detail(&format!(
+        "activation stats: {} hidden neurons, {} records, {}ms{}",
+        activation.neurons.len(),
+        activation.record_count,
+        activation.scan_ms,
+        if activation.from_cache {
+            " (cache)"
+        } else {
+            ""
+        }
+    ));
+
     // Opening parent is the only verified creature so far. `best.json` must
     // never be worse than this baseline; later issues may replace it.
     std::fs::create_dir_all(&config.output_dir)
@@ -95,6 +117,7 @@ pub fn establish_run(
         workspace,
         incumbent: meta,
         baseline,
+        activation,
         optimisation: "deferred",
     })
 }
@@ -137,6 +160,8 @@ mod tests {
         assert!(cfg.output_dir.join("best.json").exists());
         assert!(run.workspace.join("incumbent.json").exists());
         assert!(run.workspace.join("baseline.json").exists());
+        assert_eq!(run.activation.record_count, 2);
+        assert!(run.activation.neurons.is_empty());
         assert_eq!(std::fs::read(&cfg.creature).unwrap(), before);
         assert_eq!(
             std::fs::read(cfg.output_dir.join("best.json")).unwrap(),

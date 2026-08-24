@@ -16,7 +16,7 @@
 //! | immutable incumbent + checksum | [`incumbent`] | #2 |
 //! | authoritative baseline | [`baseline`], [`run`] | #2 |
 //! | corpus identity / streaming | [`corpus`] | #2 |
-//! | full-corpus activation statistics | later | #3 |
+//! | full-corpus activation statistics | [`stats`] | #3 |
 //! | mean-activation ablation + cleanup | later | #4 |
 //! | exact IDENTITY collapse | later | #5 |
 //! | seeded sampled sweep | later | #6 |
@@ -36,6 +36,7 @@ pub mod incumbent;
 pub mod log;
 pub mod run;
 pub mod scorer;
+pub mod stats;
 
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
 pub use cancel::CancelToken;
@@ -47,6 +48,7 @@ pub use corpus::{CorpusInfo, corpus_info};
 pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
 pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
+pub use stats::{ActivationStats, NeuronStats, ensure_activation_stats};
 
 /// Crate version from `ockham/Cargo.toml`.
 pub fn crate_version() -> &'static str {
