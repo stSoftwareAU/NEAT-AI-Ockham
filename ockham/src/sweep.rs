@@ -179,7 +179,7 @@ fn is_identity(creature: &CreatureExport, uuid: &str) -> bool {
     })
 }
 
-fn propose(
+pub(crate) fn propose(
     incumbent: &CreatureExport,
     stats: &ActivationStats,
     uuid: &str,
