@@ -54,8 +54,8 @@ jobs:
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v7
         with:
           token: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
-          commit-message: "chore: update Cargo dependencies"
-          title: "chore: update Cargo dependencies"
+          commit-message: "🪒 update Cargo dependencies"
+          title: "🪒 update Cargo dependencies"
           branch: chore/cargo-upgrade
           base: Develop
           body: "Automated weekly Cargo dependency update via cargo-edit (Issue #16). CI decides."

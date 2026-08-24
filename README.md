@@ -199,6 +199,7 @@ Sibling clones expected beside this repo: `NEAT-AI-core` (path dependency) and
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). The local gate mirrors CI: rustfmt,
 clippy `-D warnings`, tests, rustdoc, cargo-deny, shellcheck and spell-check.
+Commit messages use the **🪒** prefix.
 
 ## Version-1 constraints
 

@@ -24,6 +24,23 @@ an unhandled breaking bump.
   `../NEAT-AI-scorer/target/release/rust_scorer` or `NEAT_SCORER_BIN=…`.
   The tests print a skip notice and pass when it is absent.
 
+## Commit messages
+
+Ockham uses **🪒** as its commit-message prefix
+([#23](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/23)). The razor is
+project identity, not a Conventional Commits taxonomy — the descriptive text
+still matters:
+
+```text
+🪒 add full-corpus activation statistics
+🪒 prune redundant hidden neuron
+🪒 collapse exact IDENTITY path
+🪒 add sampled pruning sweep
+```
+
+Keep the convention lightweight. Do not add commit-lint CI that rejects
+otherwise valid commits solely because the emoji is absent.
+
 ## Local gate
 
 ```bash
