@@ -123,6 +123,67 @@ Ockham follows the Rust workspace, quality, journalling and scorer-gating
 conventions of the existing Rust NEAT-AI family where practical, but remains an
 independent experiment.
 
+## Usage
+
+```bash
+neat_ai_ockham <creature.json> <training-data-dir> [OPTIONS]
+neat_ai_ockham --help
+neat_ai_ockham --version
+```
+
+The supplied creature path is never written to. Training data is a directory of
+NEAT-AI `.bin` records, scored by an external `rust_scorer` binary rather than
+by Ockham itself.
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--timeout-seconds` | `2700` | Wall-clock budget (45 minutes). |
+| `--output-dir` | `.` | `best.json`, `experiments.jsonl`, `winners/`, `workspace/`. |
+| `--scorer` | `rust_scorer` | NEAT-AI-scorer binary. |
+| `--scorer-arg` | _(none)_ | Extra argument passed verbatim to the scorer (repeatable). |
+| `--seed` | drawn | RNG seed; printed for replay when optimisation starts. |
+| `--candidates` | `100` | Sampled-sweep batch size. |
+| `--screen-sample-rate` | `0.05` | Scorer sample used only to screen; `0` disables screening. |
+| `--screen-threshold` | `0` | Sampled Δscore required to promote a candidate. |
+| `--min-improvement` | `1e-6` | Strict full-corpus improvement required to accept. |
+| `--max-experiments` | _(none)_ | Optional cap in addition to the wall-clock budget. |
+| `--max-consecutive-scorer-failures` | `3` | Abort after this many consecutive scorer failures. |
+
+Issue #1 only reports this configuration as JSON on stdout. Pruning, screening
+and promotion land in later issues; a run must not attempt optimisation until
+those stages exist.
+
+## Repository layout
+
+```text
+NEAT-AI-Ockham/
+├── Cargo.toml                 # workspace
+├── ockham/
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs            # CLI
+│       ├── lib.rs
+│       ├── config.rs          # flags and defaults
+│       ├── scorer.rs          # external rust_scorer judge
+│       ├── log.rs
+│       └── cancel.rs
+├── quality.sh
+├── rust-toolchain.toml
+└── neat-core.expected-version
+```
+
+Sibling clones expected beside this repo: `NEAT-AI-core` (path dependency) and
+`NEAT-AI-scorer` (the authoritative judge binary).
+
+## Quality gates
+
+```bash
+./quality.sh < /dev/null
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). The local gate mirrors CI: rustfmt,
+clippy `-D warnings`, tests, rustdoc, cargo-deny, shellcheck and spell-check.
+
 ## Version-1 constraints
 
 - **Pure Rust.**

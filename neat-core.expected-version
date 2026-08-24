@@ -1,0 +1,12 @@
+# Last-handled neat-core version.
+#
+# Ockham consumes neat-core via an unpinned `path` dependency that tracks head.
+# CI (`scripts/check-neat-core-version.sh`) fails when the sibling neat-core
+# presents a breaking bump above this baseline — pre-1.0 a higher minor, or any
+# higher major — forcing a deliberate upgrade. Clear the gate by updating
+# `ockham` for the breaking change and bumping this version to match neat-core.
+#
+# 0.10.6: bootstrap against the current family pin (NEAT-AI-core #577 synapse
+# uniqueness by (fromUUID, toUUID, type)). Ockham issue #1 does not yet mutate
+# creatures; the pin documents the sibling we compile against.
+0.10.6
