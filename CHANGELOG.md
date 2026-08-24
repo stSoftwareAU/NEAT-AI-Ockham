@@ -48,3 +48,10 @@ All notable changes to NEAT-AI-Ockham are recorded here. The format follows
   and screened with the incumbent in the same sampled scorer cohort.
   Sampled winners are returned for later full scoring; they cannot become
   `best.json`.
+
+- Full-score every sampled winner plus grouped pruning bundles
+  ([#7](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/7)).
+  Ranked prefixes of sampled winners are rebuilt from the same incumbent
+  and scored with the individuals in one full-corpus call. The highest
+  strict full-score win — including a tiny one — may become the next
+  Ockham parent. Sampled wins never write `best.json`.
