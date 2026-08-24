@@ -5,183 +5,166 @@
 NEAT-AI-Ockham is an isolated experimental Rust optimiser for already-fit
 [NEAT-AI](https://github.com/stSoftwareAU/NEAT-AI) creatures.
 
-It starts with the current fittest creature and asks a deliberately narrow
-question:
+It asks one deliberately narrow question:
 
-> **Can we make an already highly evolved creature fitter by removing structure
+> **Can an already highly evolved creature become fitter by removing structure
 > that no longer earns the cost of keeping it?**
 
 The motivating production creature has been evolved for years and contains more
-than 3,000 neurons. Ockham does **not** replace normal evolution, redesign the
-network, or retrain it from scratch. It takes a clone of a known-good incumbent,
-tries small pruning/simplification experiments, and lets the existing
+than 3,000 neurons. Ockham does not replace normal evolution, redesign the
+network, or retrain it from scratch. It takes a clone of the current fittest
+creature, proposes small pruning/simplification experiments, and lets
 [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) decide whether
 anything is genuinely better.
 
-Ockham is intentionally expendable and isolated. If the experiment never finds
-a useful improvement, that is a valid result. If it does improve the fittest
-creature, excellent. The production evolutionary system must not depend on
-Ockham being correct.
+Ockham is deliberately isolated while experimenting. If it finds nothing, that
+is a valid result. If the **full canonical scorer** says an Ockham creature is
+fitter, that creature is legitimate again: it can be checked back into the
+normal NEAT-AI population and continue ordinary evolution.
+
+Ockham proposes and proves. Normal NEAT-AI owns the population.
 
 ## Core principle
 
 ```text
-fittest creature
-      │
-      ├── full authoritative baseline score
-      │
-      ├── full-corpus hidden-neuron activation statistics
-      │
-      ▼
+current fittest creature
+        │
+        ├── immutable clone
+        ├── full authoritative baseline score
+        └── full-corpus hidden-neuron activation statistics
+        │
+        ▼
 seeded random permutation of hidden neurons
-      │
-      ▼
-batches of ~100 single-neuron ablations
-      │
-      ├── compensate downstream biases using mean activation
-      ├── exact deterministic cleanup where possible
-      ├── cascade dead structure
-      └── creature.validate()
-      │
-      ▼
+        │
+        ▼
+~100 single-neuron pruning candidates
+        │
+        ├── mean-activation bias compensation
+        ├── exact deterministic cleanup where possible
+        ├── cascading dead-structure removal
+        └── NEAT-AI-core creature.validate()
+        │
+        ▼
 NEAT-AI-scorer on ~5% sample
-      │
-      ▼
+        │
+        ▼
 every apparent winner
-      │
-      ├── full-corpus individual candidates
-      └── grouped/prefix combinations
-      │
-      ▼
+        │
+        ├── full-corpus individual candidates
+        └── grouped/prefix combinations
+        │
+        ▼
 full-corpus NEAT-AI-scorer
-      │
-      ├── no improvement → keep incumbent, continue sweep
-      └── improvement    → new experimental incumbent
-                              │
-                              └── recompute statistics and restart
+        │
+        ├── no improvement → keep incumbent; continue sweep
+        └── improvement    → new Ockham incumbent
+                                │
+                                ├── recompute statistics
+                                ├── restart sweep
+                                └── eligible for population re-entry
 ```
 
-The default wall-clock budget is **45 minutes**. The current production creature
-has roughly 3,200 hidden neurons, so the first implementation deliberately tries
-the simple experiment before inventing clever search heuristics: approximately
-100 candidates per sampled scorer batch means a complete sweep may only require
-~30–35 screens if reality is kind.
+The default wall-clock budget is **45 minutes**. With roughly 3,200 hidden
+neurons, the first implementation intentionally starts simple: if ~100 candidate
+creatures can be screened together cheaply on 5% of the training corpus, a
+complete no-win sweep is only about 30–35 scorer batches. We should measure that
+before inventing clever search machinery.
 
 ## The Ockham rule
 
 Ockham may **approximate when proposing a candidate**. It must never approximate
 when judging one.
 
-Removing a neuron by replacing its behaviour with its average observed
-activation is deliberately approximate. Cascading dead-code deletion and some
-IDENTITY simplifications can be mathematically exact. Neither distinction gives
-a candidate any authority: only the full-corpus NEAT-AI-scorer can accept a new
-incumbent.
+Replacing a removed neuron's behaviour with its average observed activation is
+explicitly approximate. Cascading dead-code deletion, constant folding and some
+IDENTITY simplifications can be mathematically exact. Neither distinction grants
+any authority: only the full-corpus NEAT-AI-scorer may declare a better creature.
 
 ## Related repositories
 
-- [NEAT-AI](https://github.com/stSoftwareAU/NEAT-AI) — TypeScript evolutionary
-  trainer and the source of the mature creatures Ockham experiments on.
+- [NEAT-AI](https://github.com/stSoftwareAU/NEAT-AI) — evolutionary trainer and
+  owner of the normal population.
 - [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) — canonical Rust
-  creature/network implementation. Ockham uses it for loading, inference,
-  structural editing and `creature.validate()`.
-- [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) — the
-  authoritative judge. Sample scoring may screen candidates; only full-corpus
-  scoring may accept one.
+  creature/network implementation used for loading, inference, structural edits
+  and `creature.validate()`.
+- [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) — authoritative
+  judge. Sample scoring may screen; only full-corpus scoring may accept.
 - [NEAT-AI-Forests](https://github.com/stSoftwareAU/NEAT-AI-Forests) — sibling
-  experiment that searches for useful structure to **add** to a mature creature.
-  Ockham asks the opposite question: what can safely be removed?
+  experiment asking what useful structure can be **added** to a mature creature.
 - [NEAT-AI-Lamarck](https://github.com/stSoftwareAU/NEAT-AI-Lamarck) — sibling
-  experiment that uses acquired statistical/backpropagation information to
-  propose heritable improvements.
+  experiment using statistical/backpropagation information to propose heritable
+  improvements.
 
 Ockham follows the Rust workspace, quality, journalling and scorer-gating
-conventions of the existing Rust NEAT-AI family where practical, but remains a
-separate experiment.
+conventions of the existing Rust NEAT-AI family where practical, but remains an
+independent experiment.
 
-## Scope and constraints
+## Version-1 constraints
 
-Version 1 is deliberately conservative:
+- **Pure Rust.**
+- **Forward-only creatures only.** Recurrent/self-connected networks are out of
+  scope initially.
+- **The supplied creature is immutable.** Every candidate starts from a clone of
+  a scorer-verified incumbent.
+- **Every structural candidate must validate.** Call NEAT-AI-core
+  `creature.validate()` after the complete atomic transformation.
+- **Unknown semantics are skipped.** Aggregate/typed synapses are only transformed
+  when their substitution semantics are explicitly proven and tested.
+- **Sample scores only screen.** Default screen: about 100 candidates over 5% of
+  records, with the incumbent in the same sample cohort.
+- **Promote every sampled winner initially.** No top-K cap until evidence says it
+  is needed.
+- **The full scorer is king.** Highest full-corpus score wins, regardless of
+  whether the creature is elegant.
+- **45-minute default run budget.** The global champion is perishable while
+  normal evolution continues elsewhere.
 
-- **Rust only.** No TypeScript implementation path.
-- **Forward-only creatures only.** Recurrent/self-connected semantics make
-  constant substitution and cascading removal much harder to reason about and
-  are out of scope initially.
-- **Source creature is immutable.** Every candidate is produced from a clone of
-  the current experimental incumbent.
-- **Structure changes must validate.** Every complete candidate calls
-  NEAT-AI-core `creature.validate()` before it can reach the scorer.
-- **Sample scores only screen.** The default screen uses about 5% of records and
-  batches about 100 candidate creatures with the incumbent evaluated in the
-  same sample context.
-- **Every sampled winner is interesting.** Initially, every candidate that beats
-  the sampled incumbent is promoted rather than imposing a top-K cap.
-- **Full scorer is king.** The candidate with the highest authoritative score
-  wins, whether it is a single removal or an ugly multi-neuron bundle.
-- **45-minute default budget.** A currently fittest creature is perishable while
-  normal evolution continues on other machines.
+## Full-corpus activation statistics
 
-## Phase 1 — establish the incumbent
+For the current incumbent, stream the entire training corpus and accumulate for
+every hidden neuron:
 
-1. Load the supplied creature through NEAT-AI-core.
-2. Require `forwardOnly: true`.
-3. Validate and round-trip it.
-4. Keep the supplied file byte-for-byte immutable and work from a private copy.
-5. Score the incumbent over the full training corpus with NEAT-AI-scorer.
-6. Record creature checksum, corpus identity, scorer/version/configuration,
-   authoritative score/error and structural counts.
-
-Any validation/scorer/parity failure aborts the experiment rather than guessing.
-
-## Phase 2 — activation statistics
-
-Run the current incumbent over the **complete training corpus** and accumulate
-statistics for every hidden neuron. Start with:
-
-- mean post-activation value — required for the ablation substitution;
+- mean post-activation value;
 - variance / standard deviation;
 - mean absolute activation;
 - minimum and maximum activation;
 - record count.
 
-Use bounded-memory streaming and `f64` accumulators even where inference values
-are `f32`. Integrate accumulation into the inference pass rather than storing
-per-record neuron activations.
+Use bounded memory and `f64` accumulators even where inference is `f32`. Do not
+store all per-record activations. Cache only against the exact creature checksum,
+corpus identity and statistics-format version.
 
-The additional statistics are not authority. They are cheap evidence for future
-"dirty tricks" such as nearly-constant, almost-always-zero or unusually stable
-neurons.
+The mean is required for the first pruning proposal. The extra statistics are
+useful evidence for later dirty tricks such as nearly-constant or almost-always-
+zero neurons, but none is an acceptance metric.
 
-## Phase 3 — approximate single-neuron ablation
+## Approximate single-neuron ablation
 
-For a selected hidden neuron `i`, let its measured mean post-activation be
-`mean_i`. For every ordinary downstream weighted connection `i -> j` with weight
+For selected hidden neuron `i`, let its measured mean post-activation be
+`mean_i`. For each supported ordinary downstream connection `i -> j` with weight
 `w_ij`, propose removing `i` while compensating the downstream bias:
 
 ```text
 bias_j' = bias_j + mean_i * w_ij
 ```
 
-This preserves the removed neuron's **average contribution** to the downstream
-pre-activation, not its record-by-record behaviour. It is therefore an
-experimental approximation, not an algebraic simplification.
+This preserves the neuron's **average contribution** to the downstream
+pre-activation, not its record-by-record contribution. It is therefore an
+experimental approximation.
 
-Typed/aggregate synapses must only be transformed when NEAT-AI-core can prove
-that the same substitution semantics apply. Unsupported structural cases are
-skipped and journalled rather than guessed.
+## Deterministic cleanup cascade
 
-## Phase 4 — deterministic cleanup cascade
+After a proposed removal, repeatedly simplify exact consequences until stable.
 
-After a proposed removal, repeatedly simplify consequences until stable:
+### No outgoing synapses
 
-### Hidden neuron with no outgoing synapses
+A hidden neuron with no outgoing synapses cannot affect an output. Remove it.
+Its removal may make upstream hidden neurons newly useless, so recurse.
 
-It cannot influence an output. Remove it. This may make upstream hidden neurons
-newly useless, so continue recursively.
+### No incoming synapses
 
-### Hidden neuron with no incoming synapses
-
-For a supported ordinary activation neuron, its output is constant:
+Where the activation semantics are supported, a hidden neuron with no incoming
+synapses is constant:
 
 ```text
 constant = squash(bias)
@@ -193,22 +176,17 @@ Fold each ordinary outgoing contribution into the downstream bias:
 bias_j' = bias_j + constant * w_ij
 ```
 
-then remove the constant neuron and continue the cleanup cascade.
+then remove the constant neuron and continue the cascade.
 
-Only transformations whose semantics are understood exactly are folded. Any
-activation/aggregate/synapse type whose constant behaviour cannot be established
-safely remains untouched.
+The entire requested removal + cleanup is an atomic transformation on a clone.
+Intermediate topology may be temporarily invalid; the final candidate must pass
+`creature.validate()`.
 
-The entire requested removal + cleanup cascade is an atomic operation on a
-clone. Intermediate states do not need to be valid; the completed candidate
-must pass `creature.validate()`.
+Journal both the **requested removal** and every neuron/synapse actually removed.
 
-The journal records both the **requested neuron** and every neuron/synapse
-actually removed by the cascade.
+## Exact IDENTITY collapse
 
-## Phase 5 — exact IDENTITY collapse
-
-IDENTITY neurons deserve a separate exact simplification path.
+IDENTITY neurons can sometimes be removed exactly.
 
 For:
 
@@ -216,52 +194,47 @@ For:
 y = bias_y + Σ(x_k * a_k)
 ```
 
-and an ordinary outgoing connection `y -> z` with weight `b`, eliminating `y`
-can be exact by applying:
+and ordinary outgoing connection `y -> z` with weight `b`:
 
 ```text
 bias_z += bias_y * b
 x_k -> z weight += a_k * b
 ```
 
-Existing parallel connections should be merged by adding weights. With multiple
-inputs and outputs this can create `incoming × outgoing` connections, so an
-IDENTITY collapse is only attractive when its resulting NEAT growth cost is
-lower (or when explicitly being tested as a candidate).
+Merge parallel connections by adding their weights. With multiple inputs and
+outputs this can create `incoming × outgoing` synapses, so the automatic
+simplification should only be emitted when resulting NEAT growth cost is lower.
 
-The TypeScript `Creature.compact()` implementation contains related historical
-simplifications and is useful as a reference/control, but Ockham should implement
-canonical Rust transformations through NEAT-AI-core rather than depend on the
-TypeScript optimiser.
+The historical TypeScript `Creature.compact()` logic is useful as a reference
+and control, but Ockham implements canonical Rust transformations through
+NEAT-AI-core.
 
-## Phase 6 — sampled screen
+## Sampled sweep
 
-Create a seeded random permutation of hidden-neuron UUIDs. This gives random
-search order without replacement and guarantees eventual coverage if the run is
-long enough.
+Create a seeded random permutation of eligible hidden-neuron UUIDs. Random order
+without replacement gives exploration without accidentally testing the same
+neuron repeatedly.
 
-Default first experiment:
-
-- candidate batch: `100` removals;
-- scorer sample rate: `0.05`;
-- candidate and incumbent use the **same sample phase/context**;
-- promote **every** candidate whose sampled score is greater than the sampled
-  incumbent by the configured threshold;
-- validation failures and unsupported transformations are recorded and skipped.
-
-The seed and permutation state are journalled for replay.
-
-## Phase 7 — authoritative promotion and bundles
-
-Every sampled winner is scored over the complete corpus. The same authoritative
-cohort must contain the incumbent so scorer configuration/data differences cannot
-masquerade as improvement.
-
-Also construct a small number of combination candidates from sampled winners.
-A useful first strategy is to rank removals by sampled delta and full-score:
+Initial defaults:
 
 ```text
-all individual sampled winners
+candidate batch       100
+screen sample rate    0.05
+promotion policy      every sampled winner
+run budget            2700 seconds
+```
+
+The incumbent and all candidates in a screen must use the same scorer sample
+phase/context. A sample result can reject or promote; it can never accept.
+
+## Full-corpus promotion and bundles
+
+Every sampled winner gets an authoritative full-corpus score. Include the
+incumbent in that same scorer context.
+
+Also rank sampled winners by sample delta and try a few grouped candidates:
+
+```text
 best 2 together
 best 4 together
 best 8 together
@@ -269,90 +242,117 @@ best 16 together
 all sampled winners together
 ```
 
-Only prefixes that exist are generated, and duplicate bundles are removed. Each
-bundle is built independently from the same incumbent and must apply its complete
-cleanup/validation rules.
+Only generate prefixes that exist and deduplicate equivalent bundles. Each
+bundle starts independently from the same incumbent, performs its full cleanup,
+validates, and is judged as a complete creature.
 
-Interactions are expected: ten individually promising removals may be bad when
-combined. Never add predicted deltas together and call that evidence.
+Individual improvements are **not** assumed additive. Ten individually useful
+removals may be terrible together; that is precisely why the scorer evaluates
+the group.
 
-The **highest full-corpus score wins**, regardless of whether it is an individual
-or bundle. No elegance bonus.
+The highest full-corpus score wins. No preference is given to an individual over
+a bundle or to an elegant transformation over an ugly one.
 
-## Phase 8 — iterative 45-minute loop
+## Iterative 45-minute loop
 
 When the full scorer verifies an improvement:
 
-1. atomically write the candidate as the experimental incumbent;
+1. write the winning candidate as Ockham's new experimental incumbent;
 2. write `best.json` and preserve an intermediate under `winners/`;
 3. invalidate all incumbent-specific activation statistics and sweep state;
 4. recompute full-corpus activation statistics;
-5. create a new seeded/randomised sweep for the new topology;
+5. create a fresh random sweep for the new topology;
 6. continue until the wall-clock budget expires.
 
-A successful run therefore may never finish testing every neuron of the opening
-creature. That is intentional: once the incumbent changes, stale activation
-statistics belong to a creature that no longer exists.
+A successful run may therefore never finish testing every neuron of its opening
+creature. Once topology changes, old activation averages belong to a creature
+that no longer exists.
+
+## Re-entry into the general population
+
+Isolation applies to **experimentation**, not to a scorer-proven result.
+
+A winning creature is eligible to re-enter normal NEAT-AI evolution when:
+
+1. it passes NEAT-AI-core `creature.validate()`;
+2. it was scored over the full canonical corpus using the same scorer/cost
+   configuration as its incumbent;
+3. its authoritative score is strictly higher than the incumbent by the
+   configured minimum threshold;
+4. the exact exported JSON checksum matches the creature that was scored;
+5. scorer/corpus/incumbent provenance is recorded.
+
+Ockham v1 should not write directly into a live production population. Instead it
+emits an explicit scorer-proven population candidate for the existing NEAT-AI
+population path to ingest. No Ockham-specific runtime dependency should be
+required once the creature returns to ordinary evolution.
 
 ## Outputs
-
-Planned outputs follow the sibling experiments:
 
 | Path | Purpose |
 |---|---|
 | `best.json` | best full-scorer-verified creature found during the run |
+| `population-candidate.json` | exact scorer-proven creature eligible for normal evolution |
+| `population-candidate.meta.json` | checksum + scorer/corpus/provenance for population re-entry |
 | `experiments.jsonl` | append-only experiment/candidate journal |
 | `winners/` | every accepted intermediate incumbent |
-| `workspace/incumbent.json` | private immutable copy of current run incumbent |
+| `workspace/incumbent.json` | isolated copy of the current run incumbent |
 | activation-statistics cache | versioned by creature checksum + corpus identity |
 
-Record at least:
+The journal should record score/error, structure/growth cost, requested and
+cascaded removals, bias compensation, exact/approximate transform type,
+validation result, screen/full results, bundle membership, timings and random
+seed/permutation state.
 
-- opening/current creature checksum;
-- scorer and corpus identity;
-- score/error before and after;
-- sampled score/delta separately from authoritative score/delta;
-- neurons/synapses and growth cost before/after;
-- requested neuron UUID;
-- mean activation and other recorded statistics;
-- exact downstream bias compensation;
-- every cascaded removal/constant fold/IDENTITY collapse;
-- candidate validation result/reason;
-- bundle membership;
-- timings by activation scan, mutation, screen and full scoring;
-- random seed/permutation position.
-
-It matters whether a winner has lower prediction error, or merely approximately
-the same error with enough structural cost removed to increase total score.
-Report both.
+It matters whether a winner predicts better or predicts approximately the same
+while becoming sufficiently cheaper to raise the total score. Record both
+`error` and final `score`.
 
 ## Safety invariants
 
 1. **Never modify the supplied creature in place.**
 2. **Only forward-only creatures are accepted in v1.**
-3. **Every candidate starts from a known scorer-verified incumbent clone.**
-4. **Every completed structural candidate must pass NEAT-AI-core
-   `creature.validate()`.**
+3. **Every candidate starts from a known full-scorer-verified incumbent clone.**
+4. **Every completed structural candidate must pass `creature.validate()`.**
 5. **Unknown activation/synapse/aggregate semantics are skipped, never guessed.**
 6. **Mean-activation substitution is explicitly approximate.**
 7. **Sample scoring can reject/rank/promote, but cannot accept.**
-8. **Only a full-corpus NEAT-AI-scorer result may replace the incumbent.**
+8. **Only the full-corpus NEAT-AI-scorer may replace the incumbent.**
 9. **Scorer failure means no winner. Fail closed.**
-10. **After every accepted structural change, activation statistics are stale and
+10. **After an accepted structural change, activation statistics are stale and
     must be recomputed.**
-11. **A bundle is judged as a complete creature; individual deltas are never
-    assumed additive.**
-12. **`best.json` may never be worse than the opening full-scorer baseline.**
+11. **Bundle deltas are never assumed additive.**
+12. **`best.json` may never be worse than the opening authoritative baseline.**
+13. **Only an exact full-scored winner artefact may be offered back to the normal
+    population.**
+
+## Implementation roadmap
+
+The issue list is the deliberately small project plan:
+
+| Issue | Phase |
+|---|---|
+| [#1](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/1) | Rust bootstrap and quality gates |
+| [#2](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/2) | immutable incumbent + authoritative baseline |
+| [#3](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/3) | full-corpus activation statistics |
+| [#4](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/4) | mean-activation ablation + recursive cleanup |
+| [#5](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/5) | exact cost-aware IDENTITY collapse |
+| [#6](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/6) | seeded 100-wide / 5% sampled sweep |
+| [#7](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/7) | full scoring + grouped bundles |
+| [#8](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/8) | iterative 45-minute optimiser + journal |
+| [#9](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/9) | verified winner export / population re-entry |
+| [#10](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/10) | reporting + production economics |
+| [#11](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/11) | smarter ordering only if evidence warrants it |
 
 ## What success looks like
 
 The useful metric is not how many neurons Ockham deletes. It is:
 
-> **scorer-verified improvement per wall-clock hour on a mature production
-> creature.**
+> **scorer-verified improvement per wall-clock hour on a mature creature.**
 
 A smaller network is interesting. A smaller network with a better authoritative
-score is the experiment succeeding.
+score — good enough to put back into the population and keep evolving — is the
+experiment succeeding.
 
 And if no neuron can be removed profitably, Ockham has still answered a useful
 question about how efficiently evolution is already using its structure.
