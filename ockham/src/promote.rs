@@ -53,6 +53,9 @@ pub struct LocalWinner {
     pub candidate: FullCandidate,
     /// Checksum of the exported JSON that won.
     pub checksum: String,
+    /// Winning creature (not journalled as nested JSON).
+    #[serde(skip)]
+    pub creature: CreatureExport,
 }
 
 /// Outcome of one full-score cohort. Sample results never accept.
@@ -203,6 +206,7 @@ pub fn evaluate_full(
             let winner = LocalWinner {
                 checksum: sha256_hex(json.as_bytes()),
                 candidate: cand.clone(),
+                creature: creature.clone(),
             };
             let take = match &best {
                 None => true,

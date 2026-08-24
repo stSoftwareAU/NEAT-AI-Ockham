@@ -112,7 +112,7 @@ impl OckhamConfig {
             screen_threshold: self.screen_threshold,
             min_improvement: self.min_improvement,
             max_consecutive_scorer_failures: self.max_consecutive_scorer_failures,
-            optimisation: "deferred",
+            optimisation: "loop",
         }
     }
 }
@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(c.screen_sample_rate, Some(0.05));
         assert_eq!(c.screen_threshold, 0.0);
         assert_eq!(c.min_improvement, 1e-6);
-        assert_eq!(c.report().optimisation, "deferred");
+        assert_eq!(c.report().optimisation, "loop");
         assert_eq!(c.report().timeout_seconds, DEFAULT_TIMEOUT_SECONDS);
     }
 
