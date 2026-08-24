@@ -172,6 +172,7 @@ NEAT-AI-Ockham/
 │       ├── stats.rs           # hidden-neuron activation statistics
 │       ├── ablation.rs        # mean-activation ablation + cleanup
 │       ├── collapse.rs        # exact IDENTITY neuron collapse
+│       ├── sweep.rs           # seeded random sweep + 5% screen
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs

@@ -19,7 +19,7 @@
 //! | full-corpus activation statistics | [`stats`] | #3 |
 //! | mean-activation ablation + cleanup | [`ablation`] | #4 |
 //! | exact IDENTITY collapse | [`collapse`] | #5 |
-//! | seeded sampled sweep | later | #6 |
+//! | seeded sampled sweep | [`sweep`] | #6 |
 //! | full scoring + bundles | later | #7 |
 //! | iterative 45-minute loop | later | #8 |
 //! | population re-entry | later | #9 |
@@ -39,6 +39,7 @@ pub mod log;
 pub mod run;
 pub mod scorer;
 pub mod stats;
+pub mod sweep;
 
 pub use ablation::{Ablation, AblationSkip, TransformClass, ablate_mean};
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
@@ -53,6 +54,7 @@ pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
 pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
 pub use stats::{ActivationStats, NeuronStats, ensure_activation_stats};
+pub use sweep::{ScreenConfig, ScreenOutcome, Sweep, SweepCandidate, draw_seed, screen_batch};
 
 /// Crate version from `ockham/Cargo.toml`.
 pub fn crate_version() -> &'static str {

@@ -41,3 +41,10 @@ All notable changes to NEAT-AI-Ockham are recorded here. The format follows
   on an incumbent clone. Parallel synapses merge; automatic collapses
   that raise NEAT growth units are skipped unless an experimental
   override is set.
+
+- Seeded random-without-replacement sweep and 100-wide 5% scorer screening
+  ([#6](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/6)).
+  Hidden neurons are shuffled once, visited at most once per permutation,
+  and screened with the incumbent in the same sampled scorer cohort.
+  Sampled winners are returned for later full scoring; they cannot become
+  `best.json`.

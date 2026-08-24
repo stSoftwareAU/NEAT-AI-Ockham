@@ -128,6 +128,7 @@ pub fn establish_baseline(
 
 /// In-process fake scorers for tests.
 pub mod fake {
+    use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
     use std::path::Path;
 
@@ -146,6 +147,14 @@ pub mod fake {
         pub baseline_error: f64,
         /// Record count claimed for `baseline`.
         pub record_count: u64,
+        /// Score returned for every non-`baseline` stem when set.
+        pub candidate_score: Option<f64>,
+        /// Per-stem score overrides (including `baseline`).
+        pub stem_scores: BTreeMap<String, f64>,
+        /// Last scorer mode observed (tests).
+        pub last_mode: Cell<Option<ScorerMode>>,
+        /// Last file stems scored in one call (tests).
+        pub last_stems: RefCell<Vec<String>>,
     }
 
     impl ScriptedScorer {
@@ -163,10 +172,11 @@ pub mod fake {
     impl DirectoryScorer for ScriptedScorer {
         fn score_directory(
             &self,
-            _creature_dir: &Path,
+            creature_dir: &Path,
             _training_dir: &Path,
-            _mode: ScorerMode,
+            mode: ScorerMode,
         ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
+            self.last_mode.set(Some(mode));
             if let Some(m) = &self.fail_with {
                 return Err(ScorerError::Failed {
                     status: "exit 1".into(),
@@ -176,20 +186,57 @@ pub mod fake {
             if let Some(raw) = &self.raw_output {
                 return crate::scorer::parse_scorer_output(raw);
             }
+            let mut stems = vec!["baseline".to_string()];
+            if creature_dir.is_dir() {
+                let mut extra = Vec::new();
+                if let Ok(entries) = std::fs::read_dir(creature_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                            continue;
+                        }
+                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                            && stem != "baseline"
+                        {
+                            extra.push(stem.to_string());
+                        }
+                    }
+                }
+                extra.sort();
+                stems.extend(extra);
+            }
+            self.last_stems.replace(stems.clone());
             let mut out = BTreeMap::new();
-            out.insert(
-                "baseline".to_string(),
-                ScoreResult {
-                    score: self.baseline_score,
-                    error: self.baseline_error,
-                    complexity_penalty: 1e-8,
-                    record_count: self.record_count,
-                    sample_rate: None,
-                    gpu_backend: Some("fake".into()),
-                    cost_name: Some("MSE".into()),
-                    time_taken: 0.0,
-                },
-            );
+            for stem in stems {
+                let score = self
+                    .stem_scores
+                    .get(&stem)
+                    .copied()
+                    .or_else(|| {
+                        if stem == "baseline" {
+                            Some(self.baseline_score)
+                        } else {
+                            self.candidate_score
+                        }
+                    })
+                    .unwrap_or(self.baseline_score);
+                out.insert(
+                    stem,
+                    ScoreResult {
+                        score,
+                        error: self.baseline_error,
+                        complexity_penalty: 1e-8,
+                        record_count: self.record_count,
+                        sample_rate: match mode {
+                            ScorerMode::Sample { rate, .. } => Some(rate),
+                            ScorerMode::Full => None,
+                        },
+                        gpu_backend: Some("fake".into()),
+                        cost_name: Some("MSE".into()),
+                        time_taken: 0.0,
+                    },
+                );
+            }
             Ok(out)
         }
 
