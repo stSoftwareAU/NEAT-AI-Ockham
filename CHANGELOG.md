@@ -33,3 +33,11 @@ All notable changes to NEAT-AI-Ockham are recorded here. The format follows
   known-squash constant neurons then fold exactly. Typed/aggregate cases
   fail closed. The incumbent is never mutated; only `creature.validate()`
   candidates are emitted.
+
+- Exact cost-aware IDENTITY neuron collapse
+  ([#5](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/5)).
+  A hidden IDENTITY neuron is rewritten into downstream biases and
+  bypass synapses (`bias_z += bias_y * b`, `x_k → z` weight `+= a_k * b`)
+  on an incumbent clone. Parallel synapses merge; automatic collapses
+  that raise NEAT growth units are skipped unless an experimental
+  override is set.

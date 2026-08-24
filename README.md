@@ -171,6 +171,7 @@ NEAT-AI-Ockham/
 │       ├── baseline.rs        # full-corpus scorer baseline
 │       ├── stats.rs           # hidden-neuron activation statistics
 │       ├── ablation.rs        # mean-activation ablation + cleanup
+│       ├── collapse.rs        # exact IDENTITY neuron collapse
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs
