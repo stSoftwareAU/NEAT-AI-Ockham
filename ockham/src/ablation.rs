@@ -304,7 +304,7 @@ pub fn ablate_mean(
     })
 }
 
-fn cleanup_cascade(
+pub(crate) fn cleanup_cascade(
     working: &mut CreatureExport,
     compensations: &mut Vec<BiasCompensation>,
     removed: &mut Vec<RemovedNeuron>,

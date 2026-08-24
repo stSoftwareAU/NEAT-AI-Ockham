@@ -18,7 +18,7 @@
 //! | corpus identity / streaming | [`corpus`] | #2 |
 //! | full-corpus activation statistics | [`stats`] | #3 |
 //! | mean-activation ablation + cleanup | [`ablation`] | #4 |
-//! | exact IDENTITY collapse | later | #5 |
+//! | exact IDENTITY collapse | [`collapse`] | #5 |
 //! | seeded sampled sweep | later | #6 |
 //! | full scoring + bundles | later | #7 |
 //! | iterative 45-minute loop | later | #8 |
@@ -30,6 +30,7 @@
 pub mod ablation;
 pub mod baseline;
 pub mod cancel;
+pub mod collapse;
 pub mod config;
 pub mod corpus;
 pub mod fixtures;
@@ -42,6 +43,7 @@ pub mod stats;
 pub use ablation::{Ablation, AblationSkip, TransformClass, ablate_mean};
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
 pub use cancel::CancelToken;
+pub use collapse::{CollapseOptions, CollapseSkip, IdentityCollapse, collapse_identity};
 pub use config::{
     ConfigReport, DEFAULT_CANDIDATE_COUNT, DEFAULT_MIN_IMPROVEMENT, DEFAULT_SCREEN_SAMPLE_RATE,
     DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
