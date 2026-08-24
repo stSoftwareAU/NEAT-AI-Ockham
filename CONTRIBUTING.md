@@ -20,6 +20,9 @@ an unhandled breaking bump.
 - `shellcheck`, `codespell` (`pip install --user codespell`),
   `cargo install cargo-deny --locked`; optionally `markdownlint-cli2` and
   `actionlint` (CI runs them regardless).
+- For `ockham/tests/real_scorer.rs`: a built `rust_scorer` at
+  `../NEAT-AI-scorer/target/release/rust_scorer` or `NEAT_SCORER_BIN=…`.
+  The tests print a skip notice and pass when it is absent.
 
 ## Local gate
 

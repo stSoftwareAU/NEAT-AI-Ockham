@@ -1,7 +1,11 @@
-//! CLI skeleton: help, version, usage, and configuration reporting.
+//! CLI: help/version plus the Issue #2 baseline gate.
 
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use neat_ai_ockham::corpus::write_bin_file;
+use neat_ai_ockham::fixtures::{identity_creature_json, recurrent_flagged_creature_json};
 
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_neat_ai_ockham"))
@@ -13,6 +17,22 @@ fn stdout(out: &std::process::Output) -> String {
 
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+fn fake_scorer(dir: &Path, body: &str) -> PathBuf {
+    let path = dir.join("fake_scorer");
+    let script = format!("#!/bin/sh\ncat <<'EOF'\n{body}\nEOF\n");
+    std::fs::write(&path, script).unwrap();
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+    path
+}
+
+fn write_training(dir: &Path, n: usize) {
+    let recs: Vec<(Vec<f32>, Vec<f32>)> =
+        (0..n).map(|i| (vec![i as f32], vec![i as f32])).collect();
+    write_bin_file(&dir.join("0.bin"), &recs).unwrap();
 }
 
 #[test]
@@ -39,41 +59,105 @@ fn missing_positionals_print_usage() {
 }
 
 #[test]
-fn reports_configuration_without_optimising() {
+fn baseline_gate_writes_workspace_without_pruning() {
     let tmp = tempfile::tempdir().unwrap();
     let creature = tmp.path().join("creature.json");
-    let training = tmp.path().join("training");
-    std::fs::write(&creature, "{}").unwrap();
-    std::fs::create_dir(&training).unwrap();
+    let text = identity_creature_json(1, 1);
+    std::fs::write(&creature, &text).unwrap();
+    let train = tmp.path().join("train");
+    std::fs::create_dir(&train).unwrap();
+    write_training(&train, 4);
+    let out_dir = tmp.path().join("out");
+    let scorer = fake_scorer(
+        tmp.path(),
+        r#"{"baseline":{"score":0.91,"error":0.09,"complexityPenalty":1e-8,"recordCount":4,"costName":"MSE","timeTaken":0.01}}"#,
+    );
 
     let out = bin()
         .arg(&creature)
-        .arg(&training)
-        .arg("--timeout-seconds")
-        .arg("2700")
-        .arg("--candidates")
-        .arg("100")
-        .arg("--screen-sample-rate")
-        .arg("0.05")
-        .arg("--seed")
-        .arg("7")
+        .arg(&train)
+        .arg("--output-dir")
+        .arg(&out_dir)
+        .arg("--scorer")
+        .arg(&scorer)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
-    let err = stderr(&out);
-    assert!(err.contains("configuration only"));
-    assert!(err.contains("not attempted yet"));
-
-    let report: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json report");
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
     assert_eq!(report["optimisation"], "deferred");
-    assert_eq!(report["timeoutSeconds"], 2700);
-    assert_eq!(report["candidates"], 100);
-    assert_eq!(report["screenSampleRate"], 0.05);
-    assert_eq!(report["seed"], 7);
+    assert_eq!(report["baseline"]["score"], 0.91);
+    assert!(report["baseline"]["score"].as_f64().unwrap() > 0.0);
+    assert_eq!(std::fs::read_to_string(&creature).unwrap(), text);
     assert_eq!(
-        Path::new(report["creature"].as_str().unwrap()),
-        creature.as_path()
+        std::fs::read_to_string(out_dir.join("best.json")).unwrap(),
+        text
     );
+    assert!(out_dir.join("workspace/incumbent.json").exists());
+    assert!(out_dir.join("workspace/incumbent.meta.json").exists());
+    assert!(out_dir.join("workspace/baseline.json").exists());
+}
+
+#[test]
+fn non_forward_only_is_rejected_and_source_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let creature = tmp.path().join("creature.json");
+    let text = recurrent_flagged_creature_json(1, 1);
+    std::fs::write(&creature, &text).unwrap();
+    let train = tmp.path().join("train");
+    std::fs::create_dir(&train).unwrap();
+    write_training(&train, 2);
+    let scorer = fake_scorer(tmp.path(), r#"{"baseline":{"score":1,"error":0}}"#);
+
+    let out = bin()
+        .arg(&creature)
+        .arg(&train)
+        .arg("--output-dir")
+        .arg(tmp.path().join("out"))
+        .arg("--scorer")
+        .arg(&scorer)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("forward-only") || stderr(&out).contains("forwardOnly"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(std::fs::read_to_string(&creature).unwrap(), text);
+    assert!(!tmp.path().join("out/best.json").exists());
+}
+
+#[test]
+fn fake_scorer_failure_aborts_without_best() {
+    let tmp = tempfile::tempdir().unwrap();
+    let creature = tmp.path().join("creature.json");
+    std::fs::write(&creature, identity_creature_json(1, 1)).unwrap();
+    let train = tmp.path().join("train");
+    std::fs::create_dir(&train).unwrap();
+    write_training(&train, 2);
+    let scorer = fake_scorer_fail(tmp.path());
+    let out_dir = tmp.path().join("out");
+
+    let out = bin()
+        .arg(&creature)
+        .arg(&train)
+        .arg("--output-dir")
+        .arg(&out_dir)
+        .arg("--scorer")
+        .arg(&scorer)
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(!out_dir.join("best.json").exists());
+}
+
+fn fake_scorer_fail(dir: &Path) -> PathBuf {
+    let path = dir.join("fake_scorer_fail");
+    std::fs::write(&path, "#!/bin/sh\necho boom >&2\nexit 1\n").unwrap();
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+    path
 }
 
 #[test]

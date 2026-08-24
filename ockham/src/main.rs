@@ -1,7 +1,7 @@
 //! `neat_ai_ockham` command-line interface.
 //!
-//! Issue #1: start, parse flags, and report configuration. Pruning lands in
-//! later issues; this binary must not attempt optimisation yet.
+//! Issue #2: load the immutable incumbent, copy it, and score a full-corpus
+//! baseline. Pruning lands in later issues; this binary must not prune yet.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -12,7 +12,7 @@ use neat_ai_ockham::config::{
     DEFAULT_CANDIDATE_COUNT, DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES, DEFAULT_MIN_IMPROVEMENT,
     DEFAULT_SCREEN_SAMPLE_RATE, DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
 };
-use neat_ai_ockham::{crate_version, log};
+use neat_ai_ockham::{ExternalScorer, establish_run, log};
 
 #[derive(Parser, Debug)]
 #[command(name = "neat_ai_ockham")]
@@ -93,23 +93,23 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    log::info(&format!(
-        "NEAT-AI-Ockham {} — configuration only; pruning is not attempted yet",
-        crate_version()
-    ));
-    log::detail(&format!(
-        "timeout {}s, candidates {}, screen {:?}",
-        config.timeout.as_secs(),
-        config.candidates,
-        config.screen_sample_rate
-    ));
-    match serde_json::to_string_pretty(&config.report()) {
-        Ok(json) => {
-            println!("{json}");
+    let scorer = ExternalScorer {
+        binary: config.scorer_path.clone(),
+        extra_args: config.scorer_args.clone(),
+    };
+    match establish_run(&config, &scorer) {
+        Ok(run) => {
+            match serde_json::to_string_pretty(&run) {
+                Ok(json) => println!("{json}"),
+                Err(e) => {
+                    eprintln!("cannot serialise baseline: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("cannot serialise configuration: {e}");
+            log::warn(&format!("run aborted: {e}"));
             ExitCode::FAILURE
         }
     }

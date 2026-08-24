@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// One scorer result. `score` is the acceptance metric — **larger is better**.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -140,12 +139,6 @@ impl ExternalScorer {
     }
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
-}
-
 /// Parse scorer stdout; every entry must be finite and `baseline` must exist.
 pub fn parse_scorer_output(stdout: &str) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
     let parsed: BTreeMap<String, ScoreResult> =
@@ -210,7 +203,7 @@ impl DirectoryScorer for ExternalScorer {
 
     fn identity(&self) -> String {
         match std::fs::read(&self.binary) {
-            Ok(bytes) => format!("sha256:{}", &sha256_hex(&bytes)[..16]),
+            Ok(bytes) => format!("sha256:{}", &crate::incumbent::sha256_hex(&bytes)[..16]),
             Err(_) => format!("path:{}", self.binary.display()),
         }
     }

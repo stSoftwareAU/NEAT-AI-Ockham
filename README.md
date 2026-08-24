@@ -149,9 +149,10 @@ by Ockham itself.
 | `--max-experiments` | _(none)_ | Optional cap in addition to the wall-clock budget. |
 | `--max-consecutive-scorer-failures` | `3` | Abort after this many consecutive scorer failures. |
 
-Issue #1 only reports this configuration as JSON on stdout. Pruning, screening
-and promotion land in later issues; a run must not attempt optimisation until
-those stages exist.
+Issue #2 loads the supplied creature through NEAT-AI-core, requires
+`forwardOnly: true`, copies it into `workspace/` and scores a full-corpus
+baseline with `rust_scorer`. Pruning, screening and promotion land in later
+issues; a run must not prune until those stages exist.
 
 ## Repository layout
 
@@ -165,6 +166,11 @@ NEAT-AI-Ockham/
 │       ├── lib.rs
 │       ├── config.rs          # flags and defaults
 │       ├── scorer.rs          # external rust_scorer judge
+│       ├── incumbent.rs       # immutable forward-only load + checksum
+│       ├── corpus.rs          # training-data identity / streaming
+│       ├── baseline.rs        # full-corpus scorer baseline
+│       ├── fixtures.rs
+│       ├── run.rs
 │       ├── log.rs
 │       └── cancel.rs
 ├── quality.sh

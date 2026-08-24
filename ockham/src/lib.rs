@@ -5,14 +5,17 @@
 //!
 //! This crate is organised as a pipeline. Cheap search only ever *proposes*
 //! candidates. Only a full-corpus NEAT-AI-scorer result can *accept* one.
-//! Issue #1 lands the workspace, CLI and external-scorer invocation; later
-//! issues fill the remaining stages:
+//! Issue #1 lands the workspace, CLI and external-scorer invocation. Issue #2
+//! establishes the immutable forward-only incumbent and authoritative baseline.
+//! Later issues fill the remaining stages:
 //!
 //! | Stage | Module | Issue |
 //! |---|---|---|
 //! | run configuration | [`config`] | #1 |
 //! | external NEAT-AI-scorer judge | [`scorer`] | #1 |
-//! | immutable incumbent + checksum | later | #2 |
+//! | immutable incumbent + checksum | [`incumbent`] | #2 |
+//! | authoritative baseline | [`baseline`], [`run`] | #2 |
+//! | corpus identity / streaming | [`corpus`] | #2 |
 //! | full-corpus activation statistics | later | #3 |
 //! | mean-activation ablation + cleanup | later | #4 |
 //! | exact IDENTITY collapse | later | #5 |
@@ -24,16 +27,25 @@
 
 #![warn(missing_docs)]
 
+pub mod baseline;
 pub mod cancel;
 pub mod config;
+pub mod corpus;
+pub mod fixtures;
+pub mod incumbent;
 pub mod log;
+pub mod run;
 pub mod scorer;
 
+pub use baseline::{AuthoritativeBaseline, establish_baseline};
 pub use cancel::CancelToken;
 pub use config::{
     ConfigReport, DEFAULT_CANDIDATE_COUNT, DEFAULT_MIN_IMPROVEMENT, DEFAULT_SCREEN_SAMPLE_RATE,
     DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
 };
+pub use corpus::{CorpusInfo, corpus_info};
+pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
+pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
 
 /// Crate version from `ockham/Cargo.toml`.
