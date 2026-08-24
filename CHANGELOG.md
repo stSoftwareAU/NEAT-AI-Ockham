@@ -73,3 +73,8 @@ All notable changes to NEAT-AI-Ockham are recorded here. The format follows
   `experiments.jsonl` ([#10](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/10)).
   The report compounds tiny accepted steps into cumulative gain rather than
   showing only the final score.
+
+- Document **🪒** as the Ockham commit-message prefix
+  ([#23](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/23)).
+  Contributor guidance and repository commit templates use the razor; there is
+  no commit-lint gate that rejects a missing emoji.

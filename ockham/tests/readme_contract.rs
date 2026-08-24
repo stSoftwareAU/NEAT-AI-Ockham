@@ -132,6 +132,20 @@ fn repository_layout_lists_every_source_file() {
 }
 
 #[test]
+fn contributing_documents_the_razor_commit_prefix() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../CONTRIBUTING.md");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert!(
+        text.contains("🪒"),
+        "CONTRIBUTING.md must identify 🪒 as the Ockham commit-message prefix (#23)"
+    );
+    assert!(
+        text.contains("## Commit messages"),
+        "CONTRIBUTING.md must keep a Commit messages section (#23)"
+    );
+}
+
+#[test]
 fn long_flags_extracts_flags_and_ignores_prose_dashes() {
     let flags = long_flags("use --seed 1 and --output-dir x -- not a—flag");
     assert!(flags.contains("--seed") && flags.contains("--output-dir"));
