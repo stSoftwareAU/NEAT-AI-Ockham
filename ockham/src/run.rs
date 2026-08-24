@@ -45,6 +45,9 @@ pub struct BaselineRun {
     pub stop_reason: String,
     /// Cumulative score gain from the opening parent.
     pub cumulative_delta: f64,
+    /// Population re-entry comparison, when a global champion was supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reentry: Option<crate::reentry::ReentryOutcome>,
     /// Optimisation status.
     pub optimisation: &'static str,
 }
@@ -129,6 +132,24 @@ pub fn establish_run(
         &cancel,
     )?;
 
+    let reentry = if let Some(path) = &config.global_champion {
+        let best =
+            load_incumbent(&config.output_dir.join("best.json")).map_err(|e| e.to_string())?;
+        let champion = load_incumbent(path).map_err(|e| e.to_string())?;
+        Some(crate::reentry::compare_with_champion(
+            scorer,
+            &config.training_data,
+            &best,
+            &champion,
+            baseline.score,
+            config.min_improvement,
+            &workspace.join("reentry"),
+            &config.output_dir.join("population-candidate.json"),
+        )?)
+    } else {
+        None
+    };
+
     let source_after = std::fs::read(&source).map_err(|e| format!("{}: {e}", source.display()))?;
     if source_after != source_before {
         return Err(format!(
@@ -148,6 +169,7 @@ pub fn establish_run(
         experiments: loop_out.experiments,
         stop_reason: loop_out.stop_reason,
         cumulative_delta: loop_out.cumulative_delta,
+        reentry,
         optimisation: "complete",
     })
 }

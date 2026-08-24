@@ -57,6 +57,9 @@ struct Cli {
     /// Consecutive scorer failures tolerated before stopping.
     #[arg(long, default_value_t = DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES)]
     max_consecutive_scorer_failures: u32,
+    /// Latest global champion JSON for the population re-entry comparison.
+    #[arg(long)]
+    global_champion: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -87,6 +90,7 @@ fn main() -> ExitCode {
         screen_threshold: cli.screen_threshold,
         min_improvement: cli.min_improvement,
         max_consecutive_scorer_failures: cli.max_consecutive_scorer_failures,
+        global_champion: cli.global_champion,
     };
     if let Err(e) = config.validate() {
         eprintln!("{e}");
