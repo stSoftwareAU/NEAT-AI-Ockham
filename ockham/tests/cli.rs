@@ -84,7 +84,7 @@ fn baseline_gate_writes_workspace_without_pruning() {
         .unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
     let report: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
-    assert_eq!(report["optimisation"], "deferred");
+    assert_eq!(report["optimisation"], "complete");
     assert_eq!(report["baseline"]["score"], 0.91);
     assert!(report["baseline"]["score"].as_f64().unwrap() > 0.0);
     assert_eq!(std::fs::read_to_string(&creature).unwrap(), text);

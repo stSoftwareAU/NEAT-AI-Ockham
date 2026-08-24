@@ -55,3 +55,10 @@ All notable changes to NEAT-AI-Ockham are recorded here. The format follows
   and scored with the individuals in one full-corpus call. The highest
   strict full-score win — including a tiny one — may become the next
   Ockham parent. Sampled wins never write `best.json`.
+
+- Wire the 45-minute iterative Ockham loop and experiment journal
+  ([#8](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/8)).
+  After the baseline gate, hidden neurons are swept without replacement
+  until the wall-clock budget, an empty permutation, or consecutive
+  scorer failures. An accepted local win recomputes activation statistics
+  and restarts the sweep. The global champion is not consulted here.

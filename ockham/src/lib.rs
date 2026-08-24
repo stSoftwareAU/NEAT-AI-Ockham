@@ -21,7 +21,7 @@
 //! | exact IDENTITY collapse | [`collapse`] | #5 |
 //! | seeded sampled sweep | [`sweep`] | #6 |
 //! | full scoring + bundles | [`promote`] | #7 |
-//! | iterative 45-minute loop | later | #8 |
+//! | iterative 45-minute loop | [`run`], [`journal`] | #8 |
 //! | population re-entry | later | #9 |
 //! | economics report | later | #10 |
 
@@ -35,6 +35,7 @@ pub mod config;
 pub mod corpus;
 pub mod fixtures;
 pub mod incumbent;
+pub mod journal;
 pub mod log;
 pub mod promote;
 pub mod run;

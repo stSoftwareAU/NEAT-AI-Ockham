@@ -174,6 +174,7 @@ NEAT-AI-Ockham/
 │       ├── collapse.rs        # exact IDENTITY neuron collapse
 │       ├── sweep.rs           # seeded random sweep + 5% screen
 │       ├── promote.rs         # full-score winners + bundles
+│       ├── journal.rs         # experiments.jsonl
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs
