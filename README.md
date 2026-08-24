@@ -383,11 +383,11 @@ At re-entry time:
    scorer/cost/data settings;
 4. calculate:
 
-```text
-Ockham cumulative gain = OckhamBest - OckhamOpeningParent
-frontier movement       = LatestGlobalChampion - OckhamOpeningParent
-population headroom     = OckhamBest - LatestGlobalChampion
-```
+   ```text
+   Ockham cumulative gain = OckhamBest - OckhamOpeningParent
+   frontier movement       = LatestGlobalChampion - OckhamOpeningParent
+   population headroom     = OckhamBest - LatestGlobalChampion
+   ```
 
 5. mark/export Ockham as population-ready only when authoritative population
    headroom is strictly positive by the configured minimum threshold.
