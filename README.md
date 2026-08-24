@@ -170,6 +170,7 @@ NEAT-AI-Ockham/
 │       ├── corpus.rs          # training-data identity / streaming
 │       ├── baseline.rs        # full-corpus scorer baseline
 │       ├── stats.rs           # hidden-neuron activation statistics
+│       ├── ablation.rs        # mean-activation ablation + cleanup
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs

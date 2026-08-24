@@ -2,6 +2,85 @@
 
 use neat_core::{CreatureExport, NeuronExport, SynapseExport};
 
+/// Listed neuron constructor used by fixtures and structural tests.
+pub fn neuron(neuron_type: &str, uuid: &str, bias: f64, squash: Option<&str>) -> NeuronExport {
+    NeuronExport {
+        id: None,
+        neuron_type: neuron_type.into(),
+        uuid: uuid.into(),
+        bias,
+        squash: squash.map(str::to_string),
+    }
+}
+
+/// Ordinary (untyped) synapse constructor.
+pub fn synapse(from_uuid: &str, to_uuid: &str, weight: f64) -> SynapseExport {
+    SynapseExport {
+        from_uuid: from_uuid.into(),
+        to_uuid: to_uuid.into(),
+        weight,
+        synapse_type: None,
+    }
+}
+
+/// Typed synapse constructor (`positive` / `negative` / `condition`).
+pub fn typed_synapse(
+    from_uuid: &str,
+    to_uuid: &str,
+    weight: f64,
+    synapse_type: &str,
+) -> SynapseExport {
+    SynapseExport {
+        from_uuid: from_uuid.into(),
+        to_uuid: to_uuid.into(),
+        weight,
+        synapse_type: Some(synapse_type.into()),
+    }
+}
+
+/// Forward-only creature wrapping the supplied neurons and synapses.
+///
+/// Synapses are sorted by `(from index, to index, type)` so the fixture
+/// satisfies NEAT-AI-core `creature.validate()` rule 25.
+pub fn creature(
+    input: usize,
+    output: usize,
+    neurons: Vec<NeuronExport>,
+    synapses: Vec<SynapseExport>,
+) -> CreatureExport {
+    let mut creature = CreatureExport {
+        input,
+        output,
+        neurons,
+        synapses,
+        semantic_version: Some("4.0.0".into()),
+        forward_only: true,
+        memetic: None,
+    };
+    sort_synapses_canonically(&mut creature);
+    creature
+}
+
+/// Sort synapses by `(from index, to index, type)` (validate rule 25).
+pub fn sort_synapses_canonically(creature: &mut CreatureExport) {
+    let mut index =
+        std::collections::HashMap::with_capacity(creature.input + creature.neurons.len());
+    for i in 0..creature.input {
+        index.insert(format!("input-{i}"), i);
+    }
+    for (j, neuron) in creature.neurons.iter().enumerate() {
+        index.insert(neuron.uuid.clone(), creature.input + j);
+    }
+    let resolve = |uuid: &str| index.get(uuid).copied().unwrap_or(usize::MAX);
+    creature.synapses.sort_by_key(|s| {
+        (
+            resolve(&s.from_uuid),
+            resolve(&s.to_uuid),
+            neat_core::parse_synapse_type(s.synapse_type.as_deref()) as u8,
+        )
+    });
+}
+
 /// Minimal forward-only creature: each output is the identity of `input-j`
 /// (or `input-0` when there are fewer inputs than outputs).
 pub fn identity_creature(inputs: usize, outputs: usize) -> CreatureExport {
@@ -51,43 +130,18 @@ pub fn recurrent_flagged_creature_json(inputs: usize, outputs: usize) -> String 
 /// `h1` computes `IDENTITY(bias + weight * input-0)` and feeds the output
 /// with weight 1. Used to pin activation-statistics arithmetic.
 pub fn hidden_identity_creature(bias: f64, weight: f64) -> CreatureExport {
-    CreatureExport {
-        input: 1,
-        output: 1,
-        neurons: vec![
-            NeuronExport {
-                id: None,
-                neuron_type: "hidden".into(),
-                uuid: "h1".into(),
-                bias,
-                squash: Some("IDENTITY".into()),
-            },
-            NeuronExport {
-                id: None,
-                neuron_type: "output".into(),
-                uuid: "output-0".into(),
-                bias: 0.0,
-                squash: Some("IDENTITY".into()),
-            },
+    creature(
+        1,
+        1,
+        vec![
+            neuron("hidden", "h1", bias, Some("IDENTITY")),
+            neuron("output", "output-0", 0.0, Some("IDENTITY")),
         ],
-        synapses: vec![
-            SynapseExport {
-                from_uuid: "input-0".into(),
-                to_uuid: "h1".into(),
-                weight,
-                synapse_type: None,
-            },
-            SynapseExport {
-                from_uuid: "h1".into(),
-                to_uuid: "output-0".into(),
-                weight: 1.0,
-                synapse_type: None,
-            },
+        vec![
+            synapse("input-0", "h1", weight),
+            synapse("h1", "output-0", 1.0),
         ],
-        semantic_version: Some("4.0.0".into()),
-        forward_only: true,
-        memetic: None,
-    }
+    )
 }
 
 #[cfg(test)]
