@@ -63,6 +63,12 @@ struct Cli {
     /// Latest global champion JSON for the population re-entry comparison.
     #[arg(long)]
     global_champion: Option<PathBuf>,
+    /// Cap sampled winners sent to full scoring (highest sample Δ first). Omit to full-score every sampled winner.
+    #[arg(long)]
+    max_full: Option<usize>,
+    /// Stop after this many authoritative local accepts so a win can be checked in quickly.
+    #[arg(long)]
+    max_accepts: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -125,6 +131,8 @@ fn main() -> ExitCode {
         min_improvement: cli.min_improvement,
         max_consecutive_scorer_failures: cli.max_consecutive_scorer_failures,
         global_champion: cli.global_champion,
+        max_full: cli.max_full,
+        max_accepts: cli.max_accepts,
     };
     if let Err(e) = config.validate() {
         eprintln!("{e}");

@@ -49,6 +49,10 @@ pub struct OckhamConfig {
     pub min_improvement: f64,
     /// Consecutive scorer failures tolerated before aborting.
     pub max_consecutive_scorer_failures: u32,
+    /// Cap on sampled winners sent to full scoring (`None` = every sampled winner).
+    pub max_full: Option<usize>,
+    /// Stop after this many local accepts (`None` = until timeout).
+    pub max_accepts: Option<u64>,
 }
 
 impl Default for OckhamConfig {
@@ -68,6 +72,8 @@ impl Default for OckhamConfig {
             screen_threshold: DEFAULT_SCREEN_THRESHOLD,
             min_improvement: DEFAULT_MIN_IMPROVEMENT,
             max_consecutive_scorer_failures: DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES,
+            max_full: None,
+            max_accepts: None,
         }
     }
 }
@@ -95,6 +101,16 @@ impl OckhamConfig {
         if self.max_consecutive_scorer_failures == 0 {
             return Err("--max-consecutive-scorer-failures must be > 0".into());
         }
+        if let Some(n) = self.max_full
+            && n == 0
+        {
+            return Err("--max-full must be > 0".into());
+        }
+        if let Some(n) = self.max_accepts
+            && n == 0
+        {
+            return Err("--max-accepts must be > 0".into());
+        }
         Ok(())
     }
 
@@ -116,6 +132,8 @@ impl OckhamConfig {
             screen_threshold: self.screen_threshold,
             min_improvement: self.min_improvement,
             max_consecutive_scorer_failures: self.max_consecutive_scorer_failures,
+            max_full: self.max_full,
+            max_accepts: self.max_accepts,
             optimisation: "loop",
         }
     }
@@ -155,6 +173,10 @@ pub struct ConfigReport {
     pub min_improvement: f64,
     /// Consecutive scorer failures tolerated.
     pub max_consecutive_scorer_failures: u32,
+    /// Optional cap on sampled winners sent to full scoring.
+    pub max_full: Option<usize>,
+    /// Optional cap on local accepts (stop and return `best.json` immediately).
+    pub max_accepts: Option<u64>,
     /// Optimisation status for this bootstrap issue (`deferred`).
     pub optimisation: &'static str,
 }
@@ -199,6 +221,16 @@ mod tests {
             ..c
         };
         assert!(bad.validate().unwrap_err().contains("--timeout-seconds"));
+        let bad = OckhamConfig {
+            max_full: Some(0),
+            ..OckhamConfig::default()
+        };
+        assert!(bad.validate().unwrap_err().contains("--max-full"));
+        let bad = OckhamConfig {
+            max_accepts: Some(0),
+            ..OckhamConfig::default()
+        };
+        assert!(bad.validate().unwrap_err().contains("--max-accepts"));
     }
 
     #[test]

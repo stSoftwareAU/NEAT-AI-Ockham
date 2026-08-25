@@ -19,6 +19,7 @@ use crate::promote::{FullConfig, evaluate_full};
 use crate::scorer::DirectoryScorer;
 use crate::stats::{ActivationStats, ensure_activation_stats};
 use crate::sweep::{SampledWinner, ScreenConfig, Sweep, draw_seed, screen_batch, screen_dir};
+use crate::tags::{CreatureMeta, OckhamProgress};
 use crate::{crate_version, log};
 
 /// Result of a baseline-only run.
@@ -72,7 +73,7 @@ pub fn establish_run(
     ));
 
     let workspace = config.output_dir.join("workspace");
-    let meta = incumbent
+    let incumbent_meta = incumbent
         .write_workspace(&workspace)
         .map_err(|e| e.to_string())?;
 
@@ -81,6 +82,12 @@ pub fn establish_run(
     log::detail(&format!(
         "corpus {}  {} records in {} files",
         corpus.identity, corpus.record_count, corpus.file_count
+    ));
+    let creature_meta = CreatureMeta::from_json(&incumbent.text);
+    log::detail(&format!(
+        "provenance: {} creature tags, {} tagged neurons",
+        creature_meta.tags.len(),
+        creature_meta.neuron_tags.len()
     ));
 
     let baseline = establish_baseline(
@@ -96,6 +103,7 @@ pub fn establish_run(
         baseline.score, baseline.error
     ));
 
+    log::info("computing full-corpus hidden-neuron activation statistics");
     let activation = ensure_activation_stats(
         &incumbent,
         &config.training_data,
@@ -128,15 +136,17 @@ pub fn establish_run(
         incumbent,
         activation,
         baseline.score,
+        creature_meta,
         &workspace,
         &cancel,
     )?;
 
     let reentry = if let Some(path) = &config.global_champion {
+        log::info("re-scoring Ockham best against the supplied global champion");
         let best =
             load_incumbent(&config.output_dir.join("best.json")).map_err(|e| e.to_string())?;
         let champion = load_incumbent(path).map_err(|e| e.to_string())?;
-        Some(crate::reentry::compare_with_champion(
+        let outcome = crate::reentry::compare_with_champion(
             scorer,
             &config.training_data,
             &best,
@@ -145,7 +155,15 @@ pub fn establish_run(
             config.min_improvement,
             &workspace.join("reentry"),
             &config.output_dir.join("population-candidate.json"),
-        )?)
+        )?;
+        log::info(&format!(
+            "re-entry population_ready={} headroom={:.3e} ockham={} champion={}",
+            outcome.population_ready,
+            outcome.population_headroom,
+            outcome.ockham_score,
+            outcome.champion_score
+        ));
+        Some(outcome)
     } else {
         None
     };
@@ -161,7 +179,7 @@ pub fn establish_run(
     Ok(BaselineRun {
         crate_version: crate_version().to_string(),
         workspace,
-        incumbent: meta,
+        incumbent: incumbent_meta,
         baseline,
         activation: loop_out.activation,
         seed: loop_out.seed,
@@ -191,12 +209,19 @@ fn ockham_loop(
     mut incumbent: Incumbent,
     mut activation: ActivationStats,
     opening_score: f64,
+    mut meta: CreatureMeta,
     workspace: &std::path::Path,
     cancel: &CancelToken,
 ) -> Result<LoopOut, String> {
     let journal_path = config.output_dir.join("experiments.jsonl");
     let seed = config.seed.unwrap_or_else(draw_seed);
     let mut sweep = Sweep::new(&incumbent.creature, seed);
+    log::info(&format!(
+        "loop seed={seed}  hidden={}  budget={}s  candidates={}",
+        incumbent.hidden_neurons(),
+        config.timeout.as_secs(),
+        config.candidates
+    ));
     journal::append(
         &journal_path,
         &Event::Start {
@@ -240,6 +265,13 @@ fn ockham_loop(
 
         let (candidates, skips) =
             sweep.fill_batch(&incumbent.creature, &activation, config.candidates);
+        let remaining_s = deadline.saturating_duration_since(Instant::now()).as_secs();
+        log::info(&format!(
+            "batch {batch_idx}: {} candidates, {} skipped, {} hidden left, {remaining_s}s remaining",
+            candidates.len(),
+            skips.len(),
+            sweep.remaining()
+        ));
         journal::append(
             &journal_path,
             &Event::Batch {
@@ -255,7 +287,7 @@ fn ockham_loop(
             continue;
         }
 
-        let sampled = match config.screen_sample_rate {
+        let mut sampled = match config.screen_sample_rate {
             Some(rate) => {
                 match screen_batch(
                     scorer,
@@ -272,6 +304,12 @@ fn ockham_loop(
                 ) {
                     Ok(screen) => {
                         consecutive_fail = 0;
+                        log::detail(&format!(
+                            "screen: {} winners / {} losers in {}ms",
+                            screen.winners.len(),
+                            screen.losers.len(),
+                            screen.screen_ms
+                        ));
                         journal::append(
                             &journal_path,
                             &Event::Screen {
@@ -309,9 +347,28 @@ fn ockham_loop(
         experiments += 1;
         batch_idx += 1;
         if sampled.is_empty() {
+            log::detail("no sampled winners; continuing sweep");
             continue;
         }
+        if let Some(cap) = config.max_full
+            && sampled.len() > cap
+        {
+            sampled.sort_by(|a, b| {
+                b.delta
+                    .partial_cmp(&a.delta)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            log::detail(&format!(
+                "keeping top {cap} of {} sampled winners by sample Δ for full scoring",
+                sampled.len()
+            ));
+            sampled.truncate(cap);
+        }
 
+        log::detail(&format!(
+            "full-scoring {} sampled winners plus bundles",
+            sampled.len()
+        ));
         match evaluate_full(
             scorer,
             &config.training_data,
@@ -326,6 +383,13 @@ fn ockham_loop(
         ) {
             Ok(full) => {
                 consecutive_fail = 0;
+                log::detail(&format!(
+                    "full: {} individuals, {} bundles, {}ms, accepted={}",
+                    full.individuals.len(),
+                    full.bundles.len(),
+                    full.full_ms,
+                    full.winner.is_some()
+                ));
                 journal::append(
                     &journal_path,
                     &Event::Full {
@@ -337,18 +401,42 @@ fn ockham_loop(
                     },
                 )?;
                 if let Some(win) = full.winner {
-                    let winners_dir = config.output_dir.join("winners");
-                    std::fs::create_dir_all(&winners_dir)
-                        .map_err(|e| format!("{}: {e}", winners_dir.display()))?;
-                    std::fs::write(
-                        winners_dir.join(format!("{}.json", win.checksum)),
-                        neat_core::creature_to_json(&win.creature).map_err(|e| e.to_string())?,
-                    )
-                    .map_err(|e| format!("winners: {e}"))?;
+                    let last = win.candidate.kind;
                     current_score = win.candidate.score;
                     accepts += 1;
+                    meta.retain_neurons(&win.creature);
+                    meta.stamp_acceptance(&OckhamProgress {
+                        accepts,
+                        experiments,
+                        opening: opening_score,
+                        score: current_score,
+                        error: win.candidate.error,
+                        last,
+                    });
+                    let tagged = meta
+                        .serialize_with(&win.creature, true)
+                        .map_err(|e| format!("tag best.json: {e}"))?;
+                    std::fs::write(config.output_dir.join("best.json"), &tagged)
+                        .map_err(|e| format!("best.json: {e}"))?;
+                    let winners_dir = config.output_dir.join("winners");
+                    if let Err(e) = std::fs::create_dir_all(&winners_dir).and_then(|_| {
+                        std::fs::write(winners_dir.join(format!("{}.json", win.checksum)), &tagged)
+                    }) {
+                        log::warn(&format!("winners archive not written: {e}"));
+                    }
                     incumbent = Incumbent::from_creature(win.creature, "ockham-best")
                         .map_err(|e| e.to_string())?;
+                    log::ok(&format!(
+                        "accepted local win score={current_score} Δ={:.3e} hidden={}",
+                        win.candidate.delta,
+                        incumbent.hidden_neurons()
+                    ));
+                    if let Some(max) = config.max_accepts
+                        && accepts >= max
+                    {
+                        stop_reason = "max-accepts".into();
+                        break;
+                    }
                     activation = ensure_activation_stats(
                         &incumbent,
                         &config.training_data,
@@ -357,8 +445,8 @@ fn ockham_loop(
                         crate::stats::DEFAULT_CHUNK_RECORDS,
                     )?;
                     sweep = Sweep::new(&incumbent.creature, seed.wrapping_add(accepts));
-                    log::ok(&format!(
-                        "accepted local win score={current_score} hidden={}",
+                    log::detail(&format!(
+                        "restarted sweep after accept; {} hidden remaining",
                         incumbent.hidden_neurons()
                     ));
                 }
@@ -384,6 +472,10 @@ fn ockham_loop(
             cumulative_delta: current_score - opening_score,
         },
     )?;
+    log::info(&format!(
+        "stop reason={stop_reason}  accepts={accepts}  experiments={experiments}  Δ={:.3e}",
+        current_score - opening_score
+    ));
 
     Ok(LoopOut {
         activation,
