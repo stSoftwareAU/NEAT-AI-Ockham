@@ -24,6 +24,8 @@
 //! | iterative 45-minute loop | [`run`], [`journal`] | #8 |
 //! | population re-entry | [`reentry`] | #9 |
 //! | economics report | [`report`] | #10 |
+//! | GRQ check-in tags | [`tags`] | #25 |
+//! | fleet learnings store | [`learnings`] | #27 |
 
 #![warn(missing_docs)]
 
@@ -36,6 +38,7 @@ pub mod corpus;
 pub mod fixtures;
 pub mod incumbent;
 pub mod journal;
+pub mod learnings;
 pub mod log;
 pub mod promote;
 pub mod reentry;
@@ -44,6 +47,7 @@ pub mod run;
 pub mod scorer;
 pub mod stats;
 pub mod sweep;
+pub mod tags;
 
 pub use ablation::{Ablation, AblationSkip, TransformClass, ablate_mean};
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
@@ -61,6 +65,7 @@ pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
 pub use stats::{ActivationStats, NeuronStats, ensure_activation_stats};
 pub use sweep::{ScreenConfig, ScreenOutcome, Sweep, SweepCandidate, draw_seed, screen_batch};
+pub use tags::{CreatureMeta, OckhamProgress, ockham_progress_message};
 
 /// Crate version from `ockham/Cargo.toml`.
 pub fn crate_version() -> &'static str {

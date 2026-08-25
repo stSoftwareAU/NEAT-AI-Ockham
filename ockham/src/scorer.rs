@@ -179,6 +179,19 @@ impl DirectoryScorer for ExternalScorer {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        let n_json = std::fs::read_dir(creature_dir)
+            .ok()
+            .map(|it| {
+                it.filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+                    .count()
+            })
+            .unwrap_or(0);
+        crate::log::detail(&format!(
+            "scorer {}  {n_json} creatures  {}",
+            self.binary.display(),
+            mode.label()
+        ));
         crate::log::flush();
         let out = cmd
             .output()

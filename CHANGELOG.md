@@ -78,3 +78,21 @@ All notable changes to NEAT-AI-Ockham are recorded here. The format follows
   ([#23](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/23)).
   Contributor guidance and repository commit templates use the razor; there is
   no commit-lint gate that rejects a missing emoji.
+
+- Preserve GRQ-sampler creature and per-neuron tags on accepted writes, stamp
+  `score` / `error` / `ockham`, and log batch/screen/full/activation progress
+  so a production run can be monitored and checked in
+  ([#25](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/25)).
+
+- Add `--max-full` so a cheap wide sample screen can feed only the top sampled
+  winners into the expensive full-corpus cohort
+  ([#25](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/25)).
+
+- Stop after `--max-accepts` full-corpus wins so a small prune can be checked
+  in as `${HOST}-ockham.json` before Forests moves the frontier. The `ockham`
+  tag (and therefore the sampler commit subject) starts with 🪒
+  ([#25](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/25)).
+
+- Add an append-only per-host learnings store for full-corpus prune verdicts
+  (`learnings.rs`). The loop does not consult it yet
+  ([#27](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/27)).

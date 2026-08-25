@@ -40,6 +40,8 @@ The current Rust implementation includes:
 - fresh re-entry comparison against a supplied current global champion;
 - `population-candidate.json` only when Ockham wins that frontier comparison;
 - a `report` command for cumulative pruning economics;
+- GRQ-sampler `score` / `error` / `ockham` tags (🪒 prefix) preserved on write;
+- `--max-full` / `--max-accepts` so a cheap prune can be checked in quickly;
 - normal Rust CI, security and quality gates.
 
 The remaining work is experimental refinement: measure what works on mature
@@ -233,6 +235,9 @@ Common options:
 | `--candidates` | `100` | Candidates per sampled sweep batch. |
 | `--screen-sample-rate` | `0.05` | Sample rate used only for screening; `0` disables it. |
 | `--screen-threshold` | `0` | Sampled Δscore required for promotion. |
+| `--max-full` | none | Cap sampled winners sent to full scoring (highest sample Δ first). |
+| `--max-accepts` | none | Stop after this many full-corpus local accepts so a small win can be checked in quickly. |
+| `--max-consecutive-scorer-failures` | `3` | Abort after this many consecutive scorer failures. |
 | `--min-improvement` | `1e-6` | Strict authoritative improvement required locally. |
 | `--seed` | drawn | Reproducible random sweep seed. |
 | `--max-experiments` | none | Optional experiment cap in addition to timeout. |
@@ -293,6 +298,8 @@ Useful measures include:
 10. Activation statistics are recomputed after an accepted topology change.
 11. Bundle deltas are never assumed additive.
 12. A local Ockham win and a current-global-frontier win are reported separately.
+13. `best.json` may never be worse than the opening authoritative baseline.
+14. A local Ockham winner is not automatically population-ready.
 
 ## Related repositories
 
@@ -313,6 +320,63 @@ The project is pure Rust and expects sibling clones of `NEAT-AI-core` and
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the local and CI quality gates.
 Ockham commit messages use the **🪒** prefix.
+
+## Version-1 constraints
+
+- **Pure Rust.**
+- **Forward-only creatures only.** Recurrent/self-connected networks are out of
+  scope initially.
+- **The supplied creature is immutable.** Every candidate starts from a clone of
+  a scorer-verified incumbent.
+- **The full scorer is king.** Highest full-corpus score wins locally.
+- **45-minute default run budget.** The global champion is perishable while
+  normal evolution and Forests continue elsewhere.
+
+## Repository layout
+
+```text
+NEAT-AI-Ockham/
+├── Cargo.toml                 # workspace
+├── ockham/
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs            # CLI
+│       ├── lib.rs
+│       ├── config.rs          # flags and defaults
+│       ├── scorer.rs          # external rust_scorer judge
+│       ├── incumbent.rs       # immutable forward-only load + checksum
+│       ├── corpus.rs          # training-data identity / streaming
+│       ├── baseline.rs        # full-corpus scorer baseline
+│       ├── stats.rs           # hidden-neuron activation statistics
+│       ├── ablation.rs        # mean-activation ablation + cleanup
+│       ├── collapse.rs        # exact IDENTITY neuron collapse
+│       ├── sweep.rs           # seeded random sweep + 5% screen
+│       ├── promote.rs         # full-score winners + bundles
+│       ├── journal.rs         # experiments.jsonl
+│       ├── reentry.rs         # population re-entry vs global champion
+│       ├── report.rs          # experiments.jsonl summary
+│       ├── tags.rs            # GRQ-sampler score/provenance tags
+│       ├── learnings.rs       # fleet full-corpus prune-verdict cache
+│       ├── fixtures.rs
+│       ├── run.rs
+│       ├── log.rs
+│       └── cancel.rs
+├── quality.sh
+├── rust-toolchain.toml
+└── neat-core.expected-version
+```
+
+## Implementation roadmap
+
+Shipped through the iterative loop, re-entry comparison, report command, and
+GRQ check-in tags (#1–#10, #23, #25). Remaining experimental work:
+
+- skip tagged neurons as prune candidates so GRQ provenance check-in cannot fail
+  ([#26](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/26));
+- wire the learnings store into the loop
+  ([#27](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/27));
+- smarter pruning order only after the random sweep is measured
+  ([#11](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/11)).
 
 ## What success looks like
 

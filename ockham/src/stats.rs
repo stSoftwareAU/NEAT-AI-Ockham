@@ -195,6 +195,8 @@ pub fn compute_activation_stats(
         .collect();
     let cfg = TrainingDataConfig::new(creature.input, creature.output);
     let started = Instant::now();
+    let mut seen = 0u64;
+    let mut last_log = Instant::now();
     let streamed = for_each_chunk(training_dir, &cfg, chunk_records.max(1), |chunk| {
         for r in 0..chunk.records {
             let inputs = &chunk.inputs[r * creature.input..(r + 1) * creature.input];
@@ -202,6 +204,15 @@ pub fn compute_activation_stats(
             for a in &mut acc {
                 a.push(net.activations[a.activation_index]);
             }
+        }
+        seen += chunk.records as u64;
+        if last_log.elapsed().as_secs() >= 15 {
+            let rate = seen as f64 / started.elapsed().as_secs_f64().max(1e-9);
+            crate::log::detail(&format!(
+                "activation scan {seen}/{} records ({rate:.0} rec/s)",
+                corpus.record_count
+            ));
+            last_log = Instant::now();
         }
         Ok(())
     })?;
