@@ -56,10 +56,13 @@ pub struct Learning {
     pub host: String,
 }
 
-/// How many known wins to replay at the front of a sweep.
+/// How many known wins to replay before the random sweep.
+///
+/// [`Self::max`] of `0` means every still-present known win (Forests caps
+/// replay; Ockham does not — Forests leaps faster than new cuts are found).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReplayConfig {
-    /// Maximum known-win UUIDs to prefer.
+    /// Maximum known-win UUIDs to replay (`0` = all still present).
     pub max: usize,
     /// Rejected records newer than this are skipped.
     pub retry_after_secs: u64,
@@ -68,10 +71,15 @@ pub struct ReplayConfig {
 impl Default for ReplayConfig {
     fn default() -> Self {
         Self {
-            max: 32,
+            max: 0,
             retry_after_secs: DEFAULT_RETRY_AFTER_SECS,
         }
     }
+}
+
+/// Effective replay cap (`0` on the CLI means unlimited).
+pub fn replay_cap(max: usize) -> usize {
+    if max == 0 { usize::MAX } else { max }
 }
 
 /// Append-only per-host store under a corpus identity.
@@ -148,13 +156,44 @@ impl LearningsStore {
 }
 
 /// Host name for `--learnings-host` when unset.
+///
+/// Order: `$HOSTNAME`, `$HOST`, `hostname(1)`, then `unknown`. The result is
+/// the unqualified label (`GRQ-23`, not `GRQ-23.local`).
 pub fn default_host() -> String {
-    hostname_unqualified().unwrap_or_else(|| "unknown".into())
+    env_nonempty("HOSTNAME")
+        .or_else(|| env_nonempty("HOST"))
+        .or_else(hostname_cmd)
+        .map(|s| unqualified_host(&s))
+        .unwrap_or_else(|| "unknown".into())
 }
 
-fn hostname_unqualified() -> Option<String> {
-    let raw = std::env::var("HOST").ok().filter(|s| !s.is_empty())?;
-    Some(raw.split('.').next().unwrap_or(&raw).to_string())
+/// First DNS label of `raw`, or `"unknown"` if empty.
+pub fn unqualified_host(raw: &str) -> String {
+    raw.trim()
+        .split('.')
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn hostname_cmd() -> Option<String> {
+    let out = std::process::Command::new("hostname").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn now_secs() -> u64 {
@@ -194,7 +233,9 @@ fn latest_by_uuid<'a>(
     latest
 }
 
-/// Known-win UUIDs still in the incumbent, most recent first, capped.
+/// Known-win UUIDs still in the incumbent, most recent first.
+///
+/// [`ReplayConfig::max`] of `0` means every still-present known win.
 pub fn known_wins(known: &[Learning], creature: &CreatureExport, cfg: ReplayConfig) -> Vec<String> {
     let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
     let mut wins: Vec<&Learning> = latest_by_uuid(known, &present)
@@ -203,7 +244,7 @@ pub fn known_wins(known: &[Learning], creature: &CreatureExport, cfg: ReplayConf
         .collect();
     wins.sort_by_key(|a| std::cmp::Reverse(a.unix_secs));
     wins.into_iter()
-        .take(cfg.max)
+        .take(replay_cap(cfg.max))
         .map(|l| l.uuid.clone())
         .collect()
 }
@@ -338,6 +379,33 @@ mod tests {
         assert_eq!(wins, vec!["h_a".to_string()]);
         let skip = known_failures(&known, &c, ReplayConfig::default(), 3);
         assert!(!skip.contains("h_a"));
+    }
+
+    #[test]
+    fn replay_cap_zero_means_all_still_present() {
+        let c = two_hidden();
+        let known = vec![
+            rec("h_a", Outcome::Accepted, 10),
+            rec("h_b", Outcome::Accepted, 20),
+        ];
+        let all = known_wins(&known, &c, ReplayConfig::default());
+        assert_eq!(all, vec!["h_b".to_string(), "h_a".to_string()]);
+        let capped = known_wins(
+            &known,
+            &c,
+            ReplayConfig {
+                max: 1,
+                retry_after_secs: DEFAULT_RETRY_AFTER_SECS,
+            },
+        );
+        assert_eq!(capped, vec!["h_b".to_string()]);
+    }
+
+    #[test]
+    fn unqualified_host_strips_the_domain() {
+        assert_eq!(unqualified_host("GRQ-23.local"), "GRQ-23");
+        assert_eq!(unqualified_host("  GRQ-23  "), "GRQ-23");
+        assert_eq!(unqualified_host(""), "unknown");
     }
 
     #[test]

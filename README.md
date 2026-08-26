@@ -42,6 +42,11 @@ The current Rust implementation includes:
 - a `report` command for cumulative pruning economics;
 - GRQ-sampler `score` / `error` / `ockham` tags (🪒 prefix) preserved on write;
 - `--max-full` / `--max-accepts` so a cheap prune can be checked in quickly;
+- fleet learnings cache: combined replay of still-present known wins (full
+  corpus, not capped by `--max-accepts`), then skip fresh failures; a replay
+  accept stops immediately so the prune can check in;
+- tagged hidden neurons skipped as prune candidates (journal reason `tagged`)
+  so GRQ provenance check-in cannot fail;
 - normal Rust CI, security and quality gates.
 
 The remaining work is experimental refinement: measure what works on mature
@@ -236,7 +241,10 @@ Common options:
 | `--screen-sample-rate` | `0.05` | Sample rate used only for screening; `0` disables it. |
 | `--screen-threshold` | `0` | Sampled Δscore required for promotion. |
 | `--max-full` | none | Cap sampled winners sent to full scoring (highest sample Δ first). |
-| `--max-accepts` | none | Stop after this many full-corpus local accepts so a small win can be checked in quickly. |
+| `--max-accepts` | none | Stop after this many **new** full-corpus local accepts so a small win can be checked in quickly. Replay of known wins is not counted. |
+| `--learnings-dir` | none | Shared full-corpus prune-verdict cache. Omitted: do not read or write. |
+| `--learnings-host` | hostname | Per-host jsonl label (unqualified `$HOSTNAME` / `$HOST` / `hostname`). |
+| `--learnings-replay` | `0` | Max known-win UUIDs to replay before the random sweep; `0` = all still present on the incumbent. |
 | `--max-consecutive-scorer-failures` | `3` | Abort after this many consecutive scorer failures. |
 | `--min-improvement` | `1e-6` | Strict authoritative improvement required locally. |
 | `--seed` | drawn | Reproducible random sweep seed. |
@@ -361,6 +369,8 @@ NEAT-AI-Ockham/
 │       ├── run.rs
 │       ├── log.rs
 │       └── cancel.rs
+├── docs/
+│   └── population-entry.md  # how cuts actually enter the live population
 ├── quality.sh
 ├── rust-toolchain.toml
 └── neat-core.expected-version
@@ -368,13 +378,10 @@ NEAT-AI-Ockham/
 
 ## Implementation roadmap
 
-Shipped through the iterative loop, re-entry comparison, report command, and
-GRQ check-in tags (#1–#10, #23, #25). Remaining experimental work:
+Shipped through the iterative loop, re-entry comparison, report command, GRQ
+check-in tags, learnings replay, and tagged-neuron skip (#1–#10, #23, #25–#27).
+Remaining experimental work:
 
-- skip tagged neurons as prune candidates so GRQ provenance check-in cannot fail
-  ([#26](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/26));
-- wire the learnings store into the loop
-  ([#27](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/27));
 - smarter pruning order only after the random sweep is measured
   ([#11](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/11)).
 
@@ -382,13 +389,12 @@ GRQ check-in tags (#1–#10, #23, #25). Remaining experimental work:
 
 The useful metric is not simply how many neurons Ockham deletes. It is:
 
-> **cumulative scorer-verified improvement per wall-clock hour on an already-fit
-> creature.**
+> **whether those structural cuts are adopted into the general population
+> evolving independently on other machines.**
 
-A smaller creature is interesting. A smaller creature that is fitter is much
-more interesting. If enough tiny verified improvements accumulate to catch and
-beat a moving evolutionary frontier, Ockham has done exactly what it was built to
-do.
+A local `best.json` that never checks in is a private notebook. A prune that
+lands in `samples/*.json` (and then in non-Ockham offspring) is the proof. Small
+cost-of-growth wins have to be published quickly or Forests supersedes them.
 
 If nothing can be removed profitably, that is also useful evidence about how
 efficiently evolution is already using its structure.

@@ -3,6 +3,7 @@
 //! Pruning is not attempted. A later issue wires the 45-minute loop on top of
 //! this gate.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -15,10 +16,19 @@ use crate::config::OckhamConfig;
 use crate::corpus::corpus_info;
 use crate::incumbent::{Incumbent, IncumbentMeta, load_incumbent};
 use crate::journal::{self, Event};
-use crate::promote::{FullConfig, evaluate_full};
+use crate::learnings::{
+    LearningsStore, Outcome, ReplayConfig, Verdict, default_host, file_verdicts, known_failures,
+    known_wins,
+};
+use crate::promote::{
+    FullConfig, FullOutcome, LocalWinner, apply_available, evaluate_full, replay_prefix_plans,
+};
 use crate::scorer::DirectoryScorer;
 use crate::stats::{ActivationStats, ensure_activation_stats};
-use crate::sweep::{SampledWinner, ScreenConfig, Sweep, draw_seed, screen_batch, screen_dir};
+use crate::sweep::{
+    SampledWinner, ScreenConfig, Sweep, SweepCandidate, draw_seed, propose, screen_batch,
+    screen_dir,
+};
 use crate::tags::{CreatureMeta, OckhamProgress};
 use crate::{crate_version, log};
 
@@ -231,13 +241,43 @@ fn ockham_loop(
             opening_score,
         },
     )?;
+
+    let replay_cfg = ReplayConfig {
+        max: config.learnings_replay,
+        retry_after_secs: crate::learnings::DEFAULT_RETRY_AFTER_SECS,
+    };
+    let mut store = None;
+    let mut known = Vec::new();
+    if let Some(dir) = &config.learnings_dir {
+        let host = config.learnings_host.clone().unwrap_or_else(default_host);
+        let s = LearningsStore::new(dir, corpus.identity.clone(), host.clone());
+        match s.load() {
+            Ok(records) => {
+                log::info(&format!(
+                    "learnings: {} record(s) from {} host={host}",
+                    records.len(),
+                    dir.display()
+                ));
+                known = records;
+                store = Some(s);
+            }
+            Err(e) => log::warn(&format!(
+                "learnings unreadable ({e}); continuing without cache"
+            )),
+        }
+    }
+    let store = store.as_ref();
+
     let deadline = Instant::now() + config.timeout;
     let mut accepts = 0u64;
+    let mut search_accepts = 0u64;
     let mut experiments = 0u64;
     let mut consecutive_fail = 0u32;
     let mut batch_idx = 0u64;
     let mut current_score = opening_score;
     let mut stop_reason = "exhausted".to_string();
+    let mut replay_done = false;
+    let mut replay_skipped = HashSet::new();
 
     if incumbent.hidden_neurons() == 0 {
         stop_reason = "no-hidden".into();
@@ -258,13 +298,217 @@ fn ockham_loop(
             stop_reason = "max-experiments".into();
             break;
         }
+
+        if !replay_done {
+            let tagged: HashSet<String> = meta.neuron_tags.keys().cloned().collect();
+            if !tagged.is_empty() {
+                log::detail(&format!(
+                    "replay: leaving {} tagged neuron(s) untouched (GRQ #4216)",
+                    tagged.len()
+                ));
+            }
+            let wins: Vec<String> = known_wins(&known, &incumbent.creature, replay_cfg)
+                .into_iter()
+                .filter(|u| !replay_skipped.contains(u) && !tagged.contains(u))
+                .collect();
+            if wins.is_empty() {
+                replay_done = true;
+                continue;
+            }
+            let (applied, _) = apply_available(&incumbent.creature, &activation, &wins);
+            for u in &wins {
+                if !applied.iter().any(|a| a == u) {
+                    replay_skipped.insert(u.clone());
+                }
+            }
+            if applied.is_empty() {
+                replay_done = true;
+                continue;
+            }
+            log::info(&format!(
+                "replay: combining {} of {} known win(s) still on incumbent",
+                applied.len(),
+                wins.len()
+            ));
+            let plans = replay_prefix_plans(&applied);
+            let sampled: Vec<SampledWinner> = if plans.is_empty() {
+                match propose(&incumbent.creature, &activation, &applied[0]) {
+                    Ok((kind, creature)) => vec![SampledWinner {
+                        candidate: SweepCandidate {
+                            uuid: applied[0].clone(),
+                            permutation_index: 0,
+                            kind,
+                            stem: "r000".into(),
+                            creature,
+                        },
+                        score: 0.0,
+                        baseline_score: 0.0,
+                        delta: 1.0,
+                    }],
+                    Err(reason) => {
+                        log::detail(&format!("replay: skip {}: {reason}", applied[0]));
+                        replay_skipped.insert(applied[0].clone());
+                        continue;
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+            let probe_n = config.max_full.unwrap_or(8).min(applied.len());
+            experiments += 1;
+            let mut extra_plans = plans;
+            match evaluate_full(
+                scorer,
+                &config.training_data,
+                &incumbent.creature,
+                &activation,
+                &sampled,
+                FullConfig {
+                    min_improvement: config.min_improvement,
+                    dir: &workspace.join(format!("replay-{experiments}")),
+                    best_path: Some(&config.output_dir.join("best.json")),
+                    extra_plans: &extra_plans,
+                },
+            ) {
+                Ok(full) => {
+                    consecutive_fail = 0;
+                    journal_full(&journal_path, &full)?;
+                    if full.winner.is_none() && sampled.is_empty() && applied.len() > 1 {
+                        log::info(&format!(
+                            "replay: combined bundle missed; probing {probe_n} known win(s) individually"
+                        ));
+                        let mut probe = Vec::new();
+                        for uuid in applied.iter().take(probe_n) {
+                            match propose(&incumbent.creature, &activation, uuid) {
+                                Ok((kind, creature)) => probe.push(SampledWinner {
+                                    candidate: SweepCandidate {
+                                        uuid: uuid.clone(),
+                                        permutation_index: 0,
+                                        kind,
+                                        stem: "r000".into(),
+                                        creature,
+                                    },
+                                    score: 0.0,
+                                    baseline_score: 0.0,
+                                    delta: 1.0,
+                                }),
+                                Err(reason) => {
+                                    log::detail(&format!("replay: skip {uuid}: {reason}"));
+                                    replay_skipped.insert(uuid.clone());
+                                }
+                            }
+                        }
+                        if probe.is_empty() {
+                            continue;
+                        }
+                        experiments += 1;
+                        extra_plans = Vec::new();
+                        match evaluate_full(
+                            scorer,
+                            &config.training_data,
+                            &incumbent.creature,
+                            &activation,
+                            &probe,
+                            FullConfig {
+                                min_improvement: config.min_improvement,
+                                dir: &workspace.join(format!("replay-{experiments}")),
+                                best_path: Some(&config.output_dir.join("best.json")),
+                                extra_plans: &extra_plans,
+                            },
+                        ) {
+                            Ok(probe_full) => {
+                                consecutive_fail = 0;
+                                journal_full(&journal_path, &probe_full)?;
+                                file_full_outcome(store, &mut known, &probe, &probe_full);
+                                if let Some(win) = probe_full.winner {
+                                    apply_local_win(
+                                        config,
+                                        corpus,
+                                        workspace,
+                                        &mut meta,
+                                        &mut incumbent,
+                                        &mut activation,
+                                        &mut accepts,
+                                        experiments,
+                                        opening_score,
+                                        &mut current_score,
+                                        win,
+                                        "replay",
+                                    )?;
+                                    stop_reason = "replay-accepts".into();
+                                    break;
+                                }
+                                continue;
+                            }
+                            Err(e) => {
+                                consecutive_fail += 1;
+                                log::warn(&format!("replay probe failed: {e}"));
+                                if consecutive_fail >= config.max_consecutive_scorer_failures {
+                                    stop_reason = "scorer-failures".into();
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    file_full_outcome(store, &mut known, &sampled, &full);
+                    if let Some(win) = full.winner {
+                        apply_local_win(
+                            config,
+                            corpus,
+                            workspace,
+                            &mut meta,
+                            &mut incumbent,
+                            &mut activation,
+                            &mut accepts,
+                            experiments,
+                            opening_score,
+                            &mut current_score,
+                            win,
+                            "replay",
+                        )?;
+                        stop_reason = "replay-accepts".into();
+                        break;
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    consecutive_fail += 1;
+                    log::warn(&format!("replay full score failed: {e}"));
+                    if consecutive_fail >= config.max_consecutive_scorer_failures {
+                        stop_reason = "scorer-failures".into();
+                        break;
+                    }
+                    continue;
+                }
+            }
+        }
+
         if sweep.exhausted() {
             stop_reason = "exhausted".into();
             break;
         }
 
-        let (candidates, skips) =
-            sweep.fill_batch(&incumbent.creature, &activation, config.candidates);
+        let avoid = known_failures(
+            &known,
+            &incumbent.creature,
+            replay_cfg,
+            crate::incumbent::now_unix(),
+        );
+        let tagged: HashSet<String> = meta.neuron_tags.keys().cloned().collect();
+        if !avoid.is_empty() {
+            log::detail(&format!(
+                "learnings: skipping {} known failure(s)",
+                avoid.len()
+            ));
+        }
+        let (candidates, skips) = sweep.fill_batch_skipping(
+            &incumbent.creature,
+            &activation,
+            config.candidates,
+            &avoid,
+            &tagged,
+        );
         let remaining_s = deadline.saturating_duration_since(Instant::now()).as_secs();
         log::info(&format!(
             "batch {batch_idx}: {} candidates, {} skipped, {} hidden left, {remaining_s}s remaining",
@@ -375,11 +619,11 @@ fn ockham_loop(
             &incumbent.creature,
             &activation,
             &sampled,
-            FullConfig {
-                min_improvement: config.min_improvement,
-                dir: &workspace.join(format!("full-{batch_idx}")),
-                best_path: Some(&config.output_dir.join("best.json")),
-            },
+            FullConfig::new(
+                config.min_improvement,
+                &workspace.join(format!("full-{batch_idx}")),
+                Some(&config.output_dir.join("best.json")),
+            ),
         ) {
             Ok(full) => {
                 consecutive_fail = 0;
@@ -390,60 +634,30 @@ fn ockham_loop(
                     full.full_ms,
                     full.winner.is_some()
                 ));
-                journal::append(
-                    &journal_path,
-                    &Event::Full {
-                        individuals: full.individuals.len(),
-                        bundles: full.bundles.len(),
-                        accepted: full.winner.is_some(),
-                        score: full.winner.as_ref().map(|w| w.candidate.score),
-                        delta: full.winner.as_ref().map(|w| w.candidate.delta),
-                    },
-                )?;
+                journal_full(&journal_path, &full)?;
+                file_full_outcome(store, &mut known, &sampled, &full);
                 if let Some(win) = full.winner {
-                    let last = win.candidate.kind;
-                    current_score = win.candidate.score;
-                    accepts += 1;
-                    meta.retain_neurons(&win.creature);
-                    meta.stamp_acceptance(&OckhamProgress {
-                        accepts,
+                    apply_local_win(
+                        config,
+                        corpus,
+                        workspace,
+                        &mut meta,
+                        &mut incumbent,
+                        &mut activation,
+                        &mut accepts,
                         experiments,
-                        opening: opening_score,
-                        score: current_score,
-                        error: win.candidate.error,
-                        last,
-                    });
-                    let tagged = meta
-                        .serialize_with(&win.creature, true)
-                        .map_err(|e| format!("tag best.json: {e}"))?;
-                    std::fs::write(config.output_dir.join("best.json"), &tagged)
-                        .map_err(|e| format!("best.json: {e}"))?;
-                    let winners_dir = config.output_dir.join("winners");
-                    if let Err(e) = std::fs::create_dir_all(&winners_dir).and_then(|_| {
-                        std::fs::write(winners_dir.join(format!("{}.json", win.checksum)), &tagged)
-                    }) {
-                        log::warn(&format!("winners archive not written: {e}"));
-                    }
-                    incumbent = Incumbent::from_creature(win.creature, "ockham-best")
-                        .map_err(|e| e.to_string())?;
-                    log::ok(&format!(
-                        "accepted local win score={current_score} Δ={:.3e} hidden={}",
-                        win.candidate.delta,
-                        incumbent.hidden_neurons()
-                    ));
+                        opening_score,
+                        &mut current_score,
+                        win,
+                        "search",
+                    )?;
+                    search_accepts += 1;
                     if let Some(max) = config.max_accepts
-                        && accepts >= max
+                        && search_accepts >= max
                     {
                         stop_reason = "max-accepts".into();
                         break;
                     }
-                    activation = ensure_activation_stats(
-                        &incumbent,
-                        &config.training_data,
-                        corpus,
-                        workspace,
-                        crate::stats::DEFAULT_CHUNK_RECORDS,
-                    )?;
                     sweep = Sweep::new(&incumbent.creature, seed.wrapping_add(accepts));
                     log::detail(&format!(
                         "restarted sweep after accept; {} hidden remaining",
@@ -487,12 +701,142 @@ fn ockham_loop(
     })
 }
 
+fn journal_full(path: &std::path::Path, full: &FullOutcome) -> Result<(), String> {
+    journal::append(
+        path,
+        &Event::Full {
+            individuals: full.individuals.len(),
+            bundles: full.bundles.len(),
+            accepted: full.winner.is_some(),
+            score: full.winner.as_ref().map(|w| w.candidate.score),
+            delta: full.winner.as_ref().map(|w| w.candidate.delta),
+        },
+    )
+}
+
+fn file_full_outcome(
+    store: Option<&LearningsStore>,
+    known: &mut Vec<crate::learnings::Learning>,
+    sampled: &[SampledWinner],
+    full: &FullOutcome,
+) {
+    let win: HashSet<&str> = full
+        .winner
+        .as_ref()
+        .map(|w| w.candidate.uuids.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    let mut verdicts = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for w in sampled {
+        if !full
+            .individuals
+            .iter()
+            .any(|i| i.uuids.first() == Some(&w.candidate.uuid))
+        {
+            continue;
+        }
+        seen.insert(w.candidate.uuid.as_str());
+        verdicts.push(Verdict {
+            uuid: w.candidate.uuid.as_str(),
+            kind: w.candidate.kind,
+            outcome: if win.contains(w.candidate.uuid.as_str()) {
+                Outcome::Accepted
+            } else {
+                Outcome::Rejected
+            },
+        });
+    }
+    if let Some(winner) = &full.winner {
+        for uuid in &winner.candidate.uuids {
+            if seen.contains(uuid.as_str()) {
+                continue;
+            }
+            verdicts.push(Verdict {
+                uuid: uuid.as_str(),
+                kind: crate::sweep::CandidateKind::Ablation,
+                outcome: Outcome::Accepted,
+            });
+        }
+    }
+    let n = file_verdicts(store, &verdicts, known);
+    if n > 0 {
+        log::detail(&format!("learnings: filed {n} full-corpus verdict(s)"));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_local_win(
+    config: &OckhamConfig,
+    corpus: &crate::corpus::CorpusInfo,
+    workspace: &std::path::Path,
+    meta: &mut CreatureMeta,
+    incumbent: &mut Incumbent,
+    activation: &mut ActivationStats,
+    accepts: &mut u64,
+    experiments: u64,
+    opening_score: f64,
+    current_score: &mut f64,
+    win: LocalWinner,
+    phase: &'static str,
+) -> Result<(), String> {
+    let last = win.candidate.kind;
+    let cuts = win.candidate.uuids.len();
+    let origin = if phase == "replay" && cuts > 1 {
+        "replay-bundle"
+    } else if phase == "replay" {
+        "replay"
+    } else {
+        "search"
+    };
+    *current_score = win.candidate.score;
+    *accepts += 1;
+    meta.retain_neurons(&win.creature);
+    meta.stamp_acceptance(&OckhamProgress {
+        accepts: *accepts,
+        experiments,
+        opening: opening_score,
+        score: *current_score,
+        error: win.candidate.error,
+        last,
+        origin,
+        cuts,
+    });
+    let tagged = meta
+        .serialize_with(&win.creature, true)
+        .map_err(|e| format!("tag best.json: {e}"))?;
+    std::fs::write(config.output_dir.join("best.json"), &tagged)
+        .map_err(|e| format!("best.json: {e}"))?;
+    let winners_dir = config.output_dir.join("winners");
+    if let Err(e) = std::fs::create_dir_all(&winners_dir)
+        .and_then(|_| std::fs::write(winners_dir.join(format!("{}.json", win.checksum)), &tagged))
+    {
+        log::warn(&format!("winners archive not written: {e}"));
+    }
+    *incumbent =
+        Incumbent::from_creature(win.creature, "ockham-best").map_err(|e| e.to_string())?;
+    log::ok(&format!(
+        "accepted local win score={} Δ={:.3e} hidden={}",
+        *current_score,
+        win.candidate.delta,
+        incumbent.hidden_neurons()
+    ));
+    *activation = ensure_activation_stats(
+        incumbent,
+        &config.training_data,
+        corpus,
+        workspace,
+        crate::stats::DEFAULT_CHUNK_RECORDS,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::baseline::fake::ScriptedScorer;
     use crate::corpus::write_bin_file;
     use crate::fixtures::identity_creature_json;
+    use neat_core::training_data::TrainingDataConfig;
     use std::time::Duration;
 
     fn config(tmp: &std::path::Path) -> OckhamConfig {
@@ -603,5 +947,181 @@ mod tests {
         };
         assert!(establish_run(&cfg, &failing).is_err());
         assert!(!cfg.output_dir.join("best.json").exists());
+    }
+
+    fn two_hidden_paths(tmp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let creature = tmp.join("creature.json");
+        let c = crate::fixtures::creature(
+            1,
+            1,
+            vec![
+                crate::fixtures::neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
+                crate::fixtures::neuron("hidden", "h_b", 0.0, Some("IDENTITY")),
+                crate::fixtures::neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                crate::fixtures::synapse("input-0", "h_a", 1.0),
+                crate::fixtures::synapse("input-0", "h_b", 1.0),
+                crate::fixtures::synapse("h_a", "output-0", 1.0),
+                crate::fixtures::synapse("h_b", "output-0", 1.0),
+            ],
+        );
+        std::fs::write(&creature, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
+        )
+        .unwrap();
+        (creature, train)
+    }
+
+    #[test]
+    fn max_accepts_still_stops_new_discoveries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(8),
+            max_accepts: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.accepts, 1, "accepts={}", run.accepts);
+        assert_eq!(run.stop_reason, "max-accepts");
+    }
+
+    #[test]
+    fn replay_applies_every_known_win_ignoring_max_accepts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let td = TrainingDataConfig::new(1, 1);
+        let corpus = crate::corpus::corpus_info(&train, &td).unwrap();
+        let store = LearningsStore::new(&learnings_dir, corpus.identity.clone(), "t".into());
+        for (uuid, secs) in [("h_b", 20u64), ("h_a", 10)] {
+            store
+                .append(&crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: uuid.into(),
+                    kind: "identity".into(),
+                    outcome: Outcome::Accepted,
+                    unix_secs: secs,
+                    host: "t".into(),
+                })
+                .unwrap();
+        }
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(8),
+            max_accepts: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.accepts, 1, "accepts={}", run.accepts);
+        assert_eq!(run.stop_reason, "replay-accepts");
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(best.contains("replay-bundle"), "{best}");
+        assert!(!best.contains("h_a"), "{best}");
+        assert!(!best.contains("h_b"), "{best}");
+    }
+
+    #[test]
+    fn replay_leaves_tagged_source_neurons_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&creature).unwrap()).unwrap();
+        if let Some(neurons) = v.get_mut("neurons").and_then(|n| n.as_array_mut()) {
+            for n in neurons {
+                if n.get("uuid").and_then(|u| u.as_str()) == Some("h_a") {
+                    n.as_object_mut().unwrap().insert(
+                        "tags".into(),
+                        serde_json::json!([{"name":"discovered","value":"keep"}]),
+                    );
+                }
+            }
+        }
+        std::fs::write(&creature, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+        let learnings_dir = tmp.path().join("learnings");
+        let td = TrainingDataConfig::new(1, 1);
+        let corpus = crate::corpus::corpus_info(&train, &td).unwrap();
+        let store = LearningsStore::new(&learnings_dir, corpus.identity.clone(), "t".into());
+        for uuid in ["h_a", "h_b"] {
+            store
+                .append(&crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: uuid.into(),
+                    kind: "identity".into(),
+                    outcome: Outcome::Accepted,
+                    unix_secs: 10,
+                    host: "t".into(),
+                })
+                .unwrap();
+        }
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(4),
+            max_accepts: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(best.contains("h_a"), "tagged neuron must survive: {best}");
+        assert!(
+            run.accepts >= 1 || !best.contains("h_b"),
+            "untagged known win should prune or accept; accepts={} best={best}",
+            run.accepts
+        );
+    }
+
+    #[test]
+    fn omitted_learnings_dir_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = config(tmp.path());
+        let _ = establish_run(&cfg, &ScriptedScorer::ok(0.9, 0.1)).unwrap();
+        assert!(!tmp.path().join("learnings").exists());
+        assert!(
+            !cfg.output_dir.join("learnings").exists(),
+            "loop must not invent a learnings dir"
+        );
     }
 }

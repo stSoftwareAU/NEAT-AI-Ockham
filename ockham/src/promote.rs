@@ -87,6 +87,20 @@ pub struct FullConfig<'a> {
     pub dir: &'a Path,
     /// When set, a winner is written here as `best.json`.
     pub best_path: Option<&'a Path>,
+    /// Extra UUID plans scored as bundles (largest-first replay, etc.).
+    pub extra_plans: &'a [Vec<String>],
+}
+
+impl<'a> FullConfig<'a> {
+    /// Full-score config with no extra plans.
+    pub fn new(min_improvement: f64, dir: &'a Path, best_path: Option<&'a Path>) -> Self {
+        Self {
+            min_improvement,
+            dir,
+            best_path,
+            extra_plans: &[],
+        }
+    }
 }
 
 /// Rank sampled winners by sample delta and emit unique bundle UUID prefixes.
@@ -138,6 +152,45 @@ pub fn apply_bundle(
     Ok(current)
 }
 
+/// Apply every UUID that still proposes, skipping the rest.
+///
+/// Used by known-win replay: a stale cut must not abort the whole bundle.
+pub fn apply_available(
+    incumbent: &CreatureExport,
+    stats: &ActivationStats,
+    uuids: &[String],
+) -> (Vec<String>, CreatureExport) {
+    let mut current = incumbent.clone();
+    let mut applied = Vec::new();
+    for uuid in uuids {
+        if current.neurons.iter().all(|n| n.uuid != *uuid) {
+            continue;
+        }
+        match propose(&current, stats, uuid) {
+            Ok((_, next)) => {
+                current = next;
+                applied.push(uuid.clone());
+            }
+            Err(_) => continue,
+        }
+    }
+    (applied, current)
+}
+
+/// Prefix plans for combined replay, largest first so equal scores keep more cuts.
+pub fn replay_prefix_plans(applied: &[String]) -> Vec<Vec<String>> {
+    if applied.len() < 2 {
+        return Vec::new();
+    }
+    let mut plans = vec![applied.to_vec()];
+    for n in [16usize, 8, 4] {
+        if n < applied.len() {
+            plans.push(applied[..n].to_vec());
+        }
+    }
+    plans
+}
+
 /// Full-score sampled winners and their bundle prefixes in one scorer call.
 ///
 /// Scorer failure means no winner. A sampled win cannot update `best.json`.
@@ -167,10 +220,15 @@ pub fn evaluate_full(
         ));
     }
     let mut skipped_bundles = Vec::new();
-    for (i, plan) in bundle_plans(sampled).into_iter().enumerate() {
+    let mut bundle_i = 0usize;
+    for plan in bundle_plans(sampled)
+        .into_iter()
+        .chain(cfg.extra_plans.iter().cloned())
+    {
         match apply_bundle(incumbent, stats, &plan) {
             Ok(creature) => {
-                let stem = format!("b{i:03}");
+                let stem = format!("b{bundle_i:03}");
+                bundle_i += 1;
                 write_creature(cfg.dir, &stem, &creature)?;
                 pending.push((stem, "bundle", plan, creature));
             }
@@ -383,11 +441,7 @@ mod tests {
             &incumbent,
             &stats,
             &one,
-            FullConfig {
-                min_improvement: 1e-6,
-                dir: &tmp.path().join("full"),
-                best_path: Some(&best),
-            },
+            FullConfig::new(1e-6, &tmp.path().join("full"), Some(&best)),
         )
         .unwrap();
         assert!(out.winner.is_none());
@@ -418,11 +472,7 @@ mod tests {
             &incumbent,
             &stats,
             &sampled,
-            FullConfig {
-                min_improvement: 1e-6,
-                dir: &tmp.path().join("full"),
-                best_path: None,
-            },
+            FullConfig::new(1e-6, &tmp.path().join("full"), None),
         )
         .unwrap();
         assert_eq!(out.bundles.len(), 1);
@@ -454,11 +504,7 @@ mod tests {
             &incumbent,
             &stats,
             &sampled,
-            FullConfig {
-                min_improvement: 1e-6,
-                dir: &tmp.path().join("full"),
-                best_path: None,
-            },
+            FullConfig::new(1e-6, &tmp.path().join("full"), None),
         )
         .unwrap();
         let win = out.winner.expect("bundle should win");
@@ -487,16 +533,42 @@ mod tests {
             &incumbent,
             &stats,
             &one,
-            FullConfig {
-                min_improvement: 1e-6,
-                dir: &tmp.path().join("full"),
-                best_path: Some(&best),
-            },
+            FullConfig::new(1e-6, &tmp.path().join("full"), Some(&best)),
         )
         .unwrap();
         let win = out.winner.expect("tiny win");
         assert!(win.candidate.delta > 1e-6);
         assert!(best.exists());
         assert_eq!(win.candidate.kind, "individual");
+    }
+
+    #[test]
+    fn apply_available_skips_unproposable_uuids() {
+        let incumbent = three_hidden();
+        let stats = stats_for(&incumbent);
+        let before = incumbent
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .count();
+        let (applied, creature) =
+            apply_available(&incumbent, &stats, &["nope".into(), "h1".into()]);
+        assert_eq!(applied, vec!["h1".to_string()]);
+        let after = creature
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .count();
+        assert!(after < before);
+    }
+
+    #[test]
+    fn replay_prefix_plans_are_largest_first() {
+        let ids: Vec<String> = (0..10).map(|i| format!("h{i}")).collect();
+        let plans = replay_prefix_plans(&ids);
+        assert_eq!(plans[0].len(), 10);
+        assert_eq!(plans[1].len(), 8);
+        assert_eq!(plans[2].len(), 4);
+        assert!(replay_prefix_plans(&ids[..1]).is_empty());
     }
 }
