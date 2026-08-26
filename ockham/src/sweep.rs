@@ -9,6 +9,7 @@
 //! one sampled scorer call. Sampled winners are returned for later
 //! authoritative promotion; they never become `best.json` here.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -136,6 +137,24 @@ impl Sweep {
         self.next >= self.order.len()
     }
 
+    /// Move still-unvisited `uuids` to the front of the remaining order.
+    ///
+    /// Prefer-list order is preserved. Unknown or already-visited UUIDs are ignored.
+    pub fn prefer(&mut self, uuids: &[String]) {
+        if self.next >= self.order.len() || uuids.is_empty() {
+            return;
+        }
+        let mut remaining: Vec<String> = self.order.split_off(self.next);
+        let mut front = Vec::new();
+        for u in uuids {
+            if let Some(i) = remaining.iter().position(|x| x == u) {
+                front.push(remaining.remove(i));
+            }
+        }
+        self.order.extend(front);
+        self.order.extend(remaining);
+    }
+
     /// Build up to `size` valid candidates, refilling past skips.
     pub fn fill_batch(
         &mut self,
@@ -143,12 +162,51 @@ impl Sweep {
         stats: &ActivationStats,
         size: usize,
     ) -> (Vec<SweepCandidate>, Vec<SweepSkip>) {
+        self.fill_batch_avoiding(incumbent, stats, size, &HashSet::new())
+    }
+
+    /// [`Self::fill_batch`] that skips UUIDs in `avoid` (fresh known failures).
+    pub fn fill_batch_avoiding(
+        &mut self,
+        incumbent: &CreatureExport,
+        stats: &ActivationStats,
+        size: usize,
+        avoid: &HashSet<String>,
+    ) -> (Vec<SweepCandidate>, Vec<SweepSkip>) {
+        self.fill_batch_skipping(incumbent, stats, size, avoid, &HashSet::new())
+    }
+
+    /// [`Self::fill_batch`] skipping known failures and tagged provenance neurons (#26).
+    pub fn fill_batch_skipping(
+        &mut self,
+        incumbent: &CreatureExport,
+        stats: &ActivationStats,
+        size: usize,
+        avoid: &HashSet<String>,
+        tagged: &HashSet<String>,
+    ) -> (Vec<SweepCandidate>, Vec<SweepSkip>) {
         let mut candidates = Vec::new();
         let mut skips = Vec::new();
         while candidates.len() < size && !self.exhausted() {
             let permutation_index = self.next;
             let uuid = self.order[permutation_index].clone();
             self.next += 1;
+            if tagged.contains(&uuid) {
+                skips.push(SweepSkip {
+                    uuid,
+                    permutation_index,
+                    reason: "tagged".into(),
+                });
+                continue;
+            }
+            if avoid.contains(&uuid) {
+                skips.push(SweepSkip {
+                    uuid,
+                    permutation_index,
+                    reason: "known-failure".into(),
+                });
+                continue;
+            }
             match propose(incumbent, stats, &uuid) {
                 Ok((kind, creature)) => {
                     let stem = format!("c{:03}", candidates.len());
@@ -503,5 +561,49 @@ mod tests {
         assert!(outcome.winners.is_empty());
         assert_eq!(outcome.losers.len(), 2);
         assert!(!tmp.path().join("best.json").exists());
+    }
+
+    #[test]
+    fn prefer_moves_still_unvisited_uuids_to_the_front() {
+        let creature = two_hidden();
+        let mut sweep = Sweep::new(&creature, 1);
+        let last = sweep.order.last().cloned().unwrap();
+        sweep.prefer(std::slice::from_ref(&last));
+        assert_eq!(sweep.order[sweep.next], last);
+    }
+
+    #[test]
+    fn fill_batch_skips_known_failures() {
+        let creature = two_hidden();
+        let stats = stats_for(&creature);
+        let mut sweep = Sweep::new(&creature, 9);
+        let blocked = sweep.order[0].clone();
+        let avoid = HashSet::from([blocked.clone()]);
+        let (batch, skips) = sweep.fill_batch_avoiding(&creature, &stats, 8, &avoid);
+        assert!(batch.iter().all(|c| c.uuid != blocked));
+        assert!(
+            skips
+                .iter()
+                .any(|s| s.uuid == blocked && s.reason == "known-failure"),
+            "{skips:?}"
+        );
+    }
+
+    #[test]
+    fn fill_batch_skips_tagged_neurons_as_tagged() {
+        let creature = two_hidden();
+        let stats = stats_for(&creature);
+        let mut sweep = Sweep::new(&creature, 9);
+        let blocked = sweep.order[0].clone();
+        let tagged = HashSet::from([blocked.clone()]);
+        let (batch, skips) =
+            sweep.fill_batch_skipping(&creature, &stats, 8, &HashSet::new(), &tagged);
+        assert!(batch.iter().all(|c| c.uuid != blocked));
+        assert!(
+            skips
+                .iter()
+                .any(|s| s.uuid == blocked && s.reason == "tagged"),
+            "{skips:?}"
+        );
     }
 }

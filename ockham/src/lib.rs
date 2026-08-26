@@ -25,7 +25,7 @@
 //! | population re-entry | [`reentry`] | #9 |
 //! | economics report | [`report`] | #10 |
 //! | GRQ check-in tags | [`tags`] | #25 |
-//! | fleet learnings store | [`learnings`] | #27 |
+//! | fleet learnings store + replay | [`learnings`] | #27 |
 
 #![warn(missing_docs)]
 

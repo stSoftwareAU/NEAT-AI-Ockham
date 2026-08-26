@@ -51,8 +51,16 @@ pub struct OckhamConfig {
     pub max_consecutive_scorer_failures: u32,
     /// Cap on sampled winners sent to full scoring (`None` = every sampled winner).
     pub max_full: Option<usize>,
-    /// Stop after this many local accepts (`None` = until timeout).
+    /// Stop after this many **new** local accepts (`None` = until timeout).
+    ///
+    /// Does not cap replay of known wins from [`Self::learnings_dir`].
     pub max_accepts: Option<u64>,
+    /// Shared full-corpus prune-verdict cache (`None` = do not read or write).
+    pub learnings_dir: Option<PathBuf>,
+    /// Host label for the per-host jsonl file (`None` = [`crate::learnings::default_host`]).
+    pub learnings_host: Option<String>,
+    /// Max known-win UUIDs to replay before the random sweep (`0` = all still present).
+    pub learnings_replay: usize,
 }
 
 impl Default for OckhamConfig {
@@ -74,6 +82,9 @@ impl Default for OckhamConfig {
             max_consecutive_scorer_failures: DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES,
             max_full: None,
             max_accepts: None,
+            learnings_dir: None,
+            learnings_host: None,
+            learnings_replay: 0,
         }
     }
 }
@@ -134,6 +145,9 @@ impl OckhamConfig {
             max_consecutive_scorer_failures: self.max_consecutive_scorer_failures,
             max_full: self.max_full,
             max_accepts: self.max_accepts,
+            learnings_dir: self.learnings_dir.clone(),
+            learnings_host: self.learnings_host.clone(),
+            learnings_replay: self.learnings_replay,
             optimisation: "loop",
         }
     }
@@ -175,8 +189,14 @@ pub struct ConfigReport {
     pub max_consecutive_scorer_failures: u32,
     /// Optional cap on sampled winners sent to full scoring.
     pub max_full: Option<usize>,
-    /// Optional cap on local accepts (stop and return `best.json` immediately).
+    /// Optional cap on **new** local accepts (replay of known wins is uncapped).
     pub max_accepts: Option<u64>,
+    /// Shared learnings directory (`None` = cache disabled).
+    pub learnings_dir: Option<PathBuf>,
+    /// Optional host override for the per-host jsonl file.
+    pub learnings_host: Option<String>,
+    /// Known-win replay cap (`0` = every still-present known win).
+    pub learnings_replay: usize,
     /// Optimisation status for this bootstrap issue (`deferred`).
     pub optimisation: &'static str,
 }
@@ -196,6 +216,8 @@ mod tests {
         assert_eq!(c.min_improvement, 1e-6);
         assert_eq!(c.report().optimisation, "loop");
         assert_eq!(c.report().timeout_seconds, DEFAULT_TIMEOUT_SECONDS);
+        assert!(c.learnings_dir.is_none());
+        assert_eq!(c.learnings_replay, 0);
     }
 
     #[test]

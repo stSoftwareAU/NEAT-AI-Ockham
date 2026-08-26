@@ -61,5 +61,5 @@ markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy with
 5. Completed structural candidates must pass NEAT-AI-core `creature.validate()`.
 6. Ockham remains optional and isolated from the production evolutionary path.
 7. No TypeScript runtime or implementation dependency.
-8. Bump `ockham/Cargo.toml` `version` for binary-affecting changes and note
-   them under `[Unreleased]` in `CHANGELOG.md`.
+8. Bump `ockham/Cargo.toml` `version` for binary-affecting changes. Git history
+   is the record; do not maintain a changelog.

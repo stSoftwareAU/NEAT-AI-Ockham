@@ -169,23 +169,31 @@ pub struct OckhamProgress<'a> {
     pub score: f64,
     /// Current authoritative error.
     pub error: f64,
-    /// Last accepted strategy label (`collapse`, `ablate`, `bundle`, …).
+    /// Last accepted strategy label (`individual`, `bundle`, …).
     pub last: &'a str,
+    /// `replay-bundle`, `replay`, or `search` — flows through the population as the `ockham` tag.
+    pub origin: &'a str,
+    /// Hidden UUIDs removed in this accept.
+    pub cuts: usize,
 }
 
-/// GRQ-sampler skim line, matching Forests / Lamarck tag style.
+/// GRQ-sampler skim line. Becomes the sampler commit subject.
 pub fn ockham_progress_message(progress: &OckhamProgress<'_>) -> String {
-    let mut s = format!(
-        "🪒 Ockham · {} accepts / {} batches · last: {} · score: {:.6}",
-        progress.accepts, progress.experiments, progress.last, progress.score
-    );
-    if progress.score > progress.opening {
-        s.push_str(&format!(
-            " improved by {:.2e}",
-            progress.score - progress.opening
-        ));
+    let delta = if progress.score > progress.opening {
+        format!(" (+{:.2e})", progress.score - progress.opening)
+    } else {
+        String::new()
+    };
+    match progress.origin {
+        "search" => format!(
+            "🪒 Ockham · search {} · {} accepts / {} batches · score: {:.6}{delta}",
+            progress.last, progress.accepts, progress.experiments, progress.score
+        ),
+        other => format!(
+            "🪒 Ockham · {other} · {} cuts · score: {:.6}{delta}",
+            progress.cuts, progress.score
+        ),
     }
-    s
 }
 
 #[cfg(test)]
@@ -224,6 +232,8 @@ mod tests {
             score: 0.500002,
             error: 0.499998,
             last: "collapse",
+            origin: "search",
+            cuts: 1,
         });
         let out = meta.serialize_with(&pruned, true).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
@@ -237,8 +247,8 @@ mod tests {
         assert_eq!(by_name["score"], "0.500002");
         assert_eq!(by_name["name"], "Frank");
         assert!(by_name["ockham"].starts_with("🪒 Ockham"));
-        assert!(by_name["ockham"].contains("1 accepts"));
-        assert!(by_name["ockham"].contains("improved by"));
+        assert!(by_name["ockham"].contains("search"));
+        assert!(by_name["ockham"].contains("(+"));
         assert!(v["neurons"][0].get("tags").is_none());
     }
 
@@ -260,5 +270,22 @@ mod tests {
         let out = meta.serialize_with(&keep, false).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["neurons"][0]["tags"][0]["name"], "discovered");
+    }
+
+    #[test]
+    fn replay_bundle_tag_names_the_origin_and_cut_count() {
+        let msg = ockham_progress_message(&OckhamProgress {
+            accepts: 1,
+            experiments: 1,
+            opening: 0.39,
+            score: 0.39001,
+            error: 0.61,
+            last: "bundle",
+            origin: "replay-bundle",
+            cuts: 12,
+        });
+        assert!(msg.contains("replay-bundle"));
+        assert!(msg.contains("12 cuts"));
+        assert!(msg.contains("(+"));
     }
 }

@@ -66,9 +66,19 @@ struct Cli {
     /// Cap sampled winners sent to full scoring (highest sample Δ first). Omit to full-score every sampled winner.
     #[arg(long)]
     max_full: Option<usize>,
-    /// Stop after this many authoritative local accepts so a win can be checked in quickly.
+    /// Stop after this many **new** authoritative local accepts so a win can be checked in quickly.
+    /// Replay of known wins from `--learnings-dir` is not counted against this cap.
     #[arg(long)]
     max_accepts: Option<u64>,
+    /// Shared full-corpus prune-verdict cache. Omitted: do not read or write learnings.
+    #[arg(long)]
+    learnings_dir: Option<PathBuf>,
+    /// Host name for the per-host jsonl file (default: unqualified hostname).
+    #[arg(long)]
+    learnings_host: Option<String>,
+    /// Max known-win UUIDs to replay on the incumbent before the random sweep; 0 = all still present.
+    #[arg(long, default_value_t = 0)]
+    learnings_replay: usize,
 }
 
 #[derive(Subcommand, Debug)]
@@ -133,6 +143,9 @@ fn main() -> ExitCode {
         global_champion: cli.global_champion,
         max_full: cli.max_full,
         max_accepts: cli.max_accepts,
+        learnings_dir: cli.learnings_dir,
+        learnings_host: cli.learnings_host,
+        learnings_replay: cli.learnings_replay,
     };
     if let Err(e) = config.validate() {
         eprintln!("{e}");
