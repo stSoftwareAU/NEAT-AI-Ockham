@@ -379,8 +379,8 @@ NEAT-AI-Ockham/
 ## Implementation roadmap
 
 Shipped through the iterative loop, re-entry comparison, report command, GRQ
-check-in tags, learnings replay, and tagged-neuron skip (#1–#10, #23,
-#25–#27). Remaining experimental work:
+check-in tags, learnings replay, and tagged-neuron skip (#1–#10, #23, #25–#27).
+Remaining experimental work:
 
 - smarter pruning order only after the random sweep is measured
   ([#11](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/11)).
