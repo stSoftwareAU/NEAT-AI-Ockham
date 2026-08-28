@@ -7,7 +7,8 @@
 //!
 //! Every strategy starts from the seeded random permutation and then applies a
 //! **stable** sort by its ranking key, so ties keep an unbiased random order
-//! and the whole visitation order is reproducible from `(seed, ordering)`.
+//! and the whole visitation order is reproducible from
+//! `(seed, ordering, random quota)`.
 //!
 //! [`Ordering::Random`] is the control and remains the default. A strategy is
 //! only promoted to the default when benchmark evidence shows better
