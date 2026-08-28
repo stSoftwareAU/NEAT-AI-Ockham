@@ -2,8 +2,9 @@
 //!
 //! The README documents the tool as built: every long flag the binary accepts
 //! must appear in it, the README must not advertise flags the binary lacks,
-//! the charter sections the project was founded on must survive, and the
-//! repository-layout tree must list every source file.
+//! the charter sections the project was founded on must survive, the published
+//! prior art the razor implements must stay cited, and the repository-layout
+//! tree must list every source file.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -110,6 +111,118 @@ fn charter_sections_survive() {
         assert!(
             readme.contains(needle),
             "README lost charter text: {needle:?}"
+        );
+    }
+}
+
+const LITERATURE_HEADING: &str = "## Where this sits in the literature";
+
+/// The README section citing the prior art the razor already implements (#30).
+fn literature_section() -> String {
+    let readme = readme();
+    let start = readme
+        .find(LITERATURE_HEADING)
+        .unwrap_or_else(|| panic!("README lost the {LITERATURE_HEADING:?} section (#30)"));
+    let section = &readme[start..];
+    let end = section[3..].find("\n## ").map_or(section.len(), |i| i + 3);
+    section[..end].to_string()
+}
+
+/// Prior art the literature section must name, by mechanism (#30).
+const LITERATURE_CITATIONS: &[&str] = &[
+    // Saliency-ranked structural pruning.
+    "Optimal Brain Damage",
+    "LeCun",
+    "Optimal Brain Surgeon",
+    "Hassibi",
+    "Molchanov",
+    // Downstream compensation after removal.
+    "Nagel",
+    "ThiNet",
+    "Luo",
+    // Redundant / identity unit folding.
+    "Srinivas",
+    "Babu",
+    // Iterated pruning — the compounding hypothesis.
+    "Frankle",
+    "Carbin",
+    "Dense-Sparse-Dense",
+    "Han",
+    // Minimum description length.
+    "Rissanen",
+    "van Camp",
+    // Racing / sampled screening.
+    "Maron",
+    "Moore",
+    "Birattari",
+    "F-Race",
+    "Jamieson",
+    "Talwalkar",
+    // Adaptive overfitting — the caveat.
+    "Dwork",
+    "Blum",
+    "Hardt",
+];
+
+#[test]
+fn literature_section_cites_the_pruning_prior_art() {
+    let section = literature_section();
+    let missing: Vec<&str> = LITERATURE_CITATIONS
+        .iter()
+        .copied()
+        .filter(|c| !section.contains(c))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{LITERATURE_HEADING:?} omits these citations: {missing:?} (#30)"
+    );
+}
+
+#[test]
+fn literature_section_connects_the_growth_gate_to_mdl() {
+    let section = literature_section();
+    for needle in [
+        "minimum description length",
+        "Rissanen",
+        "growth_units",
+        "costOfGrowth",
+    ] {
+        assert!(
+            section.contains(needle),
+            "{LITERATURE_HEADING:?} must connect the growth gate to MDL; missing {needle:?} (#30)"
+        );
+    }
+}
+
+#[test]
+fn literature_section_states_the_compounding_hypothesis_and_its_failure_mode() {
+    let section = literature_section();
+    for needle in [
+        "compound into a material improvement",
+        "The reusable holdout",
+        "The Ladder",
+        "noise floor",
+    ] {
+        assert!(
+            section.contains(needle),
+            "{LITERATURE_HEADING:?} must state the compounding hypothesis beside its known \
+             failure mode; missing {needle:?} (#30)"
+        );
+    }
+}
+
+#[test]
+fn house_terminology_survives_the_literature_section() {
+    let readme = readme();
+    for needle in [
+        "🪒",
+        "Every neuron must earn its keep",
+        "## The Ockham rule",
+        "A tiny genuine local win is a stepping stone, not a failure.",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "README lost house terminology: {needle:?} (#30)"
         );
     }
 }
