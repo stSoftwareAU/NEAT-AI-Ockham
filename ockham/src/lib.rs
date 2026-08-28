@@ -26,6 +26,7 @@
 //! | economics report | [`report`] | #10 |
 //! | GRQ check-in tags | [`tags`] | #25 |
 //! | fleet learnings store + replay | [`learnings`] | #27 |
+//! | named candidate orderings | [`ordering`] | #11 |
 
 #![warn(missing_docs)]
 
@@ -40,6 +41,7 @@ pub mod incumbent;
 pub mod journal;
 pub mod learnings;
 pub mod log;
+pub mod ordering;
 pub mod promote;
 pub mod reentry;
 pub mod report;
@@ -59,6 +61,7 @@ pub use config::{
 };
 pub use corpus::{CorpusInfo, corpus_info};
 pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
+pub use ordering::{Ordering, OrderingConfig, hidden_order};
 pub use promote::{FullOutcome, evaluate_full};
 pub use report::{Report, summarise};
 pub use run::{BaselineRun, establish_run};

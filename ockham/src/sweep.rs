@@ -1,9 +1,14 @@
 //! Seeded random sweep and sampled scorer screening (Issue #6).
 //!
-//! Hidden-neuron UUIDs are shuffled once with a recorded seed and visited
-//! **without replacement**. Each visit tries an exact IDENTITY collapse, then
-//! a mean-activation ablation. Unsupported or invalid attempts are skipped and
-//! the batch is refilled while unvisited neurons remain.
+//! Hidden-neuron UUIDs are ordered once from a recorded seed and named
+//! [`crate::ordering::Ordering`] and visited **without replacement**. Each visit
+//! tries an exact IDENTITY collapse, then a mean-activation ablation.
+//! Unsupported or invalid attempts are skipped and the batch is refilled while
+//! unvisited neurons remain.
+//!
+//! An ordering only changes *when* a neuron is tested (Issue #11). Every
+//! candidate still passes `creature.validate()`, the sampled screen and full
+//! authoritative scoring.
 //!
 //! The incumbent and every valid candidate in a batch are scored together in
 //! one sampled scorer call. Sampled winners are returned for later
@@ -19,6 +24,7 @@ use serde::Serialize;
 use crate::ablation::ablate_mean;
 use crate::collapse::{CollapseOptions, collapse_identity};
 use crate::incumbent::sha256_hex;
+use crate::ordering::{Ordering, OrderingConfig, hidden_order};
 use crate::scorer::{DirectoryScorer, ScorerMode};
 use crate::stats::ActivationStats;
 
@@ -29,26 +35,6 @@ pub fn draw_seed() -> u64 {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
     nanos ^ u64::from(std::process::id()).wrapping_shl(32) ^ 0xA5A5_A5A5_A5A5_A5A5
-}
-
-/// SplitMix64 — enough for a reproducible Fisher–Yates shuffle.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn shuffle<T>(&mut self, items: &mut [T]) {
-        for i in (1..items.len()).rev() {
-            let j = (self.next() as usize) % (i + 1);
-            items.swap(i, j);
-        }
-    }
 }
 
 /// Kind of pruning proposal.
@@ -96,7 +82,9 @@ pub struct SweepSkip {
 pub struct Sweep {
     /// Seed that produced [`Self::order`].
     pub seed: u64,
-    /// SHA-256 of `seed` plus the ordered UUID list.
+    /// Named ordering strategy that produced [`Self::order`].
+    pub ordering: Ordering,
+    /// SHA-256 of `seed`, the ordering name and the ordered UUID list.
     pub permutation_identity: String,
     /// Hidden UUIDs in visitation order.
     pub order: Vec<String>,
@@ -105,22 +93,39 @@ pub struct Sweep {
 }
 
 impl Sweep {
-    /// Shuffle the incumbent's hidden UUIDs with `seed`.
+    /// Shuffle the incumbent's hidden UUIDs with `seed` (the random control).
     pub fn new(creature: &CreatureExport, seed: u64) -> Self {
-        let mut order: Vec<String> = creature
-            .neurons
-            .iter()
-            .filter(|n| n.neuron_type == "hidden")
-            .map(|n| n.uuid.clone())
-            .collect();
-        SplitMix64(seed).shuffle(&mut order);
-        let mut ident = format!("seed={seed}\n");
+        Self::with_ordering(
+            creature,
+            &ActivationStats::empty(),
+            seed,
+            OrderingConfig::default(),
+        )
+    }
+
+    /// Order the incumbent's hidden UUIDs with `seed` and `cfg` (Issue #11).
+    ///
+    /// The order is always a permutation of every hidden UUID: an ordering
+    /// reprioritises the sweep, it never shrinks it.
+    pub fn with_ordering(
+        creature: &CreatureExport,
+        stats: &ActivationStats,
+        seed: u64,
+        cfg: OrderingConfig,
+    ) -> Self {
+        let order = hidden_order(creature, stats, cfg, seed);
+        let mut ident = format!(
+            "seed={seed}\nordering={}\nrandomQuota={}\n",
+            cfg.strategy.name(),
+            cfg.random_quota
+        );
         for uuid in &order {
             ident.push_str(uuid);
             ident.push('\n');
         }
         Self {
             seed,
+            ordering: cfg.strategy,
             permutation_identity: sha256_hex(ident.as_bytes()),
             order,
             next: 0,
@@ -570,6 +575,72 @@ mod tests {
         let last = sweep.order.last().cloned().unwrap();
         sweep.prefer(std::slice::from_ref(&last));
         assert_eq!(sweep.order[sweep.next], last);
+    }
+
+    /// Stats that make `h_b` the flattest and quietest hidden neuron.
+    fn skewed_stats(creature: &CreatureExport) -> ActivationStats {
+        let mut stats = stats_for(creature);
+        for n in &mut stats.neurons {
+            let loud = n.uuid == "h_a";
+            n.variance = if loud { 9.0 } else { 0.001 };
+            n.mean_abs = if loud { 3.0 } else { 0.01 };
+            n.max = if loud { 5.0 } else { 0.05 };
+            n.min = -n.max;
+        }
+        stats
+    }
+
+    #[test]
+    fn a_named_ordering_reprioritises_the_sweep_without_changing_what_is_tested() {
+        let creature = two_hidden();
+        let stats = skewed_stats(&creature);
+        let seed = 5;
+        let control = Sweep::with_ordering(&creature, &stats, seed, OrderingConfig::default());
+        let ranked = Sweep::with_ordering(
+            &creature,
+            &stats,
+            seed,
+            OrderingConfig::new(Ordering::LowVariance),
+        );
+        assert_eq!(ranked.ordering, Ordering::LowVariance);
+        assert_eq!(
+            ranked.order[0], "h_b",
+            "flattest neuron must be tested first"
+        );
+        assert_ne!(
+            control.permutation_identity, ranked.permutation_identity,
+            "each ordering must have its own reproducible identity"
+        );
+
+        // Same neurons, same gates — only the visitation order moved.
+        let mut control_set: Vec<String> = control.order.clone();
+        let mut ranked_set: Vec<String> = ranked.order.clone();
+        control_set.sort();
+        ranked_set.sort();
+        assert_eq!(control_set, ranked_set);
+
+        let mut sweep = ranked;
+        let (batch, skips) = sweep.fill_batch(&creature, &stats, 8);
+        assert!(skips.is_empty(), "{skips:?}");
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].uuid, "h_b");
+        for c in &batch {
+            validate_creature(&c.creature).expect("ordering must not bypass creature.validate()");
+        }
+    }
+
+    #[test]
+    fn a_named_ordering_is_reproducible_for_a_fixed_seed() {
+        let creature = two_hidden();
+        let stats = skewed_stats(&creature);
+        let cfg = OrderingConfig {
+            strategy: Ordering::LowMeanAbs,
+            random_quota: 0.25,
+        };
+        let a = Sweep::with_ordering(&creature, &stats, 17, cfg);
+        let b = Sweep::with_ordering(&creature, &stats, 17, cfg);
+        assert_eq!(a.order, b.order);
+        assert_eq!(a.permutation_identity, b.permutation_identity);
     }
 
     #[test]

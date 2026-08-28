@@ -1,14 +1,22 @@
-//! Summarise `experiments.jsonl` journals (Issue #10).
+//! Summarise `experiments.jsonl` journals (Issue #10, extended by #11).
 //!
 //! Distinguishes **local cumulative Ockham improvement** from **population
 //! headroom** when re-entry records exist. Tiny accepted steps are kept in the
 //! cumulative trajectory rather than dismissed.
+//!
+//! Issue #11 adds the measures needed to compare one named ordering against
+//! the random control on equal terms: time to the first authoritative local
+//! winner, candidates screened before it, accepted-win size distribution,
+//! scorer calls consumed and growth-cost reduction. Cumulative gain — not the
+//! single largest cut — remains the headline.
 
 use std::path::Path;
 
 use serde::Serialize;
 
+use crate::ablation::growth_units;
 use crate::journal::Event;
+use crate::ordering::Ordering;
 
 /// Aggregate view of one or more journals.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -16,6 +24,10 @@ use crate::journal::Event;
 pub struct Report {
     /// Journals consumed.
     pub journals: Vec<String>,
+    /// Named ordering from the first start record.
+    pub ordering: Option<Ordering>,
+    /// Random exploration quota from the first start record.
+    pub ordering_random_quota: Option<f64>,
     /// Opening authoritative score (first start record).
     pub opening_score: Option<f64>,
     /// Final authoritative score (last stop record).
@@ -30,6 +42,28 @@ pub struct Report {
     pub full_accepts: u64,
     /// Full-cohort rejects.
     pub full_rejects: u64,
+    /// Sampled screen scorer calls consumed.
+    pub screen_calls: u64,
+    /// Full-corpus scorer cohort calls consumed.
+    pub full_calls: u64,
+    /// Milliseconds from the loop start to the first authoritative local win.
+    pub first_win_ms: Option<u64>,
+    /// Candidates screened before the first authoritative local win.
+    pub candidates_before_first_win: Option<u64>,
+    /// Neurons cut by each accepted winner, in acceptance order.
+    pub accepted_cut_sizes: Vec<usize>,
+    /// Total neurons cut across every accepted winner.
+    pub accepted_cuts: usize,
+    /// Wall-clock milliseconds spent in the optimisation loop.
+    pub elapsed_ms: Option<u64>,
+    /// Authoritative local accepts per hour of loop wall-clock.
+    pub accepts_per_hour: Option<f64>,
+    /// Opening `hidden + synapses / 10` growth units.
+    pub opening_growth_units: Option<f64>,
+    /// Final `hidden + synapses / 10` growth units.
+    pub final_growth_units: Option<f64>,
+    /// `opening - final` growth units; positive means structure was removed.
+    pub growth_units_saved: Option<f64>,
     /// Last stop reason.
     pub stop_reason: Option<String>,
     /// Effective seed from the first start record.
@@ -40,6 +74,8 @@ pub struct Report {
 pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
     let mut report = Report {
         journals: Vec::new(),
+        ordering: None,
+        ordering_random_quota: None,
         opening_score: None,
         final_score: None,
         cumulative_delta: None,
@@ -47,9 +83,21 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         experiments: 0,
         full_accepts: 0,
         full_rejects: 0,
+        screen_calls: 0,
+        full_calls: 0,
+        first_win_ms: None,
+        candidates_before_first_win: None,
+        accepted_cut_sizes: Vec::new(),
+        accepted_cuts: 0,
+        elapsed_ms: None,
+        accepts_per_hour: None,
+        opening_growth_units: None,
+        final_growth_units: None,
+        growth_units_saved: None,
         stop_reason: None,
         seed: None,
     };
+    let mut candidates_seen = 0u64;
     for path in paths {
         let path = path.as_ref();
         report.journals.push(path.display().to_string());
@@ -64,20 +112,45 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
             match event {
                 Event::Start {
                     seed,
+                    ordering,
+                    ordering_random_quota,
+                    hidden,
+                    synapses,
                     opening_score,
                     ..
                 } => {
                     if report.seed.is_none() {
                         report.seed = Some(seed);
+                        report.ordering = Some(ordering);
+                        report.ordering_random_quota = Some(ordering_random_quota);
                     }
                     if report.opening_score.is_none() {
                         report.opening_score = Some(opening_score);
                     }
+                    if report.opening_growth_units.is_none() {
+                        report.opening_growth_units = Some(growth_units(hidden, synapses));
+                    }
                 }
-                Event::Batch { .. } => report.experiments += 1,
-                Event::Full { accepted, .. } => {
+                Event::Batch { candidates, .. } => {
+                    report.experiments += 1;
+                    candidates_seen += candidates as u64;
+                }
+                Event::Screen { .. } => report.screen_calls += 1,
+                Event::Full {
+                    accepted,
+                    cuts,
+                    elapsed_ms,
+                    ..
+                } => {
+                    report.full_calls += 1;
                     if accepted {
                         report.full_accepts += 1;
+                        report.accepted_cut_sizes.push(cuts);
+                        report.accepted_cuts += cuts;
+                        if report.first_win_ms.is_none() {
+                            report.first_win_ms = Some(elapsed_ms);
+                            report.candidates_before_first_win = Some(candidates_seen);
+                        }
                     } else {
                         report.full_rejects += 1;
                     }
@@ -88,6 +161,9 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     experiments,
                     final_score,
                     cumulative_delta,
+                    final_hidden,
+                    final_synapses,
+                    elapsed_ms,
                 } => {
                     report.stop_reason = Some(reason);
                     report.accepts = accepts;
@@ -96,8 +172,9 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     }
                     report.final_score = Some(final_score);
                     report.cumulative_delta = Some(cumulative_delta);
+                    report.final_growth_units = Some(growth_units(final_hidden, final_synapses));
+                    report.elapsed_ms = Some(elapsed_ms);
                 }
-                Event::Screen { .. } => {}
             }
         }
     }
@@ -105,6 +182,12 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         && let (Some(open), Some(final_score)) = (report.opening_score, report.final_score)
     {
         report.cumulative_delta = Some(final_score - open);
+    }
+    if let (Some(open), Some(fin)) = (report.opening_growth_units, report.final_growth_units) {
+        report.growth_units_saved = Some(open - fin);
+    }
+    if let Some(ms) = report.elapsed_ms.filter(|ms| *ms > 0) {
+        report.accepts_per_hour = Some(report.accepts as f64 * 3_600_000.0 / ms as f64);
     }
     Ok(report)
 }
@@ -114,42 +197,37 @@ mod tests {
     use super::*;
     use crate::journal::{self, Event};
 
+    fn start(ordering: Ordering) -> Event {
+        Event::Start {
+            seed: 7,
+            ordering,
+            ordering_random_quota: 0.25,
+            permutation_identity: "x".into(),
+            hidden: 3,
+            synapses: 10,
+            opening_score: 0.50,
+        }
+    }
+
+    fn full(accepted: bool, score: f64, cuts: usize, elapsed_ms: u64) -> Event {
+        Event::Full {
+            individuals: 1,
+            bundles: 0,
+            accepted,
+            score: accepted.then_some(score),
+            delta: accepted.then_some(0.000002),
+            cuts,
+            elapsed_ms,
+        }
+    }
+
     #[test]
     fn report_compounds_tiny_accepts_rather_than_only_the_final_score() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("experiments.jsonl");
-        journal::append(
-            &path,
-            &Event::Start {
-                seed: 7,
-                permutation_identity: "x".into(),
-                hidden: 3,
-                opening_score: 0.50,
-            },
-        )
-        .unwrap();
-        journal::append(
-            &path,
-            &Event::Full {
-                individuals: 1,
-                bundles: 0,
-                accepted: true,
-                score: Some(0.500002),
-                delta: Some(0.000002),
-            },
-        )
-        .unwrap();
-        journal::append(
-            &path,
-            &Event::Full {
-                individuals: 1,
-                bundles: 0,
-                accepted: true,
-                score: Some(0.500004),
-                delta: Some(0.000002),
-            },
-        )
-        .unwrap();
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(&path, &full(true, 0.500002, 1, 1_000)).unwrap();
+        journal::append(&path, &full(true, 0.500004, 1, 2_000)).unwrap();
         journal::append(
             &path,
             &Event::Stop {
@@ -158,6 +236,9 @@ mod tests {
                 experiments: 4,
                 final_score: 0.500004,
                 cumulative_delta: 0.000004,
+                final_hidden: 1,
+                final_synapses: 8,
+                elapsed_ms: 3_600_000,
             },
         )
         .unwrap();
@@ -168,5 +249,120 @@ mod tests {
         assert_eq!(report.opening_score, Some(0.50));
         assert_eq!(report.final_score, Some(0.500004));
         assert_eq!(report.seed, Some(7));
+    }
+
+    #[test]
+    fn report_names_the_ordering_and_its_random_quota() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::LowVariance)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.ordering, Some(Ordering::LowVariance));
+        assert_eq!(report.ordering_random_quota, Some(0.25));
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"ordering\":\"low-variance\""), "{json}");
+    }
+
+    #[test]
+    fn report_measures_discovery_economics_not_just_the_largest_cut() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::LowMeanAbs)).unwrap();
+        for batch in 0..2u64 {
+            journal::append(
+                &path,
+                &Event::Batch {
+                    batch,
+                    candidates: 40,
+                    skipped: 2,
+                    remaining: 100,
+                },
+            )
+            .unwrap();
+            journal::append(
+                &path,
+                &Event::Screen {
+                    winners: 1,
+                    losers: 39,
+                    ms: 500,
+                },
+            )
+            .unwrap();
+            journal::append(&path, &full(false, 0.0, 0, 1_000 * (batch + 1))).unwrap();
+        }
+        // The third batch finally lands a tiny two-neuron bundle.
+        journal::append(
+            &path,
+            &Event::Batch {
+                batch: 2,
+                candidates: 40,
+                skipped: 0,
+                remaining: 20,
+            },
+        )
+        .unwrap();
+        journal::append(
+            &path,
+            &Event::Screen {
+                winners: 2,
+                losers: 38,
+                ms: 500,
+            },
+        )
+        .unwrap();
+        journal::append(&path, &full(true, 0.5001, 2, 9_000)).unwrap();
+        journal::append(&path, &full(true, 0.5002, 1, 12_000)).unwrap();
+        journal::append(
+            &path,
+            &Event::Stop {
+                reason: "max-accepts".into(),
+                accepts: 2,
+                experiments: 3,
+                final_score: 0.5002,
+                cumulative_delta: 0.0002,
+                final_hidden: 0,
+                final_synapses: 5,
+                elapsed_ms: 1_800_000,
+            },
+        )
+        .unwrap();
+
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.screen_calls, 3);
+        assert_eq!(report.full_calls, 4);
+        assert_eq!(report.first_win_ms, Some(9_000));
+        // 80 candidates screened across the two fruitless batches, then 40 more
+        // in the batch that produced the win.
+        assert_eq!(report.candidates_before_first_win, Some(120));
+        assert_eq!(report.accepted_cut_sizes, vec![2, 1]);
+        assert_eq!(report.accepted_cuts, 3);
+        assert_eq!(report.elapsed_ms, Some(1_800_000));
+        assert_eq!(report.accepts_per_hour, Some(4.0));
+        assert_eq!(report.opening_growth_units, Some(growth_units(3, 10)));
+        assert_eq!(report.final_growth_units, Some(growth_units(0, 5)));
+        assert_eq!(report.growth_units_saved, Some(3.5));
+    }
+
+    #[test]
+    fn a_journal_written_before_issue_11_still_parses_as_the_random_control() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"record":"start","seed":3,"permutation_identity":"x","hidden":2,"opening_score":0.5}"#,
+                "\n",
+                r#"{"record":"full","individuals":1,"bundles":0,"accepted":true,"score":0.6,"delta":0.1}"#,
+                "\n",
+                r#"{"record":"stop","reason":"timeout","accepts":1,"experiments":1,"final_score":0.6,"cumulative_delta":0.1}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.ordering, Some(Ordering::Random));
+        assert_eq!(report.accepts, 1);
+        assert_eq!(report.first_win_ms, Some(0));
+        assert_eq!(report.accepted_cut_sizes, vec![0]);
     }
 }

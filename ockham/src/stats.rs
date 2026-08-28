@@ -263,6 +263,22 @@ impl ActivationStats {
     pub fn by_uuid(&self, uuid: &str) -> Option<&NeuronStats> {
         self.neurons.iter().find(|n| n.uuid == uuid)
     }
+
+    /// Measurement-free placeholder for callers that need no activation signal.
+    ///
+    /// Every `by_uuid` lookup misses, so a statistics-driven ordering degrades
+    /// to the random control rather than silently inventing a signal.
+    pub fn empty() -> Self {
+        Self {
+            format_version: STATS_FORMAT_VERSION,
+            creature_checksum: String::new(),
+            corpus_identity: String::new(),
+            record_count: 0,
+            scan_ms: 0,
+            neurons: Vec::new(),
+            from_cache: false,
+        }
+    }
 }
 
 #[cfg(test)]

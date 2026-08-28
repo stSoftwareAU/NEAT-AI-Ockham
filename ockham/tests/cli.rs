@@ -172,3 +172,41 @@ fn invalid_candidates_names_the_flag() {
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("--candidates"));
 }
+
+#[test]
+fn an_unknown_ordering_names_the_valid_strategies() {
+    let out = bin()
+        .arg("creature.json")
+        .arg("training")
+        .arg("--ordering")
+        .arg("cleverest")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("cleverest"), "{err}");
+    assert!(err.contains("low-variance"), "{err}");
+    assert!(err.contains("random"), "{err}");
+}
+
+#[test]
+fn an_out_of_range_ordering_random_quota_names_the_flag() {
+    let out = bin()
+        .arg("creature.json")
+        .arg("training")
+        .arg("--ordering-random-quota")
+        .arg("1.0")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("--ordering-random-quota"));
+}
+
+#[test]
+fn help_lists_the_ordering_flags() {
+    let help = bin().arg("--help").output().unwrap();
+    assert!(help.status.success(), "{}", stderr(&help));
+    let text = stdout(&help);
+    assert!(text.contains("--ordering"), "{text}");
+    assert!(text.contains("--ordering-random-quota"), "{text}");
+}
