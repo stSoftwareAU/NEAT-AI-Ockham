@@ -228,6 +228,116 @@ promising removals because individual pruning effects are not assumed additive.
 The highest strict full-corpus improvement becomes the next Ockham incumbent,
 even if that improvement is tiny.
 
+## Where this sits in the literature
+
+Structured pruning of trained networks is one of the best-studied problems in
+the field, and Ockham is a deliberately simple member of that family rather than
+a new idea. The central question is not untested: it is decades old and largely
+confirmed, which is good news for the razor. This section records the published
+prior art each mechanism above already implements, and the one place the
+literature says Ockham is most exposed.
+
+```mermaid
+flowchart LR
+    O[activation statistics] -->|"OBD / OBS / Molchanov saliency"| A[mean-activation ablation]
+    A -->|"Nagel bias correction, ThiNet"| B[downstream compensation]
+    B -->|"Srinivas & Babu"| C["exact IDENTITY collapse"]
+    C -->|"racing, F-Race, successive halving"| S[5% sampled screen]
+    S -->|"Rissanen MDL, Hinton & van Camp"| F[full-corpus accept]
+    F -->|"Frankle & Carbin, Dense-Sparse-Dense"| O
+    F -.->|"Dwork, Blum & Hardt — the caveat"| X[adaptive overfitting]
+```
+
+### Removing structure from a trained network
+
+The core question — whether deleting structure from an already-trained network
+can improve it — is **Optimal Brain Damage** (LeCun, Denker & Solla, 1989) and
+**Optimal Brain Surgeon** (Hassibi & Stork, 1993). Both rank a parameter by a
+saliency estimate of the loss change its removal would cause: OBD from the
+diagonal of the Hessian, OBS from the full inverse Hessian. The modern form of
+the same criterion is a Taylor expansion of the loss around the trained weights
+(Molchanov et al., 2017, 2019).
+
+Ockham's [mean-activation ablation](#mean-activation-ablation) is the
+**zeroth-order** member of that family. It uses no derivative of the loss at
+all — only the measured mean activation — and then asks the scorer what actually
+happened. First-order (gradient) or second-order (Hessian) saliency would rank
+candidates better, but each order costs another corpus pass and a gradient the
+external scorer does not expose. The order Ockham operates at is therefore a
+deliberate cost choice, and closing part of that gap without gradients is
+exactly what [candidate ordering](#candidate-ordering) measures.
+
+### Compensating downstream after a removal
+
+Folding a removed unit's mean activation into downstream biases is **bias
+correction** (Nagel et al., 2019), where the expected error an approximation
+introduces is absorbed by the following layer's bias. Reconstruction-based
+pruning (**ThiNet**, Luo et al., 2017) attacks the same problem from the other
+side by re-fitting the surviving weights to reproduce the next layer's response.
+
+### Folding redundant and identity structure
+
+Exact `IDENTITY` collapse and the removal of functionally redundant units is
+**data-free parameter pruning** (Srinivas & Babu, 2015), which merges neurons
+computing the same function and rewires their outgoing weights. That is the same
+algebraic move as [exact cleanup](#exact-cleanup), restricted here to the cases
+Ockham can prove rather than estimate.
+
+### Iterating: the compounding hypothesis
+
+Prune, retest, then prune again from the survivor is the **lottery-ticket**
+procedure (Frankle & Carbin, 2019) and **Dense-Sparse-Dense** training (Han et
+al., 2017). Both report that iterated pruning leaves the model better than it
+found it, which is direct published support for Ockham's central bet.
+
+### The name is formalisable
+
+Ockham's razor has a mathematical counterpart: **minimum description length**
+(Rissanen, 1978). A model is scored by the cost of describing the model plus the
+cost of describing the data given that model, so simpler structure is preferred
+only where it does not cost accuracy. Hinton & van Camp (1993), *Keeping neural
+networks simple by minimising the description length of the weights*, applies
+MDL directly to network weights.
+
+That is the shape of the growth gate. `growth_units` — `hidden + synapses / 10`,
+the unitless quantity the scorer multiplies by its growth-cost knob
+(`costOfGrowth` in NEAT-AI, `growthCost` in `NEAT-AI-scorer`) — is the
+model-description term; the scorer's error over the corpus is the
+data-given-model term. Accepting a cut only when the authoritative full-corpus
+score improves is an MDL trade-off with the scorer supplying both terms. Citing
+MDL turns the pun into a principle: `costOfGrowth` is a complexity penalty with
+a formal justification, not a taste for small networks.
+
+### Screening on a sample before confirming on the corpus
+
+Testing many candidates cheaply and confirming only the survivors is **racing**
+(Maron & Moore, 1994) and **F-Race** (Birattari et al., 2002); allocating the
+budget by repeatedly discarding the worst half is **successive halving**
+(Jamieson & Talwalkar, 2016). Ockham's
+[5% screen](#sampling-and-authoritative-promotion) is the simplest possible
+member of that family — one round, one rate — and it keeps the invariant those
+methods rely on: a sample may reject or promote a candidate, but only the full
+corpus may accept one.
+
+### The caveat this README must carry
+
+The stated hypothesis — many individually tiny, scorer-verified pruning wins may
+compound into a material improvement — is precisely the hypothesis that fails
+under evaluation noise. Every accept is selected against the same corpus, so
+tiny wins accumulate **bias as readily as skill**: the adaptive-overfitting
+results (Dwork et al., 2015, *The reusable holdout*; Blum & Hardt, 2015,
+*The Ladder*) show that a long sequence of decisions taken against one held-out
+set ends up measuring the set rather than the model.
+
+Ockham accepts even tiny full-scorer local wins by design — `--min-improvement`
+defaults to `1e-6` — so of the sibling experiments it carries the largest
+exposure to this failure mode. The known remedy is a Ladder-style gate: accept
+only when the improvement exceeds the previous best by more than the scorer's
+noise floor, which turns an unbounded run of micro-accepts into a bounded number
+of real ones. Ockham does not implement that gate today. It is documented here
+so a compounding result is read with the right suspicion, and so the scorer's
+noise floor is measured before it is trusted.
+
 ## Usage
 
 ```bash
