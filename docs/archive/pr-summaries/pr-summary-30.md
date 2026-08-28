@@ -102,4 +102,9 @@ No existing test was modified or removed; the pre-existing flag-coverage tests
 still pass, which confirms the new prose introduces no undocumented flag
 (`--min-improvement` is a real flag already in the options table).
 
-Full gate: `./quality.sh < /dev/null`.
+Full gate: `./quality.sh < /dev/null`. Every check passes — shellcheck, the
+neat-core version gate, markdownlint-cli2 (0 issues), `cargo deny check`,
+`cargo fmt --check`, `cargo clippy -D warnings`, the full workspace test suite
+and `cargo doc -D warnings` — except the codespell preflight, which cannot run
+in this container: `codespell` is absent and there is no `pip`, `pipx` or
+`ensurepip` to install it. CI runs that check for real.
