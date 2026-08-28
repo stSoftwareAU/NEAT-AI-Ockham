@@ -47,11 +47,15 @@ The current Rust implementation includes:
   accept stops immediately so the prune can check in;
 - tagged hidden neurons skipped as prune candidates (journal reason `tagged`)
   so GRQ provenance check-in cannot fail;
+- named, reproducible candidate orderings with random as the measured control,
+  plus the report measures needed to compare their discovery economics;
 - normal Rust CI, security and quality gates.
 
 The remaining work is experimental refinement: measure what works on mature
 creatures and only then decide whether smarter pruning order or other dirty
-tricks improve the rate of discovery.
+tricks improve the rate of discovery. The ordering experiment is now wired for
+that measurement — the random sweep is still the default and only benchmark
+evidence may change it.
 
 ## Application scope
 
@@ -74,7 +78,7 @@ known-good creature
         └── full-corpus hidden-neuron activation statistics
         │
         ▼
-seeded random permutation of hidden neurons
+seeded ordering of hidden neurons (random control by default)
         │
         ▼
 ~100 pruning candidates
@@ -248,6 +252,8 @@ Common options:
 | `--max-consecutive-scorer-failures` | `3` | Abort after this many consecutive scorer failures. |
 | `--min-improvement` | `1e-6` | Strict authoritative improvement required locally. |
 | `--seed` | drawn | Reproducible random sweep seed. |
+| `--ordering` | `random` | Named candidate ordering; see [Candidate ordering](#candidate-ordering). |
+| `--ordering-random-quota` | `0` | Fraction of sweep slots reserved for the random control, in `[0, 1)`. |
 | `--max-experiments` | none | Optional experiment cap in addition to timeout. |
 | `--scorer` | `rust_scorer` | NEAT-AI-scorer binary. |
 | `--scorer-arg` | none | Extra scorer argument; repeatable. |
@@ -255,6 +261,56 @@ Common options:
 | `--output-dir` | `.` | Output workspace. |
 
 The supplied creature is never modified in place.
+
+## Candidate ordering
+
+An ordering decides only **which hidden neuron is tested sooner**. It never
+declares a neuron safe to remove, and it never weakens a gate: every candidate
+still passes `creature.validate()`, the sampled screen and full authoritative
+scoring exactly as it does under the random control.
+
+| `--ordering` | Ranking signal (earliest first) |
+|---|---|
+| `random` | Seeded permutation — the control, and the default. |
+| `low-variance` | Lowest activation variance (nearly constant neurons). |
+| `low-mean-abs` | Lowest mean absolute activation (quietest neurons). |
+| `narrow-range` | Smallest activation range (`max - min`). |
+| `low-outgoing-contribution` | Smallest `mean_abs_activation × Σ abs(outgoing weight)`. |
+| `low-fan-out` | Fewest outgoing synapses (smallest structural blast radius). |
+| `high-growth-saving` | Largest growth-unit saving per removed structure. |
+| `identity-first` | `IDENTITY` neurons — exact-fold opportunities. |
+
+Every strategy starts from the seeded random permutation and then applies a
+**stable** sort by its ranking key, so ties keep an unbiased random order and
+the whole visitation order is reproducible from `(--seed, --ordering,
+--ordering-random-quota)`. The permutation identity recorded in the journal
+covers all three.
+
+`--ordering-random-quota` reserves that fraction of visitation slots for the
+random control, so a ranking can be mixed with deliberate exploration:
+
+```bash
+neat_ai_ockham creature.json training/ \
+  --seed 42 --ordering low-variance --ordering-random-quota 0.2
+```
+
+The optimisation target is **cumulative local improvement**, not one large
+deletion. A ranking earns its place by reaching a productive chain of tiny
+scorer-verified wins sooner — which is what the report below measures.
+
+```mermaid
+flowchart LR
+    S[seed] --> P[random permutation]
+    P --> R{ordering}
+    R -->|random| V[visitation order]
+    R -->|ranked| K[stable sort by signal] --> Q[blend random quota] --> V
+    V --> G["creature.validate()"] --> C[sampled screen] --> F[full scorer]
+    F --> A[accept only on authoritative win]
+```
+
+The default ordering changes only if benchmark evidence shows better
+scorer-verified improvement economics. Until then `random` stays the default and
+remains available as the control for every comparison.
 
 ## Outputs
 
@@ -283,14 +339,30 @@ changes.
 
 Useful measures include:
 
+- the named `ordering` and its random quota, so runs are comparable;
 - cumulative scorer improvement from the opening parent;
-- distribution of individual accepted win sizes;
+- distribution of individual accepted win sizes (`acceptedCutSizes`);
+- time to the first authoritative local winner (`firstWinMs`);
+- candidates screened before that first win (`candidatesBeforeFirstWin`);
+- authoritative local accepts per hour (`acceptsPerHour`);
+- sample and full scorer calls consumed (`screenCalls`, `fullCalls`);
+- growth-cost reduction (`growthUnitsSaved`);
 - neurons and synapses removed;
-- growth-cost reduction;
 - sampled-screen false positives;
-- time spent in activation analysis, screening and full scoring;
 - individual versus bundled winners;
 - population headroom when a global-champion comparison was performed.
+
+To compare an ordering against the control, run both on the same creature,
+scorer configuration, seed and wall-clock budget, then report each journal:
+
+```bash
+neat_ai_ockham creature.json training/ --seed 42 --ordering random \
+  --output-dir runs/control
+neat_ai_ockham creature.json training/ --seed 42 --ordering low-variance \
+  --output-dir runs/low-variance
+neat_ai_ockham report runs/control/experiments.jsonl
+neat_ai_ockham report runs/low-variance/experiments.jsonl
+```
 
 ## Safety invariants
 
@@ -365,6 +437,7 @@ NEAT-AI-Ockham/
 │       ├── report.rs          # experiments.jsonl summary
 │       ├── tags.rs            # GRQ-sampler score/provenance tags
 │       ├── learnings.rs       # fleet full-corpus prune-verdict cache
+│       ├── ordering.rs        # named candidate ordering strategies
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs
@@ -379,11 +452,12 @@ NEAT-AI-Ockham/
 ## Implementation roadmap
 
 Shipped through the iterative loop, re-entry comparison, report command, GRQ
-check-in tags, learnings replay, and tagged-neuron skip (#1–#10, #23, #25–#27).
-Remaining experimental work:
+check-in tags, learnings replay, tagged-neuron skip, and named candidate
+orderings (#1–#11, #23, #25–#27).
 
-- smarter pruning order only after the random sweep is measured
-  ([#11](https://github.com/stSoftwareAU/NEAT-AI-Ockham/issues/11)).
+The ordering experiment itself is now the work: run each named strategy against
+the seeded random control on a mature creature and let the report decide whether
+any of them earns the default.
 
 ## What success looks like
 

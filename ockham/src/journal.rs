@@ -10,6 +10,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::incumbent::now_unix;
+use crate::ordering::Ordering;
 
 /// One journal event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,10 +20,19 @@ pub enum Event {
     Start {
         /// Effective RNG seed.
         seed: u64,
+        /// Named candidate ordering (Issue #11). Older journals read `random`.
+        #[serde(default)]
+        ordering: Ordering,
+        /// Fraction of sweep slots reserved for the random control.
+        #[serde(default)]
+        ordering_random_quota: f64,
         /// Permutation identity.
         permutation_identity: String,
         /// Hidden neurons on the opening incumbent.
         hidden: usize,
+        /// Synapses on the opening incumbent.
+        #[serde(default)]
+        synapses: usize,
         /// Opening authoritative score.
         opening_score: f64,
     },
@@ -60,6 +70,12 @@ pub enum Event {
         /// Winner Δ vs the same-call incumbent.
         #[serde(skip_serializing_if = "Option::is_none")]
         delta: Option<f64>,
+        /// Neurons cut by the accepted winner (`0` when nothing was accepted).
+        #[serde(default)]
+        cuts: usize,
+        /// Milliseconds from the first sweep batch to this cohort result.
+        #[serde(default)]
+        elapsed_ms: u64,
     },
     /// Loop stopped.
     Stop {
@@ -73,6 +89,15 @@ pub enum Event {
         final_score: f64,
         /// Cumulative score gain from the opening parent.
         cumulative_delta: f64,
+        /// Hidden neurons left on the final incumbent.
+        #[serde(default)]
+        final_hidden: usize,
+        /// Synapses left on the final incumbent.
+        #[serde(default)]
+        final_synapses: usize,
+        /// Wall-clock milliseconds spent in the optimisation loop.
+        #[serde(default)]
+        elapsed_ms: u64,
     },
 }
 

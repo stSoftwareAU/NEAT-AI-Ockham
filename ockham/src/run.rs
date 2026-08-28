@@ -225,9 +225,13 @@ fn ockham_loop(
 ) -> Result<LoopOut, String> {
     let journal_path = config.output_dir.join("experiments.jsonl");
     let seed = config.seed.unwrap_or_else(draw_seed);
-    let mut sweep = Sweep::new(&incumbent.creature, seed);
+    let ordering = config.ordering_config();
+    let started = Instant::now();
+    let mut sweep = Sweep::with_ordering(&incumbent.creature, &activation, seed, ordering);
     log::info(&format!(
-        "loop seed={seed}  hidden={}  budget={}s  candidates={}",
+        "loop seed={seed}  ordering={}  randomQuota={}  hidden={}  budget={}s  candidates={}",
+        ordering.strategy,
+        ordering.random_quota,
         incumbent.hidden_neurons(),
         config.timeout.as_secs(),
         config.candidates
@@ -236,8 +240,11 @@ fn ockham_loop(
         &journal_path,
         &Event::Start {
             seed,
+            ordering: ordering.strategy,
+            ordering_random_quota: ordering.random_quota,
             permutation_identity: sweep.permutation_identity.clone(),
             hidden: incumbent.hidden_neurons(),
+            synapses: incumbent.creature.synapses.len(),
             opening_score,
         },
     )?;
@@ -372,7 +379,7 @@ fn ockham_loop(
             ) {
                 Ok(full) => {
                     consecutive_fail = 0;
-                    journal_full(&journal_path, &full)?;
+                    journal_full(&journal_path, &full, started)?;
                     if full.winner.is_none() && sampled.is_empty() && applied.len() > 1 {
                         log::info(&format!(
                             "replay: combined bundle missed; probing {probe_n} known win(s) individually"
@@ -418,7 +425,7 @@ fn ockham_loop(
                         ) {
                             Ok(probe_full) => {
                                 consecutive_fail = 0;
-                                journal_full(&journal_path, &probe_full)?;
+                                journal_full(&journal_path, &probe_full, started)?;
                                 file_full_outcome(store, &mut known, &probe, &probe_full);
                                 if let Some(win) = probe_full.winner {
                                     apply_local_win(
@@ -634,7 +641,7 @@ fn ockham_loop(
                     full.full_ms,
                     full.winner.is_some()
                 ));
-                journal_full(&journal_path, &full)?;
+                journal_full(&journal_path, &full, started)?;
                 file_full_outcome(store, &mut known, &sampled, &full);
                 if let Some(win) = full.winner {
                     apply_local_win(
@@ -658,7 +665,12 @@ fn ockham_loop(
                         stop_reason = "max-accepts".into();
                         break;
                     }
-                    sweep = Sweep::new(&incumbent.creature, seed.wrapping_add(accepts));
+                    sweep = Sweep::with_ordering(
+                        &incumbent.creature,
+                        &activation,
+                        seed.wrapping_add(accepts),
+                        ordering,
+                    );
                     log::detail(&format!(
                         "restarted sweep after accept; {} hidden remaining",
                         incumbent.hidden_neurons()
@@ -684,6 +696,9 @@ fn ockham_loop(
             experiments,
             final_score: current_score,
             cumulative_delta: current_score - opening_score,
+            final_hidden: incumbent.hidden_neurons(),
+            final_synapses: incumbent.creature.synapses.len(),
+            elapsed_ms: started.elapsed().as_millis() as u64,
         },
     )?;
     log::info(&format!(
@@ -701,7 +716,11 @@ fn ockham_loop(
     })
 }
 
-fn journal_full(path: &std::path::Path, full: &FullOutcome) -> Result<(), String> {
+fn journal_full(
+    path: &std::path::Path,
+    full: &FullOutcome,
+    started: Instant,
+) -> Result<(), String> {
     journal::append(
         path,
         &Event::Full {
@@ -710,6 +729,8 @@ fn journal_full(path: &std::path::Path, full: &FullOutcome) -> Result<(), String
             accepted: full.winner.is_some(),
             score: full.winner.as_ref().map(|w| w.candidate.score),
             delta: full.winner.as_ref().map(|w| w.candidate.delta),
+            cuts: full.winner.as_ref().map_or(0, |w| w.candidate.uuids.len()),
+            elapsed_ms: started.elapsed().as_millis() as u64,
         },
     )
 }
@@ -1111,6 +1132,42 @@ mod tests {
             "untagged known win should prune or accept; accepts={} best={best}",
             run.accepts
         );
+    }
+
+    #[test]
+    fn the_named_ordering_reaches_the_journal_and_the_report() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(4),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            ordering: crate::ordering::Ordering::LowVariance,
+            ordering_random_quota: 0.25,
+            ..OckhamConfig::default()
+        };
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_eq!(run.accepts, 0, "a flat scorer must not accept anything");
+        let journal_path = cfg.output_dir.join("experiments.jsonl");
+        let journal = std::fs::read_to_string(&journal_path).unwrap();
+        assert!(
+            journal.contains("\"ordering\":\"low-variance\""),
+            "{journal}"
+        );
+        let report = crate::report::summarise(&[&journal_path]).unwrap();
+        assert_eq!(
+            report.ordering,
+            Some(crate::ordering::Ordering::LowVariance)
+        );
+        assert_eq!(report.ordering_random_quota, Some(0.25));
+        assert_eq!(report.seed, Some(1));
+        assert!(report.elapsed_ms.is_some());
+        assert_eq!(report.first_win_ms, None, "no win, so no time-to-first-win");
     }
 
     #[test]

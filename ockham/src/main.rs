@@ -10,9 +10,10 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use neat_ai_ockham::config::{
     DEFAULT_CANDIDATE_COUNT, DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES, DEFAULT_MIN_IMPROVEMENT,
-    DEFAULT_SCREEN_SAMPLE_RATE, DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
+    DEFAULT_ORDERING, DEFAULT_ORDERING_RANDOM_QUOTA, DEFAULT_SCREEN_SAMPLE_RATE,
+    DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
 };
-use neat_ai_ockham::{ExternalScorer, establish_run, log};
+use neat_ai_ockham::{ExternalScorer, Ordering, establish_run, log};
 
 #[derive(Parser, Debug)]
 #[command(name = "neat_ai_ockham")]
@@ -79,6 +80,13 @@ struct Cli {
     /// Max known-win UUIDs to replay on the incumbent before the random sweep; 0 = all still present.
     #[arg(long, default_value_t = 0)]
     learnings_replay: usize,
+    /// Candidate ordering strategy. Ranking only changes which neuron is tested
+    /// sooner; every candidate still faces the sampled screen and full scorer.
+    #[arg(long, default_value_t = DEFAULT_ORDERING, value_parser = Ordering::parse)]
+    ordering: Ordering,
+    /// Fraction of sweep slots reserved for the random control, in [0, 1).
+    #[arg(long, default_value_t = DEFAULT_ORDERING_RANDOM_QUOTA)]
+    ordering_random_quota: f64,
 }
 
 #[derive(Subcommand, Debug)]
@@ -146,6 +154,8 @@ fn main() -> ExitCode {
         learnings_dir: cli.learnings_dir,
         learnings_host: cli.learnings_host,
         learnings_replay: cli.learnings_replay,
+        ordering: cli.ordering,
+        ordering_random_quota: cli.ordering_random_quota,
     };
     if let Err(e) = config.validate() {
         eprintln!("{e}");

@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::ordering::{Ordering, OrderingConfig};
+
 /// Default wall-clock budget (45 minutes).
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 45 * 60;
 /// Default candidate batch size for the sampled sweep (issue #6).
@@ -17,6 +19,11 @@ pub const DEFAULT_SCREEN_THRESHOLD: f64 = 0.0;
 pub const DEFAULT_MIN_IMPROVEMENT: f64 = 1e-6;
 /// Abort after this many consecutive scorer failures.
 pub const DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES: u32 = 3;
+/// Default candidate ordering — the random control stays the default until
+/// benchmark evidence shows a ranking earns better economics (issue #11).
+pub const DEFAULT_ORDERING: Ordering = Ordering::Random;
+/// Default fraction of sweep slots reserved for random exploration (issue #11).
+pub const DEFAULT_ORDERING_RANDOM_QUOTA: f64 = 0.0;
 
 /// Complete configuration.
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +68,10 @@ pub struct OckhamConfig {
     pub learnings_host: Option<String>,
     /// Max known-win UUIDs to replay before the random sweep (`0` = all still present).
     pub learnings_replay: usize,
+    /// Named candidate ordering strategy (issue #11).
+    pub ordering: Ordering,
+    /// Fraction of sweep slots reserved for the random control, in `[0, 1)`.
+    pub ordering_random_quota: f64,
 }
 
 impl Default for OckhamConfig {
@@ -85,6 +96,8 @@ impl Default for OckhamConfig {
             learnings_dir: None,
             learnings_host: None,
             learnings_replay: 0,
+            ordering: DEFAULT_ORDERING,
+            ordering_random_quota: DEFAULT_ORDERING_RANDOM_QUOTA,
         }
     }
 }
@@ -122,7 +135,16 @@ impl OckhamConfig {
         {
             return Err("--max-accepts must be > 0".into());
         }
+        self.ordering_config().validate()?;
         Ok(())
+    }
+
+    /// Strategy plus reserved random quota for the sweep (issue #11).
+    pub fn ordering_config(&self) -> OrderingConfig {
+        OrderingConfig {
+            strategy: self.ordering,
+            random_quota: self.ordering_random_quota,
+        }
     }
 
     /// Machine-readable configuration dump (CLI stdout).
@@ -148,6 +170,8 @@ impl OckhamConfig {
             learnings_dir: self.learnings_dir.clone(),
             learnings_host: self.learnings_host.clone(),
             learnings_replay: self.learnings_replay,
+            ordering: self.ordering,
+            ordering_random_quota: self.ordering_random_quota,
             optimisation: "loop",
         }
     }
@@ -197,6 +221,10 @@ pub struct ConfigReport {
     pub learnings_host: Option<String>,
     /// Known-win replay cap (`0` = every still-present known win).
     pub learnings_replay: usize,
+    /// Named candidate ordering strategy.
+    pub ordering: Ordering,
+    /// Fraction of sweep slots reserved for the random control.
+    pub ordering_random_quota: f64,
     /// Optimisation status for this bootstrap issue (`deferred`).
     pub optimisation: &'static str,
 }
@@ -218,6 +246,9 @@ mod tests {
         assert_eq!(c.report().timeout_seconds, DEFAULT_TIMEOUT_SECONDS);
         assert!(c.learnings_dir.is_none());
         assert_eq!(c.learnings_replay, 0);
+        assert_eq!(c.ordering, Ordering::Random, "random stays the control");
+        assert_eq!(c.ordering_random_quota, 0.0);
+        assert_eq!(c.report().ordering, Ordering::Random);
     }
 
     #[test]
@@ -253,6 +284,15 @@ mod tests {
             ..OckhamConfig::default()
         };
         assert!(bad.validate().unwrap_err().contains("--max-accepts"));
+        let bad = OckhamConfig {
+            ordering_random_quota: 1.0,
+            ..OckhamConfig::default()
+        };
+        assert!(
+            bad.validate()
+                .unwrap_err()
+                .contains("--ordering-random-quota")
+        );
     }
 
     #[test]
