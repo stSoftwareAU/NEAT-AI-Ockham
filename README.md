@@ -546,7 +546,7 @@ NEAT-AI-Ockham/
 │       ├── reentry.rs         # population re-entry vs global champion
 │       ├── report.rs          # experiments.jsonl summary
 │       ├── tags.rs            # GRQ-sampler score/provenance tags
-│       ├── learnings.rs       # fleet full-corpus prune-verdict cache
+│       ├── learnings.rs       # fleet prune-verdict cache + screen coverage
 │       ├── ordering.rs        # named candidate ordering strategies
 │       ├── fixtures.rs
 │       ├── run.rs
