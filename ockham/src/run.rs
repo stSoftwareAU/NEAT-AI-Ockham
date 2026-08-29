@@ -468,6 +468,8 @@ fn ockham_loop(
                                         &mut current_score,
                                         win,
                                         "replay",
+                                        store.map(|_| screens.as_slice()),
+                                        opening_hidden,
                                     )?;
                                     stop_reason = "replay-accepts".into();
                                     break;
@@ -500,6 +502,8 @@ fn ockham_loop(
                             &mut current_score,
                             win,
                             "replay",
+                            store.map(|_| screens.as_slice()),
+                            opening_hidden,
                         )?;
                         stop_reason = "replay-accepts".into();
                         break;
@@ -712,6 +716,8 @@ fn ockham_loop(
                         &mut current_score,
                         win,
                         "search",
+                        store.map(|_| screens.as_slice()),
+                        opening_hidden,
                     )?;
                     search_accepts += 1;
                     if let Some(max) = config.max_accepts
@@ -918,6 +924,8 @@ fn apply_local_win(
     current_score: &mut f64,
     win: LocalWinner,
     phase: &'static str,
+    screens: Option<&[Screened]>,
+    opening_hidden: usize,
 ) -> Result<(), String> {
     let last = win.candidate.kind;
     let cuts = win.candidate.uuids.len();
@@ -931,6 +939,24 @@ fn apply_local_win(
     *current_score = win.candidate.score;
     *accepts += 1;
     meta.retain_neurons(&win.creature);
+    // Coverage over the creature we are about to publish, so the tag agrees
+    // with the run's end-of-loop coverage journal. Absent without a screen
+    // store: there is no coverage state to report.
+    let coverage = screens.map(|screens| {
+        let tagged_uuids: HashSet<String> = meta.neuron_tags.keys().cloned().collect();
+        let hidden = win
+            .creature
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .count();
+        crate::coverage::coverage(
+            &win.creature,
+            &tagged_uuids,
+            screens,
+            opening_hidden.saturating_sub(hidden),
+        )
+    });
     meta.stamp_acceptance(&OckhamProgress {
         accepts: *accepts,
         experiments,
@@ -940,6 +966,7 @@ fn apply_local_win(
         last,
         origin,
         cuts,
+        coverage,
     });
     let tagged = meta
         .serialize_with(&win.creature, true)
@@ -1506,6 +1533,86 @@ mod tests {
         assert_eq!(report.hidden, Some(4));
         assert_eq!(report.checked, Some(2), "one batch of two candidates");
         assert_eq!(report.coverage_percent, Some(50.0));
+    }
+
+    /// Extract the `ockham` creature tag from a written `best.json`.
+    fn ockham_tag(best: &std::path::Path) -> String {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(best).unwrap()).unwrap();
+        v["tags"]
+            .as_array()
+            .expect("tags")
+            .iter()
+            .find(|t| t["name"] == "ockham")
+            .expect("ockham tag")["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn an_accept_stamps_coverage_into_the_ockham_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(8),
+            max_accepts: Some(1),
+            seed: Some(1),
+            candidates: 2,
+            screen_sample_rate: None,
+            learnings_dir: Some(tmp.path().join("learnings")),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.accepts, 1);
+        let tag = ockham_tag(&cfg.output_dir.join("best.json"));
+        assert!(tag.starts_with("🪒 Ockham"), "{tag}");
+        assert!(tag.contains(" · checked "), "{tag}");
+        assert!(
+            tag.contains("/3 (") || tag.contains("/4 ("),
+            "denominator must be the checkable hidden count: {tag}"
+        );
+    }
+
+    #[test]
+    fn an_accept_without_a_learnings_dir_leaves_the_tag_coverage_free() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(8),
+            max_accepts: Some(1),
+            seed: Some(1),
+            candidates: 2,
+            screen_sample_rate: None,
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.accepts, 1);
+        let tag = ockham_tag(&cfg.output_dir.join("best.json"));
+        assert!(tag.starts_with("🪒 Ockham"), "{tag}");
+        assert!(
+            !tag.contains("checked"),
+            "no screen store means no coverage clause, not 0/0: {tag}"
+        );
     }
 
     #[test]
