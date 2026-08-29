@@ -227,6 +227,7 @@ fn ockham_loop(
     let seed = config.seed.unwrap_or_else(draw_seed);
     let ordering = config.ordering_config();
     let started = Instant::now();
+    let opening_hidden = incumbent.hidden_neurons();
     let mut sweep = Sweep::with_ordering(&incumbent.creature, &activation, seed, ordering);
     log::info(&format!(
         "loop seed={seed}  ordering={}  randomQuota={}  hidden={}  budget={}s  candidates={}",
@@ -731,6 +732,29 @@ fn ockham_loop(
                 }
             }
         }
+    }
+
+    // Coverage is only meaningful with the screen store behind it; without one
+    // there is no coverage state to report, so nothing is journalled.
+    if store.is_some() {
+        let tagged: HashSet<String> = meta.neuron_tags.keys().cloned().collect();
+        let cov = crate::coverage::coverage(
+            &incumbent.creature,
+            &tagged,
+            &screens,
+            opening_hidden.saturating_sub(incumbent.hidden_neurons()),
+        );
+        log::info(&cov.summary());
+        journal::append(
+            &journal_path,
+            &Event::Coverage {
+                hidden: cov.hidden,
+                tagged: cov.tagged,
+                checkable: cov.checkable,
+                checked: cov.checked,
+                cut: cov.cut,
+            },
+        )?;
     }
 
     journal::append(
@@ -1311,6 +1335,58 @@ mod tests {
         );
         let report = crate::report::summarise(&[&journal_path]).unwrap();
         assert_eq!(report.screened, 4);
+    }
+
+    #[test]
+    fn the_run_journals_coverage_over_the_final_incumbent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 2,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_eq!(run.accepts, 0, "a flat scorer must not accept anything");
+
+        let journal_path = cfg.output_dir.join("experiments.jsonl");
+        let report = crate::report::summarise(&[&journal_path]).unwrap();
+        assert_eq!(report.hidden, Some(4));
+        assert_eq!(report.checked, Some(2), "one batch of two candidates");
+        assert_eq!(report.coverage_percent, Some(50.0));
+    }
+
+    #[test]
+    fn a_run_without_a_learnings_dir_journals_no_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 2,
+            ..OckhamConfig::default()
+        };
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let journal_path = cfg.output_dir.join("experiments.jsonl");
+        let journal = std::fs::read_to_string(&journal_path).unwrap();
+        assert!(!journal.contains(r#""record":"coverage""#), "{journal}");
+        let report = crate::report::summarise(&[&journal_path]).unwrap();
+        assert_eq!(
+            report.coverage_percent, None,
+            "no screen store means no coverage state, not 0%"
+        );
     }
 
     #[test]

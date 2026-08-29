@@ -48,6 +48,9 @@ The current Rust implementation includes:
 - fleet screen coverage: every candidate a batch actually scores — winners
   **and** losers — leaves a record in `screens-<identity>/<host>.jsonl`, so
   "which neurons have been checked" survives the run;
+- a single coverage calculation over the **current** incumbent — `checked X of
+  Y hidden (Z%), N cut` — journalled at the end of each run and surfaced by
+  `report`;
 - tagged hidden neurons skipped as prune candidates (journal reason `tagged`)
   so GRQ provenance check-in cannot fail;
 - named, reproducible candidate orderings with random as the measured control,
@@ -255,6 +258,43 @@ flowchart LR
     W --> R["screens-identity/host.jsonl"]
     D --> R
     R --> J["journal: screened"]
+```
+
+### How far Ockham has got
+
+`coverage::coverage` turns those records into one answer, computed in exactly
+one place so the tag, the commit description and `report` can never disagree:
+
+```text
+checked 1204 of 4971 hidden (24.2%), 7 cut, 42 tagged skipped
+```
+
+The denominator is the **current** incumbent, minus the tagged neurons Ockham
+never proposes:
+
+- a screen record for a uuid no longer on the creature is ignored — it raises
+  neither `checked` nor `hidden`;
+- duplicate records for one uuid count once;
+- tagged (GRQ-provenance) neurons leave the denominator and are reported
+  separately, because they can never become checked;
+- newly evolved neurons start unchecked and therefore *lower* the percentage.
+  That is intended: coverage describes the creature in front of us, not a
+  score that only ever rises.
+
+With `--learnings-dir` set, the run journals one `coverage` record at the end,
+so `report` shows `hidden`, `checked` and `coveragePercent` across runs. Without
+a learnings dir there is no coverage state, and nothing is journalled — absent
+rather than a misleading 0%.
+
+```mermaid
+flowchart LR
+    H["hidden on current incumbent"] --> T{"tagged?"}
+    T -->|yes| K["skipped — reported separately"]
+    T -->|no| C["checkable = denominator"]
+    C --> S{"has a screen record?"}
+    S -->|yes| D["checked"]
+    S -->|no| U["unchecked"]
+    D --> P["percent = checked / checkable"]
 ```
 
 ## Where this sits in the literature
@@ -486,6 +526,7 @@ Useful measures include:
 - authoritative local accepts per hour (`acceptsPerHour`);
 - sample and full scorer calls consumed (`screenCalls`, `fullCalls`);
 - screen-coverage records filed (`screened`);
+- screening coverage of the incumbent (`hidden`, `checked`, `coveragePercent`);
 - growth-cost reduction (`growthUnitsSaved`);
 - neurons and synapses removed;
 - sampled-screen false positives;
@@ -577,6 +618,7 @@ NEAT-AI-Ockham/
 │       ├── report.rs          # experiments.jsonl summary
 │       ├── tags.rs            # GRQ-sampler score/provenance tags
 │       ├── learnings.rs       # fleet prune-verdict cache + screen coverage
+│       ├── coverage.rs       # checked/total/percent over the incumbent
 │       ├── ordering.rs        # named candidate ordering strategies
 │       ├── fixtures.rs
 │       ├── run.rs
