@@ -50,7 +50,9 @@ The current Rust implementation includes:
   "which neurons have been checked" survives the run;
 - a single coverage calculation over the **current** incumbent — `checked X of
   Y hidden (Z%), N cut` — journalled at the end of each run and surfaced by
-  `report`;
+  `report`, and carried into the `ockham` check-in tag (the GRQ-sampler commit
+  subject) in the compact `checked X/Y (Z%)` form whenever a learnings dir is
+  configured;
 - tagged hidden neurons skipped as prune candidates (journal reason `tagged`)
   so GRQ provenance check-in cannot fail;
 - named, reproducible candidate orderings with random as the measured control,

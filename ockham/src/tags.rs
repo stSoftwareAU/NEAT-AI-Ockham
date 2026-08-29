@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, HashSet};
 use neat_core::{CreatureExport, creature_to_json};
 use serde_json::{Map, Value};
 
+use crate::coverage::Coverage;
+
 /// One `{ name, value }` tag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {
@@ -175,22 +177,39 @@ pub struct OckhamProgress<'a> {
     pub origin: &'a str,
     /// Hidden UUIDs removed in this accept.
     pub cuts: usize,
+    /// Screening coverage over the incumbent, when a screen store is configured.
+    ///
+    /// `None` without `--learnings-dir`: there is no coverage state, and
+    /// `0/0 (0.0%)` would be a lie rather than a measurement.
+    pub coverage: Option<Coverage>,
 }
 
 /// GRQ-sampler skim line. Becomes the sampler commit subject.
+///
+/// The coverage clause uses the compact `checked X/Y (Z%)` form — this is a
+/// commit subject, so [`Coverage::summary`]'s fuller wording belongs in the
+/// commit description instead.
 pub fn ockham_progress_message(progress: &OckhamProgress<'_>) -> String {
     let delta = if progress.score > progress.opening {
         format!(" (+{:.2e})", progress.score - progress.opening)
     } else {
         String::new()
     };
+    let coverage = progress.coverage.map_or_else(String::new, |c| {
+        format!(
+            " · checked {}/{} ({:.1}%)",
+            c.checked,
+            c.checkable,
+            c.percent()
+        )
+    });
     match progress.origin {
         "search" => format!(
-            "🪒 Ockham · search {} · {} accepts / {} batches · score: {:.6}{delta}",
+            "🪒 Ockham · search {} · {} accepts / {} batches · score: {:.6}{delta}{coverage}",
             progress.last, progress.accepts, progress.experiments, progress.score
         ),
         other => format!(
-            "🪒 Ockham · {other} · {} cuts · score: {:.6}{delta}",
+            "🪒 Ockham · {other} · {} cuts · score: {:.6}{delta}{coverage}",
             progress.cuts, progress.score
         ),
     }
@@ -234,6 +253,7 @@ mod tests {
             last: "collapse",
             origin: "search",
             cuts: 1,
+            coverage: None,
         });
         let out = meta.serialize_with(&pruned, true).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
@@ -283,9 +303,109 @@ mod tests {
             last: "bundle",
             origin: "replay-bundle",
             cuts: 12,
+            coverage: None,
         });
         assert!(msg.contains("replay-bundle"));
         assert!(msg.contains("12 cuts"));
         assert!(msg.contains("(+"));
+    }
+
+    fn progress(origin: &'static str, coverage: Option<Coverage>) -> OckhamProgress<'static> {
+        OckhamProgress {
+            accepts: 3,
+            experiments: 41,
+            opening: 0.512225,
+            score: 0.512345,
+            error: 0.487655,
+            last: "bundle",
+            origin,
+            cuts: 8,
+            coverage,
+        }
+    }
+
+    fn some_coverage() -> Option<Coverage> {
+        Some(Coverage {
+            hidden: 5013,
+            tagged: 42,
+            checkable: 4971,
+            checked: 1204,
+            cut: 8,
+        })
+    }
+
+    #[test]
+    fn absent_coverage_leaves_the_search_message_exactly_as_it_was() {
+        assert_eq!(
+            ockham_progress_message(&progress("search", None)),
+            "🪒 Ockham · search bundle · 3 accepts / 41 batches · score: 0.512345 (+1.20e-4)"
+        );
+    }
+
+    #[test]
+    fn absent_coverage_leaves_the_replay_message_exactly_as_it_was() {
+        assert_eq!(
+            ockham_progress_message(&progress("replay-bundle", None)),
+            "🪒 Ockham · replay-bundle · 8 cuts · score: 0.512345 (+1.20e-4)"
+        );
+    }
+
+    #[test]
+    fn search_carries_the_compact_coverage_clause() {
+        assert_eq!(
+            ockham_progress_message(&progress("search", some_coverage())),
+            "🪒 Ockham · search bundle · 3 accepts / 41 batches · score: 0.512345 (+1.20e-4) · checked 1204/4971 (24.2%)"
+        );
+    }
+
+    #[test]
+    fn replay_carries_the_same_compact_coverage_clause() {
+        let msg = ockham_progress_message(&progress("replay", some_coverage()));
+        assert_eq!(
+            msg,
+            "🪒 Ockham · replay · 8 cuts · score: 0.512345 (+1.20e-4) · checked 1204/4971 (24.2%)"
+        );
+        assert!(
+            msg.starts_with("🪒 Ockham"),
+            "GRQ's razor-prefix check must keep matching"
+        );
+        assert!(msg.contains("score: 0.512345"));
+        assert!(msg.contains("(+1.20e-4)"));
+    }
+
+    /// The compact clause, not `Coverage::summary` — the verbose wording is for
+    /// the commit description, not this subject line.
+    #[test]
+    fn the_clause_is_compact_rather_than_the_full_summary() {
+        let msg = ockham_progress_message(&progress("search", some_coverage()));
+        assert!(!msg.contains("hidden"), "{msg}");
+        assert!(!msg.contains("tagged skipped"), "{msg}");
+    }
+
+    #[test]
+    fn nothing_checkable_still_renders_an_honest_clause_when_coverage_exists() {
+        let msg = ockham_progress_message(&progress(
+            "search",
+            Some(Coverage {
+                hidden: 2,
+                tagged: 2,
+                checkable: 0,
+                checked: 0,
+                cut: 0,
+            }),
+        ));
+        assert!(msg.contains("checked 0/0 (0.0%)"), "{msg}");
+    }
+
+    #[test]
+    fn stamped_acceptance_puts_coverage_in_the_ockham_tag() {
+        let mut meta = CreatureMeta::default();
+        meta.stamp_acceptance(&progress("search", some_coverage()));
+        let ockham = meta
+            .tags
+            .iter()
+            .find(|t| t.name == "ockham")
+            .expect("ockham tag");
+        assert!(ockham.value.contains("checked 1204/4971 (24.2%)"));
     }
 }
