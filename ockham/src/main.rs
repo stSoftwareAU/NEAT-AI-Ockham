@@ -87,6 +87,15 @@ struct Cli {
     /// Fraction of sweep slots reserved for the random control, in [0, 1).
     #[arg(long, default_value_t = DEFAULT_ORDERING_RANDOM_QUOTA)]
     ordering_random_quota: f64,
+    /// Screen never-checked neurons before re-screening the stalest ones.
+    /// Defaults to on with `--learnings-dir` and off without it.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true"
+    )]
+    unchecked_first: Option<bool>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -156,6 +165,7 @@ fn main() -> ExitCode {
         learnings_replay: cli.learnings_replay,
         ordering: cli.ordering,
         ordering_random_quota: cli.ordering_random_quota,
+        unchecked_first: cli.unchecked_first,
     };
     if let Err(e) = config.validate() {
         eprintln!("{e}");

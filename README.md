@@ -297,6 +297,37 @@ flowchart LR
     D --> P["percent = checked / checkable"]
 ```
 
+### Unchecked-first selection
+
+With thousands of hidden neurons and roughly a hundred screened per run,
+independent runs re-screen the same neurons by chance and coverage crawls.
+`--unchecked-first` fixes that at selection time, one layer above the ordering
+strategies: coverage is per-fleet state, while a strategy must stay reproducible
+from `(--seed, --ordering, --ordering-random-quota)` alone.
+
+The still-unvisited tail is **partitioned**, never filtered — it stays a
+permutation of the same UUIDs, so a run that exhausts the never-screened block
+rolls straight into re-screening the stalest neurons instead of stopping:
+
+- **block A** — UUIDs with no screen record, in ordering-strategy order;
+- **block B** — already-screened UUIDs, oldest-screened first.
+
+```mermaid
+flowchart LR
+    O["ordering-strategy tail"] --> S{"screen record?"}
+    S -->|no| A["block A — unchecked,<br/>strategy order"]
+    S -->|yes| B["block B — recycled,<br/>oldest screened first"]
+    A --> V["visitation order"]
+    B --> V
+```
+
+The flag defaults to on with `--learnings-dir` and off without it: with no
+screen store there is no coverage state to prefer, and the order is then
+identical to the raw seeded permutation. The `permutation_identity` in the
+journal is hashed **before** this reorder, so `--ordering` comparisons stay
+valid; the `start` record carries `unchecked_first` so a run is reconstructable.
+Tagged and known-failure skips still apply on top.
+
 ## Where this sits in the literature
 
 Structured pruning of trained networks is one of the best-studied problems in
@@ -431,6 +462,7 @@ Common options:
 | `--max-consecutive-scorer-failures` | `3` | Abort after this many consecutive scorer failures. |
 | `--min-improvement` | `1e-6` | Strict authoritative improvement required locally. |
 | `--seed` | drawn | Reproducible random sweep seed. |
+| `--unchecked-first` | on with `--learnings-dir`, off without | Screen never-checked neurons first, then recycle the stalest; see [Unchecked-first selection](#unchecked-first-selection). Set `--unchecked-first=false` to keep the raw seeded permutation. |
 | `--ordering` | `random` | Named candidate ordering; see [Candidate ordering](#candidate-ordering). |
 | `--ordering-random-quota` | `0` | Fraction of sweep slots reserved for the random control, in `[0, 1)`. |
 | `--max-experiments` | none | Optional experiment cap in addition to timeout. |

@@ -72,6 +72,11 @@ pub struct OckhamConfig {
     pub ordering: Ordering,
     /// Fraction of sweep slots reserved for the random control, in `[0, 1)`.
     pub ordering_random_quota: f64,
+    /// Screen never-checked neurons before re-screening stale ones (issue #38).
+    ///
+    /// `None` takes the default: on when [`Self::learnings_dir`] is set, off
+    /// without it — with no screen store there is no coverage state to prefer.
+    pub unchecked_first: Option<bool>,
 }
 
 impl Default for OckhamConfig {
@@ -98,6 +103,7 @@ impl Default for OckhamConfig {
             learnings_replay: 0,
             ordering: DEFAULT_ORDERING,
             ordering_random_quota: DEFAULT_ORDERING_RANDOM_QUOTA,
+            unchecked_first: None,
         }
     }
 }
@@ -147,6 +153,15 @@ impl OckhamConfig {
         }
     }
 
+    /// Whether the sweep prefers never-screened neurons (issue #38).
+    ///
+    /// `--unchecked-first` wins when given; otherwise it follows
+    /// `--learnings-dir`, because coverage state only exists with a store.
+    pub fn unchecked_first_enabled(&self) -> bool {
+        self.unchecked_first
+            .unwrap_or_else(|| self.learnings_dir.is_some())
+    }
+
     /// Machine-readable configuration dump (CLI stdout).
     pub fn report(&self) -> ConfigReport {
         ConfigReport {
@@ -172,6 +187,7 @@ impl OckhamConfig {
             learnings_replay: self.learnings_replay,
             ordering: self.ordering,
             ordering_random_quota: self.ordering_random_quota,
+            unchecked_first: self.unchecked_first_enabled(),
             optimisation: "loop",
         }
     }
@@ -225,6 +241,8 @@ pub struct ConfigReport {
     pub ordering: Ordering,
     /// Fraction of sweep slots reserved for the random control.
     pub ordering_random_quota: f64,
+    /// Resolved unchecked-first selection (defaults to `learnings_dir.is_some()`).
+    pub unchecked_first: bool,
     /// Optimisation status for this bootstrap issue (`deferred`).
     pub optimisation: &'static str,
 }
@@ -293,6 +311,43 @@ mod tests {
                 .unwrap_err()
                 .contains("--ordering-random-quota")
         );
+    }
+
+    #[test]
+    fn unchecked_first_follows_the_learnings_dir_by_default() {
+        let without = OckhamConfig::default();
+        assert!(
+            !without.unchecked_first_enabled(),
+            "no cache means no coverage state to prefer"
+        );
+        assert!(!without.report().unchecked_first);
+
+        let with = OckhamConfig {
+            learnings_dir: Some("/tmp/learnings".into()),
+            ..OckhamConfig::default()
+        };
+        assert!(with.unchecked_first_enabled());
+        assert!(with.report().unchecked_first);
+    }
+
+    #[test]
+    fn an_explicit_unchecked_first_flag_overrides_the_default() {
+        let off = OckhamConfig {
+            learnings_dir: Some("/tmp/learnings".into()),
+            unchecked_first: Some(false),
+            ..OckhamConfig::default()
+        };
+        off.validate().unwrap();
+        assert!(!off.unchecked_first_enabled());
+        assert!(!off.report().unchecked_first);
+
+        let on = OckhamConfig {
+            unchecked_first: Some(true),
+            ..OckhamConfig::default()
+        };
+        on.validate().unwrap();
+        assert!(on.unchecked_first_enabled());
+        assert!(on.report().unchecked_first);
     }
 
     #[test]

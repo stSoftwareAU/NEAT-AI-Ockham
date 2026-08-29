@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use neat_core::CreatureExport;
 use neat_core::training_data::TrainingDataConfig;
 use serde::Serialize;
 
@@ -18,7 +19,7 @@ use crate::incumbent::{Incumbent, IncumbentMeta, load_incumbent};
 use crate::journal::{self, Event};
 use crate::learnings::{
     LearningsStore, Outcome, ReplayConfig, ScreenOutcomeKind, Screened, Verdict, default_host,
-    file_screens, file_verdicts, known_failures, known_wins,
+    file_screens, file_verdicts, known_failures, known_wins, oldest_screened_first, screened_uuids,
 };
 use crate::promote::{
     FullConfig, FullOutcome, LocalWinner, apply_available, evaluate_full, replay_prefix_plans,
@@ -237,18 +238,6 @@ fn ockham_loop(
         config.timeout.as_secs(),
         config.candidates
     ));
-    journal::append(
-        &journal_path,
-        &Event::Start {
-            seed,
-            ordering: ordering.strategy,
-            ordering_random_quota: ordering.random_quota,
-            permutation_identity: sweep.permutation_identity.clone(),
-            hidden: incumbent.hidden_neurons(),
-            synapses: incumbent.creature.synapses.len(),
-            opening_score,
-        },
-    )?;
 
     let replay_cfg = ReplayConfig {
         max: config.learnings_replay,
@@ -292,6 +281,26 @@ fn ockham_loop(
         }
     }
     let store = store.as_ref();
+
+    // Coverage is fleet state, so it reprioritises the sweep one layer above
+    // the ordering strategies — after the identity above is already fixed.
+    let unchecked_first = config.unchecked_first_enabled();
+    if unchecked_first {
+        prefer_unchecked(&mut sweep, &screens, &incumbent.creature);
+    }
+    journal::append(
+        &journal_path,
+        &Event::Start {
+            seed,
+            ordering: ordering.strategy,
+            ordering_random_quota: ordering.random_quota,
+            permutation_identity: sweep.permutation_identity.clone(),
+            unchecked_first: sweep.unchecked_first,
+            hidden: incumbent.hidden_neurons(),
+            synapses: incumbent.creature.synapses.len(),
+            opening_score,
+        },
+    )?;
 
     let deadline = Instant::now() + config.timeout;
     let mut accepts = 0u64;
@@ -717,6 +726,9 @@ fn ockham_loop(
                         seed.wrapping_add(accepts),
                         ordering,
                     );
+                    if unchecked_first {
+                        prefer_unchecked(&mut sweep, &screens, &incumbent.creature);
+                    }
                     log::detail(&format!(
                         "restarted sweep after accept; {} hidden remaining",
                         incumbent.hidden_neurons()
@@ -783,6 +795,25 @@ fn ockham_loop(
         stop_reason,
         cumulative_delta: current_score - opening_score,
     })
+}
+
+/// Reorder the sweep's unvisited tail unchecked-first, stalest-first (Issue #38).
+///
+/// Selection only: nothing here removes a neuron from the sweep, so a run that
+/// runs out of never-screened neurons recycles the stalest ones instead of
+/// stopping. With no screen records the order is unchanged.
+fn prefer_unchecked(sweep: &mut Sweep, screens: &[Screened], creature: &CreatureExport) {
+    let screened = screened_uuids(screens, creature);
+    let oldest = oldest_screened_first(screens, creature);
+    let deferred = sweep.order[sweep.next..]
+        .iter()
+        .filter(|uuid| screened.contains(*uuid))
+        .count();
+    let unchecked = sweep.remaining() - deferred;
+    sweep.prefer_unchecked(&screened, &oldest);
+    log::info(&format!(
+        "coverage: {unchecked} unchecked first, {deferred} already screened deferred"
+    ));
 }
 
 fn journal_full(
@@ -1062,12 +1093,8 @@ mod tests {
         hidden_paths(tmp, &["h_a", "h_b"])
     }
 
-    /// Creature with one parallel hidden IDENTITY neuron per uuid, plus corpus.
-    fn hidden_paths(
-        tmp: &std::path::Path,
-        uuids: &[&str],
-    ) -> (std::path::PathBuf, std::path::PathBuf) {
-        let creature = tmp.join("creature.json");
+    /// Creature with one parallel hidden IDENTITY neuron per uuid.
+    fn hidden_creature(uuids: &[&str]) -> CreatureExport {
         let mut neurons: Vec<neat_core::NeuronExport> = uuids
             .iter()
             .map(|u| crate::fixtures::neuron("hidden", u, 0.0, Some("IDENTITY")))
@@ -1083,7 +1110,16 @@ mod tests {
             synapses.push(crate::fixtures::synapse("input-0", u, 1.0));
             synapses.push(crate::fixtures::synapse(u, "output-0", 1.0));
         }
-        let c = crate::fixtures::creature(1, 1, neurons, synapses);
+        crate::fixtures::creature(1, 1, neurons, synapses)
+    }
+
+    /// [`hidden_creature`] written to disk, plus a training corpus.
+    fn hidden_paths(
+        tmp: &std::path::Path,
+        uuids: &[&str],
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let creature = tmp.join("creature.json");
+        let c = hidden_creature(uuids);
         std::fs::write(&creature, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
         let train = tmp.join("train");
         std::fs::create_dir(&train).unwrap();
@@ -1335,6 +1371,114 @@ mod tests {
         );
         let report = crate::report::summarise(&[&journal_path]).unwrap();
         assert_eq!(report.screened, 4);
+    }
+
+    /// Seed one already-screened record per uuid, dated `unix_secs`.
+    fn seed_screens(store: &LearningsStore, uuids: &[(&str, u64)]) {
+        for (uuid, unix_secs) in uuids {
+            store
+                .append_screen(&Screened {
+                    version: crate::learnings::SCREENS_FORMAT_VERSION,
+                    uuid: (*uuid).into(),
+                    kind: "identity".into(),
+                    outcome: ScreenOutcomeKind::Loser,
+                    unix_secs: *unix_secs,
+                    host: "t".into(),
+                })
+                .unwrap();
+        }
+    }
+
+    /// UUIDs screened after `unix_secs` — i.e. by the run, not the fixture.
+    fn screened_this_run(store: &LearningsStore, after: u64) -> Vec<String> {
+        let mut uuids: Vec<String> = store
+            .load_screens()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.unix_secs > after)
+            .map(|s| s.uuid)
+            .collect();
+        uuids.sort();
+        uuids
+    }
+
+    fn unchecked_first_cfg(
+        creature: std::path::PathBuf,
+        train: std::path::PathBuf,
+        out: std::path::PathBuf,
+        learnings_dir: std::path::PathBuf,
+        unchecked_first: Option<bool>,
+    ) -> OckhamConfig {
+        OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: out,
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 2,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            unchecked_first,
+            ..OckhamConfig::default()
+        }
+    }
+
+    #[test]
+    fn the_run_screens_never_checked_neurons_before_stale_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        seed_screens(&store, &[("h_a", 10), ("h_b", 20)]);
+
+        let cfg = unchecked_first_cfg(
+            creature,
+            train.clone(),
+            tmp.path().join("out"),
+            learnings_dir,
+            None,
+        );
+        assert!(cfg.unchecked_first_enabled(), "--learnings-dir turns it on");
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        assert_eq!(
+            screened_this_run(&store, 20),
+            vec!["h_c", "h_d"],
+            "the one batch must advance coverage, not re-screen h_a/h_b"
+        );
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(journal.contains(r#""unchecked_first":true"#), "{journal}");
+    }
+
+    #[test]
+    fn unchecked_first_off_keeps_the_seeded_permutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuids = ["h_a", "h_b", "h_c", "h_d"];
+        let (creature, train) = hidden_paths(tmp.path(), &uuids);
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        seed_screens(&store, &[("h_a", 10), ("h_b", 20)]);
+
+        let cfg = unchecked_first_cfg(
+            creature,
+            train.clone(),
+            tmp.path().join("out"),
+            learnings_dir,
+            Some(false),
+        );
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        let mut expected: Vec<String> =
+            crate::ordering::random_order(&hidden_creature(&uuids), 1)[..2].to_vec();
+        expected.sort();
+        assert_eq!(
+            screened_this_run(&store, 20),
+            expected,
+            "with the flag off the raw seeded permutation must be untouched"
+        );
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(journal.contains(r#""unchecked_first":false"#), "{journal}");
     }
 
     #[test]

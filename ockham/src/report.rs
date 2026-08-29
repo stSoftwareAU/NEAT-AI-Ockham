@@ -239,6 +239,7 @@ mod tests {
             ordering,
             ordering_random_quota: 0.25,
             permutation_identity: "x".into(),
+            unchecked_first: false,
             hidden: 3,
             synapses: 10,
             opening_score: 0.50,
