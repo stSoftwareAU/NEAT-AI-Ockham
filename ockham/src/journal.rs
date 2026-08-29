@@ -56,6 +56,17 @@ pub enum Event {
         /// Screen wall time (ms).
         ms: u64,
     },
+    /// Screen-coverage records filed for one batch (Issue #36).
+    ///
+    /// A sibling of [`Self::Screen`] rather than a field on it: coverage is
+    /// also filed when screening is disabled, and `screen` must keep counting
+    /// only real sampled scorer calls.
+    Screened {
+        /// Batch index (0-based).
+        batch: u64,
+        /// Screen-coverage records filed for this batch.
+        screened: usize,
+    },
     /// Full-corpus cohort result.
     Full {
         /// Individuals scored.

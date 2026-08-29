@@ -139,6 +139,8 @@ pub mod fake {
     pub struct ScriptedScorer {
         /// When set, every call fails with this message.
         pub fail_with: Option<String>,
+        /// When set, only sampled (screen) calls fail with this message.
+        pub fail_sample_with: Option<String>,
         /// When set, the output is this raw string (to simulate malformed output).
         pub raw_output: Option<String>,
         /// Score returned for `baseline` when neither failure mode is set.
@@ -178,6 +180,12 @@ pub mod fake {
         ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
             self.last_mode.set(Some(mode));
             if let Some(m) = &self.fail_with {
+                return Err(ScorerError::Failed {
+                    status: "exit 1".into(),
+                    stderr: m.clone(),
+                });
+            }
+            if let (Some(m), ScorerMode::Sample { .. }) = (&self.fail_sample_with, mode) {
                 return Err(ScorerError::Failed {
                     status: "exit 1".into(),
                     stderr: m.clone(),

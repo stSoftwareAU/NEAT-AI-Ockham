@@ -46,6 +46,8 @@ pub struct Report {
     pub screen_calls: u64,
     /// Full-corpus scorer cohort calls consumed.
     pub full_calls: u64,
+    /// Screen-coverage records filed across the run (Issue #36).
+    pub screened: u64,
     /// Milliseconds from the loop start to the first authoritative local win.
     pub first_win_ms: Option<u64>,
     /// Candidates screened before the first authoritative local win.
@@ -85,6 +87,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         full_rejects: 0,
         screen_calls: 0,
         full_calls: 0,
+        screened: 0,
         first_win_ms: None,
         candidates_before_first_win: None,
         accepted_cut_sizes: Vec::new(),
@@ -136,6 +139,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     candidates_seen += candidates as u64;
                 }
                 Event::Screen { .. } => report.screen_calls += 1,
+                Event::Screened { screened, .. } => report.screened += screened as u64,
                 Event::Full {
                     accepted,
                     cuts,
@@ -341,6 +345,67 @@ mod tests {
         assert_eq!(report.opening_growth_units, Some(growth_units(3, 10)));
         assert_eq!(report.final_growth_units, Some(growth_units(0, 5)));
         assert_eq!(report.growth_units_saved, Some(3.5));
+    }
+
+    #[test]
+    fn screen_coverage_records_are_totalled_without_inflating_scorer_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Screen {
+                winners: 1,
+                losers: 3,
+                ms: 100,
+            },
+        )
+        .unwrap();
+        journal::append(
+            &path,
+            &Event::Screened {
+                batch: 0,
+                screened: 4,
+            },
+        )
+        .unwrap();
+        journal::append(
+            &path,
+            &Event::Screened {
+                batch: 1,
+                screened: 2,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.screened, 6);
+        assert_eq!(report.screen_calls, 1, "coverage is not a scorer call");
+    }
+
+    #[test]
+    fn a_journal_written_before_issue_36_parses_with_no_screen_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"record":"start","seed":3,"permutation_identity":"x","hidden":2,"opening_score":0.5}"#,
+                "\n",
+                r#"{"record":"batch","batch":0,"candidates":2,"skipped":0,"remaining":0}"#,
+                "\n",
+                r#"{"record":"screen","winners":1,"losers":1,"ms":50}"#,
+                "\n",
+                r#"{"record":"full","individuals":1,"bundles":0,"accepted":false}"#,
+                "\n",
+                r#"{"record":"stop","reason":"timeout","accepts":0,"experiments":1,"final_score":0.5,"cumulative_delta":0.0}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.screen_calls, 1);
+        assert_eq!(report.screened, 0, "old journals carry no coverage records");
+        assert_eq!(report.stop_reason.as_deref(), Some("timeout"));
     }
 
     #[test]

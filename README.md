@@ -45,6 +45,9 @@ The current Rust implementation includes:
 - fleet learnings cache: combined replay of still-present known wins (full
   corpus, not capped by `--max-accepts`), then skip fresh failures; a replay
   accept stops immediately so the prune can check in;
+- fleet screen coverage: every candidate a batch actually scores — winners
+  **and** losers — leaves a record in `screens-<identity>/<host>.jsonl`, so
+  "which neurons have been checked" survives the run;
 - tagged hidden neurons skipped as prune candidates (journal reason `tagged`)
   so GRQ provenance check-in cannot fail;
 - named, reproducible candidate orderings with random as the measured control,
@@ -227,6 +230,32 @@ promising removals because individual pruning effects are not assumed additive.
 
 The highest strict full-corpus improvement becomes the next Ockham incumbent,
 even if that improvement is tiny.
+
+### Screen coverage
+
+A neuron counts as **checked** once it has been proposed into a batch and
+scored. With `--learnings-dir` set, every checked candidate leaves one screen
+record in `screens-<identity>/<host>.jsonl` — winners and losers alike, and the
+same when `--screen-sample-rate 0` sends candidates straight to full scoring.
+A batch whose screen call fails files nothing: those candidates were never
+checked. Each batch also journals a `screened` record, so coverage is
+reconstructable from `experiments.jsonl` alone.
+
+A screen record is a coverage fact, never a prune verdict: only a full-corpus
+learnings verdict may accept or reject a cut, and a screens IO fault warns
+rather than failing the run.
+
+```mermaid
+flowchart LR
+    B[sweep batch] --> S{"--screen-sample-rate"}
+    S -->|"rate > 0"| C[sampled screen]
+    C -->|Ok| W[winners + losers]
+    C -->|Err| N["nothing filed<br/>(not checked)"]
+    S -->|"0 — disabled"| D[straight to full scoring]
+    W --> R["screens-identity/host.jsonl"]
+    D --> R
+    R --> J["journal: screened"]
+```
 
 ## Where this sits in the literature
 
@@ -456,6 +485,7 @@ Useful measures include:
 - candidates screened before that first win (`candidatesBeforeFirstWin`);
 - authoritative local accepts per hour (`acceptsPerHour`);
 - sample and full scorer calls consumed (`screenCalls`, `fullCalls`);
+- screen-coverage records filed (`screened`);
 - growth-cost reduction (`growthUnitsSaved`);
 - neurons and synapses removed;
 - sampled-screen false positives;
