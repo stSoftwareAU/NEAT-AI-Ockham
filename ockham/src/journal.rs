@@ -26,8 +26,11 @@ pub enum Event {
         /// Fraction of sweep slots reserved for the random control.
         #[serde(default)]
         ordering_random_quota: f64,
-        /// Permutation identity.
+        /// Permutation identity, hashed **before** any coverage reorder.
         permutation_identity: String,
+        /// Whether unchecked-first selection reordered the sweep (Issue #38).
+        #[serde(default)]
+        unchecked_first: bool,
         /// Hidden neurons on the opening incumbent.
         hidden: usize,
         /// Synapses on the opening incumbent.
