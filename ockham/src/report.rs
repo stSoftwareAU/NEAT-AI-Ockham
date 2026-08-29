@@ -15,6 +15,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::ablation::growth_units;
+use crate::coverage::Coverage;
 use crate::journal::Event;
 use crate::ordering::Ordering;
 
@@ -48,6 +49,12 @@ pub struct Report {
     pub full_calls: u64,
     /// Screen-coverage records filed across the run (Issue #36).
     pub screened: u64,
+    /// Hidden neurons on the incumbent at the last coverage record (Issue #37).
+    pub hidden: Option<usize>,
+    /// Checkable UUIDs screened at least once, at that same record.
+    pub checked: Option<usize>,
+    /// `checked / checkable * 100` at that same record.
+    pub coverage_percent: Option<f64>,
     /// Milliseconds from the loop start to the first authoritative local win.
     pub first_win_ms: Option<u64>,
     /// Candidates screened before the first authoritative local win.
@@ -88,6 +95,9 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         screen_calls: 0,
         full_calls: 0,
         screened: 0,
+        hidden: None,
+        checked: None,
+        coverage_percent: None,
         first_win_ms: None,
         candidates_before_first_win: None,
         accepted_cut_sizes: Vec::new(),
@@ -140,6 +150,28 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                 }
                 Event::Screen { .. } => report.screen_calls += 1,
                 Event::Screened { screened, .. } => report.screened += screened as u64,
+                Event::Coverage {
+                    hidden,
+                    tagged,
+                    checkable,
+                    checked,
+                    cut,
+                } => {
+                    // Coverage is a snapshot of one incumbent, not a total:
+                    // the last record read is the current state. The percent
+                    // comes from `Coverage` so the report can never disagree
+                    // with the tag or the commit description.
+                    let cov = Coverage {
+                        hidden,
+                        tagged,
+                        checkable,
+                        checked,
+                        cut,
+                    };
+                    report.hidden = Some(cov.hidden);
+                    report.checked = Some(cov.checked);
+                    report.coverage_percent = Some(cov.percent());
+                }
                 Event::Full {
                     accepted,
                     cuts,
@@ -383,6 +415,53 @@ mod tests {
     }
 
     #[test]
+    fn the_last_coverage_record_becomes_the_reported_progress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Coverage {
+                hidden: 12,
+                tagged: 2,
+                checkable: 10,
+                checked: 2,
+                cut: 0,
+            },
+        )
+        .unwrap();
+        // A later run screened more of the same creature.
+        journal::append(
+            &path,
+            &Event::Coverage {
+                hidden: 10,
+                tagged: 2,
+                checkable: 8,
+                checked: 3,
+                cut: 2,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.hidden, Some(10));
+        assert_eq!(report.checked, Some(3));
+        assert_eq!(report.coverage_percent, Some(37.5));
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"coveragePercent\":37.5"), "{json}");
+    }
+
+    #[test]
+    fn a_journal_with_no_coverage_record_reports_no_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.hidden, None);
+        assert_eq!(report.checked, None);
+        assert_eq!(report.coverage_percent, None, "no coverage state is not 0%");
+    }
+
+    #[test]
     fn a_journal_written_before_issue_36_parses_with_no_screen_coverage() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("experiments.jsonl");
@@ -405,6 +484,8 @@ mod tests {
         let report = summarise(&[&path]).unwrap();
         assert_eq!(report.screen_calls, 1);
         assert_eq!(report.screened, 0, "old journals carry no coverage records");
+        assert_eq!(report.hidden, None, "coverage is absent, not zero");
+        assert_eq!(report.coverage_percent, None);
         assert_eq!(report.stop_reason.as_deref(), Some("timeout"));
     }
 
