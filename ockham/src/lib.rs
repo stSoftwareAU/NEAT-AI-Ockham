@@ -67,7 +67,9 @@ pub use report::{Report, summarise};
 pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
 pub use stats::{ActivationStats, NeuronStats, ensure_activation_stats};
-pub use sweep::{ScreenConfig, ScreenOutcome, Sweep, SweepCandidate, draw_seed, screen_batch};
+pub use sweep::{
+    ScreenConfig, ScreenOutcome, ScreenedLoser, Sweep, SweepCandidate, draw_seed, screen_batch,
+};
 pub use tags::{CreatureMeta, OckhamProgress, ockham_progress_message};
 
 /// Crate version from `ockham/Cargo.toml`.

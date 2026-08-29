@@ -17,8 +17,8 @@ use crate::corpus::corpus_info;
 use crate::incumbent::{Incumbent, IncumbentMeta, load_incumbent};
 use crate::journal::{self, Event};
 use crate::learnings::{
-    LearningsStore, Outcome, ReplayConfig, Verdict, default_host, file_verdicts, known_failures,
-    known_wins,
+    LearningsStore, Outcome, ReplayConfig, ScreenOutcomeKind, Screened, Verdict, default_host,
+    file_screens, file_verdicts, known_failures, known_wins,
 };
 use crate::promote::{
     FullConfig, FullOutcome, LocalWinner, apply_available, evaluate_full, replay_prefix_plans,
@@ -26,8 +26,8 @@ use crate::promote::{
 use crate::scorer::DirectoryScorer;
 use crate::stats::{ActivationStats, ensure_activation_stats};
 use crate::sweep::{
-    SampledWinner, ScreenConfig, Sweep, SweepCandidate, draw_seed, propose, screen_batch,
-    screen_dir,
+    CandidateKind, SampledWinner, ScreenConfig, Sweep, SweepCandidate, draw_seed, propose,
+    screen_batch, screen_dir,
 };
 use crate::tags::{CreatureMeta, OckhamProgress};
 use crate::{crate_version, log};
@@ -255,6 +255,7 @@ fn ockham_loop(
     };
     let mut store = None;
     let mut known = Vec::new();
+    let mut screens: Vec<Screened> = Vec::new();
     if let Some(dir) = &config.learnings_dir {
         let host = config.learnings_host.clone().unwrap_or_else(default_host);
         let s = LearningsStore::new(dir, corpus.identity.clone(), host.clone());
@@ -271,6 +272,22 @@ fn ockham_loop(
             Err(e) => log::warn(&format!(
                 "learnings unreadable ({e}); continuing without cache"
             )),
+        }
+        // Coverage only — a screens fault must never stop pruning.
+        if let Some(s) = store.as_ref() {
+            match s.load_screens() {
+                Ok(records) => {
+                    log::info(&format!(
+                        "screens: {} record(s) from {} host={host}",
+                        records.len(),
+                        dir.display()
+                    ));
+                    screens = records;
+                }
+                Err(e) => log::warn(&format!(
+                    "screen coverage unreadable ({e}); continuing without it"
+                )),
+            }
         }
     }
     let store = store.as_ref();
@@ -569,6 +586,25 @@ fn ockham_loop(
                                 ms: screen.screen_ms,
                             },
                         )?;
+                        let mut coverage: Vec<(&str, CandidateKind, ScreenOutcomeKind)> =
+                            Vec::new();
+                        for w in &screen.winners {
+                            coverage.push((
+                                w.candidate.uuid.as_str(),
+                                w.candidate.kind,
+                                ScreenOutcomeKind::Winner,
+                            ));
+                        }
+                        for l in &screen.losers {
+                            coverage.push((l.uuid.as_str(), l.kind, ScreenOutcomeKind::Loser));
+                        }
+                        file_batch_screens(
+                            store,
+                            &mut screens,
+                            &coverage,
+                            &journal_path,
+                            batch_idx,
+                        )?;
                         screen.winners
                     }
                     Err(e) => {
@@ -584,15 +620,24 @@ fn ockham_loop(
                     }
                 }
             }
-            None => candidates
-                .into_iter()
-                .map(|c| SampledWinner {
-                    delta: 1.0,
-                    score: 1.0,
-                    baseline_score: 0.0,
-                    candidate: c,
-                })
-                .collect(),
+            None => {
+                // Screening off: every candidate goes straight to full scoring,
+                // so every candidate is checked and must leave a screen record.
+                let coverage: Vec<(&str, CandidateKind, ScreenOutcomeKind)> = candidates
+                    .iter()
+                    .map(|c| (c.uuid.as_str(), c.kind, ScreenOutcomeKind::Winner))
+                    .collect();
+                file_batch_screens(store, &mut screens, &coverage, &journal_path, batch_idx)?;
+                candidates
+                    .into_iter()
+                    .map(|c| SampledWinner {
+                        delta: 1.0,
+                        score: 1.0,
+                        baseline_score: 0.0,
+                        candidate: c,
+                    })
+                    .collect()
+            }
         };
 
         experiments += 1;
@@ -733,6 +778,25 @@ fn journal_full(
             elapsed_ms: started.elapsed().as_millis() as u64,
         },
     )
+}
+
+/// File one screen-coverage record per checked candidate and journal the count.
+///
+/// Coverage only: nothing filed here accepts or rejects a prune. Store faults
+/// warn inside [`file_screens`], so a learnings IO fault can never fail the run
+/// — only the journal write, which is the run's own audit trail, can.
+fn file_batch_screens(
+    store: Option<&LearningsStore>,
+    screens: &mut Vec<Screened>,
+    coverage: &[(&str, CandidateKind, ScreenOutcomeKind)],
+    journal_path: &std::path::Path,
+    batch: u64,
+) -> Result<(), String> {
+    let n = file_screens(store, coverage, screens);
+    if n > 0 {
+        log::detail(&format!("screens: filed {n} screen record(s)"));
+    }
+    journal::append(journal_path, &Event::Screened { batch, screened: n })
 }
 
 fn file_full_outcome(
@@ -971,22 +1035,31 @@ mod tests {
     }
 
     fn two_hidden_paths(tmp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        hidden_paths(tmp, &["h_a", "h_b"])
+    }
+
+    /// Creature with one parallel hidden IDENTITY neuron per uuid, plus corpus.
+    fn hidden_paths(
+        tmp: &std::path::Path,
+        uuids: &[&str],
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
         let creature = tmp.join("creature.json");
-        let c = crate::fixtures::creature(
-            1,
-            1,
-            vec![
-                crate::fixtures::neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
-                crate::fixtures::neuron("hidden", "h_b", 0.0, Some("IDENTITY")),
-                crate::fixtures::neuron("output", "output-0", 0.0, Some("IDENTITY")),
-            ],
-            vec![
-                crate::fixtures::synapse("input-0", "h_a", 1.0),
-                crate::fixtures::synapse("input-0", "h_b", 1.0),
-                crate::fixtures::synapse("h_a", "output-0", 1.0),
-                crate::fixtures::synapse("h_b", "output-0", 1.0),
-            ],
-        );
+        let mut neurons: Vec<neat_core::NeuronExport> = uuids
+            .iter()
+            .map(|u| crate::fixtures::neuron("hidden", u, 0.0, Some("IDENTITY")))
+            .collect();
+        neurons.push(crate::fixtures::neuron(
+            "output",
+            "output-0",
+            0.0,
+            Some("IDENTITY"),
+        ));
+        let mut synapses = Vec::new();
+        for u in uuids {
+            synapses.push(crate::fixtures::synapse("input-0", u, 1.0));
+            synapses.push(crate::fixtures::synapse(u, "output-0", 1.0));
+        }
+        let c = crate::fixtures::creature(1, 1, neurons, synapses);
         std::fs::write(&creature, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
         let train = tmp.join("train");
         std::fs::create_dir(&train).unwrap();
@@ -996,6 +1069,23 @@ mod tests {
         )
         .unwrap();
         (creature, train)
+    }
+
+    /// Store pointed at the screen records a run under `train` would have filed.
+    fn screens_store(learnings_dir: &std::path::Path, train: &std::path::Path) -> LearningsStore {
+        let corpus = crate::corpus::corpus_info(train, &TrainingDataConfig::new(1, 1)).unwrap();
+        LearningsStore::new(learnings_dir, corpus.identity, "t".into())
+    }
+
+    fn screened_uuids(store: &LearningsStore) -> Vec<String> {
+        let mut uuids: Vec<String> = store
+            .load_screens()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.uuid)
+            .collect();
+        uuids.sort();
+        uuids
     }
 
     #[test]
@@ -1168,6 +1258,160 @@ mod tests {
         assert_eq!(report.seed, Some(1));
         assert!(report.elapsed_ms.is_some());
         assert_eq!(report.first_win_ms, None, "no win, so no time-to-first-win");
+    }
+
+    #[test]
+    fn every_screened_candidate_is_filed_across_two_batches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train.clone(),
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(2),
+            seed: Some(1),
+            candidates: 2,
+            learnings_dir: Some(learnings_dir.clone()),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        // Flat scorer: every candidate loses the screen, and losers are the
+        // bulk of coverage.
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_eq!(run.accepts, 0, "a flat scorer must not accept anything");
+
+        let store = screens_store(&learnings_dir, &train);
+        let records = store.load_screens().unwrap();
+        assert_eq!(
+            records.len(),
+            4,
+            "one record per candidate scored, no duplicates: {records:?}"
+        );
+        assert_eq!(
+            screened_uuids(&store),
+            vec!["h_a", "h_b", "h_c", "h_d"],
+            "the union of both batches must be covered"
+        );
+        assert!(
+            records
+                .iter()
+                .all(|r| r.outcome == crate::learnings::ScreenOutcomeKind::Loser
+                    && r.kind == "identity"),
+            "{records:?}"
+        );
+
+        let journal_path = cfg.output_dir.join("experiments.jsonl");
+        let journal = std::fs::read_to_string(&journal_path).unwrap();
+        assert_eq!(
+            journal.matches(r#""record":"screened""#).count(),
+            2,
+            "one screened record per batch: {journal}"
+        );
+        let report = crate::report::summarise(&[&journal_path]).unwrap();
+        assert_eq!(report.screened, 4);
+    }
+
+    #[test]
+    fn screening_disabled_still_files_a_record_for_every_candidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train.clone(),
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            learnings_dir: Some(learnings_dir.clone()),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_eq!(run.accepts, 0);
+
+        let store = screens_store(&learnings_dir, &train);
+        assert_eq!(
+            screened_uuids(&store),
+            vec!["h_a", "h_b"],
+            "candidates that reach full scoring are checked too"
+        );
+
+        let journal_path = cfg.output_dir.join("experiments.jsonl");
+        let journal = std::fs::read_to_string(&journal_path).unwrap();
+        assert!(
+            !journal.contains(r#""record":"screen""#),
+            "no sampled scorer call happened: {journal}"
+        );
+        let report = crate::report::summarise(&[&journal_path]).unwrap();
+        assert_eq!(report.screen_calls, 0);
+        assert_eq!(report.screened, 2);
+    }
+
+    #[test]
+    fn a_failed_screen_files_no_screen_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d", "h_e"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train.clone(),
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            seed: Some(1),
+            candidates: 1,
+            learnings_dir: Some(learnings_dir.clone()),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            fail_sample_with: Some("screen exploded".into()),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.stop_reason, "scorer-failures");
+
+        let store = screens_store(&learnings_dir, &train);
+        assert!(
+            store.load_screens().unwrap().is_empty(),
+            "candidates whose screen errored were never checked"
+        );
+        assert!(!store.screens_dir().exists());
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(!journal.contains(r#""record":"screened""#), "{journal}");
+    }
+
+    #[test]
+    fn omitted_learnings_dir_files_no_screen_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(2),
+            seed: Some(1),
+            candidates: 8,
+            ..OckhamConfig::default()
+        };
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_eq!(run.accepts, 0);
+        let stray: Vec<std::path::PathBuf> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("screens-") || n == "learnings")
+            })
+            .collect();
+        assert!(stray.is_empty(), "{stray:?}");
+        assert!(!cfg.output_dir.join("learnings").exists());
     }
 
     #[test]

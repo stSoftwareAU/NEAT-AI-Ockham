@@ -282,6 +282,20 @@ pub struct SampledWinner {
     pub delta: f64,
 }
 
+/// One candidate the sampled screen did not promote.
+///
+/// Carries the [`CandidateKind`] so screen-coverage records match the kind the
+/// verdict cache stores (Issue #36); the losing candidate creature itself is
+/// dropped because nothing downstream scores it again.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenedLoser {
+    /// Hidden neuron that was screened.
+    pub uuid: String,
+    /// How the candidate was built.
+    pub kind: CandidateKind,
+}
+
 /// Outcome of one sampled screen. Never writes `best.json`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -295,7 +309,7 @@ pub struct ScreenOutcome {
     /// Candidates that beat the sampled incumbent by `threshold`.
     pub winners: Vec<SampledWinner>,
     /// Candidates that did not.
-    pub losers: Vec<String>,
+    pub losers: Vec<ScreenedLoser>,
     /// Wall time of the scorer call (ms).
     pub screen_ms: u64,
     /// Candidates scored per second.
@@ -382,7 +396,10 @@ pub fn screen_batch(
                 delta,
             });
         } else {
-            losers.push(c.uuid);
+            losers.push(ScreenedLoser {
+                uuid: c.uuid,
+                kind: c.kind,
+            });
         }
     }
     Ok(ScreenOutcome {
@@ -565,6 +582,16 @@ mod tests {
         .unwrap();
         assert!(outcome.winners.is_empty());
         assert_eq!(outcome.losers.len(), 2);
+        // Losers carry their kind so a screen record matches the verdict cache.
+        let mut lost: Vec<&str> = outcome.losers.iter().map(|l| l.uuid.as_str()).collect();
+        lost.sort_unstable();
+        assert_eq!(lost, vec!["h_a", "h_b"]);
+        assert!(
+            outcome
+                .losers
+                .iter()
+                .all(|l| l.kind == CandidateKind::Identity)
+        );
         assert!(!tmp.path().join("best.json").exists());
     }
 
