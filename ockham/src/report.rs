@@ -15,7 +15,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::ablation::growth_units;
-use crate::coverage::Coverage;
+use crate::coverage::{Coverage, Winners};
 use crate::journal::Event;
 use crate::ordering::Ordering;
 
@@ -63,6 +63,15 @@ pub struct Report {
     pub cut: Option<usize>,
     /// `checked / checkable * 100` at that same record.
     pub coverage_percent: Option<f64>,
+    /// What the run tried, kept and rejected (Issue #59); `None` on older
+    /// journals, which carry no winners record.
+    pub winners: Option<Winners>,
+    /// Rolling full-corpus cost estimate from the last budget record (Issue #58).
+    pub est_ms_per_creature: Option<f64>,
+    /// Cohort entries dropped over budget across the journals.
+    pub budget_dropped: usize,
+    /// Full cohorts that had to be trimmed to fit the wall clock.
+    pub budget_trims: u64,
     /// Milliseconds from the loop start to the first authoritative local win.
     pub first_win_ms: Option<u64>,
     /// Candidates screened before the first authoritative local win.
@@ -110,6 +119,10 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         unchecked: None,
         cut: None,
         coverage_percent: None,
+        winners: None,
+        est_ms_per_creature: None,
+        budget_dropped: 0,
+        budget_trims: 0,
         first_win_ms: None,
         candidates_before_first_win: None,
         accepted_cut_sizes: Vec::new(),
@@ -187,6 +200,48 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     report.unchecked = Some(cov.unchecked());
                     report.cut = Some(cov.cut);
                     report.coverage_percent = Some(cov.percent());
+                }
+                Event::Budget {
+                    est_ms_per_creature,
+                    dropped_individuals,
+                    dropped_bundles,
+                    ..
+                } => {
+                    // The estimate is a running state, so the last record read
+                    // is the current one; the drops are a total.
+                    if est_ms_per_creature > 0.0 {
+                        report.est_ms_per_creature = Some(est_ms_per_creature);
+                    }
+                    let dropped = dropped_individuals + dropped_bundles;
+                    report.budget_dropped += dropped;
+                    if dropped > 0 {
+                        report.budget_trims += 1;
+                    }
+                }
+                Event::Winners {
+                    screened,
+                    confirmed,
+                    applied,
+                    carried,
+                    plans,
+                    skipped,
+                    best_cuts,
+                    best_delta,
+                    dropped,
+                    est_ms_per_creature,
+                } => {
+                    report.winners = Some(Winners {
+                        screened,
+                        confirmed,
+                        applied,
+                        carried,
+                        plans,
+                        skipped,
+                        best_cuts,
+                        best_delta,
+                        dropped,
+                        est_ms_per_creature,
+                    });
                 }
                 Event::Full {
                     accepted,
@@ -542,6 +597,85 @@ mod tests {
         assert_eq!(report.hidden, None, "coverage is absent, not zero");
         assert_eq!(report.coverage_percent, None);
         assert_eq!(report.stop_reason.as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn the_report_carries_the_winner_figures_and_the_budget_trim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Budget {
+                est_ms_per_creature: 18_000.0,
+                remaining_secs: 240,
+                entries: 13,
+                dropped_individuals: 24,
+                dropped_bundles: 7,
+            },
+        )
+        .unwrap();
+        journal::append(
+            &path,
+            &Event::Winners {
+                screened: 38,
+                confirmed: 22,
+                applied: 1,
+                carried: 21,
+                plans: 9,
+                skipped: 3,
+                best_cuts: 14,
+                best_delta: 1.2e-4,
+                dropped: 31,
+                est_ms_per_creature: 18_000,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        let winners = report.winners.expect("winner figures");
+        assert_eq!(winners.confirmed, 22);
+        assert_eq!(winners.carried, 21);
+        assert_eq!(report.est_ms_per_creature, Some(18_000.0));
+        assert_eq!(report.budget_dropped, 31);
+        assert_eq!(report.budget_trims, 1);
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"confirmed\":22"), "{json}");
+        assert!(json.contains("\"budgetTrims\":1"), "{json}");
+    }
+
+    #[test]
+    fn a_journal_with_no_winners_record_reports_none_rather_than_zeroes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.winners, None);
+        assert_eq!(report.est_ms_per_creature, None);
+        assert_eq!(report.budget_trims, 0);
+    }
+
+    /// An untrimmed cohort still journals its estimate, and must not be counted
+    /// as budget-starved.
+    #[test]
+    fn a_cohort_that_fitted_the_budget_is_not_counted_as_a_trim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Budget {
+                est_ms_per_creature: 900.0,
+                remaining_secs: 2400,
+                entries: 44,
+                dropped_individuals: 0,
+                dropped_bundles: 0,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.budget_trims, 0);
+        assert_eq!(report.budget_dropped, 0);
+        assert_eq!(report.est_ms_per_creature, Some(900.0));
     }
 
     #[test]

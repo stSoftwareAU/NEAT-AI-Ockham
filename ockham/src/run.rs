@@ -19,10 +19,12 @@ use crate::incumbent::{Incumbent, IncumbentMeta, load_incumbent};
 use crate::journal::{self, Event};
 use crate::learnings::{
     LearningsStore, Outcome, ReplayConfig, ScreenOutcomeKind, Screened, Verdict, default_host,
-    file_screens, file_verdicts, known_failures, known_wins, oldest_screened_first, screened_uuids,
+    file_screens, file_verdicts, known_failures, oldest_screened_first, ranked_confirmed,
+    replay_cap, screened_uuids,
 };
 use crate::promote::{
-    FullConfig, FullOutcome, LocalWinner, apply_available, evaluate_full, replay_prefix_plans,
+    BundleMember, FullConfig, FullOutcome, LocalWinner, REPLAY_PROBE_LIMIT, apply_available,
+    evaluate_full, replay_plans,
 };
 use crate::scorer::DirectoryScorer;
 use crate::stats::{ActivationStats, ensure_activation_stats};
@@ -212,6 +214,272 @@ struct LoopOut {
     cumulative_delta: f64,
 }
 
+/// Most confirmed winners carried between batches (Issue #56).
+///
+/// The pool costs nothing to score — its members join bundles only — but it
+/// does feed the plan generator, so it is bounded rather than unbounded.
+pub const MAX_CONFIRMED_POOL: usize = 64;
+
+/// Weight of the newest cohort in the rolling cost estimate (Issue #58).
+const FULL_COST_SMOOTHING: f64 = 0.3;
+
+/// Safety multiple applied to a cost estimate derived from a screen (Issue #58).
+const SCREEN_FALLBACK_SAFETY: f64 = 1.5;
+
+/// Full-corpus multiple assumed when the screen sample rate is unknown.
+const SCREEN_FALLBACK_MULTIPLE: f64 = 20.0;
+
+/// Fraction of the remaining budget reserved for applying a win (Issue #58).
+///
+/// `apply_local_win` re-scans activation statistics and writes `best.json`
+/// after the cohort returns; a cohort sized to the whole budget would leave
+/// nothing to check the win in with.
+const BUDGET_RESERVE_FRACTION: f64 = 0.25;
+
+/// How big a full-corpus cohort the remaining wall clock can pay for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CohortBudget {
+    /// Nothing measured yet — launch the cohort untrimmed.
+    Unmeasured,
+    /// At most this many entries besides the incumbent baseline.
+    Entries(usize),
+    /// Not even a minimal cohort fits; do not start a call that will overrun.
+    TooSmall,
+}
+
+/// Rolling estimate of full-corpus scorer cost per creature (Issue #58).
+///
+/// Seeded from the first full cohort of the run and smoothed afterwards, so a
+/// single anomalous cohort cannot permanently distort it. Before any full
+/// cohort has run, the observed screen cost stands in: a screen scores the same
+/// creatures over `sample_rate` of the corpus, so the full cost is roughly the
+/// screen cost divided by that rate, with a safety multiple on top.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct CostModel {
+    full_per_creature_ms: Option<f64>,
+    screen_per_creature_ms: Option<f64>,
+    sample_rate: Option<f64>,
+}
+
+impl CostModel {
+    fn new(sample_rate: Option<f64>) -> Self {
+        Self {
+            sample_rate,
+            ..Self::default()
+        }
+    }
+
+    /// Record one sampled screen: `creatures` includes the incumbent.
+    fn observe_screen(&mut self, screen_ms: u64, creatures: usize) {
+        if creatures == 0 {
+            return;
+        }
+        self.screen_per_creature_ms = Some(screen_ms as f64 / creatures as f64);
+    }
+
+    /// Record one full cohort: `entries` excludes the incumbent baseline.
+    fn observe_full(&mut self, full_ms: u64, entries: usize) {
+        let sample = full_ms as f64 / (entries + 1) as f64;
+        self.full_per_creature_ms = Some(match self.full_per_creature_ms {
+            None => sample,
+            Some(prev) => prev * (1.0 - FULL_COST_SMOOTHING) + sample * FULL_COST_SMOOTHING,
+        });
+    }
+
+    /// Best available milliseconds-per-creature estimate.
+    fn per_creature_ms(&self) -> Option<f64> {
+        if let Some(ms) = self.full_per_creature_ms {
+            return Some(ms);
+        }
+        let screen = self.screen_per_creature_ms?;
+        let multiple = match self.sample_rate {
+            Some(rate) if rate > 0.0 => 1.0 / rate,
+            _ => SCREEN_FALLBACK_MULTIPLE,
+        };
+        Some(screen * multiple * SCREEN_FALLBACK_SAFETY)
+    }
+
+    /// Entries the remaining wall clock can pay for, keeping a check-in reserve.
+    fn cohort_budget(&self, remaining: std::time::Duration) -> CohortBudget {
+        let Some(per_creature) = self.per_creature_ms().filter(|ms| *ms > 0.0) else {
+            return CohortBudget::Unmeasured;
+        };
+        let usable = remaining.as_millis() as f64 * (1.0 - BUDGET_RESERVE_FRACTION);
+        // The incumbent baseline is scored in every cohort and buys no cut.
+        let creatures = (usable / per_creature).floor();
+        if !creatures.is_finite() || creatures < 2.0 {
+            return CohortBudget::TooSmall;
+        }
+        CohortBudget::Entries(creatures as usize - 1)
+    }
+}
+
+/// What a run tried, kept and rejected — the winners block of the commit
+/// description (Issue #59).
+#[derive(Debug, Clone, Default)]
+struct WinnerTally {
+    screened: usize,
+    confirmed: HashSet<String>,
+    applied: usize,
+    plans: usize,
+    skipped: usize,
+    dropped: usize,
+    best_cuts: usize,
+    best_delta: f64,
+}
+
+impl WinnerTally {
+    /// Fold one full-score cohort into the tally.
+    fn observe(&mut self, full: &FullOutcome, min_improvement: f64) {
+        self.plans += full.bundles.len();
+        self.skipped += full.skipped_bundles;
+        self.dropped += full.dropped();
+        for cand in &full.individuals {
+            if cand.delta > min_improvement
+                && let Some(uuid) = cand.uuids.first()
+            {
+                self.confirmed.insert(uuid.clone());
+            }
+        }
+        if let Some(win) = &full.winner {
+            self.applied += win.candidate.uuids.len();
+            self.confirmed.extend(win.candidate.uuids.iter().cloned());
+            if win.candidate.uuids.len() > self.best_cuts {
+                self.best_cuts = win.candidate.uuids.len();
+                self.best_delta = win.candidate.delta;
+            }
+        }
+    }
+
+    /// Render for [`crate::coverage::Winners`], with the pool still standing.
+    fn finish(&self, carried: usize, est_ms_per_creature: Option<f64>) -> crate::coverage::Winners {
+        crate::coverage::Winners {
+            screened: self.screened,
+            confirmed: self.confirmed.len(),
+            applied: self.applied,
+            carried,
+            plans: self.plans,
+            skipped: self.skipped,
+            best_cuts: self.best_cuts,
+            best_delta: self.best_delta,
+            dropped: self.dropped,
+            est_ms_per_creature: est_ms_per_creature.unwrap_or(0.0).round() as u64,
+        }
+    }
+}
+
+/// The `full-scoring …` line for one batch (Issue #54).
+///
+/// The old line — `keeping top 8 of 38 sampled winners by sample Δ for full
+/// scoring` — read as though bundles had been truncated to eight too, which is
+/// exactly what was happening and exactly what #45 was raised about. These
+/// numbers are now separate: how many winners are scored **individually**, and
+/// how many are offered to bundle construction.
+fn full_scoring_line(max_full: Option<usize>, sampled: usize, carried: usize) -> String {
+    let individuals = max_full.map_or(sampled, |cap| cap.min(sampled));
+    let bundled = sampled + carried;
+    if individuals < sampled {
+        return format!(
+            "full-scoring {individuals} of {sampled} sampled winners individually; bundling all {bundled}"
+        );
+    }
+    if carried == 0 {
+        return format!("full-scoring {sampled} sampled winners plus bundles");
+    }
+    format!(
+        "full-scoring {sampled} sampled winners individually; bundling all {bundled} ({carried} carried)"
+    )
+}
+
+/// The cohort-trim line (Issue #58) — a silent cap reads as "we tried
+/// everything" when we did not.
+fn budget_trim_line(
+    remaining: std::time::Duration,
+    per_creature_ms: f64,
+    full: &FullOutcome,
+) -> String {
+    format!(
+        "full: budget {}s, est {:.0}s/creature → {} of {} entries; dropped {} ({} individual, {} bundle)",
+        remaining.as_secs(),
+        per_creature_ms / 1000.0,
+        full.entries(),
+        full.entries() + full.dropped(),
+        full.dropped(),
+        full.dropped_individuals,
+        full.dropped_bundles
+    )
+}
+
+/// Drop pool members the incumbent no longer carries, keeping ranked order.
+///
+/// A member is kept only when it still proposes **after** the members ranked
+/// above it — the same order a bundle applies them in — so a plan built from
+/// what survives can never be voided by a cut that has gone stale.
+fn standing_pool(
+    pool: &[BundleMember],
+    incumbent: &CreatureExport,
+    stats: &ActivationStats,
+) -> Vec<BundleMember> {
+    if pool.is_empty() {
+        return Vec::new();
+    }
+    let uuids: Vec<String> = pool.iter().map(|m| m.uuid.clone()).collect();
+    let (applied, _) = apply_available(incumbent, stats, &uuids);
+    let kept: HashSet<&str> = applied.iter().map(String::as_str).collect();
+    pool.iter()
+        .filter(|m| kept.contains(m.uuid.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Fold one cohort's individual verdicts into the carried-winner pool.
+///
+/// The latest verdict wins: a uuid measured at or below `min_improvement`
+/// leaves, and an applied cut leaves because it is no longer on the creature.
+fn update_pool(
+    pool: &mut Vec<BundleMember>,
+    sampled: &[SampledWinner],
+    full: &FullOutcome,
+    min_improvement: f64,
+) {
+    let applied: HashSet<&str> = full
+        .winner
+        .as_ref()
+        .map(|w| w.candidate.uuids.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    for cand in &full.individuals {
+        let Some(uuid) = cand.uuids.first() else {
+            continue;
+        };
+        pool.retain(|m| m.uuid != *uuid);
+        if applied.contains(uuid.as_str()) || cand.delta <= min_improvement {
+            continue;
+        }
+        let kind = sampled
+            .iter()
+            .find(|w| w.candidate.uuid == *uuid)
+            .map_or(CandidateKind::Ablation, |w| w.candidate.kind);
+        pool.push(BundleMember {
+            uuid: uuid.clone(),
+            kind,
+            delta: cand.delta,
+        });
+    }
+    pool.sort_by(|a, b| {
+        b.delta
+            .partial_cmp(&a.delta)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uuid.cmp(&b.uuid))
+    });
+    if pool.len() > MAX_CONFIRMED_POOL {
+        let dropped = pool.len() - MAX_CONFIRMED_POOL;
+        pool.truncate(MAX_CONFIRMED_POOL);
+        log::detail(&format!(
+            "pool: dropped {dropped} weakest confirmed winner(s); {MAX_CONFIRMED_POOL} carried"
+        ));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ockham_loop(
     config: &OckhamConfig,
@@ -312,6 +580,11 @@ fn ockham_loop(
     let mut stop_reason = "exhausted".to_string();
     let mut replay_done = false;
     let mut replay_skipped = HashSet::new();
+    // In-run state, deliberately not seeded from the cache: cross-run memory is
+    // the learnings store's job (Issues #56, #57).
+    let mut pool: Vec<BundleMember> = Vec::new();
+    let mut cost = CostModel::new(config.screen_sample_rate);
+    let mut tally = WinnerTally::default();
 
     if incumbent.hidden_neurons() == 0 {
         stop_reason = "no-hidden".into();
@@ -341,10 +614,18 @@ fn ockham_loop(
                     tagged.len()
                 ));
             }
-            let wins: Vec<String> = known_wins(&known, &incumbent.creature, replay_cfg)
-                .into_iter()
-                .filter(|u| !replay_skipped.contains(u) && !tagged.contains(u))
-                .collect();
+            // Accepted cuts and confirmed-but-unapplied ones, best measured
+            // delta first (Issue #57): the largest-first plans below then drop
+            // the weakest members rather than the most recently filed.
+            let replayable: Vec<crate::learnings::ConfirmedWin> =
+                ranked_confirmed(&known, &incumbent.creature, config.min_improvement)
+                    .into_iter()
+                    .filter(|c| !replay_skipped.contains(&c.uuid) && !tagged.contains(&c.uuid))
+                    .take(replay_cap(replay_cfg.max))
+                    .collect();
+            let accepted_only = replayable.iter().filter(|c| c.accepted).count();
+            let confirmed_only = replayable.len() - accepted_only;
+            let wins: Vec<String> = replayable.into_iter().map(|c| c.uuid).collect();
             if wins.is_empty() {
                 replay_done = true;
                 continue;
@@ -360,11 +641,18 @@ fn ockham_loop(
                 continue;
             }
             log::info(&format!(
-                "replay: combining {} of {} known win(s) still on incumbent",
+                "replay: combining {} of {} known win(s) still on incumbent ({accepted_only} applied elsewhere, {confirmed_only} confirmed only)",
                 applied.len(),
                 wins.len()
             ));
-            let plans = replay_prefix_plans(&applied);
+            let plans = replay_plans(&applied);
+            if plans.len() > 1 {
+                log::detail(&format!(
+                    "replay: combined plan plus {} shrink step(s), smallest {} cut(s)",
+                    plans.len() - 1,
+                    plans.last().map_or(0, Vec::len)
+                ));
+            }
             let sampled: Vec<SampledWinner> = if plans.is_empty() {
                 match propose(&incumbent.creature, &activation, &applied[0]) {
                     Ok((kind, creature)) => vec![SampledWinner {
@@ -388,7 +676,13 @@ fn ockham_loop(
             } else {
                 Vec::new()
             };
-            let probe_n = config.max_full.unwrap_or(8).min(applied.len());
+            // Replay is not sized by `--max-full`: after Issue #54 that flag
+            // caps individual scoring in the search loop, and using it for a
+            // replay probe was always a conflation. Nor is the replay cohort
+            // trimmed to the wall clock (Issue #58): it runs first, with the
+            // whole budget in front of it, and `MAX_REPLAY_PLANS` plus
+            // `REPLAY_PROBE_LIMIT` already bound it.
+            let probe_n = REPLAY_PROBE_LIMIT.min(applied.len());
             experiments += 1;
             let mut extra_plans = plans;
             match evaluate_full(
@@ -402,14 +696,19 @@ fn ockham_loop(
                     dir: &workspace.join(format!("replay-{experiments}")),
                     best_path: Some(&config.output_dir.join("best.json")),
                     extra_plans: &extra_plans,
+                    max_individuals: None,
+                    pool: &[],
+                    max_entries: None,
                 },
             ) {
                 Ok(full) => {
                     consecutive_fail = 0;
+                    cost.observe_full(full.full_ms, full.entries());
+                    tally.observe(&full, config.min_improvement);
                     journal_full(&journal_path, &full, started)?;
                     if full.winner.is_none() && sampled.is_empty() && applied.len() > 1 {
                         log::info(&format!(
-                            "replay: combined bundle missed; probing {probe_n} known win(s) individually"
+                            "replay: every plan missed; probing {probe_n} known win(s) individually"
                         ));
                         let mut probe = Vec::new();
                         for uuid in applied.iter().take(probe_n) {
@@ -448,11 +747,20 @@ fn ockham_loop(
                                 dir: &workspace.join(format!("replay-{experiments}")),
                                 best_path: Some(&config.output_dir.join("best.json")),
                                 extra_plans: &extra_plans,
+                                max_individuals: None,
+                                pool: &[],
+                                max_entries: None,
                             },
                         ) {
                             Ok(probe_full) => {
                                 consecutive_fail = 0;
+                                cost.observe_full(probe_full.full_ms, probe_full.entries());
+                                tally.observe(&probe_full, config.min_improvement);
                                 journal_full(&journal_path, &probe_full, started)?;
+                                // The probes are the honest per-uuid measurement
+                                // of a replayed win: one that has stopped paying
+                                // files a negative delta here and stops being
+                                // replayed (Issue #57).
                                 file_full_outcome(store, &mut known, &probe, &probe_full);
                                 if let Some(win) = probe_full.winner {
                                     apply_local_win(
@@ -532,6 +840,7 @@ fn ockham_loop(
             &incumbent.creature,
             replay_cfg,
             crate::incumbent::now_unix(),
+            config.min_improvement,
         );
         let tagged: HashSet<String> = meta.neuron_tags.keys().cloned().collect();
         if !avoid.is_empty() {
@@ -569,7 +878,8 @@ fn ockham_loop(
             continue;
         }
 
-        let mut sampled = match config.screen_sample_rate {
+        let batch_size = candidates.len();
+        let sampled = match config.screen_sample_rate {
             Some(rate) => {
                 match screen_batch(
                     scorer,
@@ -586,6 +896,8 @@ fn ockham_loop(
                 ) {
                     Ok(screen) => {
                         consecutive_fail = 0;
+                        // The incumbent is scored alongside the batch.
+                        cost.observe_screen(screen.screen_ms, batch_size + 1);
                         log::detail(&format!(
                             "screen: {} winners / {} losers in {}ms",
                             screen.winners.len(),
@@ -660,48 +972,91 @@ fn ockham_loop(
             log::detail("no sampled winners; continuing sweep");
             continue;
         }
-        if let Some(cap) = config.max_full
-            && sampled.len() > cap
-        {
-            sampled.sort_by(|a, b| {
-                b.delta
-                    .partial_cmp(&a.delta)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            log::detail(&format!(
-                "keeping top {cap} of {} sampled winners by sample Δ for full scoring",
-                sampled.len()
-            ));
-            sampled.truncate(cap);
-        }
+        tally.screened += sampled.len();
 
-        log::detail(&format!(
-            "full-scoring {} sampled winners plus bundles",
-            sampled.len()
+        // Every screened winner is full-scored: `--max-full` caps how many are
+        // scored *individually* and never which combinations are tried
+        // (Issue #54). Confirmed winners from earlier batches join for bundle
+        // membership only — they already have a verdict (Issue #56).
+        pool = standing_pool(&pool, &incumbent.creature, &activation);
+        log::detail(&full_scoring_line(
+            config.max_full,
+            sampled.len(),
+            pool.len(),
         ));
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let max_entries = match cost.cohort_budget(remaining) {
+            CohortBudget::Unmeasured => None,
+            CohortBudget::Entries(n) => Some(n),
+            CohortBudget::TooSmall => {
+                // Starting a cohort that cannot finish overruns the deadline,
+                // and GRQ runs Ockham on a schedule. The winners are already
+                // in the screen cache, so the next run picks them up.
+                log::warn(&format!(
+                    "full: {}s left, est {:.0}ms/creature — too small for a cohort; stopping",
+                    remaining.as_secs(),
+                    cost.per_creature_ms().unwrap_or(0.0)
+                ));
+                stop_reason = "budget".into();
+                break;
+            }
+        };
         match evaluate_full(
             scorer,
             &config.training_data,
             &incumbent.creature,
             &activation,
             &sampled,
-            FullConfig::new(
-                config.min_improvement,
-                &workspace.join(format!("full-{batch_idx}")),
-                Some(&config.output_dir.join("best.json")),
-            ),
+            FullConfig {
+                min_improvement: config.min_improvement,
+                dir: &workspace.join(format!("full-{batch_idx}")),
+                best_path: Some(&config.output_dir.join("best.json")),
+                extra_plans: &[],
+                max_individuals: config.max_full,
+                pool: &pool,
+                max_entries,
+            },
         ) {
             Ok(full) => {
                 consecutive_fail = 0;
+                cost.observe_full(full.full_ms, full.entries());
                 log::detail(&format!(
-                    "full: {} individuals, {} bundles, {}ms, accepted={}",
+                    "full: {} individuals, {} bundles, {} skipped, {}ms, accepted={}",
                     full.individuals.len(),
                     full.bundles.len(),
+                    full.skipped_bundles,
                     full.full_ms,
                     full.winner.is_some()
                 ));
+                if full.dropped() > 0 {
+                    log::detail(&budget_trim_line(
+                        remaining,
+                        cost.per_creature_ms().unwrap_or(0.0),
+                        &full,
+                    ));
+                }
+                if full.capped_plans > 0 {
+                    log::detail(&format!(
+                        "bundles: {} plan(s) beyond the cap of {} were not built",
+                        full.capped_plans,
+                        crate::promote::MAX_BUNDLE_PLANS
+                    ));
+                }
                 journal_full(&journal_path, &full, started)?;
+                journal::append(
+                    &journal_path,
+                    &Event::Budget {
+                        est_ms_per_creature: cost.per_creature_ms().unwrap_or(0.0),
+                        remaining_secs: remaining.as_secs(),
+                        entries: full.entries(),
+                        dropped_individuals: full.dropped_individuals,
+                        dropped_bundles: full.dropped_bundles,
+                    },
+                )?;
+                tally.observe(&full, config.min_improvement);
                 file_full_outcome(store, &mut known, &sampled, &full);
+                update_pool(&mut pool, &sampled, &full, config.min_improvement);
                 if let Some(win) = full.winner {
                     apply_local_win(
                         config,
@@ -735,9 +1090,14 @@ fn ockham_loop(
                     if unchecked_first {
                         prefer_unchecked(&mut sweep, &screens, &incumbent.creature);
                     }
+                    // The pool was measured against the incumbent that just
+                    // moved, so its members are candidates to re-try, not facts
+                    // to re-apply; the ones the accept removed go now.
+                    pool = standing_pool(&pool, &incumbent.creature, &activation);
                     log::detail(&format!(
-                        "restarted sweep after accept; {} hidden remaining",
-                        incumbent.hidden_neurons()
+                        "restarted sweep after accept; {} hidden remaining; {} confirmed winner(s) still standing",
+                        incumbent.hidden_neurons(),
+                        pool.len()
                     ));
                 }
             }
@@ -750,6 +1110,29 @@ fn ockham_loop(
                 }
             }
         }
+    }
+
+    // What the run tried, kept and rejected, for the commit description and
+    // `--report` (Issue #59). Journalled whenever anything was screened, so a
+    // run with no learnings dir still reports its economics.
+    let winners = tally.finish(pool.len(), cost.per_creature_ms());
+    if winners.has_any() {
+        log::info(&winners.summary());
+        journal::append(
+            &journal_path,
+            &Event::Winners {
+                screened: winners.screened,
+                confirmed: winners.confirmed,
+                applied: winners.applied,
+                carried: winners.carried,
+                plans: winners.plans,
+                skipped: winners.skipped,
+                best_cuts: winners.best_cuts,
+                best_delta: winners.best_delta,
+                dropped: winners.dropped,
+                est_ms_per_creature: winners.est_ms_per_creature,
+            },
+        )?;
     }
 
     // Coverage is only meaningful with the screen store behind it; without one
@@ -773,10 +1156,14 @@ fn ockham_loop(
                 cut: cov.cut,
             },
         )?;
-        // The GRQ-facing commit-description artefacts (Issue #40). A write
-        // fault warns rather than failing the run, matching the learnings
+        // The GRQ-facing commit-description artefacts (Issues #40, #59). A
+        // write fault warns rather than failing the run, matching the learnings
         // cache: coverage is reporting, and reporting must never lose pruning.
-        match crate::coverage::write_files(&config.output_dir, &cov, config.candidates) {
+        let report = crate::coverage::CoverageReport {
+            coverage: cov,
+            winners: winners.has_any().then_some(winners),
+        };
+        match crate::coverage::write_files(&config.output_dir, &report, config.candidates) {
             Ok(()) => log::detail(&format!(
                 "coverage: wrote {} and {}",
                 crate::coverage::COVERAGE_TEXT_FILE,
@@ -871,6 +1258,13 @@ fn file_batch_screens(
     journal::append(journal_path, &Event::Screened { batch, screened: n })
 }
 
+/// File one verdict per individually scored uuid, plus the winner's cuts.
+///
+/// `outcome` still says which candidate won the cohort, but every individual
+/// now carries the delta the scorer actually returned for it alone
+/// (Issue #52). A cut that comfortably beat `min_improvement` and merely lost
+/// its cohort is therefore recorded as the confirmed win it is, and stops being
+/// suppressed fleet-wide for seven days as if it had failed.
 fn file_full_outcome(
     store: Option<&LearningsStore>,
     known: &mut Vec<crate::learnings::Learning>,
@@ -885,13 +1279,13 @@ fn file_full_outcome(
     let mut verdicts = Vec::new();
     let mut seen: HashSet<&str> = HashSet::new();
     for w in sampled {
-        if !full
+        let Some(scored) = full
             .individuals
             .iter()
-            .any(|i| i.uuids.first() == Some(&w.candidate.uuid))
-        {
+            .find(|i| i.uuids.first() == Some(&w.candidate.uuid))
+        else {
             continue;
-        }
+        };
         seen.insert(w.candidate.uuid.as_str());
         verdicts.push(Verdict {
             uuid: w.candidate.uuid.as_str(),
@@ -901,6 +1295,7 @@ fn file_full_outcome(
             } else {
                 Outcome::Rejected
             },
+            full_delta: Some(scored.delta),
         });
     }
     if let Some(winner) = &full.winner {
@@ -912,6 +1307,9 @@ fn file_full_outcome(
                 uuid: uuid.as_str(),
                 kind: crate::sweep::CandidateKind::Ablation,
                 outcome: Outcome::Accepted,
+                // Measured only inside the winning bundle, so its individual
+                // contribution is unknown — never guess it from the bundle.
+                full_delta: None,
             });
         }
     }
@@ -1230,6 +1628,7 @@ mod tests {
                     outcome: Outcome::Accepted,
                     unix_secs: secs,
                     host: "t".into(),
+                    full_delta: None,
                 })
                 .unwrap();
         }
@@ -1291,6 +1690,7 @@ mod tests {
                     outcome: Outcome::Accepted,
                     unix_secs: 10,
                     host: "t".into(),
+                    full_delta: None,
                 })
                 .unwrap();
         }
@@ -1853,6 +2253,565 @@ mod tests {
             .collect();
         assert!(stray.is_empty(), "{stray:?}");
         assert!(!cfg.output_dir.join("learnings").exists());
+    }
+
+    // ---- Issue #54: the cap stops gating bundle construction ---------------
+
+    #[test]
+    fn the_full_scoring_line_no_longer_conflates_individuals_with_bundles() {
+        assert_eq!(
+            full_scoring_line(Some(8), 38, 0),
+            "full-scoring 8 of 38 sampled winners individually; bundling all 38"
+        );
+        assert_eq!(
+            full_scoring_line(None, 38, 0),
+            "full-scoring 38 sampled winners plus bundles"
+        );
+        assert_eq!(
+            full_scoring_line(None, 38, 21),
+            "full-scoring 38 sampled winners individually; bundling all 59 (21 carried)"
+        );
+        // A cap larger than the winner list caps nothing.
+        assert_eq!(
+            full_scoring_line(Some(99), 38, 0),
+            "full-scoring 38 sampled winners plus bundles"
+        );
+        for line in [
+            full_scoring_line(Some(8), 38, 0),
+            full_scoring_line(None, 38, 21),
+        ] {
+            assert!(!line.contains("keeping top"), "{line}");
+        }
+    }
+
+    // ---- Issue #56: confirmed winners are carried between batches ----------
+
+    fn member(uuid: &str, delta: f64) -> BundleMember {
+        BundleMember {
+            uuid: uuid.into(),
+            kind: CandidateKind::Identity,
+            delta,
+        }
+    }
+
+    fn stats_of(creature: &CreatureExport) -> ActivationStats {
+        crate::stats::ActivationStats {
+            format_version: crate::stats::STATS_FORMAT_VERSION,
+            creature_checksum: "t".into(),
+            corpus_identity: "c".into(),
+            record_count: 1,
+            scan_ms: 0,
+            from_cache: false,
+            neurons: creature
+                .neurons
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.neuron_type == "hidden")
+                .map(|(i, n)| crate::stats::NeuronStats {
+                    uuid: n.uuid.clone(),
+                    neuron_index: i,
+                    count: 1,
+                    mean: 0.0,
+                    variance: 0.0,
+                    std_dev: 0.0,
+                    mean_abs: 0.0,
+                    min: 0.0,
+                    max: 0.0,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_pool_member_the_incumbent_no_longer_carries_is_dropped() {
+        let creature = hidden_creature(&["h_a", "h_b"]);
+        let stats = stats_of(&creature);
+        let pool = vec![
+            member("h_a", 3e-6),
+            member("gone", 9e-6),
+            member("h_b", 1e-6),
+        ];
+        let standing = standing_pool(&pool, &creature, &stats);
+        assert_eq!(
+            standing.iter().map(|m| m.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["h_a", "h_b"],
+            "a stale cut leaves rather than voiding every plan it joins"
+        );
+        assert!(standing_pool(&[], &creature, &stats).is_empty());
+    }
+
+    /// Build a `FullOutcome` whose individuals carry the given deltas.
+    fn outcome_with(individuals: &[(&str, f64)], winner: Option<&str>) -> FullOutcome {
+        let candidate = |uuid: &str, delta: f64| crate::promote::FullCandidate {
+            stem: uuid.into(),
+            kind: "individual",
+            uuids: vec![uuid.into()],
+            score: 0.5 + delta,
+            error: 0.5,
+            complexity_penalty: 0.0,
+            after: crate::ablation::StructureSnapshot::of(&hidden_creature(&["h_a"])),
+            delta,
+        };
+        FullOutcome {
+            incumbent_score: 0.5,
+            incumbent_error: 0.5,
+            individuals: individuals
+                .iter()
+                .map(|(uuid, delta)| candidate(uuid, *delta))
+                .collect(),
+            bundles: Vec::new(),
+            sample_false_positives: Vec::new(),
+            winner: winner.map(|uuid| LocalWinner {
+                candidate: candidate(uuid, 0.3),
+                checksum: "c".into(),
+                creature: hidden_creature(&["h_a"]),
+            }),
+            full_ms: 10,
+            skipped_bundles: 0,
+            dropped_individuals: 0,
+            dropped_bundles: 0,
+            capped_plans: 0,
+        }
+    }
+
+    #[test]
+    fn the_pool_keeps_confirmed_winners_and_forgets_the_rest() {
+        let mut pool = Vec::new();
+        update_pool(
+            &mut pool,
+            &[],
+            &outcome_with(&[("h_a", 3e-6), ("h_b", 9e-6), ("h_c", -1.0)], Some("h_a")),
+            1e-6,
+        );
+        assert_eq!(
+            pool.iter().map(|m| m.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["h_b"],
+            "the applied cut and the loser both leave; the confirmed one stays"
+        );
+
+        // A later cohort measures h_b as a loser: the latest verdict wins and
+        // the old delta must not resurrect it.
+        update_pool(&mut pool, &[], &outcome_with(&[("h_b", -1.0)], None), 1e-6);
+        assert!(pool.is_empty(), "{pool:?}");
+    }
+
+    #[test]
+    fn the_pool_holds_one_entry_per_uuid_and_drops_the_weakest_on_overflow() {
+        let mut pool = Vec::new();
+        let many: Vec<(String, f64)> = (0..MAX_CONFIRMED_POOL + 4)
+            .map(|i| (format!("h{i:03}"), 1e-3 + i as f64 * 1e-4))
+            .collect();
+        let refs: Vec<(&str, f64)> = many.iter().map(|(u, d)| (u.as_str(), *d)).collect();
+        update_pool(&mut pool, &[], &outcome_with(&refs, None), 1e-6);
+        assert_eq!(pool.len(), MAX_CONFIRMED_POOL);
+        assert!(
+            pool.iter().all(|m| m.uuid != "h000"),
+            "the weakest members are the ones dropped"
+        );
+
+        // Re-filing the same uuids must not duplicate them.
+        update_pool(&mut pool, &[], &outcome_with(&refs[..4], None), 1e-6);
+        let unique: HashSet<&str> = pool.iter().map(|m| m.uuid.as_str()).collect();
+        assert_eq!(unique.len(), pool.len());
+    }
+
+    /// Hidden neurons in a written cohort creature.
+    fn hidden_in(path: &std::path::Path) -> usize {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        v["neurons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "hidden")
+            .count()
+    }
+
+    /// Cohort file stems of one kind (`i` or `b`) written under `dir`.
+    fn cohort_stems(dir: &std::path::Path, prefix: char) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                e.path()
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+            })
+            .filter(|s| s.starts_with(prefix))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Two batches over parallel hidden neurons, one accept per batch.
+    fn carried_winner_run(tmp: &std::path::Path) -> (OckhamConfig, BaselineRun) {
+        let (creature, train) = hidden_paths(tmp, &["h_a", "h_b", "h_c", "h_d", "h_e", "h_f"]);
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(2),
+            seed: Some(1),
+            candidates: 2,
+            screen_sample_rate: None,
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        (cfg, run)
+    }
+
+    #[test]
+    fn a_confirmed_winner_from_batch_one_joins_batch_twos_bundles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, run) = carried_winner_run(tmp.path());
+        assert!(run.accepts >= 1, "accepts={}", run.accepts);
+
+        let second = run.workspace.join("full-2");
+        let baseline = hidden_in(&second.join("baseline.json"));
+        let widest = cohort_stems(&second, 'b')
+            .iter()
+            .map(|stem| baseline - hidden_in(&second.join(format!("{stem}.json"))))
+            .max()
+            .expect("batch two must build at least one bundle");
+        assert!(
+            widest > cfg.candidates,
+            "a bundle wider than the batch can only come from the carried pool: \
+             {widest} cuts from {} candidates",
+            cfg.candidates
+        );
+    }
+
+    #[test]
+    fn carried_winners_are_never_re_scored_as_individuals() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, _) = carried_winner_run(tmp.path());
+        let workspace = cfg.output_dir.join("workspace");
+        for batch in ["full-1", "full-2"] {
+            let dir = workspace.join(batch);
+            assert!(
+                cohort_stems(&dir, 'i').len() <= cfg.candidates,
+                "the individual cohort must stay this batch's fresh winners: {:?}",
+                cohort_stems(&dir, 'i')
+            );
+        }
+    }
+
+    #[test]
+    fn the_pool_starts_empty_so_the_first_batch_bundles_only_its_own_winners() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, run) = carried_winner_run(tmp.path());
+        let first = run.workspace.join("full-1");
+        let baseline = hidden_in(&first.join("baseline.json"));
+        for stem in cohort_stems(&first, 'b') {
+            let cuts = baseline - hidden_in(&first.join(format!("{stem}.json")));
+            assert!(
+                cuts <= cfg.candidates,
+                "cross-run memory is the learnings cache's job, not the pool's: {cuts}"
+            );
+        }
+    }
+
+    // ---- Issue #57: replay seeks the creature carrying the most winners ----
+
+    /// Seed one learnings record per `(uuid, outcome, full_delta)`.
+    fn seed_verdicts(store: &LearningsStore, records: &[(&str, Outcome, Option<f64>, u64)]) {
+        for (uuid, outcome, full_delta, unix_secs) in records {
+            store
+                .append(&crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: (*uuid).into(),
+                    kind: "identity".into(),
+                    outcome: *outcome,
+                    unix_secs: *unix_secs,
+                    host: "t".into(),
+                    full_delta: *full_delta,
+                })
+                .unwrap();
+        }
+    }
+
+    /// Config for the replay tests: two hidden neurons, a seeded cache.
+    fn replay_cfg(
+        creature: std::path::PathBuf,
+        train: std::path::PathBuf,
+        out: std::path::PathBuf,
+        learnings_dir: std::path::PathBuf,
+        max_full: Option<usize>,
+    ) -> OckhamConfig {
+        OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: out,
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(8),
+            max_accepts: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            max_full,
+            ..OckhamConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_confirmed_but_unapplied_cut_is_replayed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        // Neither was ever applied: both lost their cohort to a better
+        // candidate, and before Issue #52 both were poison for seven days.
+        seed_verdicts(
+            &store,
+            &[
+                ("h_a", Outcome::Rejected, Some(2e-6), 10),
+                ("h_b", Outcome::Rejected, Some(9e-6), 20),
+            ],
+        );
+        let cfg = replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None);
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.stop_reason, "replay-accepts");
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(best.contains("replay-bundle"), "{best}");
+        assert!(!best.contains("h_a") && !best.contains("h_b"), "{best}");
+    }
+
+    #[test]
+    fn a_measured_loss_is_still_not_replayed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        seed_verdicts(
+            &store,
+            &[
+                (
+                    "h_a",
+                    Outcome::Rejected,
+                    Some(-1.0),
+                    crate::incumbent::now_unix(),
+                ),
+                ("h_b", Outcome::Rejected, None, crate::incumbent::now_unix()),
+            ],
+        );
+        let cfg = OckhamConfig {
+            max_experiments: Some(1),
+            ..replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None)
+        };
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_ne!(run.stop_reason, "replay-accepts");
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            journal.contains(r#""record":"batch""#),
+            "the run went to the sweep rather than replaying failures: {journal}"
+        );
+    }
+
+    /// `--max-full` is an individual-scoring cap for the search loop; sizing a
+    /// replay probe with it was always a conflation (Issue #57).
+    #[test]
+    fn a_replay_probe_is_not_sized_by_max_full() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        seed_verdicts(
+            &store,
+            &[
+                ("h_a", Outcome::Accepted, None, 10),
+                ("h_b", Outcome::Accepted, None, 20),
+                ("h_c", Outcome::Accepted, None, 30),
+            ],
+        );
+        let cfg = replay_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            learnings_dir,
+            Some(1),
+        );
+        // Every plan scores exactly the incumbent, so the combined bundle and
+        // every shrink step miss and the probes run.
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_eq!(run.accepts, 0);
+        let probe = run.workspace.join("replay-2");
+        assert!(
+            probe.is_dir(),
+            "a missed replay cohort must fall back to individual probes"
+        );
+        assert_eq!(
+            cohort_stems(&probe, 'i').len(),
+            3,
+            "all three known wins are probed despite --max-full 1"
+        );
+    }
+
+    #[test]
+    fn a_missed_replay_bundle_shrinks_before_it_probes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuids: Vec<String> = (0..6).map(|i| format!("h_{i}")).collect();
+        let refs: Vec<&str> = uuids.iter().map(String::as_str).collect();
+        let (creature, train) = hidden_paths(tmp.path(), &refs);
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        let records: Vec<(&str, Outcome, Option<f64>, u64)> = refs
+            .iter()
+            .enumerate()
+            .map(|(i, u)| (*u, Outcome::Accepted, None, 10 + i as u64))
+            .collect();
+        seed_verdicts(&store, &records);
+        let cfg = replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None);
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        let combined = cfg.output_dir.join("workspace").join("replay-1");
+        let baseline = hidden_in(&combined.join("baseline.json"));
+        let mut cuts: Vec<usize> = cohort_stems(&combined, 'b')
+            .iter()
+            .map(|stem| baseline - hidden_in(&combined.join(format!("{stem}.json"))))
+            .collect();
+        cuts.sort_unstable();
+        assert_eq!(cuts.last(), Some(&6), "the combined plan is tried");
+        assert!(
+            cuts.len() > 1,
+            "a shrink step must share the cohort with it: {cuts:?}"
+        );
+        assert!(cuts.len() <= crate::promote::MAX_REPLAY_PLANS, "{cuts:?}");
+    }
+
+    // ---- Issue #58: the cohort is sized to the wall clock ------------------
+
+    #[test]
+    fn the_cost_estimate_comes_from_observed_full_timings() {
+        let mut cost = CostModel::new(Some(0.01));
+        assert_eq!(cost.per_creature_ms(), None, "nothing measured yet");
+        assert_eq!(
+            cost.cohort_budget(Duration::from_secs(600)),
+            CohortBudget::Unmeasured
+        );
+
+        // A screen stands in until the first full cohort: 100ms per creature
+        // over a 1% sample is roughly 10s per creature on the full corpus.
+        cost.observe_screen(1_000, 10);
+        let fallback = cost.per_creature_ms().unwrap();
+        assert!((fallback - 15_000.0).abs() < 1.0, "{fallback}");
+        assert_eq!(
+            cost.cohort_budget(Duration::from_secs(600)),
+            CohortBudget::Entries(29),
+            "a first batch with no full timing still launches a bounded cohort"
+        );
+
+        // The first real cohort replaces it outright, later ones smooth in.
+        cost.observe_full(4_000, 3);
+        assert_eq!(cost.per_creature_ms(), Some(1_000.0));
+        cost.observe_full(40_000, 3);
+        let smoothed = cost.per_creature_ms().unwrap();
+        assert!(
+            smoothed > 1_000.0 && smoothed < 10_000.0,
+            "one anomalous cohort must not become the estimate: {smoothed}"
+        );
+    }
+
+    #[test]
+    fn the_cohort_is_sized_to_the_budget_with_a_check_in_reserve() {
+        let mut cost = CostModel::new(Some(0.01));
+        cost.observe_full(11_000, 10);
+        assert_eq!(cost.per_creature_ms(), Some(1_000.0));
+        // 100s left, a quarter reserved for applying the win: 75 creatures,
+        // one of which is the incumbent baseline.
+        assert_eq!(
+            cost.cohort_budget(Duration::from_secs(100)),
+            CohortBudget::Entries(74)
+        );
+        assert_eq!(
+            cost.cohort_budget(Duration::from_secs(1)),
+            CohortBudget::TooSmall,
+            "a cohort that cannot finish must never be started"
+        );
+    }
+
+    #[test]
+    fn a_starved_run_stops_before_launching_a_cohort_it_cannot_finish() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            // Enough to score the baseline and one screen, nowhere near enough
+            // for a full cohort at the cost that screen implies.
+            timeout: Duration::from_secs(2),
+            seed: Some(1),
+            candidates: 4,
+            screen_sample_rate: Some(0.01),
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            delay_per_creature: Duration::from_millis(100),
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.stop_reason, "budget");
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            !journal.contains(r#""record":"full""#),
+            "no cohort may be launched: {journal}"
+        );
+    }
+
+    #[test]
+    fn a_generous_budget_leaves_the_cohort_untrimmed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(600),
+            max_experiments: Some(1),
+            max_accepts: Some(1),
+            seed: Some(1),
+            candidates: 4,
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        establish_run(&cfg, &scorer).unwrap();
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(journal.contains(r#""record":"budget""#), "{journal}");
+        let report =
+            crate::report::summarise(&[&cfg.output_dir.join("experiments.jsonl")]).unwrap();
+        assert_eq!(report.budget_trims, 0, "the guard must be inert here");
+        assert_eq!(report.budget_dropped, 0);
+    }
+
+    #[test]
+    fn the_trim_line_names_what_was_dropped_and_why() {
+        let mut full = outcome_with(&[("h_a", 1.0)], None);
+        full.dropped_individuals = 24;
+        full.dropped_bundles = 7;
+        assert_eq!(
+            budget_trim_line(Duration::from_secs(240), 18_000.0, &full),
+            "full: budget 240s, est 18s/creature → 1 of 32 entries; dropped 31 (24 individual, 7 bundle)"
+        );
     }
 
     #[test]

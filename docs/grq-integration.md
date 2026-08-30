@@ -99,7 +99,7 @@ The full argument vector is built in `grq_ockham_run`
 | `--candidates` | `100` | `GRQ_OCKHAM_CANDIDATES` |
 | `--screen-sample-rate` | `0.01` | `GRQ_OCKHAM_SCREEN_SAMPLE_RATE` |
 | `--max-accepts` | `1` | `GRQ_OCKHAM_MAX_ACCEPTS` |
-| `--max-full` | **not passed** unless set | `GRQ_OCKHAM_MAX_FULL` |
+| `--max-full` | **not passed**; the companion GRQ change unsets `GRQ_OCKHAM_MAX_FULL` | `GRQ_OCKHAM_MAX_FULL` |
 | `--learnings-dir` | `${GRQ_OCKHAM_LEARNINGS_DIR}` | set by section 3 |
 | `--learnings-host` | `grq_ockham_learnings_host` | `GRQ_OCKHAM_LEARNINGS_HOST` |
 | `--learnings-replay` | only when set | `GRQ_OCKHAM_LEARNINGS_REPLAY` |
@@ -119,6 +119,12 @@ Notes that matter to anyone changing Ockham's CLI:
   `OckhamConfig::unchecked_first_enabled` (`ockham/src/config.rs`) decides, and
   it follows `--learnings-dir` — so in production the flag is **on** whenever
   the shared cache is reachable, and off when it is not.
+- **`--max-full` caps individual scoring only.** Since Issue #54 it no longer
+  gates bundle construction: every screened winner reaches `bundle_plans`
+  whatever the cap, so setting `GRQ_OCKHAM_MAX_FULL` again cannot re-create the
+  state Issue #45 was raised about, where 30 of 38 winners were discarded before
+  any combination was built. The companion GRQ change unsets the variable, so
+  production runs with no cap at all.
 - The three `--learnings-*` flags are only appended when
   `GRQ_OCKHAM_LEARNINGS_DIR` is non-empty; an unreachable cache means the whole
   block is absent, not empty.
@@ -309,8 +315,8 @@ What GRQ reads out of Ockham. Changing any row breaks a live fleet worker.
 | Other creature tag *names* | `grq_creature_guard_checkin_lineage` | Every source tag name must survive on the candidate, except `score` / `dataSha`. `error` is stamped by `stamp_acceptance` and matters here as a name. |
 | Per-neuron `tags` | `grq_creature_guard_checkin_lineage` | Must survive the prune. Cutting a tagged neuron loses provenance that cannot be recovered from the checked-in file. |
 | `uuid` / `memetic` keys | `grq_creature_guard_checkin_lineage` | Must be **absent** from the written creature. |
-| `<output-dir>/coverage.txt` | `grq_ockham_read_coverage` | Line-oriented block relayed verbatim as the commit description. Absent or blank is a supported no-op. |
-| `<output-dir>/coverage.json` | *nothing in GRQ today* | Written by Ockham; GRQ reads only `coverage.txt`. |
+| `<output-dir>/coverage.txt` | `grq_ockham_read_coverage` | Line-oriented block relayed verbatim as the commit description. Since Issue #59 it may carry `winners:` / `bundles:` / `dropped:` lines after the coverage lines; each is omitted when it has nothing to report, and a run that screened nothing renders the pre-#59 block byte for byte. Absent or blank is a supported no-op. |
+| `<output-dir>/coverage.json` | *nothing in GRQ today* | Written by Ockham; GRQ reads only `coverage.txt`. Since Issue #59 it carries an additive `winners` object beside the existing coverage fields, which are unchanged. |
 | Process stdout | *nothing* | Redirected to stderr by `grq_ockham_run`. `grq_ockham_run`'s **own** stdout must carry the `best.json` path and nothing else. |
 | Exit code 0 | `grq_ockham_run` | Success; `best.json` must be present. |
 | Exit code 124/143/137 | `grq_ockham_run` | OS wall-clock backstop — warned, and `best.json` is used if present. |

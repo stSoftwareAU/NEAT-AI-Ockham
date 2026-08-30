@@ -157,6 +157,9 @@ pub mod fake {
         pub last_mode: Cell<Option<ScorerMode>>,
         /// Last file stems scored in one call (tests).
         pub last_stems: RefCell<Vec<String>>,
+        /// Wall time this fake spends per creature, so a test can starve a run
+        /// of budget deterministically (Issue #58).
+        pub delay_per_creature: std::time::Duration,
     }
 
     impl ScriptedScorer {
@@ -212,6 +215,9 @@ pub mod fake {
                 }
                 extra.sort();
                 stems.extend(extra);
+            }
+            if !self.delay_per_creature.is_zero() {
+                std::thread::sleep(self.delay_per_creature * stems.len() as u32);
             }
             self.last_stems.replace(stems.clone());
             let mut out = BTreeMap::new();
