@@ -290,7 +290,7 @@ pub fn hidden_order(
 mod tests {
     use super::*;
     use crate::fixtures::{creature, neuron, synapse};
-    use crate::stats::{NeuronStats, STATS_FORMAT_VERSION};
+    use crate::stats::{NeuronStats, STATS_FORMAT_VERSION, SampleSpec};
 
     /// Three hidden neurons with deliberately different signals.
     ///
@@ -331,6 +331,9 @@ mod tests {
             creature_checksum: "t".into(),
             corpus_identity: "c".into(),
             record_count: 10,
+            corpus_record_count: 10,
+            sample: SampleSpec::full(),
+            stopped_early: false,
             scan_ms: 0,
             from_cache: false,
             neurons: rows
