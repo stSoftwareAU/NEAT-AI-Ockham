@@ -53,6 +53,9 @@ The current Rust implementation includes:
   `report`, and carried into the `ockham` check-in tag (the GRQ-sampler commit
   subject) in the compact `checked X/Y (Z%)` form whenever a learnings dir is
   configured;
+- `coverage.txt` / `coverage.json` beside `best.json`: the multi-line screening
+  coverage block GRQ pastes into the sampler commit description, plus the same
+  figures machine-readably;
 - tagged hidden neurons skipped as prune candidates (journal reason `tagged`)
   so GRQ provenance check-in cannot fail;
 - named, reproducible candidate orderings with random as the measured control,
@@ -284,9 +287,9 @@ never proposes:
   score that only ever rises.
 
 With `--learnings-dir` set, the run journals one `coverage` record at the end,
-so `report` shows `hidden`, `checked` and `coveragePercent` across runs. Without
-a learnings dir there is no coverage state, and nothing is journalled — absent
-rather than a misleading 0%.
+so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`
+and `coveragePercent` across runs. Without a learnings dir there is no coverage
+state, and nothing is journalled — absent rather than a misleading 0%.
 
 ```mermaid
 flowchart LR
@@ -297,6 +300,52 @@ flowchart LR
     S -->|yes| D["checked"]
     S -->|no| U["unchecked"]
     D --> P["percent = checked / checkable"]
+```
+
+### The GRQ commit-description contract
+
+The `ockham` tag is one crowded line, so the readable answer to "how many
+neurons have been checked, and have they earnt their keep?" belongs in the
+commit **description**. Ockham produces that block; GRQ only pastes it.
+
+On the normal completion path, a run with `--learnings-dir` writes two files
+into `--output-dir`, beside `best.json`:
+
+| Path | Contents |
+|---|---|
+| `coverage.txt` | The rendered description block, ready to paste into `git commit`. |
+| `coverage.json` | The same figures as the serialised `Coverage` struct. |
+
+`coverage.txt` is line-oriented and stable — treat it as a contract:
+
+```text
+🪒 Ockham neuron screening coverage
+checked:   1204 of 4971 hidden (24.2%)
+cut:       7 this run
+unchecked: 3767 remaining (~38 runs at 100/run)
+skipped:   42 tagged (GRQ provenance, never pruned)
+```
+
+- the runs-remaining estimate divides `unchecked` by the configured
+  `--candidates` batch size, and the whole clause is **omitted** — never `inf`
+  or `NaN` — when that batch size is zero or coverage is already complete;
+- the `skipped:` line is omitted when no neuron is tagged;
+- `coverage.json` deserialises straight back into `Coverage`, so nothing
+  downstream needs to parse the prose.
+
+Both files are written only when coverage exists: no `--learnings-dir` means no
+screen store, no coverage state, and neither file. A write fault warns and the
+run still completes — reporting must never cost a verified prune.
+
+```mermaid
+flowchart LR
+    L["--learnings-dir set?"] -->|no| N["no coverage state<br/>neither file written"]
+    L -->|yes| C["Coverage over the final incumbent"]
+    C --> J["journal: coverage record"]
+    C --> T["coverage.txt — description block"]
+    C --> S["coverage.json — Coverage struct"]
+    T --> G["GRQ: git commit description"]
+    S --> G
 ```
 
 ### Unchecked-first selection
@@ -531,6 +580,8 @@ remains available as the control for every comparison.
 |---|---|
 | `best.json` | Best authoritative local Ockham result found during the run. |
 | `experiments.jsonl` | Append-only experiment journal. |
+| `coverage.txt` | Screening-coverage block for the GRQ commit description. Written only with `--learnings-dir`. |
+| `coverage.json` | The same coverage figures as JSON. Written only with `--learnings-dir`. |
 | `winners/` | Accepted intermediate Ockham incumbents. |
 | `workspace/` | Isolated run state, baseline and statistics caches. |
 | `population-candidate.json` | Written only after beating the supplied current global champion. |
@@ -560,7 +611,9 @@ Useful measures include:
 - authoritative local accepts per hour (`acceptsPerHour`);
 - sample and full scorer calls consumed (`screenCalls`, `fullCalls`);
 - screen-coverage records filed (`screened`);
-- screening coverage of the incumbent (`hidden`, `checked`, `coveragePercent`);
+- screening coverage of the incumbent — every figure of the commit-description
+  block (`hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`,
+  `coveragePercent`);
 - growth-cost reduction (`growthUnitsSaved`);
 - neurons and synapses removed;
 - sampled-screen false positives;
@@ -652,7 +705,7 @@ NEAT-AI-Ockham/
 │       ├── report.rs          # experiments.jsonl summary
 │       ├── tags.rs            # GRQ-sampler score/provenance tags
 │       ├── learnings.rs       # fleet prune-verdict cache + screen coverage
-│       ├── coverage.rs       # checked/total/percent over the incumbent
+│       ├── coverage.rs       # checked/total/percent + coverage.txt / coverage.json
 │       ├── ordering.rs        # named candidate ordering strategies
 │       ├── fixtures.rs
 │       ├── run.rs
