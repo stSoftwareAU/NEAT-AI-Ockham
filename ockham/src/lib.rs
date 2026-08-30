@@ -28,6 +28,7 @@
 //! | fleet learnings store + replay | [`learnings`] | #27 |
 //! | named candidate orderings | [`ordering`] | #11 |
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
+//! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
 
 #![warn(missing_docs)]
 
@@ -62,7 +63,9 @@ pub use config::{
     DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
 };
 pub use corpus::{CorpusInfo, corpus_info};
-pub use coverage::{Coverage, coverage};
+pub use coverage::{
+    COVERAGE_JSON_FILE, COVERAGE_TEXT_FILE, Coverage, coverage, write_files as write_coverage_files,
+};
 pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
 pub use ordering::{Ordering, OrderingConfig, hidden_order};
 pub use promote::{FullOutcome, evaluate_full};

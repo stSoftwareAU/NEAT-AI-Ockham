@@ -18,11 +18,17 @@
 //! creature in front of us, not a monotonic score.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use neat_core::CreatureExport;
 use serde::{Deserialize, Serialize};
 
 use crate::learnings::Screened;
+
+/// Rendered commit-description block, written beside `best.json` (Issue #40).
+pub const COVERAGE_TEXT_FILE: &str = "coverage.txt";
+/// Serialised [`Coverage`], written beside `best.json` (Issue #40).
+pub const COVERAGE_JSON_FILE: &str = "coverage.json";
 
 /// Screening coverage of one incumbent at one moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +75,75 @@ impl Coverage {
         }
         out
     }
+
+    /// Checkable UUIDs with no screen record yet.
+    ///
+    /// Saturating: a stale record set can report more `checked` than there are
+    /// checkable neurons, and "minus three unchecked" is not a measurement.
+    pub fn unchecked(&self) -> usize {
+        self.checkable.saturating_sub(self.checked)
+    }
+
+    /// Multi-line commit-description block — the GRQ-facing artefact (Issue #40).
+    ///
+    /// ```text
+    /// 🪒 Ockham neuron screening coverage
+    /// checked:   1204 of 4971 hidden (24.2%)
+    /// cut:       7 this run
+    /// unchecked: 3767 remaining (~38 runs at 100/run)
+    /// skipped:   42 tagged (GRQ provenance, never pruned)
+    /// ```
+    ///
+    /// Line-oriented and stable: GRQ pastes it into a `git commit` description.
+    /// `candidates` is the configured `--candidates` batch size; the
+    /// runs-remaining clause is **omitted** rather than rendering `inf` when
+    /// the batch size is zero, and there is nothing to estimate once coverage
+    /// is complete. The `skipped:` line is omitted when nothing is tagged.
+    /// No trailing newline — [`write_files`] adds one.
+    pub fn description(&self, candidates: usize) -> String {
+        let unchecked = self.unchecked();
+        let runs = if candidates > 0 && unchecked > 0 {
+            let n = unchecked.div_ceil(candidates);
+            let unit = if n == 1 { "run" } else { "runs" };
+            format!(" (~{n} {unit} at {candidates}/run)")
+        } else {
+            String::new()
+        };
+        let mut out = String::from("🪒 Ockham neuron screening coverage\n");
+        out.push_str(&format!(
+            "{:<11}{} of {} hidden ({:.1}%)\n",
+            "checked:",
+            self.checked,
+            self.checkable,
+            self.percent()
+        ));
+        out.push_str(&format!("{:<11}{} this run\n", "cut:", self.cut));
+        out.push_str(&format!("{:<11}{unchecked} remaining{runs}", "unchecked:"));
+        if self.tagged > 0 {
+            out.push_str(&format!(
+                "\n{:<11}{} tagged (GRQ provenance, never pruned)",
+                "skipped:", self.tagged
+            ));
+        }
+        out
+    }
+}
+
+/// Write `coverage.txt` and `coverage.json` into `dir` (Issue #40).
+///
+/// The stable contract GRQ consumes: prose for the commit description, and the
+/// same figures as JSON for anything that would otherwise parse the prose.
+/// Both are written or the error names the file that failed — the caller warns
+/// rather than failing the run, matching the learnings-cache rule.
+pub fn write_files(dir: &Path, coverage: &Coverage, candidates: usize) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let text = dir.join(COVERAGE_TEXT_FILE);
+    std::fs::write(&text, format!("{}\n", coverage.description(candidates)))
+        .map_err(|e| format!("{}: {e}", text.display()))?;
+    let json =
+        serde_json::to_string_pretty(coverage).map_err(|e| format!("{COVERAGE_JSON_FILE}: {e}"))?;
+    let path = dir.join(COVERAGE_JSON_FILE);
+    std::fs::write(&path, format!("{json}\n")).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Count coverage of `creature` from `screens`, excluding `tagged` UUIDs.
@@ -244,6 +319,134 @@ mod tests {
             cov.summary(),
             "checked 2 of 5 hidden (40.0%), 1 cut, 1 tagged skipped"
         );
+    }
+
+    /// The fleet-scale example from Issue #40, rendered exactly.
+    fn fleet_coverage() -> Coverage {
+        Coverage {
+            hidden: 5013,
+            tagged: 42,
+            checkable: 4971,
+            checked: 1204,
+            cut: 7,
+        }
+    }
+
+    #[test]
+    fn the_description_block_renders_exactly_as_grq_will_paste_it() {
+        assert_eq!(
+            fleet_coverage().description(100),
+            concat!(
+                "🪒 Ockham neuron screening coverage\n",
+                "checked:   1204 of 4971 hidden (24.2%)\n",
+                "cut:       7 this run\n",
+                "unchecked: 3767 remaining (~38 runs at 100/run)\n",
+                "skipped:   42 tagged (GRQ provenance, never pruned)"
+            )
+        );
+    }
+
+    #[test]
+    fn the_description_omits_the_skipped_line_when_nothing_is_tagged() {
+        let cov = Coverage {
+            tagged: 0,
+            checkable: 5013,
+            ..fleet_coverage()
+        };
+        let block = cov.description(100);
+        assert!(!block.contains("skipped"), "{block}");
+        assert!(
+            block.ends_with("unchecked: 3809 remaining (~39 runs at 100/run)"),
+            "{block}"
+        );
+    }
+
+    /// `--candidates 0` must not produce a division by zero — the clause goes.
+    /// A single remaining run reads `~1 run`, not `~1 runs`.
+    #[test]
+    fn the_last_remaining_run_is_singular() {
+        let cov = Coverage {
+            hidden: 4,
+            tagged: 0,
+            checkable: 4,
+            checked: 2,
+            cut: 0,
+        };
+        assert!(
+            cov.description(100)
+                .ends_with("unchecked: 2 remaining (~1 run at 100/run)"),
+            "{}",
+            cov.description(100)
+        );
+    }
+
+    #[test]
+    fn a_zero_batch_size_drops_the_runs_clause_rather_than_rendering_inf() {
+        let block = fleet_coverage().description(0);
+        assert!(block.contains("unchecked: 3767 remaining\n"), "{block}");
+        assert!(!block.contains("runs at"), "{block}");
+        assert!(!block.contains("inf") && !block.contains("NaN"), "{block}");
+    }
+
+    #[test]
+    fn complete_coverage_drops_the_runs_clause_because_nothing_is_left() {
+        let cov = Coverage {
+            hidden: 4,
+            tagged: 0,
+            checkable: 4,
+            checked: 4,
+            cut: 1,
+        };
+        assert_eq!(
+            cov.description(100),
+            concat!(
+                "🪒 Ockham neuron screening coverage\n",
+                "checked:   4 of 4 hidden (100.0%)\n",
+                "cut:       1 this run\n",
+                "unchecked: 0 remaining"
+            )
+        );
+    }
+
+    #[test]
+    fn more_records_than_checkable_neurons_never_renders_a_negative_remainder() {
+        let cov = Coverage {
+            hidden: 3,
+            tagged: 0,
+            checkable: 3,
+            checked: 9,
+            cut: 0,
+        };
+        assert_eq!(cov.unchecked(), 0);
+        assert!(cov.description(10).contains("unchecked: 0 remaining"));
+    }
+
+    #[test]
+    fn both_files_are_written_and_the_json_deserialises_back_into_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("out");
+        let cov = fleet_coverage();
+        write_files(&dir, &cov, 100).unwrap();
+
+        let text = std::fs::read_to_string(dir.join(COVERAGE_TEXT_FILE)).unwrap();
+        assert_eq!(text, format!("{}\n", cov.description(100)));
+
+        let json = std::fs::read_to_string(dir.join(COVERAGE_JSON_FILE)).unwrap();
+        let back: Coverage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, cov, "the machine-readable contract must round-trip");
+        assert!(json.contains("\"checkable\": 4971"), "{json}");
+    }
+
+    /// A blocked write must name the file it could not write, so the caller's
+    /// warning is actionable rather than a silent missing artefact.
+    #[test]
+    fn a_blocked_write_returns_an_error_naming_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("out");
+        // A directory where coverage.txt belongs: the write cannot succeed.
+        std::fs::create_dir_all(dir.join(COVERAGE_TEXT_FILE)).unwrap();
+        let err = write_files(&dir, &fleet_coverage(), 100).unwrap_err();
+        assert!(err.contains(COVERAGE_TEXT_FILE), "{err}");
     }
 
     #[test]

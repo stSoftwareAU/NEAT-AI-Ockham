@@ -773,6 +773,17 @@ fn ockham_loop(
                 cut: cov.cut,
             },
         )?;
+        // The GRQ-facing commit-description artefacts (Issue #40). A write
+        // fault warns rather than failing the run, matching the learnings
+        // cache: coverage is reporting, and reporting must never lose pruning.
+        match crate::coverage::write_files(&config.output_dir, &cov, config.candidates) {
+            Ok(()) => log::detail(&format!(
+                "coverage: wrote {} and {}",
+                crate::coverage::COVERAGE_TEXT_FILE,
+                crate::coverage::COVERAGE_JSON_FILE
+            )),
+            Err(e) => log::warn(&format!("coverage files not written: {e}")),
+        }
     }
 
     journal::append(
@@ -1002,6 +1013,7 @@ mod tests {
     use super::*;
     use crate::baseline::fake::ScriptedScorer;
     use crate::corpus::write_bin_file;
+    use crate::coverage::Coverage;
     use crate::fixtures::identity_creature_json;
     use neat_core::training_data::TrainingDataConfig;
     use std::time::Duration;
@@ -1533,6 +1545,108 @@ mod tests {
         assert_eq!(report.hidden, Some(4));
         assert_eq!(report.checked, Some(2), "one batch of two candidates");
         assert_eq!(report.coverage_percent, Some(50.0));
+    }
+
+    /// Config for the coverage-artefact tests: one batch over four neurons.
+    fn coverage_files_cfg(
+        creature: std::path::PathBuf,
+        train: std::path::PathBuf,
+        out: std::path::PathBuf,
+        learnings_dir: Option<std::path::PathBuf>,
+    ) -> OckhamConfig {
+        OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: out,
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 2,
+            learnings_dir,
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        }
+    }
+
+    #[test]
+    fn the_run_writes_the_coverage_description_and_json_beside_best_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let cfg = coverage_files_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(tmp.path().join("learnings")),
+        );
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(cfg.output_dir.join("best.json").exists());
+        let json =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_JSON_FILE))
+                .unwrap();
+        let cov: Coverage = serde_json::from_str(&json).unwrap();
+        assert_eq!(cov.hidden, 4);
+        assert_eq!(cov.checked, 2, "one batch of two candidates");
+        assert_eq!(cov.checkable, 4);
+        assert_eq!(
+            text,
+            format!("{}\n", cov.description(cfg.candidates)),
+            "the text block must render the JSON figures"
+        );
+        assert!(
+            text.starts_with("🪒 Ockham neuron screening coverage\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("unchecked: 2 remaining (~1 run at 2/run)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_run_without_a_learnings_dir_writes_no_coverage_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let cfg = coverage_files_cfg(creature, train, tmp.path().join("out"), None);
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert!(
+            !cfg.output_dir
+                .join(crate::coverage::COVERAGE_TEXT_FILE)
+                .exists(),
+            "no screen store means no coverage state to publish"
+        );
+        assert!(
+            !cfg.output_dir
+                .join(crate::coverage::COVERAGE_JSON_FILE)
+                .exists()
+        );
+    }
+
+    #[test]
+    fn a_blocked_coverage_write_warns_rather_than_failing_the_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let out = tmp.path().join("out");
+        // A directory where coverage.txt belongs: the artefact cannot be
+        // written, and the run must still complete.
+        std::fs::create_dir_all(out.join(crate::coverage::COVERAGE_TEXT_FILE)).unwrap();
+        let cfg = coverage_files_cfg(creature, train, out, Some(tmp.path().join("learnings")));
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_eq!(run.optimisation, "complete");
+        assert!(
+            !cfg.output_dir
+                .join(crate::coverage::COVERAGE_JSON_FILE)
+                .exists(),
+            "the failed text write stops before the json, and neither fails the run"
+        );
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            journal.contains(r#""record":"coverage""#),
+            "coverage is still journalled: {journal}"
+        );
     }
 
     /// Extract the `ockham` creature tag from a written `best.json`.

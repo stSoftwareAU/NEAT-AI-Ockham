@@ -51,8 +51,16 @@ pub struct Report {
     pub screened: u64,
     /// Hidden neurons on the incumbent at the last coverage record (Issue #37).
     pub hidden: Option<usize>,
+    /// Hidden neurons carrying GRQ-provenance tags, at that same record (Issue #40).
+    pub tagged: Option<usize>,
+    /// `hidden - tagged`: the coverage denominator, at that same record (Issue #40).
+    pub checkable: Option<usize>,
     /// Checkable UUIDs screened at least once, at that same record.
     pub checked: Option<usize>,
+    /// Checkable UUIDs still never screened, at that same record (Issue #40).
+    pub unchecked: Option<usize>,
+    /// Hidden neurons cut by the run that wrote that record (Issue #40).
+    pub cut: Option<usize>,
     /// `checked / checkable * 100` at that same record.
     pub coverage_percent: Option<f64>,
     /// Milliseconds from the loop start to the first authoritative local win.
@@ -96,7 +104,11 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         full_calls: 0,
         screened: 0,
         hidden: None,
+        tagged: None,
+        checkable: None,
         checked: None,
+        unchecked: None,
+        cut: None,
         coverage_percent: None,
         first_win_ms: None,
         candidates_before_first_win: None,
@@ -169,7 +181,11 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                         cut,
                     };
                     report.hidden = Some(cov.hidden);
+                    report.tagged = Some(cov.tagged);
+                    report.checkable = Some(cov.checkable);
                     report.checked = Some(cov.checked);
+                    report.unchecked = Some(cov.unchecked());
+                    report.cut = Some(cov.cut);
                     report.coverage_percent = Some(cov.percent());
                 }
                 Event::Full {
@@ -449,6 +465,44 @@ mod tests {
         assert_eq!(report.coverage_percent, Some(37.5));
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"coveragePercent\":37.5"), "{json}");
+    }
+
+    /// Every figure of the commit-description block reaches `report` (#40).
+    #[test]
+    fn the_report_carries_the_whole_coverage_block_not_just_the_percentage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Coverage {
+                hidden: 5013,
+                tagged: 42,
+                checkable: 4971,
+                checked: 1204,
+                cut: 7,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.tagged, Some(42));
+        assert_eq!(report.checkable, Some(4971));
+        assert_eq!(report.unchecked, Some(3767));
+        assert_eq!(report.cut, Some(7));
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"unchecked\":3767"), "{json}");
+    }
+
+    #[test]
+    fn a_journal_with_no_coverage_record_reports_no_block_figures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.tagged, None);
+        assert_eq!(report.checkable, None);
+        assert_eq!(report.unchecked, None, "no coverage state is not zero left");
+        assert_eq!(report.cut, None);
     }
 
     #[test]
