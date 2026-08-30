@@ -16,7 +16,7 @@
 //! | immutable incumbent + checksum | [`incumbent`] | #2 |
 //! | authoritative baseline | [`baseline`], [`run`] | #2 |
 //! | corpus identity / streaming | [`corpus`] | #2 |
-//! | full-corpus activation statistics | [`stats`] | #3 |
+//! | sampled activation statistics | [`stats`] | #3, #44 |
 //! | mean-activation ablation + cleanup | [`ablation`] | #4 |
 //! | exact IDENTITY collapse | [`collapse`] | #5 |
 //! | seeded sampled sweep | [`sweep`] | #6 |
@@ -62,7 +62,7 @@ pub use config::{
     ConfigReport, DEFAULT_CANDIDATE_COUNT, DEFAULT_MIN_IMPROVEMENT, DEFAULT_SCREEN_SAMPLE_RATE,
     DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
 };
-pub use corpus::{CorpusInfo, corpus_info};
+pub use corpus::{CorpusInfo, RecordRange, corpus_info};
 pub use coverage::{
     COVERAGE_JSON_FILE, COVERAGE_TEXT_FILE, Coverage, coverage, write_files as write_coverage_files,
 };
@@ -72,7 +72,7 @@ pub use promote::{FullOutcome, evaluate_full};
 pub use report::{Report, summarise};
 pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
-pub use stats::{ActivationStats, NeuronStats, ensure_activation_stats};
+pub use stats::{ActivationStats, NeuronStats, SampleSpec, ensure_activation_stats};
 pub use sweep::{
     ScreenConfig, ScreenOutcome, ScreenedLoser, Sweep, SweepCandidate, draw_seed, screen_batch,
 };

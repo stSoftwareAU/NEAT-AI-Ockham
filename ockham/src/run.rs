@@ -116,19 +116,34 @@ pub fn establish_run(
         baseline.score, baseline.error
     ));
 
-    log::info("computing full-corpus hidden-neuron activation statistics");
+    let sample = config.stats_sample_spec();
+    log::info(&format!(
+        "computing hidden-neuron activation statistics ({})",
+        if sample.max_records == 0 {
+            "full corpus".to_string()
+        } else {
+            format!("sampled, up to {} records", sample.max_records)
+        }
+    ));
     let activation = ensure_activation_stats(
         &incumbent,
         &config.training_data,
         &corpus,
         &workspace,
         crate::stats::DEFAULT_CHUNK_RECORDS,
+        &sample,
     )?;
     log::detail(&format!(
-        "activation stats: {} hidden neurons, {} records, {}ms{}",
+        "activation stats: {} hidden neurons, {}/{} records, {}ms{}{}",
         activation.neurons.len(),
         activation.record_count,
+        activation.corpus_record_count,
         activation.scan_ms,
+        if activation.stopped_early {
+            " (converged)"
+        } else {
+            ""
+        },
         if activation.from_cache {
             " (cache)"
         } else {
@@ -1402,6 +1417,7 @@ fn apply_local_win(
         corpus,
         workspace,
         crate::stats::DEFAULT_CHUNK_RECORDS,
+        &config.stats_sample_spec(),
     )?;
     Ok(())
 }
@@ -1447,7 +1463,11 @@ mod tests {
         assert!(cfg.output_dir.join("best.json").exists());
         assert!(run.workspace.join("incumbent.json").exists());
         assert!(run.workspace.join("baseline.json").exists());
-        assert_eq!(run.activation.record_count, 2);
+        // No hidden neurons, so there is nothing to measure and the scan is
+        // skipped outright rather than streaming the corpus for an empty
+        // result (#44).
+        assert_eq!(run.activation.record_count, 0);
+        assert_eq!(run.activation.corpus_record_count, 2);
         assert!(run.activation.neurons.is_empty());
         assert_eq!(std::fs::read(&cfg.creature).unwrap(), before);
         assert_eq!(

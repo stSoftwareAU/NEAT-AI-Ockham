@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::ordering::{Ordering, OrderingConfig};
+use crate::stats::{DEFAULT_SAMPLE_RECORDS, SampleSpec};
 
 /// Default wall-clock budget (45 minutes).
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 45 * 60;
@@ -77,6 +78,8 @@ pub struct OckhamConfig {
     /// `None` takes the default: on when [`Self::learnings_dir`] is set, off
     /// without it — with no screen store there is no coverage state to prefer.
     pub unchecked_first: Option<bool>,
+    /// Cap on records visited by the activation scan; `0` = full corpus (#44).
+    pub stats_sample_records: u64,
 }
 
 impl Default for OckhamConfig {
@@ -104,6 +107,7 @@ impl Default for OckhamConfig {
             ordering: DEFAULT_ORDERING,
             ordering_random_quota: DEFAULT_ORDERING_RANDOM_QUOTA,
             unchecked_first: None,
+            stats_sample_records: DEFAULT_SAMPLE_RECORDS,
         }
     }
 }
@@ -153,6 +157,11 @@ impl OckhamConfig {
         }
     }
 
+    /// Sampling policy for the hidden-neuron activation scan (issue #44).
+    pub fn stats_sample_spec(&self) -> SampleSpec {
+        SampleSpec::with_max_records(self.stats_sample_records)
+    }
+
     /// Whether the sweep prefers never-screened neurons (issue #38).
     ///
     /// `--unchecked-first` wins when given; otherwise it follows
@@ -188,6 +197,7 @@ impl OckhamConfig {
             ordering: self.ordering,
             ordering_random_quota: self.ordering_random_quota,
             unchecked_first: self.unchecked_first_enabled(),
+            stats_sample_records: self.stats_sample_records,
             optimisation: "loop",
         }
     }
@@ -243,6 +253,8 @@ pub struct ConfigReport {
     pub ordering_random_quota: f64,
     /// Resolved unchecked-first selection (defaults to `learnings_dir.is_some()`).
     pub unchecked_first: bool,
+    /// Cap on records visited by the activation scan (`0` = full corpus).
+    pub stats_sample_records: u64,
     /// Optimisation status for this bootstrap issue (`deferred`).
     pub optimisation: &'static str,
 }
@@ -348,6 +360,23 @@ mod tests {
         on.validate().unwrap();
         assert!(on.unchecked_first_enabled());
         assert!(on.report().unchecked_first);
+    }
+
+    #[test]
+    fn the_activation_scan_samples_by_default_and_zero_restores_the_full_scan() {
+        let c = OckhamConfig::default();
+        assert_eq!(c.stats_sample_records, DEFAULT_SAMPLE_RECORDS);
+        assert_eq!(c.stats_sample_spec().max_records, DEFAULT_SAMPLE_RECORDS);
+        assert!(c.stats_sample_spec().target_rel_se > 0.0);
+        assert_eq!(c.report().stats_sample_records, DEFAULT_SAMPLE_RECORDS);
+
+        let full = OckhamConfig {
+            stats_sample_records: 0,
+            ..OckhamConfig::default()
+        };
+        full.validate().unwrap();
+        assert_eq!(full.stats_sample_spec(), SampleSpec::full());
+        assert_eq!(full.stats_sample_spec().target_rel_se, 0.0);
     }
 
     #[test]
