@@ -1601,7 +1601,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("unchecked: 2 remaining (~1 runs at 2/run)"),
+            text.contains("unchecked: 2 remaining (~1 run at 2/run)"),
             "{text}"
         );
     }

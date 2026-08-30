@@ -327,8 +327,9 @@ skipped:   42 tagged (GRQ provenance, never pruned)
 ```
 
 - the runs-remaining estimate divides `unchecked` by the configured
-  `--candidates` batch size, and the whole clause is **omitted** — never `inf`
-  or `NaN` — when that batch size is zero or coverage is already complete;
+  `--candidates` batch size (`~1 run` when one batch would finish it), and the
+  whole clause is **omitted** — never `inf` or `NaN` — when that batch size is
+  zero or coverage is already complete;
 - the `skipped:` line is omitted when no neuron is tagged;
 - `coverage.json` deserialises straight back into `Coverage`, so nothing
   downstream needs to parse the prose.

@@ -103,10 +103,9 @@ impl Coverage {
     pub fn description(&self, candidates: usize) -> String {
         let unchecked = self.unchecked();
         let runs = if candidates > 0 && unchecked > 0 {
-            format!(
-                " (~{} runs at {candidates}/run)",
-                unchecked.div_ceil(candidates)
-            )
+            let n = unchecked.div_ceil(candidates);
+            let unit = if n == 1 { "run" } else { "runs" };
+            format!(" (~{n} {unit} at {candidates}/run)")
         } else {
             String::new()
         };
@@ -363,6 +362,24 @@ mod tests {
     }
 
     /// `--candidates 0` must not produce a division by zero — the clause goes.
+    /// A single remaining run reads `~1 run`, not `~1 runs`.
+    #[test]
+    fn the_last_remaining_run_is_singular() {
+        let cov = Coverage {
+            hidden: 4,
+            tagged: 0,
+            checkable: 4,
+            checked: 2,
+            cut: 0,
+        };
+        assert!(
+            cov.description(100)
+                .ends_with("unchecked: 2 remaining (~1 run at 100/run)"),
+            "{}",
+            cov.description(100)
+        );
+    }
+
     #[test]
     fn a_zero_batch_size_drops_the_runs_clause_rather_than_rendering_inf() {
         let block = fleet_coverage().description(0);
