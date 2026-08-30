@@ -13,6 +13,7 @@ use neat_ai_ockham::config::{
     DEFAULT_ORDERING, DEFAULT_ORDERING_RANDOM_QUOTA, DEFAULT_SCREEN_SAMPLE_RATE,
     DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
 };
+use neat_ai_ockham::stats::DEFAULT_SAMPLE_RECORDS;
 use neat_ai_ockham::{ExternalScorer, Ordering, establish_run, log};
 
 #[derive(Parser, Debug)]
@@ -87,6 +88,9 @@ struct Cli {
     /// Fraction of sweep slots reserved for the random control, in [0, 1).
     #[arg(long, default_value_t = DEFAULT_ORDERING_RANDOM_QUOTA)]
     ordering_random_quota: f64,
+    /// Records sampled for hidden-neuron activation statistics; 0 scans the whole corpus.
+    #[arg(long, default_value_t = DEFAULT_SAMPLE_RECORDS)]
+    stats_sample_records: u64,
     /// Screen never-checked neurons before re-screening the stalest ones.
     /// Defaults to on with `--learnings-dir` and off without it.
     #[arg(
@@ -166,6 +170,7 @@ fn main() -> ExitCode {
         ordering: cli.ordering,
         ordering_random_quota: cli.ordering_random_quota,
         unchecked_first: cli.unchecked_first,
+        stats_sample_records: cli.stats_sample_records,
     };
     if let Err(e) = config.validate() {
         eprintln!("{e}");

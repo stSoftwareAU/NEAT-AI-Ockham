@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use neat_ai_ockham::corpus::write_bin_file;
-use neat_ai_ockham::fixtures::{identity_creature_json, recurrent_flagged_creature_json};
+use neat_ai_ockham::fixtures::{
+    hidden_identity_creature, identity_creature_json, recurrent_flagged_creature_json,
+};
 
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_neat_ai_ockham"))
@@ -95,6 +97,57 @@ fn baseline_gate_writes_workspace_without_pruning() {
     assert!(out_dir.join("workspace/incumbent.json").exists());
     assert!(out_dir.join("workspace/incumbent.meta.json").exists());
     assert!(out_dir.join("workspace/baseline.json").exists());
+}
+
+#[test]
+fn stats_sample_records_bounds_the_activation_scan_and_zero_restores_the_full_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let creature = tmp.path().join("creature.json");
+    std::fs::write(
+        &creature,
+        neat_core::creature_to_json_pretty(&hidden_identity_creature(0.0, 1.0)).unwrap(),
+    )
+    .unwrap();
+    let train = tmp.path().join("train");
+    std::fs::create_dir(&train).unwrap();
+    write_training(&train, 4_000);
+    let scorer = fake_scorer(
+        tmp.path(),
+        r#"{"baseline":{"score":0.5,"error":0.5,"complexityPenalty":1e-8,"recordCount":4000,"costName":"MSE","timeTaken":0.01}}"#,
+    );
+
+    let activation = |sample: &str| -> serde_json::Value {
+        let out = bin()
+            .arg(&creature)
+            .arg(&train)
+            .arg("--output-dir")
+            .arg(tmp.path().join(format!("out-{sample}")))
+            .arg("--scorer")
+            .arg(&scorer)
+            .arg("--stats-sample-records")
+            .arg(sample)
+            .arg("--timeout-seconds")
+            .arg("1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        serde_json::from_str::<serde_json::Value>(&stdout(&out)).expect("json")["activation"]
+            .clone()
+    };
+
+    let sampled = activation("500");
+    assert_eq!(sampled["corpusRecordCount"], 4_000);
+    assert!(
+        sampled["recordCount"].as_u64().unwrap() <= 500,
+        "sampled scan must stay inside the cap: {sampled}"
+    );
+    assert!(sampled["recordCount"].as_u64().unwrap() > 0);
+    assert_eq!(sampled["sample"]["maxRecords"], 500);
+    assert_eq!(sampled["neurons"][0]["count"], sampled["recordCount"]);
+
+    let full = activation("0");
+    assert_eq!(full["recordCount"], 4_000);
+    assert_eq!(full["sample"]["maxRecords"], 0);
 }
 
 #[test]

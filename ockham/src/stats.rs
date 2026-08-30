@@ -1,4 +1,4 @@
-//! Full-corpus hidden-neuron activation statistics (Issue #3).
+//! Sampled hidden-neuron activation statistics (Issues #3, #44).
 //!
 //! Statistics **propose** candidates only. They are not a proxy acceptance
 //! score and must not be presented as proof that a neuron is unimportant.
@@ -8,7 +8,16 @@
 //! does not lose the mean to `f32` rounding. Per-record activations are not
 //! retained: memory is one compiled network plus one accumulator per hidden
 //! neuron.
+//!
+//! Because the statistics only *propose*, they do not need full-corpus
+//! precision: a multi-million-record corpus costs minutes of the run budget
+//! while the extra precision it buys is far below the score movement the loop
+//! chases. [`SampleSpec`] therefore visits evenly-spread blocks of records
+//! (deterministically placed from the corpus identity) and stops once every
+//! neuron mean's standard error is small against that neuron's activation
+//! scale. Set `max_records = 0` to restore the full-corpus scan.
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -16,15 +25,142 @@ use neat_core::training_data::TrainingDataConfig;
 use neat_core::{CreatureExport, compile_creature};
 use serde::{Deserialize, Serialize};
 
-use crate::corpus::{CorpusInfo, for_each_chunk};
+use crate::corpus::{CorpusInfo, RecordRange, for_each_selected_chunk};
 use crate::incumbent::Incumbent;
 
 /// Cache / on-disk format version. Bump when the JSON shape changes.
-pub const STATS_FORMAT_VERSION: u32 = 1;
+pub const STATS_FORMAT_VERSION: u32 = 2;
 /// Default records per streaming chunk.
 pub const DEFAULT_CHUNK_RECORDS: usize = 4096;
+/// Default cap on records visited by the activation scan (issue #44).
+pub const DEFAULT_SAMPLE_RECORDS: u64 = 100_000;
+/// Default contiguous records per sampled block — one sequential read each.
+pub const DEFAULT_SAMPLE_BLOCK_RECORDS: usize = 4096;
+/// Default records visited before adaptive stopping may trigger.
+pub const DEFAULT_MIN_SAMPLE_RECORDS: u64 = 20_000;
+/// Default standard error of a neuron mean, relative to that neuron's
+/// activation scale, at which the scan may stop early.
+pub const DEFAULT_TARGET_REL_SE: f64 = 0.01;
 
-/// One hidden neuron's full-corpus post-activation summary.
+/// How much of the corpus the activation scan visits (issue #44).
+///
+/// The plan is a function of the spec and the corpus alone, so a cached scan
+/// is reproducible for a given `(incumbent, corpus, spec)`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SampleSpec {
+    /// Cap on records visited; `0` scans the whole corpus.
+    pub max_records: u64,
+    /// Contiguous records per sampled block.
+    pub block_records: usize,
+    /// Records that must be visited before adaptive stopping may trigger.
+    pub min_records: u64,
+    /// Relative standard-error target for adaptive stopping; `0` disables it.
+    pub target_rel_se: f64,
+}
+
+impl Default for SampleSpec {
+    fn default() -> Self {
+        Self {
+            max_records: DEFAULT_SAMPLE_RECORDS,
+            block_records: DEFAULT_SAMPLE_BLOCK_RECORDS,
+            min_records: DEFAULT_MIN_SAMPLE_RECORDS,
+            target_rel_se: DEFAULT_TARGET_REL_SE,
+        }
+    }
+}
+
+impl SampleSpec {
+    /// Visit every record, with no adaptive stopping (pre-#44 behaviour).
+    pub fn full() -> Self {
+        Self {
+            max_records: 0,
+            target_rel_se: 0.0,
+            ..Self::default()
+        }
+    }
+
+    /// Default sampling capped at `max_records`; `0` means the full corpus.
+    ///
+    /// The block size and the adaptive-stopping floor are clamped to the cap,
+    /// so a small cap stays a cap instead of being overrun by one large block
+    /// or holding a scan open past its own limit.
+    pub fn with_max_records(max_records: u64) -> Self {
+        if max_records == 0 {
+            return Self::full();
+        }
+        let defaults = Self::default();
+        Self {
+            max_records,
+            block_records: defaults
+                .block_records
+                .min(usize::try_from(max_records).unwrap_or(usize::MAX)),
+            min_records: defaults.min_records.min(max_records),
+            ..defaults
+        }
+    }
+
+    /// Filename-safe tag identifying this spec in a cache key.
+    pub fn tag(&self) -> String {
+        if self.max_records == 0 {
+            return "full".into();
+        }
+        format!(
+            "n{}b{}m{}e{}",
+            self.max_records,
+            self.block_records.max(1),
+            self.min_records,
+            (self.target_rel_se.max(0.0) * 1e6).round() as u64
+        )
+    }
+
+    /// Ascending, non-overlapping record ranges to visit for `corpus`.
+    ///
+    /// One block per stratum of `record_count / blocks` records, placed inside
+    /// its stratum by a generator seeded from the corpus identity — evenly
+    /// spread like systematic sampling, without its fixed-phase aliasing.
+    pub fn plan(&self, corpus: &CorpusInfo) -> Vec<RecordRange> {
+        let total = corpus.record_count;
+        if total == 0 || self.max_records == 0 || self.max_records >= total {
+            return vec![RecordRange {
+                start: 0,
+                len: total,
+            }];
+        }
+        // A block never exceeds the cap, so the plan cannot overrun it.
+        let block = (self.block_records.max(1) as u64).min(self.max_records);
+        let blocks = self.max_records.div_ceil(block).max(1).min(total);
+        let mut state =
+            u64::from_str_radix(&corpus.identity, 16).unwrap_or(0) ^ 0x9e37_79b9_7f4a_7c15;
+        let mut ranges = Vec::with_capacity(blocks as usize);
+        for i in 0..blocks {
+            let start = (u128::from(i) * u128::from(total) / u128::from(blocks)) as u64;
+            let end = (u128::from(i + 1) * u128::from(total) / u128::from(blocks)) as u64;
+            let span = end - start;
+            let len = block.min(span);
+            state = split_mix64(state);
+            let offset = match span - len {
+                0 => 0,
+                slack => state % (slack + 1),
+            };
+            ranges.push(RecordRange {
+                start: start + offset,
+                len,
+            });
+        }
+        ranges
+    }
+}
+
+/// SplitMix64 — deterministic block placement inside each stratum.
+fn split_mix64(state: u64) -> u64 {
+    let mut z = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// One hidden neuron's post-activation summary over the scanned records.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NeuronStats {
@@ -48,7 +184,7 @@ pub struct NeuronStats {
     pub max: f64,
 }
 
-/// Full-corpus hidden-neuron statistics for one incumbent + corpus.
+/// Sampled hidden-neuron statistics for one incumbent + corpus.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivationStats {
@@ -58,8 +194,17 @@ pub struct ActivationStats {
     pub creature_checksum: String,
     /// Corpus identity the stats were measured against.
     pub corpus_identity: String,
-    /// Records streamed.
+    /// Records streamed — the sample, not the corpus.
     pub record_count: u64,
+    /// Records in the whole corpus.
+    #[serde(default)]
+    pub corpus_record_count: u64,
+    /// Sampling policy the scan followed.
+    #[serde(default = "SampleSpec::full")]
+    pub sample: SampleSpec,
+    /// `true` when adaptive stopping ended the scan before the plan ran out.
+    #[serde(default)]
+    pub stopped_early: bool,
     /// Wall time of the scan (ms), excluding cache hits.
     pub scan_ms: u64,
     /// Per-hidden-neuron summaries.
@@ -112,6 +257,23 @@ impl Accumulator {
         }
     }
 
+    /// Standard error of the mean relative to this neuron's activation scale.
+    ///
+    /// A neuron that barely moves converges immediately; a noisy one keeps the
+    /// scan running until its mean is pinned down to `target_rel_se`.
+    fn relative_standard_error(&self) -> f64 {
+        if self.count < 2 {
+            return f64::INFINITY;
+        }
+        let n = self.count as f64;
+        let std_dev = (self.m2 / n).max(0.0).sqrt();
+        if std_dev == 0.0 {
+            return 0.0;
+        }
+        let scale = std_dev.max(self.abs_sum / n);
+        std_dev / (n.sqrt() * scale)
+    }
+
     fn finish(self) -> NeuronStats {
         let (variance, std_dev, min, max, mean_abs) = if self.count == 0 {
             (0.0, 0.0, 0.0, 0.0, 0.0)
@@ -139,10 +301,16 @@ impl Accumulator {
     }
 }
 
-/// Cache path keyed by format version, creature checksum and corpus identity.
-pub fn cache_path(dir: &Path, checksum: &str, corpus_identity: &str) -> PathBuf {
+/// Cache path keyed by format version, creature checksum, corpus and sampling.
+pub fn cache_path(
+    dir: &Path,
+    checksum: &str,
+    corpus_identity: &str,
+    sample: &SampleSpec,
+) -> PathBuf {
     dir.join(format!(
-        "activation-stats.v{STATS_FORMAT_VERSION}.{checksum}.{corpus_identity}.json"
+        "activation-stats.v{STATS_FORMAT_VERSION}.{checksum}.{corpus_identity}.{}.json",
+        sample.tag()
     ))
 }
 
@@ -151,6 +319,7 @@ pub fn load_cached_stats(
     path: &Path,
     checksum: &str,
     corpus_identity: &str,
+    sample: &SampleSpec,
 ) -> Result<Option<ActivationStats>, String> {
     if !path.is_file() {
         return Ok(None);
@@ -161,6 +330,7 @@ pub fn load_cached_stats(
     if stats.format_version != STATS_FORMAT_VERSION
         || stats.creature_checksum != checksum
         || stats.corpus_identity != corpus_identity
+        || stats.sample != *sample
     {
         return Ok(None);
     }
@@ -177,13 +347,18 @@ pub fn store_cached_stats(path: &Path, stats: &ActivationStats) -> Result<(), St
     std::fs::write(path, json).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Stream the corpus through NEAT-AI-core inference and accumulate hidden stats.
+/// Stream the sampled corpus through NEAT-AI-core inference and accumulate
+/// hidden-neuron statistics.
+///
+/// `sample` decides how much of the corpus is visited; [`SampleSpec::full`]
+/// keeps the exhaustive scan.
 pub fn compute_activation_stats(
     creature: &CreatureExport,
     creature_checksum: &str,
     training_dir: &Path,
     corpus: &CorpusInfo,
     chunk_records: usize,
+    sample: &SampleSpec,
 ) -> Result<ActivationStats, String> {
     let mut net = compile_creature(creature).map_err(|e| e.to_string())?;
     let mut acc: Vec<Accumulator> = creature
@@ -193,33 +368,64 @@ pub fn compute_activation_stats(
         .filter(|(_, n)| n.neuron_type == "hidden")
         .map(|(i, n)| Accumulator::new(n.uuid.clone(), i, net.num_inputs + i))
         .collect();
+    if acc.is_empty() {
+        // Nothing to measure: streaming the corpus could only produce an empty
+        // measurement more slowly.
+        return Ok(ActivationStats {
+            creature_checksum: creature_checksum.to_string(),
+            corpus_identity: corpus.identity.clone(),
+            corpus_record_count: corpus.record_count,
+            sample: *sample,
+            ..ActivationStats::empty()
+        });
+    }
     let cfg = TrainingDataConfig::new(creature.input, creature.output);
+    let plan = sample.plan(corpus);
+    let planned: u64 = plan.iter().map(|r| r.len.min(corpus.record_count)).sum();
     let started = Instant::now();
     let mut seen = 0u64;
+    let mut stopped_early = false;
     let mut last_log = Instant::now();
-    let streamed = for_each_chunk(training_dir, &cfg, chunk_records.max(1), |chunk| {
-        for r in 0..chunk.records {
-            let inputs = &chunk.inputs[r * creature.input..(r + 1) * creature.input];
-            let _ = net.activate(inputs, creature.output);
-            for a in &mut acc {
-                a.push(net.activations[a.activation_index]);
+    let streamed =
+        for_each_selected_chunk(training_dir, &cfg, &plan, chunk_records.max(1), |chunk| {
+            for r in 0..chunk.records {
+                let inputs = &chunk.inputs[r * creature.input..(r + 1) * creature.input];
+                let _ = net.activate(inputs, creature.output);
+                for a in &mut acc {
+                    a.push(net.activations[a.activation_index]);
+                }
             }
-        }
-        seen += chunk.records as u64;
-        if last_log.elapsed().as_secs() >= 15 {
-            let rate = seen as f64 / started.elapsed().as_secs_f64().max(1e-9);
-            crate::log::detail(&format!(
-                "activation scan {seen}/{} records ({rate:.0} rec/s)",
-                corpus.record_count
-            ));
-            last_log = Instant::now();
-        }
-        Ok(())
-    })?;
+            seen += chunk.records as u64;
+            if last_log.elapsed().as_secs() >= 15 {
+                let rate = seen as f64 / started.elapsed().as_secs_f64().max(1e-9);
+                crate::log::detail(&format!(
+                    "activation scan {seen}/{planned} sampled records of {} ({rate:.0} rec/s)",
+                    corpus.record_count
+                ));
+                last_log = Instant::now();
+            }
+            if sample.target_rel_se > 0.0
+                && seen >= sample.min_records
+                && acc
+                    .iter()
+                    .all(|a| a.relative_standard_error() <= sample.target_rel_se)
+            {
+                stopped_early = true;
+                return Ok(ControlFlow::Break(()));
+            }
+            Ok(ControlFlow::Continue(()))
+        })?;
     let scan_ms = started.elapsed().as_millis() as u64;
-    if streamed != corpus.record_count {
+    if !stopped_early && streamed != planned {
         return Err(format!(
-            "activation scan saw {streamed} records but corpus identity has {}",
+            "activation scan saw {streamed} records but planned {planned} of the \
+             {} the corpus identity has",
+            corpus.record_count
+        ));
+    }
+    if streamed == 0 && corpus.record_count > 0 {
+        return Err(format!(
+            "activation scan visited no records of the {} the corpus identity has",
             corpus.record_count
         ));
     }
@@ -228,6 +434,9 @@ pub fn compute_activation_stats(
         creature_checksum: creature_checksum.to_string(),
         corpus_identity: corpus.identity.clone(),
         record_count: streamed,
+        corpus_record_count: corpus.record_count,
+        sample: *sample,
+        stopped_early,
         scan_ms,
         neurons: acc.into_iter().map(Accumulator::finish).collect(),
         from_cache: false,
@@ -241,9 +450,10 @@ pub fn ensure_activation_stats(
     corpus: &CorpusInfo,
     cache_dir: &Path,
     chunk_records: usize,
+    sample: &SampleSpec,
 ) -> Result<ActivationStats, String> {
-    let path = cache_path(cache_dir, &incumbent.checksum, &corpus.identity);
-    if let Some(cached) = load_cached_stats(&path, &incumbent.checksum, &corpus.identity)? {
+    let path = cache_path(cache_dir, &incumbent.checksum, &corpus.identity, sample);
+    if let Some(cached) = load_cached_stats(&path, &incumbent.checksum, &corpus.identity, sample)? {
         return Ok(cached);
     }
     let stats = compute_activation_stats(
@@ -252,6 +462,7 @@ pub fn ensure_activation_stats(
         training_dir,
         corpus,
         chunk_records,
+        sample,
     )?;
     store_cached_stats(&path, &stats)?;
     Ok(stats)
@@ -274,10 +485,18 @@ impl ActivationStats {
             creature_checksum: String::new(),
             corpus_identity: String::new(),
             record_count: 0,
+            corpus_record_count: 0,
+            sample: SampleSpec::full(),
+            stopped_early: false,
             scan_ms: 0,
             neurons: Vec::new(),
             from_cache: false,
         }
+    }
+
+    /// `true` when the scan visited fewer records than the corpus holds.
+    pub fn is_sampled(&self) -> bool {
+        self.record_count < self.corpus_record_count
     }
 }
 
@@ -306,8 +525,15 @@ mod tests {
     fn means_min_max_variance_match_hand_calculation() {
         // h = 0.5 + 2 * x  for x in {1, 0, -1} → {2.5, 0.5, -1.5}
         let (tmp, inc, corpus) = setup(&[1.0, 0.0, -1.0], 0.5, 2.0);
-        let stats =
-            compute_activation_stats(&inc.creature, &inc.checksum, tmp.path(), &corpus, 2).unwrap();
+        let stats = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            2,
+            &SampleSpec::full(),
+        )
+        .unwrap();
         let h = stats.by_uuid("h1").expect("h1");
         assert_eq!(h.count, 3);
         assert!(close(h.mean, 0.5), "mean {}", h.mean);
@@ -320,24 +546,34 @@ mod tests {
             "std {}",
             h.std_dev
         );
-        let again =
-            compute_activation_stats(&inc.creature, &inc.checksum, tmp.path(), &corpus, 1).unwrap();
+        let again = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            1,
+            &SampleSpec::full(),
+        )
+        .unwrap();
         let h2 = again.by_uuid("h1").unwrap();
         assert!(close(h.mean, h2.mean) && close(h.variance, h2.variance));
+        assert_eq!(stats.record_count, corpus.record_count);
+        assert!(!stats.is_sampled());
     }
 
     #[test]
     fn cache_is_not_reused_for_a_changed_creature_or_corpus() {
         let (tmp, inc, corpus) = setup(&[1.0, 2.0, 3.0], 0.0, 1.0);
         let cache = tmp.path().join("cache");
-        let a = ensure_activation_stats(&inc, tmp.path(), &corpus, &cache, 8).unwrap();
+        let full = SampleSpec::full();
+        let a = ensure_activation_stats(&inc, tmp.path(), &corpus, &cache, 8, &full).unwrap();
         assert!(!a.from_cache);
-        let b = ensure_activation_stats(&inc, tmp.path(), &corpus, &cache, 8).unwrap();
+        let b = ensure_activation_stats(&inc, tmp.path(), &corpus, &cache, 8, &full).unwrap();
         assert!(b.from_cache);
         assert_eq!(a.neurons, b.neurons);
 
         let other = Incumbent::from_creature(hidden_identity_creature(1.0, 1.0), "u").unwrap();
-        let path = cache_path(&cache, &other.checksum, &corpus.identity);
+        let path = cache_path(&cache, &other.checksum, &corpus.identity, &full);
         // Plant a cache file with the wrong checksum inside a matching filename
         // so a naive loader that ignored the JSON keys would still succeed.
         store_cached_stats(
@@ -349,7 +585,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            load_cached_stats(&path, &other.checksum, &corpus.identity)
+            load_cached_stats(&path, &other.checksum, &corpus.identity, &full)
                 .unwrap()
                 .is_none()
         );
@@ -357,19 +593,199 @@ mod tests {
         write_bin_file(&tmp.path().join("0.bin"), &[(vec![9.0f32], vec![9.0f32])]).unwrap();
         let corpus2 = corpus_info(tmp.path(), &TrainingDataConfig::new(1, 1)).unwrap();
         assert_ne!(corpus.identity, corpus2.identity);
-        let c = ensure_activation_stats(&inc, tmp.path(), &corpus2, &cache, 8).unwrap();
+        let c = ensure_activation_stats(&inc, tmp.path(), &corpus2, &cache, 8, &full).unwrap();
         assert!(!c.from_cache);
         assert_eq!(c.record_count, 1);
         assert_ne!(c.neurons[0].mean, a.neurons[0].mean);
     }
 
     #[test]
+    fn a_full_scan_cache_entry_is_never_served_to_a_sampled_scan() {
+        let (tmp, inc, corpus) = setup(&(0..2_000).map(|i| i as f32).collect::<Vec<_>>(), 0.0, 1.0);
+        let cache = tmp.path().join("cache");
+        let full = SampleSpec::full();
+        let sampled = SampleSpec {
+            max_records: 400,
+            block_records: 100,
+            min_records: u64::MAX, // adaptive stopping cannot fire
+            target_rel_se: 0.0,
+        };
+        let a = ensure_activation_stats(&inc, tmp.path(), &corpus, &cache, 64, &full).unwrap();
+        assert_eq!(a.record_count, 2_000);
+
+        let b = ensure_activation_stats(&inc, tmp.path(), &corpus, &cache, 64, &sampled).unwrap();
+        assert!(!b.from_cache, "a different sample spec is a different key");
+        assert_eq!(b.record_count, 400);
+        assert!(b.is_sampled());
+        assert_ne!(
+            cache_path(&cache, &inc.checksum, &corpus.identity, &full),
+            cache_path(&cache, &inc.checksum, &corpus.identity, &sampled)
+        );
+
+        let again =
+            ensure_activation_stats(&inc, tmp.path(), &corpus, &cache, 64, &sampled).unwrap();
+        assert!(again.from_cache);
+        assert_eq!(again.neurons, b.neurons);
+    }
+
+    #[test]
+    fn sampling_visits_a_fraction_of_the_corpus_and_still_tracks_the_full_mean() {
+        // h = x for x drawn from a sawtooth over 20_000 records.
+        let values: Vec<f32> = (0..20_000).map(|i| (i % 101) as f32).collect();
+        let (tmp, inc, corpus) = setup(&values, 0.0, 1.0);
+        let spec = SampleSpec {
+            max_records: 4_000,
+            block_records: 200,
+            min_records: u64::MAX,
+            target_rel_se: 0.0,
+        };
+        let sampled =
+            compute_activation_stats(&inc.creature, &inc.checksum, tmp.path(), &corpus, 64, &spec)
+                .unwrap();
+        assert_eq!(sampled.record_count, 4_000, "one fifth of the corpus");
+        assert_eq!(sampled.corpus_record_count, 20_000);
+        assert!(sampled.is_sampled());
+
+        let exact = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            64,
+            &SampleSpec::full(),
+        )
+        .unwrap();
+        let (s, f) = (sampled.by_uuid("h1").unwrap(), exact.by_uuid("h1").unwrap());
+        assert_eq!(s.count, 4_000);
+        assert!(
+            (s.mean - f.mean).abs() < 0.05 * f.std_dev,
+            "sampled mean {} is far from the full-corpus mean {}",
+            s.mean,
+            f.mean
+        );
+    }
+
+    #[test]
+    fn the_sample_plan_is_deterministic_ascending_and_capped() {
+        let (_tmp, _inc, corpus) =
+            setup(&(0..5_000).map(|i| i as f32).collect::<Vec<_>>(), 0.0, 1.0);
+        let spec = SampleSpec {
+            max_records: 500,
+            block_records: 100,
+            ..SampleSpec::default()
+        };
+        let plan = spec.plan(&corpus);
+        assert_eq!(plan, spec.plan(&corpus), "same corpus, same plan");
+        assert_eq!(plan.len(), 5);
+        assert_eq!(plan.iter().map(|r| r.len).sum::<u64>(), 500);
+        for pair in plan.windows(2) {
+            assert!(pair[0].end() <= pair[1].start, "{plan:?} must not overlap");
+        }
+        assert!(plan.last().unwrap().end() <= corpus.record_count);
+        assert!(
+            plan.windows(2).any(|p| p[1].start - p[0].end() > 0),
+            "a sampled plan must skip records: {plan:?}"
+        );
+
+        // A cap at or above the corpus size degrades to the exhaustive scan.
+        let whole = SampleSpec::with_max_records(5_000).plan(&corpus);
+        assert_eq!(
+            whole,
+            vec![RecordRange {
+                start: 0,
+                len: 5_000
+            }]
+        );
+        assert_eq!(SampleSpec::full().plan(&corpus), whole);
+    }
+
+    #[test]
+    fn a_cap_below_the_block_size_still_caps_the_scan() {
+        let (tmp, inc, corpus) = setup(&(0..5_000).map(|i| i as f32).collect::<Vec<_>>(), 0.0, 1.0);
+        let spec = SampleSpec::with_max_records(300);
+        assert!(spec.block_records <= 300, "block clamped to the cap");
+        assert!(spec.min_records <= 300, "stopping floor clamped to the cap");
+        assert_eq!(spec.plan(&corpus).iter().map(|r| r.len).sum::<u64>(), 300);
+        let stats =
+            compute_activation_stats(&inc.creature, &inc.checksum, tmp.path(), &corpus, 64, &spec)
+                .unwrap();
+        assert!(stats.record_count <= 300, "{}", stats.record_count);
+        assert!(stats.record_count > 0);
+    }
+
+    #[test]
+    fn a_creature_without_hidden_neurons_is_not_scanned_at_all() {
+        let (tmp, _inc, corpus) = setup(&[1.0, 2.0, 3.0], 0.0, 1.0);
+        let flat = crate::fixtures::identity_creature(1, 1);
+        let stats = compute_activation_stats(
+            &flat,
+            "t",
+            tmp.path(),
+            &corpus,
+            8,
+            &SampleSpec::with_max_records(2),
+        )
+        .unwrap();
+        assert!(stats.neurons.is_empty());
+        assert_eq!(stats.record_count, 0, "nothing to measure, nothing to read");
+        assert_eq!(stats.corpus_record_count, 3);
+    }
+
+    #[test]
+    fn adaptive_stopping_ends_a_constant_neuron_scan_early() {
+        // A constant activation has zero standard error, so the scan may stop
+        // as soon as the minimum sample is in.
+        let (tmp, inc, corpus) = setup(&vec![1.0f32; 20_000], 0.0, 1.0);
+        let spec = SampleSpec {
+            max_records: 10_000,
+            block_records: 500,
+            min_records: 1_000,
+            target_rel_se: 0.01,
+        };
+        let stats = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            500,
+            &spec,
+        )
+        .unwrap();
+        assert!(stats.stopped_early, "constant neuron must converge early");
+        assert_eq!(stats.record_count, 1_000);
+        assert!(close(stats.by_uuid("h1").unwrap().mean, 1.0));
+
+        // A moving activation is not declared converged at the same point.
+        let values: Vec<f32> = (0..20_000).map(|i| (i % 101) as f32).collect();
+        let (tmp, inc, corpus) = setup(&values, 0.0, 1.0);
+        let stats = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            500,
+            &spec,
+        )
+        .unwrap();
+        assert!(
+            stats.record_count > 1_000,
+            "noisy neuron needs more records"
+        );
+    }
+
+    #[test]
     fn memory_is_bounded_by_hidden_neuron_count() {
         let (tmp, inc, corpus) =
             setup(&(0..10_000).map(|i| i as f32).collect::<Vec<_>>(), 0.0, 1.0);
-        let stats =
-            compute_activation_stats(&inc.creature, &inc.checksum, tmp.path(), &corpus, 512)
-                .unwrap();
+        let stats = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            512,
+            &SampleSpec::full(),
+        )
+        .unwrap();
         assert_eq!(stats.neurons.len(), 1);
         assert_eq!(stats.record_count, 10_000);
         assert_eq!(stats.neurons[0].count, 10_000);

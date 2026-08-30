@@ -28,7 +28,7 @@ The current Rust implementation includes:
 
 - immutable loading and validation of a forward-only incumbent;
 - authoritative full-corpus baseline scoring through `NEAT-AI-scorer`;
-- full-corpus hidden-neuron activation statistics;
+- sampled hidden-neuron activation statistics;
 - mean-activation neuron ablation with downstream bias compensation;
 - recursive removal/folding of newly redundant structure;
 - exact, cost-aware `IDENTITY` neuron collapse;
@@ -86,7 +86,7 @@ known-good creature
         │
         ├── immutable clone
         ├── full authoritative baseline score
-        └── full-corpus hidden-neuron activation statistics
+        └── sampled hidden-neuron activation statistics
         │
         ▼
 seeded ordering of hidden neurons (random control by default)
@@ -115,7 +115,7 @@ full-corpus NEAT-AI-scorer vs current Ockham incumbent
         └── local improvement    → new Ockham incumbent
                                      │
                                      ├── keep even a tiny verified win
-                                     ├── recompute activation statistics
+                                     ├── rescan activation statistics
                                      └── restart on the new topology
 ```
 
@@ -170,6 +170,52 @@ makes a candidate trustworthy by itself.
 A second rule matters just as much:
 
 > **A tiny genuine local win is a stepping stone, not a failure.**
+
+## Activation statistics
+
+Before the sweep starts — and again after every accepted win — Ockham measures
+each hidden neuron's post-activation mean, variance, mean absolute value and
+range. Those numbers feed the [mean-activation ablation](#mean-activation-ablation)
+proposal and the statistics-driven [candidate orderings](#candidate-ordering).
+
+They only ever **propose**. Nothing here can accept a cut, so the scan does not
+need full-corpus precision: on a 2.3M-record corpus an exhaustive scan spent
+about six minutes of a 2700-second budget, while the extra precision it bought
+sat far below the score movement the loop is chasing. Ockham therefore samples
+the corpus (`--stats-sample-records`, default `100000`):
+
+- the records are taken as evenly-spread contiguous blocks, one per stratum of
+  the corpus, so a block is one sequential read and the skipped records cost
+  neither IO nor inference;
+- each block's position inside its stratum is drawn deterministically from the
+  corpus identity, so the sample is reproducible for a given
+  `(incumbent, corpus, sample spec)` — and periodic corpora do not alias with a
+  fixed sampling phase;
+- the scan stops early once every neuron's mean has a standard error under 1% of
+  that neuron's own activation scale, so near-constant neurons are settled in
+  the minimum sample;
+- the workspace cache is keyed by the sample spec as well as the incumbent
+  checksum and corpus identity, so a sampled scan can never be served a
+  full-corpus cache entry, or the reverse.
+
+```mermaid
+flowchart LR
+    C[("corpus<br/>N records")] --> P["sample plan<br/>blocks placed from corpus identity"]
+    P -->|seek past the rest| R["sampled records"]
+    R --> A["compiled forward pass<br/>+ f64 accumulators"]
+    A --> Q{"every mean's<br/>standard error &lt; 1%<br/>of its scale?"}
+    Q -->|no, records left| R
+    Q -->|yes, or plan exhausted| S["activation statistics"]
+    S --> O["candidate ordering"]
+    S --> M["mean-activation ablation"]
+```
+
+`--stats-sample-records 0` restores the exhaustive full-corpus scan.
+
+The sample weakens `min` / `max` most — they are extreme-value statistics — so
+the `narrow-range` ordering signal is the noisiest of the four. That is
+acceptable: an ordering only decides which neuron is tested sooner, and every
+candidate still faces the sampled screen and the full authoritative scorer.
 
 ## Mean-activation ablation
 
@@ -506,6 +552,7 @@ Common options:
 | `--candidates` | `100` | Candidates per sampled sweep batch. |
 | `--screen-sample-rate` | `0.05` | Sample rate used only for screening; `0` disables it. |
 | `--screen-threshold` | `0` | Sampled Δscore required for promotion. |
+| `--stats-sample-records` | `100000` | Records sampled for hidden-neuron activation statistics; `0` scans the whole corpus. See [Activation statistics](#activation-statistics). |
 | `--max-full` | none | Cap sampled winners sent to full scoring (highest sample Δ first). |
 | `--max-accepts` | none | Stop after this many **new** full-corpus local accepts so a small win can be checked in quickly. Replay of known wins is not counted. |
 | `--learnings-dir` | none | Shared full-corpus prune-verdict cache. Omitted: do not read or write. |
