@@ -14,7 +14,7 @@
 //! one sampled scorer call. Sampled winners are returned for later
 //! authoritative promotion; they never become `best.json` here.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -90,6 +90,11 @@ pub struct Sweep {
     pub order: Vec<String>,
     /// Next index to visit.
     pub next: usize,
+    /// Whether coverage-driven unchecked-first selection reordered the tail (#38).
+    ///
+    /// Recorded so a run is reconstructable: [`Self::permutation_identity`]
+    /// covers the pre-reorder order only.
+    pub unchecked_first: bool,
 }
 
 impl Sweep {
@@ -129,6 +134,7 @@ impl Sweep {
             permutation_identity: sha256_hex(ident.as_bytes()),
             order,
             next: 0,
+            unchecked_first: false,
         }
     }
 
@@ -158,6 +164,38 @@ impl Sweep {
         }
         self.order.extend(front);
         self.order.extend(remaining);
+    }
+
+    /// Partition the unvisited tail into unchecked-first, then stalest-first (#38).
+    ///
+    /// The tail becomes two blocks, and every UUID stays in exactly one of them:
+    ///
+    /// - **A** — UUIDs with no screen record, in ordering-strategy order.
+    /// - **B** — UUIDs in `screened`, ordered by `oldest_first`
+    ///   ([`crate::learnings::oldest_screened_first`]); any not named there keep
+    ///   their ordering-strategy order behind the ones that are.
+    ///
+    /// This reprioritises the sweep, it never shrinks it: the result is a
+    /// permutation of the same tail, so a run that exhausts block A rolls
+    /// straight into re-screening the stalest neurons instead of stopping.
+    /// Already-visited entries and [`Self::permutation_identity`] are untouched.
+    pub fn prefer_unchecked(&mut self, screened: &HashSet<String>, oldest_first: &[String]) {
+        self.unchecked_first = true;
+        if self.next >= self.order.len() {
+            return;
+        }
+        let tail = self.order.split_off(self.next);
+        let (mut unchecked, mut deferred): (Vec<String>, Vec<String>) =
+            tail.into_iter().partition(|uuid| !screened.contains(uuid));
+        let staleness: HashMap<&str, usize> = oldest_first
+            .iter()
+            .enumerate()
+            .map(|(i, uuid)| (uuid.as_str(), i))
+            .collect();
+        // Stable, so an unranked screened uuid keeps its strategy order last.
+        deferred.sort_by_key(|uuid| staleness.get(uuid.as_str()).copied().unwrap_or(usize::MAX));
+        self.order.append(&mut unchecked);
+        self.order.append(&mut deferred);
     }
 
     /// Build up to `size` valid candidates, refilling past skips.
@@ -282,6 +320,20 @@ pub struct SampledWinner {
     pub delta: f64,
 }
 
+/// One candidate the sampled screen did not promote.
+///
+/// Carries the [`CandidateKind`] so screen-coverage records match the kind the
+/// verdict cache stores (Issue #36); the losing candidate creature itself is
+/// dropped because nothing downstream scores it again.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenedLoser {
+    /// Hidden neuron that was screened.
+    pub uuid: String,
+    /// How the candidate was built.
+    pub kind: CandidateKind,
+}
+
 /// Outcome of one sampled screen. Never writes `best.json`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -295,7 +347,7 @@ pub struct ScreenOutcome {
     /// Candidates that beat the sampled incumbent by `threshold`.
     pub winners: Vec<SampledWinner>,
     /// Candidates that did not.
-    pub losers: Vec<String>,
+    pub losers: Vec<ScreenedLoser>,
     /// Wall time of the scorer call (ms).
     pub screen_ms: u64,
     /// Candidates scored per second.
@@ -382,7 +434,10 @@ pub fn screen_batch(
                 delta,
             });
         } else {
-            losers.push(c.uuid);
+            losers.push(ScreenedLoser {
+                uuid: c.uuid,
+                kind: c.kind,
+            });
         }
     }
     Ok(ScreenOutcome {
@@ -565,6 +620,16 @@ mod tests {
         .unwrap();
         assert!(outcome.winners.is_empty());
         assert_eq!(outcome.losers.len(), 2);
+        // Losers carry their kind so a screen record matches the verdict cache.
+        let mut lost: Vec<&str> = outcome.losers.iter().map(|l| l.uuid.as_str()).collect();
+        lost.sort_unstable();
+        assert_eq!(lost, vec!["h_a", "h_b"]);
+        assert!(
+            outcome
+                .losers
+                .iter()
+                .all(|l| l.kind == CandidateKind::Identity)
+        );
         assert!(!tmp.path().join("best.json").exists());
     }
 
@@ -641,6 +706,222 @@ mod tests {
         let b = Sweep::with_ordering(&creature, &stats, 17, cfg);
         assert_eq!(a.order, b.order);
         assert_eq!(a.permutation_identity, b.permutation_identity);
+    }
+
+    /// Six hidden neurons with deliberately different signals, so every
+    /// [`Ordering`] strategy produces a distinct tail to partition.
+    fn six_hidden() -> CreatureExport {
+        let mut neurons: Vec<_> = (0..6)
+            .map(|i| {
+                let squash = if i % 2 == 0 { "IDENTITY" } else { "TANH" };
+                neuron("hidden", &format!("h{i}"), 0.0, Some(squash))
+            })
+            .collect();
+        neurons.push(neuron("output", "output-0", 0.0, Some("IDENTITY")));
+        neurons.push(neuron("output", "output-1", 0.0, Some("IDENTITY")));
+        let mut synapses = Vec::new();
+        for i in 0..6 {
+            let uuid = format!("h{i}");
+            synapses.push(synapse("input-0", &uuid, 1.0));
+            synapses.push(synapse(&uuid, "output-0", 0.5 + i as f64));
+            if i % 3 == 0 {
+                synapses.push(synapse(&uuid, "output-1", 1.0));
+            }
+        }
+        creature(1, 2, neurons, synapses)
+    }
+
+    /// Statistics that rank the six hidden neurons differently on every signal.
+    fn varied_stats(creature: &CreatureExport) -> ActivationStats {
+        let mut stats = stats_for(creature);
+        for (i, n) in stats.neurons.iter_mut().enumerate() {
+            let k = (i + 1) as f64;
+            n.variance = k * 0.5;
+            n.std_dev = n.variance.sqrt();
+            n.mean_abs = k * 0.1;
+            n.max = k;
+            n.min = -k;
+        }
+        stats
+    }
+
+    fn uuid_set(uuids: &[&str]) -> HashSet<String> {
+        uuids.iter().map(|u| (*u).to_string()).collect()
+    }
+
+    fn uuid_list(uuids: &[&str]) -> Vec<String> {
+        uuids.iter().map(|u| (*u).to_string()).collect()
+    }
+
+    fn every_ordering() -> Vec<OrderingConfig> {
+        let mut cfgs = Vec::new();
+        for strategy in Ordering::ALL {
+            for random_quota in [0.0, 0.25, 0.5, 0.9] {
+                cfgs.push(OrderingConfig {
+                    strategy: *strategy,
+                    random_quota,
+                });
+            }
+        }
+        cfgs
+    }
+
+    #[test]
+    fn prefer_unchecked_is_a_permutation_under_every_ordering_and_quota() {
+        let creature = six_hidden();
+        let stats = varied_stats(&creature);
+        let screened = uuid_set(&["h1", "h3", "h5"]);
+        let oldest = uuid_list(&["h5", "h1", "h3"]);
+        let expected = {
+            let mut u: Vec<String> = (0..6).map(|i| format!("h{i}")).collect();
+            u.sort();
+            u
+        };
+        for cfg in every_ordering() {
+            let mut sweep = Sweep::with_ordering(&creature, &stats, 3, cfg);
+            assert!(!sweep.unchecked_first);
+            sweep.prefer_unchecked(&screened, &oldest);
+            assert!(sweep.unchecked_first);
+            let mut got = sweep.order.clone();
+            got.sort();
+            assert_eq!(
+                got, expected,
+                "{} quota={} lost or duplicated a neuron",
+                cfg.strategy, cfg.random_quota
+            );
+        }
+    }
+
+    #[test]
+    fn unchecked_keep_strategy_order_and_screened_recycle_oldest_first() {
+        let creature = six_hidden();
+        let stats = varied_stats(&creature);
+        let screened = uuid_set(&["h1", "h3", "h5"]);
+        let oldest = uuid_list(&["h5", "h1", "h3"]);
+        for cfg in every_ordering() {
+            let mut sweep = Sweep::with_ordering(&creature, &stats, 8, cfg);
+            let before = sweep.order.clone();
+            sweep.prefer_unchecked(&screened, &oldest);
+            let block_a: Vec<String> = before
+                .iter()
+                .filter(|u| !screened.contains(*u))
+                .cloned()
+                .collect();
+            assert_eq!(
+                &sweep.order[..block_a.len()],
+                block_a.as_slice(),
+                "block A must keep {} order",
+                cfg.strategy
+            );
+            assert_eq!(
+                &sweep.order[block_a.len()..],
+                oldest.as_slice(),
+                "block B must be oldest-screened first"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_screen_set_leaves_the_order_unchanged() {
+        let creature = six_hidden();
+        let stats = varied_stats(&creature);
+        for cfg in every_ordering() {
+            let mut sweep = Sweep::with_ordering(&creature, &stats, 21, cfg);
+            let before = sweep.order.clone();
+            sweep.prefer_unchecked(&HashSet::new(), &[]);
+            assert_eq!(
+                sweep.order, before,
+                "a cold cache must not change {} quota={}",
+                cfg.strategy, cfg.random_quota
+            );
+        }
+    }
+
+    #[test]
+    fn the_same_inputs_reproduce_the_same_coverage_driven_order() {
+        let creature = six_hidden();
+        let stats = varied_stats(&creature);
+        let screened = uuid_set(&["h0", "h4"]);
+        let oldest = uuid_list(&["h4", "h0"]);
+        let cfg = OrderingConfig {
+            strategy: Ordering::LowMeanAbs,
+            random_quota: 0.3,
+        };
+        let mut a = Sweep::with_ordering(&creature, &stats, 17, cfg);
+        let mut b = Sweep::with_ordering(&creature, &stats, 17, cfg);
+        a.prefer_unchecked(&screened, &oldest);
+        b.prefer_unchecked(&screened, &oldest);
+        assert_eq!(a.order, b.order);
+        assert_eq!(a.permutation_identity, b.permutation_identity);
+    }
+
+    #[test]
+    fn the_permutation_identity_predates_the_coverage_reorder() {
+        let creature = six_hidden();
+        let stats = varied_stats(&creature);
+        let cfg = OrderingConfig::new(Ordering::LowVariance);
+        let mut sweep = Sweep::with_ordering(&creature, &stats, 4, cfg);
+        let identity = sweep.permutation_identity.clone();
+        sweep.prefer_unchecked(&uuid_set(&["h0", "h1"]), &uuid_list(&["h1", "h0"]));
+        assert_ne!(
+            sweep.order[0], "h0",
+            "the reorder must actually move the tail"
+        );
+        assert_eq!(
+            sweep.permutation_identity, identity,
+            "#11 strategy comparisons hash the pre-reorder order"
+        );
+        assert_eq!(
+            identity,
+            Sweep::with_ordering(&creature, &stats, 4, cfg).permutation_identity
+        );
+    }
+
+    #[test]
+    fn a_fully_screened_creature_still_visits_every_neuron() {
+        let creature = six_hidden();
+        let stats = varied_stats(&creature);
+        let all: Vec<&str> = ["h0", "h1", "h2", "h3", "h4", "h5"].into();
+        let mut sweep = Sweep::new(&creature, 5);
+        sweep.prefer_unchecked(&uuid_set(&all), &uuid_list(&all));
+        assert_eq!(
+            sweep.order,
+            uuid_list(&all),
+            "block A is empty, so the stalest-first recycle order is the sweep"
+        );
+        let mut visited = 0;
+        while !sweep.exhausted() {
+            let (batch, skips) = sweep.fill_batch(&creature, &stats, 2);
+            assert!(
+                !batch.is_empty() || !skips.is_empty(),
+                "recycling must never starve a run"
+            );
+            visited += batch.len() + skips.len();
+        }
+        assert_eq!(visited, 6);
+    }
+
+    #[test]
+    fn already_visited_uuids_are_left_alone() {
+        let creature = six_hidden();
+        let stats = varied_stats(&creature);
+        let mut sweep = Sweep::new(&creature, 12);
+        let (batch, skips) = sweep.fill_batch(&creature, &stats, 2);
+        assert_eq!(batch.len() + skips.len(), sweep.next);
+        let visited: Vec<String> = sweep.order[..sweep.next].to_vec();
+        let screened = uuid_set(&visited.iter().map(String::as_str).collect::<Vec<_>>());
+        sweep.prefer_unchecked(&screened, &visited);
+        assert_eq!(
+            sweep.order[..sweep.next],
+            visited[..],
+            "the visited prefix must not move"
+        );
+        assert!(
+            sweep.order[sweep.next..]
+                .iter()
+                .all(|u| !screened.contains(u)),
+            "already-visited UUIDs must not be re-queued into the tail"
+        );
     }
 
     #[test]

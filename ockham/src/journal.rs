@@ -26,8 +26,11 @@ pub enum Event {
         /// Fraction of sweep slots reserved for the random control.
         #[serde(default)]
         ordering_random_quota: f64,
-        /// Permutation identity.
+        /// Permutation identity, hashed **before** any coverage reorder.
         permutation_identity: String,
+        /// Whether unchecked-first selection reordered the sweep (Issue #38).
+        #[serde(default)]
+        unchecked_first: bool,
         /// Hidden neurons on the opening incumbent.
         hidden: usize,
         /// Synapses on the opening incumbent.
@@ -55,6 +58,36 @@ pub enum Event {
         losers: usize,
         /// Screen wall time (ms).
         ms: u64,
+    },
+    /// Screen-coverage records filed for one batch (Issue #36).
+    ///
+    /// A sibling of [`Self::Screen`] rather than a field on it: coverage is
+    /// also filed when screening is disabled, and `screen` must keep counting
+    /// only real sampled scorer calls.
+    Screened {
+        /// Batch index (0-based).
+        batch: u64,
+        /// Screen-coverage records filed for this batch.
+        screened: usize,
+    },
+    /// Screening coverage over the incumbent at the end of a run (Issue #37).
+    ///
+    /// Written only when a learnings dir is configured: without the screen
+    /// store there is no coverage state, and `checked: 0` would be a lie
+    /// rather than a measurement.
+    Coverage {
+        /// Hidden neurons on the final incumbent.
+        hidden: usize,
+        /// Hidden neurons carrying GRQ-provenance tags, skipped as candidates.
+        #[serde(default)]
+        tagged: usize,
+        /// `hidden - tagged`: the coverage denominator.
+        checkable: usize,
+        /// Checkable UUIDs with at least one screen record.
+        checked: usize,
+        /// Hidden neurons removed this run.
+        #[serde(default)]
+        cut: usize,
     },
     /// Full-corpus cohort result.
     Full {

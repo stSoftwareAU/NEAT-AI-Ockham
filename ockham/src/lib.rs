@@ -27,6 +27,8 @@
 //! | GRQ check-in tags | [`tags`] | #25 |
 //! | fleet learnings store + replay | [`learnings`] | #27 |
 //! | named candidate orderings | [`ordering`] | #11 |
+//! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
+//! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
 
 #![warn(missing_docs)]
 
@@ -36,6 +38,7 @@ pub mod cancel;
 pub mod collapse;
 pub mod config;
 pub mod corpus;
+pub mod coverage;
 pub mod fixtures;
 pub mod incumbent;
 pub mod journal;
@@ -60,6 +63,9 @@ pub use config::{
     DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
 };
 pub use corpus::{CorpusInfo, corpus_info};
+pub use coverage::{
+    COVERAGE_JSON_FILE, COVERAGE_TEXT_FILE, Coverage, coverage, write_files as write_coverage_files,
+};
 pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
 pub use ordering::{Ordering, OrderingConfig, hidden_order};
 pub use promote::{FullOutcome, evaluate_full};
@@ -67,7 +73,9 @@ pub use report::{Report, summarise};
 pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
 pub use stats::{ActivationStats, NeuronStats, ensure_activation_stats};
-pub use sweep::{ScreenConfig, ScreenOutcome, Sweep, SweepCandidate, draw_seed, screen_batch};
+pub use sweep::{
+    ScreenConfig, ScreenOutcome, ScreenedLoser, Sweep, SweepCandidate, draw_seed, screen_batch,
+};
 pub use tags::{CreatureMeta, OckhamProgress, ockham_progress_message};
 
 /// Crate version from `ockham/Cargo.toml`.

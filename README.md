@@ -45,6 +45,17 @@ The current Rust implementation includes:
 - fleet learnings cache: combined replay of still-present known wins (full
   corpus, not capped by `--max-accepts`), then skip fresh failures; a replay
   accept stops immediately so the prune can check in;
+- fleet screen coverage: every candidate a batch actually scores — winners
+  **and** losers — leaves a record in `screens-<identity>/<host>.jsonl`, so
+  "which neurons have been checked" survives the run;
+- a single coverage calculation over the **current** incumbent — `checked X of
+  Y hidden (Z%), N cut` — journalled at the end of each run and surfaced by
+  `report`, and carried into the `ockham` check-in tag (the GRQ-sampler commit
+  subject) in the compact `checked X/Y (Z%)` form whenever a learnings dir is
+  configured;
+- `coverage.txt` / `coverage.json` beside `best.json`: the multi-line screening
+  coverage block GRQ pastes into the sampler commit description, plus the same
+  figures machine-readably;
 - tagged hidden neurons skipped as prune candidates (journal reason `tagged`)
   so GRQ provenance check-in cannot fail;
 - named, reproducible candidate orderings with random as the measured control,
@@ -228,6 +239,147 @@ promising removals because individual pruning effects are not assumed additive.
 The highest strict full-corpus improvement becomes the next Ockham incumbent,
 even if that improvement is tiny.
 
+### Screen coverage
+
+A neuron counts as **checked** once it has been proposed into a batch and
+scored. With `--learnings-dir` set, every checked candidate leaves one screen
+record in `screens-<identity>/<host>.jsonl` — winners and losers alike, and the
+same when `--screen-sample-rate 0` sends candidates straight to full scoring.
+A batch whose screen call fails files nothing: those candidates were never
+checked. Each batch also journals a `screened` record, so coverage is
+reconstructable from `experiments.jsonl` alone.
+
+A screen record is a coverage fact, never a prune verdict: only a full-corpus
+learnings verdict may accept or reject a cut, and a screens IO fault warns
+rather than failing the run.
+
+```mermaid
+flowchart LR
+    B[sweep batch] --> S{"--screen-sample-rate"}
+    S -->|"rate > 0"| C[sampled screen]
+    C -->|Ok| W[winners + losers]
+    C -->|Err| N["nothing filed<br/>(not checked)"]
+    S -->|"0 — disabled"| D[straight to full scoring]
+    W --> R["screens-identity/host.jsonl"]
+    D --> R
+    R --> J["journal: screened"]
+```
+
+### How far Ockham has got
+
+`coverage::coverage` turns those records into one answer, computed in exactly
+one place so the tag, the commit description and `report` can never disagree:
+
+```text
+checked 1204 of 4971 hidden (24.2%), 7 cut, 42 tagged skipped
+```
+
+The denominator is the **current** incumbent, minus the tagged neurons Ockham
+never proposes:
+
+- a screen record for a uuid no longer on the creature is ignored — it raises
+  neither `checked` nor `hidden`;
+- duplicate records for one uuid count once;
+- tagged (GRQ-provenance) neurons leave the denominator and are reported
+  separately, because they can never become checked;
+- newly evolved neurons start unchecked and therefore *lower* the percentage.
+  That is intended: coverage describes the creature in front of us, not a
+  score that only ever rises.
+
+With `--learnings-dir` set, the run journals one `coverage` record at the end,
+so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`
+and `coveragePercent` across runs. Without a learnings dir there is no coverage
+state, and nothing is journalled — absent rather than a misleading 0%.
+
+```mermaid
+flowchart LR
+    H["hidden on current incumbent"] --> T{"tagged?"}
+    T -->|yes| K["skipped — reported separately"]
+    T -->|no| C["checkable = denominator"]
+    C --> S{"has a screen record?"}
+    S -->|yes| D["checked"]
+    S -->|no| U["unchecked"]
+    D --> P["percent = checked / checkable"]
+```
+
+### The GRQ commit-description contract
+
+The `ockham` tag is one crowded line, so the readable answer to "how many
+neurons have been checked, and have they earnt their keep?" belongs in the
+commit **description**. Ockham produces that block; GRQ only pastes it.
+
+On the normal completion path, a run with `--learnings-dir` writes two files
+into `--output-dir`, beside `best.json`:
+
+| Path | Contents |
+|---|---|
+| `coverage.txt` | The rendered description block, ready to paste into `git commit`. |
+| `coverage.json` | The same figures as the serialised `Coverage` struct. |
+
+`coverage.txt` is line-oriented and stable — treat it as a contract:
+
+```text
+🪒 Ockham neuron screening coverage
+checked:   1204 of 4971 hidden (24.2%)
+cut:       7 this run
+unchecked: 3767 remaining (~38 runs at 100/run)
+skipped:   42 tagged (GRQ provenance, never pruned)
+```
+
+- the runs-remaining estimate divides `unchecked` by the configured
+  `--candidates` batch size (`~1 run` when one batch would finish it), and the
+  whole clause is **omitted** — never `inf` or `NaN` — when that batch size is
+  zero or coverage is already complete;
+- the `skipped:` line is omitted when no neuron is tagged;
+- `coverage.json` deserialises straight back into `Coverage`, so nothing
+  downstream needs to parse the prose.
+
+Both files are written only when coverage exists: no `--learnings-dir` means no
+screen store, no coverage state, and neither file. A write fault warns and the
+run still completes — reporting must never cost a verified prune.
+
+```mermaid
+flowchart LR
+    L["--learnings-dir set?"] -->|no| N["no coverage state<br/>neither file written"]
+    L -->|yes| C["Coverage over the final incumbent"]
+    C --> J["journal: coverage record"]
+    C --> T["coverage.txt — description block"]
+    C --> S["coverage.json — Coverage struct"]
+    T --> G["GRQ: git commit description"]
+    S --> G
+```
+
+### Unchecked-first selection
+
+With thousands of hidden neurons and roughly a hundred screened per run,
+independent runs re-screen the same neurons by chance and coverage crawls.
+`--unchecked-first` fixes that at selection time, one layer above the ordering
+strategies: coverage is per-fleet state, while a strategy must stay reproducible
+from `(--seed, --ordering, --ordering-random-quota)` alone.
+
+The still-unvisited tail is **partitioned**, never filtered — it stays a
+permutation of the same UUIDs, so a run that exhausts the never-screened block
+rolls straight into re-screening the stalest neurons instead of stopping:
+
+- **block A** — UUIDs with no screen record, in ordering-strategy order;
+- **block B** — already-screened UUIDs, oldest-screened first.
+
+```mermaid
+flowchart LR
+    O["ordering-strategy tail"] --> S{"screen record?"}
+    S -->|no| A["block A — unchecked,<br/>strategy order"]
+    S -->|yes| B["block B — recycled,<br/>oldest screened first"]
+    A --> V["visitation order"]
+    B --> V
+```
+
+The flag defaults to on with `--learnings-dir` and off without it: with no
+screen store there is no coverage state to prefer, and the order is then
+identical to the raw seeded permutation. The `permutation_identity` in the
+journal is hashed **before** this reorder, so `--ordering` comparisons stay
+valid; the `start` record carries `unchecked_first` so a run is reconstructable.
+Tagged and known-failure skips still apply on top.
+
 ## Where this sits in the literature
 
 Structured pruning of trained networks is one of the best-studied problems in
@@ -362,6 +514,7 @@ Common options:
 | `--max-consecutive-scorer-failures` | `3` | Abort after this many consecutive scorer failures. |
 | `--min-improvement` | `1e-6` | Strict authoritative improvement required locally. |
 | `--seed` | drawn | Reproducible random sweep seed. |
+| `--unchecked-first` | on with `--learnings-dir`, off without | Screen never-checked neurons first, then recycle the stalest; see [Unchecked-first selection](#unchecked-first-selection). Set `--unchecked-first=false` to keep the raw seeded permutation. |
 | `--ordering` | `random` | Named candidate ordering; see [Candidate ordering](#candidate-ordering). |
 | `--ordering-random-quota` | `0` | Fraction of sweep slots reserved for the random control, in `[0, 1)`. |
 | `--max-experiments` | none | Optional experiment cap in addition to timeout. |
@@ -428,6 +581,8 @@ remains available as the control for every comparison.
 |---|---|
 | `best.json` | Best authoritative local Ockham result found during the run. |
 | `experiments.jsonl` | Append-only experiment journal. |
+| `coverage.txt` | Screening-coverage block for the GRQ commit description. Written only with `--learnings-dir`. |
+| `coverage.json` | The same coverage figures as JSON. Written only with `--learnings-dir`. |
 | `winners/` | Accepted intermediate Ockham incumbents. |
 | `workspace/` | Isolated run state, baseline and statistics caches. |
 | `population-candidate.json` | Written only after beating the supplied current global champion. |
@@ -456,6 +611,10 @@ Useful measures include:
 - candidates screened before that first win (`candidatesBeforeFirstWin`);
 - authoritative local accepts per hour (`acceptsPerHour`);
 - sample and full scorer calls consumed (`screenCalls`, `fullCalls`);
+- screen-coverage records filed (`screened`);
+- screening coverage of the incumbent — every figure of the commit-description
+  block (`hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`,
+  `coveragePercent`);
 - growth-cost reduction (`growthUnitsSaved`);
 - neurons and synapses removed;
 - sampled-screen false positives;
@@ -546,18 +705,26 @@ NEAT-AI-Ockham/
 │       ├── reentry.rs         # population re-entry vs global champion
 │       ├── report.rs          # experiments.jsonl summary
 │       ├── tags.rs            # GRQ-sampler score/provenance tags
-│       ├── learnings.rs       # fleet full-corpus prune-verdict cache
+│       ├── learnings.rs       # fleet prune-verdict cache + screen coverage
+│       ├── coverage.rs       # checked/total/percent + coverage.txt / coverage.json
 │       ├── ordering.rs        # named candidate ordering strategies
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs
 │       └── cancel.rs
 ├── docs/
+│   ├── grq-integration.md   # audit: how GRQ invokes Ockham and reads it back
 │   └── population-entry.md  # how cuts actually enter the live population
 ├── quality.sh
 ├── rust-toolchain.toml
 └── neat-core.expected-version
 ```
+
+[docs/grq-integration.md](docs/grq-integration.md) is the checked-in audit of
+the integration itself: the invocation path, every flag GRQ passes, how the
+shared learnings cache is mounted, the check-in gates, where the commit subject
+and description come from, and the table of Ockham surfaces GRQ reads — which is
+what makes them load-bearing.
 
 ## Implementation roadmap
 

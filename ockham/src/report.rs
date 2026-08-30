@@ -15,6 +15,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::ablation::growth_units;
+use crate::coverage::Coverage;
 use crate::journal::Event;
 use crate::ordering::Ordering;
 
@@ -46,6 +47,22 @@ pub struct Report {
     pub screen_calls: u64,
     /// Full-corpus scorer cohort calls consumed.
     pub full_calls: u64,
+    /// Screen-coverage records filed across the run (Issue #36).
+    pub screened: u64,
+    /// Hidden neurons on the incumbent at the last coverage record (Issue #37).
+    pub hidden: Option<usize>,
+    /// Hidden neurons carrying GRQ-provenance tags, at that same record (Issue #40).
+    pub tagged: Option<usize>,
+    /// `hidden - tagged`: the coverage denominator, at that same record (Issue #40).
+    pub checkable: Option<usize>,
+    /// Checkable UUIDs screened at least once, at that same record.
+    pub checked: Option<usize>,
+    /// Checkable UUIDs still never screened, at that same record (Issue #40).
+    pub unchecked: Option<usize>,
+    /// Hidden neurons cut by the run that wrote that record (Issue #40).
+    pub cut: Option<usize>,
+    /// `checked / checkable * 100` at that same record.
+    pub coverage_percent: Option<f64>,
     /// Milliseconds from the loop start to the first authoritative local win.
     pub first_win_ms: Option<u64>,
     /// Candidates screened before the first authoritative local win.
@@ -85,6 +102,14 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         full_rejects: 0,
         screen_calls: 0,
         full_calls: 0,
+        screened: 0,
+        hidden: None,
+        tagged: None,
+        checkable: None,
+        checked: None,
+        unchecked: None,
+        cut: None,
+        coverage_percent: None,
         first_win_ms: None,
         candidates_before_first_win: None,
         accepted_cut_sizes: Vec::new(),
@@ -136,6 +161,33 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     candidates_seen += candidates as u64;
                 }
                 Event::Screen { .. } => report.screen_calls += 1,
+                Event::Screened { screened, .. } => report.screened += screened as u64,
+                Event::Coverage {
+                    hidden,
+                    tagged,
+                    checkable,
+                    checked,
+                    cut,
+                } => {
+                    // Coverage is a snapshot of one incumbent, not a total:
+                    // the last record read is the current state. The percent
+                    // comes from `Coverage` so the report can never disagree
+                    // with the tag or the commit description.
+                    let cov = Coverage {
+                        hidden,
+                        tagged,
+                        checkable,
+                        checked,
+                        cut,
+                    };
+                    report.hidden = Some(cov.hidden);
+                    report.tagged = Some(cov.tagged);
+                    report.checkable = Some(cov.checkable);
+                    report.checked = Some(cov.checked);
+                    report.unchecked = Some(cov.unchecked());
+                    report.cut = Some(cov.cut);
+                    report.coverage_percent = Some(cov.percent());
+                }
                 Event::Full {
                     accepted,
                     cuts,
@@ -203,6 +255,7 @@ mod tests {
             ordering,
             ordering_random_quota: 0.25,
             permutation_identity: "x".into(),
+            unchecked_first: false,
             hidden: 3,
             synapses: 10,
             opening_score: 0.50,
@@ -341,6 +394,154 @@ mod tests {
         assert_eq!(report.opening_growth_units, Some(growth_units(3, 10)));
         assert_eq!(report.final_growth_units, Some(growth_units(0, 5)));
         assert_eq!(report.growth_units_saved, Some(3.5));
+    }
+
+    #[test]
+    fn screen_coverage_records_are_totalled_without_inflating_scorer_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Screen {
+                winners: 1,
+                losers: 3,
+                ms: 100,
+            },
+        )
+        .unwrap();
+        journal::append(
+            &path,
+            &Event::Screened {
+                batch: 0,
+                screened: 4,
+            },
+        )
+        .unwrap();
+        journal::append(
+            &path,
+            &Event::Screened {
+                batch: 1,
+                screened: 2,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.screened, 6);
+        assert_eq!(report.screen_calls, 1, "coverage is not a scorer call");
+    }
+
+    #[test]
+    fn the_last_coverage_record_becomes_the_reported_progress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Coverage {
+                hidden: 12,
+                tagged: 2,
+                checkable: 10,
+                checked: 2,
+                cut: 0,
+            },
+        )
+        .unwrap();
+        // A later run screened more of the same creature.
+        journal::append(
+            &path,
+            &Event::Coverage {
+                hidden: 10,
+                tagged: 2,
+                checkable: 8,
+                checked: 3,
+                cut: 2,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.hidden, Some(10));
+        assert_eq!(report.checked, Some(3));
+        assert_eq!(report.coverage_percent, Some(37.5));
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"coveragePercent\":37.5"), "{json}");
+    }
+
+    /// Every figure of the commit-description block reaches `report` (#40).
+    #[test]
+    fn the_report_carries_the_whole_coverage_block_not_just_the_percentage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Coverage {
+                hidden: 5013,
+                tagged: 42,
+                checkable: 4971,
+                checked: 1204,
+                cut: 7,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.tagged, Some(42));
+        assert_eq!(report.checkable, Some(4971));
+        assert_eq!(report.unchecked, Some(3767));
+        assert_eq!(report.cut, Some(7));
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"unchecked\":3767"), "{json}");
+    }
+
+    #[test]
+    fn a_journal_with_no_coverage_record_reports_no_block_figures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.tagged, None);
+        assert_eq!(report.checkable, None);
+        assert_eq!(report.unchecked, None, "no coverage state is not zero left");
+        assert_eq!(report.cut, None);
+    }
+
+    #[test]
+    fn a_journal_with_no_coverage_record_reports_no_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.hidden, None);
+        assert_eq!(report.checked, None);
+        assert_eq!(report.coverage_percent, None, "no coverage state is not 0%");
+    }
+
+    #[test]
+    fn a_journal_written_before_issue_36_parses_with_no_screen_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"record":"start","seed":3,"permutation_identity":"x","hidden":2,"opening_score":0.5}"#,
+                "\n",
+                r#"{"record":"batch","batch":0,"candidates":2,"skipped":0,"remaining":0}"#,
+                "\n",
+                r#"{"record":"screen","winners":1,"losers":1,"ms":50}"#,
+                "\n",
+                r#"{"record":"full","individuals":1,"bundles":0,"accepted":false}"#,
+                "\n",
+                r#"{"record":"stop","reason":"timeout","accepts":0,"experiments":1,"final_score":0.5,"cumulative_delta":0.0}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.screen_calls, 1);
+        assert_eq!(report.screened, 0, "old journals carry no coverage records");
+        assert_eq!(report.hidden, None, "coverage is absent, not zero");
+        assert_eq!(report.coverage_percent, None);
+        assert_eq!(report.stop_reason.as_deref(), Some("timeout"));
     }
 
     #[test]
