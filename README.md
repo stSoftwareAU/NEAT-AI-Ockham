@@ -713,11 +713,18 @@ NEAT-AI-Ockham/
 │       ├── log.rs
 │       └── cancel.rs
 ├── docs/
+│   ├── grq-integration.md   # audit: how GRQ invokes Ockham and reads it back
 │   └── population-entry.md  # how cuts actually enter the live population
 ├── quality.sh
 ├── rust-toolchain.toml
 └── neat-core.expected-version
 ```
+
+[docs/grq-integration.md](docs/grq-integration.md) is the checked-in audit of
+the integration itself: the invocation path, every flag GRQ passes, how the
+shared learnings cache is mounted, the check-in gates, where the commit subject
+and description come from, and the table of Ockham surfaces GRQ reads — which is
+what makes them load-bearing.
 
 ## Implementation roadmap
 
