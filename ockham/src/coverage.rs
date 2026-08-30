@@ -129,19 +129,139 @@ impl Coverage {
     }
 }
 
-/// Write `coverage.txt` and `coverage.json` into `dir` (Issue #40).
+/// What one run tried, kept and rejected (Issue #59).
+///
+/// Coverage says how much of the creature has been looked at; this says whether
+/// looking paid. A reader of the fleet history needs both to tell whether the
+/// exploitation strategy of #45 is working.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Winners {
+    /// Sampled winners promoted to full scoring across the run.
+    pub screened: usize,
+    /// Distinct UUIDs whose own full-corpus delta beat `--min-improvement`.
+    pub confirmed: usize,
+    /// Hidden neurons removed by accepted winners.
+    pub applied: usize,
+    /// Confirmed winners still standing in the in-run pool at the end.
+    pub carried: usize,
+    /// Bundle plans actually scored.
+    pub plans: usize,
+    /// Plans dropped because a cut in them no longer proposed.
+    pub skipped: usize,
+    /// Cuts in the largest accepted winner.
+    pub best_cuts: usize,
+    /// Full-corpus delta of that winner.
+    pub best_delta: f64,
+    /// Cohort entries dropped to fit the wall-clock budget.
+    pub dropped: usize,
+    /// Rolling full-corpus scorer cost estimate, milliseconds per creature.
+    pub est_ms_per_creature: u64,
+}
+
+impl Winners {
+    /// Whether this run has anything to report.
+    ///
+    /// A run that screened nothing renders exactly as it did before Issue #59.
+    pub fn has_any(&self) -> bool {
+        self.screened > 0 || self.confirmed > 0 || self.applied > 0 || self.plans > 0
+    }
+
+    /// One-line log summary.
+    pub fn summary(&self) -> String {
+        format!(
+            "winners {} screened, {} confirmed, {} applied, {} carried",
+            self.screened, self.confirmed, self.applied, self.carried
+        )
+    }
+
+    /// The description lines, each omitted when it has nothing to report.
+    fn lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.screened > 0 || self.confirmed > 0 {
+            out.push(format!(
+                "{:<11}{} screened · {} confirmed · {} applied · {} carried",
+                "winners:", self.screened, self.confirmed, self.applied, self.carried
+            ));
+        }
+        if self.plans > 0 {
+            let mut line = format!(
+                "{:<11}{} plans · best {} cuts (Δ {:+.1e})",
+                "bundles:", self.plans, self.best_cuts, self.best_delta
+            );
+            if self.skipped > 0 {
+                line.push_str(&format!(" · {} skipped", self.skipped));
+            }
+            out.push(line);
+        }
+        if self.dropped > 0 {
+            let est = if self.est_ms_per_creature > 0 {
+                format!(
+                    " (est {:.0}s/creature)",
+                    self.est_ms_per_creature as f64 / 1000.0
+                )
+            } else {
+                String::new()
+            };
+            out.push(format!(
+                "{:<11}{} entries over budget{est}",
+                "dropped:", self.dropped
+            ));
+        }
+        out
+    }
+}
+
+/// The commit-description artefact: coverage, plus the run's winner economics.
+///
+/// [`Coverage`] is flattened, so a consumer that deserialises `coverage.json`
+/// straight into [`Coverage`] keeps working — serde ignores the extra key.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageReport {
+    /// Screening coverage of the final incumbent.
+    #[serde(flatten)]
+    pub coverage: Coverage,
+    /// What the run tried and kept; absent when nothing was screened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winners: Option<Winners>,
+}
+
+impl CoverageReport {
+    /// Coverage with no winner figures — the pre-Issue-#59 artefact.
+    pub fn new(coverage: Coverage) -> Self {
+        Self {
+            coverage,
+            winners: None,
+        }
+    }
+
+    /// The full commit-description block: coverage lines, then winner lines.
+    ///
+    /// With no winners this is byte-identical to [`Coverage::description`].
+    pub fn description(&self, candidates: usize) -> String {
+        let mut out = self.coverage.description(candidates);
+        for line in self.winners.iter().flat_map(Winners::lines) {
+            out.push('\n');
+            out.push_str(&line);
+        }
+        out
+    }
+}
+
+/// Write `coverage.txt` and `coverage.json` into `dir` (Issues #40, #59).
 ///
 /// The stable contract GRQ consumes: prose for the commit description, and the
 /// same figures as JSON for anything that would otherwise parse the prose.
 /// Both are written or the error names the file that failed — the caller warns
 /// rather than failing the run, matching the learnings-cache rule.
-pub fn write_files(dir: &Path, coverage: &Coverage, candidates: usize) -> Result<(), String> {
+pub fn write_files(dir: &Path, report: &CoverageReport, candidates: usize) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let text = dir.join(COVERAGE_TEXT_FILE);
-    std::fs::write(&text, format!("{}\n", coverage.description(candidates)))
+    std::fs::write(&text, format!("{}\n", report.description(candidates)))
         .map_err(|e| format!("{}: {e}", text.display()))?;
     let json =
-        serde_json::to_string_pretty(coverage).map_err(|e| format!("{COVERAGE_JSON_FILE}: {e}"))?;
+        serde_json::to_string_pretty(report).map_err(|e| format!("{COVERAGE_JSON_FILE}: {e}"))?;
     let path = dir.join(COVERAGE_JSON_FILE);
     std::fs::write(&path, format!("{json}\n")).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -426,7 +546,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("out");
         let cov = fleet_coverage();
-        write_files(&dir, &cov, 100).unwrap();
+        write_files(&dir, &CoverageReport::new(cov), 100).unwrap();
 
         let text = std::fs::read_to_string(dir.join(COVERAGE_TEXT_FILE)).unwrap();
         assert_eq!(text, format!("{}\n", cov.description(100)));
@@ -445,8 +565,115 @@ mod tests {
         let dir = tmp.path().join("out");
         // A directory where coverage.txt belongs: the write cannot succeed.
         std::fs::create_dir_all(dir.join(COVERAGE_TEXT_FILE)).unwrap();
-        let err = write_files(&dir, &fleet_coverage(), 100).unwrap_err();
+        let err = write_files(&dir, &CoverageReport::new(fleet_coverage()), 100).unwrap_err();
         assert!(err.contains(COVERAGE_TEXT_FILE), "{err}");
+    }
+
+    /// The fleet-scale winner figures from Issue #59, rendered exactly.
+    fn fleet_winners() -> Winners {
+        Winners {
+            screened: 38,
+            confirmed: 22,
+            applied: 1,
+            carried: 21,
+            plans: 9,
+            skipped: 3,
+            best_cuts: 14,
+            best_delta: 1.2e-4,
+            dropped: 12,
+            est_ms_per_creature: 18_000,
+        }
+    }
+
+    #[test]
+    fn the_winners_block_renders_exactly_as_grq_will_paste_it() {
+        let report = CoverageReport {
+            coverage: fleet_coverage(),
+            winners: Some(fleet_winners()),
+        };
+        assert_eq!(
+            report.description(100),
+            concat!(
+                "🪒 Ockham neuron screening coverage\n",
+                "checked:   1204 of 4971 hidden (24.2%)\n",
+                "cut:       7 this run\n",
+                "unchecked: 3767 remaining (~38 runs at 100/run)\n",
+                "skipped:   42 tagged (GRQ provenance, never pruned)\n",
+                "winners:   38 screened · 22 confirmed · 1 applied · 21 carried\n",
+                "bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped\n",
+                "dropped:   12 entries over budget (est 18s/creature)"
+            )
+        );
+    }
+
+    /// The block is pasted into every fleet host's check-in commit, so a run
+    /// with nothing to say must add no empty lines and no `0 of 0` filler.
+    #[test]
+    fn a_run_with_no_winners_renders_exactly_todays_block() {
+        let cov = fleet_coverage();
+        let report = CoverageReport::new(cov);
+        assert_eq!(report.description(100), cov.description(100));
+        assert!(!report.description(100).contains("winners:"));
+        assert!(!report.description(100).contains("bundles:"));
+        assert!(!report.description(100).contains("dropped:"));
+        assert!(!Winners::default().has_any());
+    }
+
+    #[test]
+    fn each_winner_line_is_omitted_when_it_has_nothing_to_report() {
+        let report = CoverageReport {
+            coverage: fleet_coverage(),
+            winners: Some(Winners {
+                screened: 4,
+                confirmed: 0,
+                applied: 0,
+                carried: 0,
+                ..Winners::default()
+            }),
+        };
+        let block = report.description(100);
+        assert!(block.ends_with("winners:   4 screened · 0 confirmed · 0 applied · 0 carried"));
+        assert!(!block.contains("bundles:"), "{block}");
+        assert!(!block.contains("dropped:"), "{block}");
+    }
+
+    #[test]
+    fn a_bundle_line_without_skips_omits_the_skipped_clause() {
+        let report = CoverageReport {
+            coverage: fleet_coverage(),
+            winners: Some(Winners {
+                skipped: 0,
+                dropped: 0,
+                ..fleet_winners()
+            }),
+        };
+        let block = report.description(100);
+        assert!(
+            block.ends_with("bundles:   9 plans · best 14 cuts (Δ +1.2e-4)"),
+            "{block}"
+        );
+    }
+
+    #[test]
+    fn the_json_stays_readable_by_a_consumer_that_only_knows_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("out");
+        let report = CoverageReport {
+            coverage: fleet_coverage(),
+            winners: Some(fleet_winners()),
+        };
+        write_files(&dir, &report, 100).unwrap();
+
+        let json = std::fs::read_to_string(dir.join(COVERAGE_JSON_FILE)).unwrap();
+        let old: Coverage = serde_json::from_str(&json).unwrap();
+        assert_eq!(old, fleet_coverage(), "existing fields must not move");
+        let back: CoverageReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, report, "the new key must round-trip");
+        assert!(json.contains("\"checkable\": 4971"), "{json}");
+        assert!(json.contains("\"winners\": {"), "{json}");
+
+        let text = std::fs::read_to_string(dir.join(COVERAGE_TEXT_FILE)).unwrap();
+        assert_eq!(text, format!("{}\n", report.description(100)));
     }
 
     #[test]
