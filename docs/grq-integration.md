@@ -137,9 +137,63 @@ Notes that matter to anyone changing Ockham's CLI:
 `2700` (45 minutes). When `GRQ_TASK_DEADLINE_EPOCH` is set it is trimmed to the
 remaining task time less `GRQ_OCKHAM_CHECKIN_RESERVE_SEC` (default 180); under
 120 seconds remaining it returns 1, and `grq_ockham_run` turns that into rc 2 —
-a clean skip (section 6). On top of Ockham's own `--timeout-seconds`, GRQ wraps
-the process in `timeout`/`gtimeout` `-s SIGTERM` at `timeout_sec + 120` as a
-hard backstop; rc 124/143/137 are tolerated and `best.json` is used if present.
+a clean skip (section 6).
+
+**The budget is soft: it gates the start of new work, not total runtime
+(Issue #53).** `--timeout-seconds` is the window in which Ockham may *start*
+work; it is not a bound on how long the process runs. The deadline is consulted
+only at safe checkpoints — the top of the batch loop, and again before a
+full-corpus cohort is launched, where `CostModel::cohort_budget`
+(`ockham/src/run.rs`) trims the cohort to what the remaining clock can pay for
+or declines to start one at all. **Ockham never aborts a scorer call it has
+already launched.** A full-corpus cohort still running when the deadline passes
+finishes, and its results are processed exactly as an in-budget cohort's are:
+the winner is applied if it clears `--min-improvement`, the learnings are filed,
+`best.json` is written. A run may therefore exit *after* its budget, typically
+by up to the length of one full-corpus cohort — minutes, not hours. Two phases
+sit outside the budget altogether: the clock starts when the optimisation loop
+starts, so the authoritative baseline score and the hidden-neuron activation
+scan (several minutes on a large corpus) are already spent before the first
+second of it is counted.
+
+```mermaid
+flowchart LR
+    A["baseline + activation scan<br/>(before the clock starts)"] --> B["budget starts<br/>--timeout-seconds"]
+    B --> C["batches — deadline checked<br/>at safe checkpoints only"]
+    C --> D["deadline passes:<br/>no new work starts"]
+    D --> E["in-flight cohort finishes,<br/>results kept, rc 0"]
+    E -.->|hours of headroom| F["wrapper SIGTERM:<br/>process judged stuck"]
+```
+
+**The wrapper is a stuck-process kill, not budget enforcement.** GRQ runs the
+binary under `timeout`/`gtimeout` `-s SIGTERM`. That wrapper exists to kill a
+process the fleet judges **stuck** — wedged on a network mount, a scorer that
+never returns — and nothing else. Its value therefore belongs on the order of
+**hours**, with deliberate headroom over the budget to absorb slow networks,
+retries and one overrunning cohort; it must not track the budget. A SIGTERM
+shortly after the deadline lands in the middle of an in-flight cohort, and that
+cohort's several minutes of full-corpus scoring — and any winner in it — are
+discarded, leaving a run that reports no improvement. That is the rc 124 in
+Issue #53's fleet log, and it is why "budget plus a couple of minutes" is the
+wrong shape for this value. The wrapper's number lives on the GRQ side and is
+changed there; this document records only the contract it must satisfy.
+
+**What an overrun looks like in the log — and that it is expected.** A run that
+finishes past its budget is normal operation:
+
+- the last `batch N: … candidates, … hidden left, Ns remaining` line shows a
+  small remaining figure (it floors at `0s`), and that batch's `screen:` and
+  `full:` lines continue past the deadline;
+- the run ends with `stop reason=timeout` (the deadline was seen at the top of
+  the next batch) or `stop reason=budget` (the remaining clock could not pay for
+  another cohort, preceded by the warning `full: Ns left, est …ms/creature —
+  too small for a cohort; stopping`);
+- the exit code is **0**, `best.json` is written, and the run's `stop` record in
+  `<output-dir>/experiments.jsonl` carries `elapsed_ms` — the number to compare
+  against the budget when judging how far the run ran over.
+
+An rc 124/143/137 is *not* what an overrun looks like: that is the wrapper's
+stuck-process kill (section 6), and it means work was thrown away.
 
 **Stdout discipline.** The binary is invoked with `>&2`. `grq_ockham_run`'s own
 stdout *is its return value* — the caller reads the `best.json` path out of a
@@ -319,7 +373,7 @@ What GRQ reads out of Ockham. Changing any row breaks a live fleet worker.
 | `<output-dir>/coverage.json` | *nothing in GRQ today* | Written by Ockham; GRQ reads only `coverage.txt`. Since Issue #59 it carries an additive `winners` object beside the existing coverage fields, which are unchanged. |
 | Process stdout | *nothing* | Redirected to stderr by `grq_ockham_run`. `grq_ockham_run`'s **own** stdout must carry the `best.json` path and nothing else. |
 | Exit code 0 | `grq_ockham_run` | Success; `best.json` must be present. |
-| Exit code 124/143/137 | `grq_ockham_run` | OS wall-clock backstop — warned, and `best.json` is used if present. |
+| Exit code 124/143/137 | `grq_ockham_run` | The wrapper judged the process **stuck** and killed it — an incident to investigate, not routine budget enforcement (section 2): whatever cohort was in flight is lost. Warned, and `best.json` is used if present. |
 | Any other non-zero | `grq_ockham_run` | Reported as `neat_ai_ockham exited <rc>` and turned into helper rc **1**, a fatal run fault. |
 
 **Correction: exit code 2.** `worker/Ockham/run.sh` treats rc 2 from
