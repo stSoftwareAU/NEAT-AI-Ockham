@@ -8,6 +8,12 @@
 //! Only full-corpus verdicts are stored as verdicts. Sample-screen opinions
 //! never are — they are wrong often enough to bury good prunes.
 //!
+//! A cohort can apply only one of its candidates, so most full-corpus winners
+//! lose to a better one and are filed [`Outcome::Rejected`]. [`Learning::full_delta`]
+//! records what the scorer actually measured for each individual, and
+//! [`confirmed_wins`] reads it back: *confirmed but not applied* is a candidate
+//! to retry, not a failure to suppress (Issue #52).
+//!
 //! Layout: `<root>/corpus-<identity>/<host>.jsonl` — one append-only file per
 //! host, so a git-shared directory never conflicts. Nothing here talks to git.
 //!
@@ -62,6 +68,27 @@ pub struct Learning {
     pub unix_secs: u64,
     /// Host that filed it (`GRQ-23`).
     pub host: String,
+    /// Full-corpus `score - incumbent` for this uuid scored **alone**, when it
+    /// was scored as an individual (Issue #52).
+    ///
+    /// `None` on records written before this field and on uuids that only ever
+    /// appeared inside a bundle — their individual contribution was never
+    /// measured.
+    ///
+    /// Only one candidate out of a cohort can be applied, because every one of
+    /// them was scored from the same incumbent snapshot. A positive delta on a
+    /// record whose [`Outcome`] is [`Outcome::Rejected`] therefore means
+    /// *confirmed but not applied*, not *no good*: [`confirmed_wins`] replays
+    /// it and [`known_failures`] stops suppressing it.
+    ///
+    /// This is deliberately an additive **field** rather than a new [`Outcome`]
+    /// variant. The fleet runs mixed versions against one shared cache and
+    /// loading treats an undeserialisable line as a hard error for the
+    /// whole load; serde ignores unknown fields but rejects unknown enum
+    /// variants, so a new variant would break learnings on every host still on
+    /// the old binary the moment one upgraded host wrote a record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_delta: Option<f64>,
 }
 
 /// Current screen-record format version.
@@ -344,20 +371,103 @@ pub fn known_wins(known: &[Learning], creature: &CreatureExport, cfg: ReplayConf
 }
 
 /// UUIDs whose latest full-corpus verdict is a fresh rejection.
+///
+/// A record carrying a [`Learning::full_delta`] above `min_improvement` is
+/// **not** a failure whatever its [`Outcome`] (Issue #52): it lost its cohort
+/// to a better candidate, which says nothing about the cut itself.
 pub fn known_failures(
     known: &[Learning],
     creature: &CreatureExport,
     cfg: ReplayConfig,
     now: u64,
+    min_improvement: f64,
 ) -> HashSet<String> {
     let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
     latest_by_uuid(known, &present)
         .into_values()
         .filter(|l| {
-            l.outcome == Outcome::Rejected && now.saturating_sub(l.unix_secs) < cfg.retry_after_secs
+            l.outcome == Outcome::Rejected
+                && !confirmed_positive(l, min_improvement)
+                && now.saturating_sub(l.unix_secs) < cfg.retry_after_secs
         })
         .map(|l| l.uuid.clone())
         .collect()
+}
+
+/// Whether this record measured a full-corpus win for the uuid on its own.
+fn confirmed_positive(l: &Learning, min_improvement: f64) -> bool {
+    l.full_delta.is_some_and(|d| d > min_improvement)
+}
+
+/// One still-present uuid a previous full-corpus score spoke well of.
+///
+/// Either it was applied ([`Outcome::Accepted`]) or its own individual delta
+/// beat `min_improvement` while another candidate won the cohort.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfirmedWin {
+    /// Hidden neuron UUID.
+    pub uuid: String,
+    /// Measured individual full-corpus delta, when one was recorded.
+    pub full_delta: Option<f64>,
+    /// Whether the latest record applied the cut.
+    pub accepted: bool,
+    /// Unix seconds of the latest record.
+    pub unix_secs: u64,
+}
+
+/// Still-present uuids whose latest verdict confirmed the cut, best delta first.
+///
+/// The cross-run half of "remember every winner" (Issue #52): a cut that beat
+/// `min_improvement` on the full corpus but lost its cohort is exactly the
+/// candidate #45 asks Ockham to keep trying, and it was previously filed —
+/// and suppressed — as a failure.
+pub fn confirmed_wins(
+    known: &[Learning],
+    creature: &CreatureExport,
+    min_improvement: f64,
+) -> Vec<String> {
+    ranked_confirmed(known, creature, min_improvement)
+        .into_iter()
+        .map(|c| c.uuid)
+        .collect()
+}
+
+/// [`confirmed_wins`] with the ranking keys the replay path needs.
+///
+/// Accepted records come first — the fleet has already paid to apply them —
+/// then confirmed-only ones. Within each group the best measured delta leads,
+/// an unmeasured delta comes last, and recency then uuid break the remaining
+/// ties so every host builds the same order.
+pub fn ranked_confirmed(
+    known: &[Learning],
+    creature: &CreatureExport,
+    min_improvement: f64,
+) -> Vec<ConfirmedWin> {
+    let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
+    let mut out: Vec<ConfirmedWin> = latest_by_uuid(known, &present)
+        .into_values()
+        .filter(|l| l.outcome == Outcome::Accepted || confirmed_positive(l, min_improvement))
+        .map(|l| ConfirmedWin {
+            uuid: l.uuid.clone(),
+            full_delta: l.full_delta,
+            accepted: l.outcome == Outcome::Accepted,
+            unix_secs: l.unix_secs,
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.accepted
+            .cmp(&a.accepted)
+            .then_with(|| {
+                let (x, y) = (
+                    a.full_delta.unwrap_or(f64::NEG_INFINITY),
+                    b.full_delta.unwrap_or(f64::NEG_INFINITY),
+                );
+                y.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| b.unix_secs.cmp(&a.unix_secs))
+            .then_with(|| a.uuid.cmp(&b.uuid))
+    });
+    out
 }
 
 /// One full-corpus verdict to file.
@@ -368,6 +478,8 @@ pub struct Verdict<'a> {
     pub kind: CandidateKind,
     /// Accepted or rejected.
     pub outcome: Outcome,
+    /// Individual full-corpus delta when this uuid was scored alone.
+    pub full_delta: Option<f64>,
 }
 
 /// File verdicts onto `known` and the store. Returns how many were written.
@@ -387,6 +499,7 @@ pub fn file_verdicts(
             outcome: v.outcome,
             unix_secs,
             host: host.clone(),
+            full_delta: v.full_delta,
         };
         if let Some(store) = store
             && let Err(e) = store.append(&learning)
@@ -520,6 +633,15 @@ mod tests {
             outcome,
             unix_secs: secs,
             host: "t".into(),
+            full_delta: None,
+        }
+    }
+
+    /// A rejected record that nonetheless measured `delta` on its own.
+    fn confirmed(uuid: &str, delta: f64, secs: u64) -> Learning {
+        Learning {
+            full_delta: Some(delta),
+            ..rec(uuid, Outcome::Rejected, secs)
         }
     }
 
@@ -543,7 +665,7 @@ mod tests {
             rec("h_a", Outcome::Rejected, now - 60),
             rec("h_b", Outcome::Rejected, now - DEFAULT_RETRY_AFTER_SECS - 1),
         ];
-        let skip = known_failures(&known, &c, ReplayConfig::default(), now);
+        let skip = known_failures(&known, &c, ReplayConfig::default(), now, 1e-6);
         assert!(skip.contains("h_a"));
         assert!(!skip.contains("h_b"));
     }
@@ -557,7 +679,7 @@ mod tests {
         ];
         let wins = known_wins(&known, &c, ReplayConfig::default());
         assert_eq!(wins, vec!["h_a".to_string()]);
-        let skip = known_failures(&known, &c, ReplayConfig::default(), 3);
+        let skip = known_failures(&known, &c, ReplayConfig::default(), 3, 1e-6);
         assert!(!skip.contains("h_a"));
     }
 
@@ -650,7 +772,7 @@ mod tests {
         let c = two_hidden();
         let known = store.load().unwrap();
         assert!(known_wins(&known, &c, ReplayConfig::default()).is_empty());
-        assert!(known_failures(&known, &c, ReplayConfig::default(), 1_000_000).is_empty());
+        assert!(known_failures(&known, &c, ReplayConfig::default(), 1_000_000, 1e-6).is_empty());
     }
 
     #[test]
@@ -728,6 +850,115 @@ mod tests {
         assert_eq!(
             oldest_screened_first(&known, &c),
             vec!["h_b".to_string(), "h_a".to_string()]
+        );
+    }
+
+    /// A line written before Issue #52 must still load, with no delta.
+    #[test]
+    fn a_record_written_before_full_delta_still_deserialises() {
+        let line = r#"{"version":1,"uuid":"h_a","kind":"ablation","outcome":"rejected","unixSecs":9,"host":"t"}"#;
+        let l: Learning = serde_json::from_str(line).unwrap();
+        assert_eq!(l.full_delta, None);
+        assert_eq!(l.uuid, "h_a");
+        // And the field is skipped on the way out, so an old binary reading a
+        // new binary's record sees the shape it already knows.
+        assert_eq!(serde_json::to_string(&l).unwrap(), line);
+    }
+
+    #[test]
+    fn a_file_mixing_both_record_shapes_loads_without_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        store.append(&rec("h_a", Outcome::Accepted, 9)).unwrap();
+        store.append(&confirmed("h_b", 2e-6, 10)).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.len(), 2, "{loaded:?}");
+        assert_eq!(loaded[0].full_delta, None);
+        assert_eq!(loaded[1].full_delta, Some(2e-6));
+        let text = std::fs::read_to_string(store.host_path()).unwrap();
+        assert!(
+            !text.lines().next().unwrap().contains("fullDelta"),
+            "{text}"
+        );
+        assert!(
+            text.lines().nth(1).unwrap().contains("\"fullDelta\":"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_positive_is_a_win_even_though_it_was_filed_rejected() {
+        let c = two_hidden();
+        let known = vec![confirmed("h_a", 2e-6, 10), confirmed("h_b", 1e-9, 11)];
+        assert_eq!(confirmed_wins(&known, &c, 1e-6), vec!["h_a".to_string()]);
+        assert!(
+            known_wins(&known, &c, ReplayConfig::default()).is_empty(),
+            "nothing was applied, so nothing is an accepted win"
+        );
+    }
+
+    #[test]
+    fn confirmed_wins_are_still_present_and_best_delta_first() {
+        let c = two_hidden();
+        let known = vec![
+            confirmed("h_a", 2e-6, 10),
+            confirmed("h_b", 9e-6, 11),
+            confirmed("gone", 9e-3, 12),
+        ];
+        assert_eq!(
+            confirmed_wins(&known, &c, 1e-6),
+            vec!["h_b".to_string(), "h_a".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_accepted_record_outranks_a_confirmed_one_with_a_bigger_delta() {
+        let c = two_hidden();
+        let known = vec![
+            confirmed("h_b", 9e-3, 11),
+            Learning {
+                full_delta: Some(1e-5),
+                ..rec("h_a", Outcome::Accepted, 10)
+            },
+        ];
+        let ranked = ranked_confirmed(&known, &c, 1e-6);
+        assert_eq!(ranked[0].uuid, "h_a", "applied cuts replay first");
+        assert!(ranked[0].accepted);
+        assert_eq!(ranked[1].uuid, "h_b");
+        assert!(!ranked[1].accepted);
+    }
+
+    /// Recency and measured delta deliberately disagree: replay must follow the
+    /// delta, so its largest-first plans drop the weakest members (Issue #57).
+    #[test]
+    fn ranking_follows_the_measured_delta_not_the_filing_order() {
+        let c = two_hidden();
+        let known = vec![confirmed("h_a", 9e-3, 10), confirmed("h_b", 2e-6, 5_000)];
+        let ranked = ranked_confirmed(&known, &c, 1e-6);
+        assert_eq!(
+            ranked.iter().map(|r| r.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["h_a", "h_b"],
+            "the newest record is the weakest and must rank last"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_positive_is_no_longer_suppressed_as_a_failure() {
+        let c = two_hidden();
+        let now = 1_000_000;
+        let known = vec![
+            confirmed("h_a", 2e-6, now - 60),
+            confirmed("h_b", -1e-4, now - 60),
+        ];
+        let skip = known_failures(&known, &c, ReplayConfig::default(), now, 1e-6);
+        assert!(!skip.contains("h_a"), "a measured win is not a failure");
+        assert!(skip.contains("h_b"), "a measured loss still is");
+
+        // A fresh rejection carrying no measurement stays suppressed too.
+        let unmeasured = vec![rec("h_a", Outcome::Rejected, now - 60)];
+        assert!(
+            known_failures(&unmeasured, &c, ReplayConfig::default(), now, 1e-6).contains("h_a")
         );
     }
 

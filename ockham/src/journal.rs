@@ -110,6 +110,61 @@ pub enum Event {
         #[serde(default)]
         elapsed_ms: u64,
     },
+    /// Cohort sizing against the wall clock (Issue #58).
+    ///
+    /// Written after every full cohort so `--report` can show whether runs are
+    /// budget-starved: a persistent trim says the budget, not the algorithm, is
+    /// the binding constraint.
+    Budget {
+        /// Rolling full-corpus cost estimate, milliseconds per creature.
+        #[serde(default)]
+        est_ms_per_creature: f64,
+        /// Wall clock left when the cohort was sized.
+        #[serde(default)]
+        remaining_secs: u64,
+        /// Entries scored, excluding the incumbent baseline.
+        #[serde(default)]
+        entries: usize,
+        /// Individual entries dropped to fit the budget.
+        #[serde(default)]
+        dropped_individuals: usize,
+        /// Bundle entries dropped to fit the budget.
+        #[serde(default)]
+        dropped_bundles: usize,
+    },
+    /// What the run tried, kept and rejected (Issue #59).
+    Winners {
+        /// Sampled winners promoted to full scoring.
+        #[serde(default)]
+        screened: usize,
+        /// Distinct UUIDs with a full-corpus positive of their own.
+        #[serde(default)]
+        confirmed: usize,
+        /// Hidden neurons removed by accepted winners.
+        #[serde(default)]
+        applied: usize,
+        /// Confirmed winners still standing at the end of the run.
+        #[serde(default)]
+        carried: usize,
+        /// Bundle plans scored.
+        #[serde(default)]
+        plans: usize,
+        /// Plans skipped because a cut no longer proposed.
+        #[serde(default)]
+        skipped: usize,
+        /// Cuts in the largest accepted winner.
+        #[serde(default)]
+        best_cuts: usize,
+        /// Full-corpus delta of that winner.
+        #[serde(default)]
+        best_delta: f64,
+        /// Cohort entries dropped over budget.
+        #[serde(default)]
+        dropped: usize,
+        /// Rolling cost estimate, milliseconds per creature.
+        #[serde(default)]
+        est_ms_per_creature: u64,
+    },
     /// Loop stopped.
     Stop {
         /// Why the loop ended.

@@ -34,14 +34,20 @@ The current Rust implementation includes:
 - exact, cost-aware `IDENTITY` neuron collapse;
 - seeded random-without-replacement neuron sweeps;
 - default batches of 100 candidates screened on a 5% scorer sample;
-- full-corpus scoring of every sampled winner plus grouped pruning bundles;
+- full-corpus scoring of every sampled winner plus grouped pruning bundles —
+  combination plans built over **every** winner, not one nested prefix chain;
+- confirmed-but-unapplied winners remembered and re-bundled: within a run
+  through an in-run pool, and across runs through the learnings cache;
+- full cohorts sized to the wall clock, with what was dropped reported rather
+  than silently trimmed;
 - iterative acceptance of even tiny full-scorer local wins;
 - a default 45-minute optimisation loop with append-only journalling;
 - fresh re-entry comparison against a supplied current global champion;
 - `population-candidate.json` only when Ockham wins that frontier comparison;
 - a `report` command for cumulative pruning economics;
 - GRQ-sampler `score` / `error` / `ockham` tags (🪒 prefix) preserved on write;
-- `--max-full` / `--max-accepts` so a cheap prune can be checked in quickly;
+- `--max-full` / `--max-accepts` so a cheap prune can be checked in quickly
+  (`--max-full` caps individual scoring only — it never shrinks a bundle);
 - fleet learnings cache: combined replay of still-present known wins (full
   corpus, not capped by `--max-accepts`), then skip fresh failures; a replay
   accept stops immediately so the prune can check in;
@@ -55,7 +61,8 @@ The current Rust implementation includes:
   configured;
 - `coverage.txt` / `coverage.json` beside `best.json`: the multi-line screening
   coverage block GRQ pastes into the sampler commit description, plus the same
-  figures machine-readably;
+  figures machine-readably, extended with what the run screened, confirmed,
+  applied and carried forward;
 - tagged hidden neurons skipped as prune candidates (journal reason `tagged`)
   so GRQ provenance check-in cannot fail;
 - named, reproducible candidate orderings with random as the measured control,
@@ -279,11 +286,54 @@ minimum full win      1e-6
 The incumbent and all candidates in a sampled screen use the same scorer sample
 context. Sampling may reject or promote candidates; it can never accept one.
 
-Every sampled winner is full-scored. Ockham also tries small grouped prefixes of
-promising removals because individual pruning effects are not assumed additive.
+Every sampled winner is full-scored. Ockham also tries grouped removals because
+individual pruning effects are not assumed additive.
 
 The highest strict full-corpus improvement becomes the next Ockham incumbent,
 even if that improvement is tiny.
+
+### Exploiting every screened winner
+
+A screen that finds 38 winners has already paid for 38 pieces of evidence, and
+only one of them can be applied — every candidate in a cohort is scored from the
+same incumbent snapshot. The other 37 are the cheapest cuts Ockham will ever
+find again, so nothing throws them away:
+
+- **Every winner is full-scored.** `--max-full` caps how many are scored
+  *individually*; it never decides which combinations are tried.
+- **Combination plans are structurally different, not one nested chain.** The
+  generator emits the all-winners plan, two complementary disjoint halves, an
+  all-identity and an all-ablation group, then power-of-two prefixes — capped,
+  de-duplicated and deterministic. A single ranked chain cannot localise a
+  winner that poisons every bundle it joins; two disjoint plans can.
+- **A confirmed winner is remembered, not buried.** A cut whose own full-corpus
+  delta beat `--min-improvement` but which lost its cohort is recorded with that
+  delta, so it is never mistaken for a failure and suppressed fleet-wide. Within
+  a run it joins later batches' bundles through an in-run pool; across runs
+  replay picks it up from the learnings cache.
+- **Replay shrinks before it probes.** When a combined replay plan misses, the
+  same cohort carries shrink steps that drop the weakest members first, and only
+  then does Ockham fall back to scoring known wins one at a time.
+- **The cohort is sized to the wall clock.** A rolling cost estimate from
+  observed cohort timings decides how many entries fit in the budget left,
+  keeping a reserve to apply and write the win. When entries must be dropped,
+  the structurally distinct plans and the strongest individuals are kept, and
+  the log and the commit description say what went — a silent cap reads as "we
+  tried everything" when we did not. When not even a minimal cohort fits, the
+  run stops rather than starting a scorer call that would overrun.
+
+```mermaid
+flowchart TD
+    S["screen: 38 winners"] --> I["individuals (capped by --max-full)"]
+    S --> B["bundle plans over all 38 + carried pool"]
+    I --> C["one full-corpus cohort"]
+    B --> C
+    C --> W{"a winner?"}
+    W -->|yes| A["apply, restart the sweep"]
+    W -->|no| N["nothing applied"]
+    C --> P["confirmed positives → in-run pool + learnings"]
+    P --> B
+```
 
 ### Screen coverage
 
@@ -360,7 +410,7 @@ into `--output-dir`, beside `best.json`:
 | Path | Contents |
 |---|---|
 | `coverage.txt` | The rendered description block, ready to paste into `git commit`. |
-| `coverage.json` | The same figures as the serialised `Coverage` struct. |
+| `coverage.json` | The same figures as the serialised `CoverageReport` struct. |
 
 `coverage.txt` is line-oriented and stable — treat it as a contract:
 
@@ -370,6 +420,9 @@ checked:   1204 of 4971 hidden (24.2%)
 cut:       7 this run
 unchecked: 3767 remaining (~38 runs at 100/run)
 skipped:   42 tagged (GRQ provenance, never pruned)
+winners:   38 screened · 22 confirmed · 1 applied · 21 carried
+bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped
+dropped:   12 entries over budget (est 18s/creature)
 ```
 
 - the runs-remaining estimate divides `unchecked` by the configured
@@ -377,8 +430,12 @@ skipped:   42 tagged (GRQ provenance, never pruned)
   whole clause is **omitted** — never `inf` or `NaN` — when that batch size is
   zero or coverage is already complete;
 - the `skipped:` line is omitted when no neuron is tagged;
-- `coverage.json` deserialises straight back into `Coverage`, so nothing
-  downstream needs to parse the prose.
+- the `winners:` / `bundles:` / `dropped:` lines are each omitted when they have
+  nothing to report, so a run that screened nothing renders exactly the block it
+  did before they existed;
+- `coverage.json` carries the same figures under an additive `winners` key, and
+  still deserialises straight into `Coverage` for a consumer that ignores it, so
+  nothing downstream needs to parse the prose.
 
 Both files are written only when coverage exists: no `--learnings-dir` means no
 screen store, no coverage state, and neither file. A write fault warns and the

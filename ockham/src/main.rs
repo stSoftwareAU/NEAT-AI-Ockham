@@ -65,7 +65,8 @@ struct Cli {
     /// Latest global champion JSON for the population re-entry comparison.
     #[arg(long)]
     global_champion: Option<PathBuf>,
-    /// Cap sampled winners sent to full scoring (highest sample Δ first). Omit to full-score every sampled winner.
+    /// Cap winners scored individually (highest sample Δ first). Never restricts bundle membership.
+    /// Omit to score every sampled winner individually.
     #[arg(long)]
     max_full: Option<usize>,
     /// Stop after this many **new** authoritative local accepts so a win can be checked in quickly.
