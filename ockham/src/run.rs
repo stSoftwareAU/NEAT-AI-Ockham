@@ -2320,6 +2320,9 @@ mod tests {
             creature_checksum: "t".into(),
             corpus_identity: "c".into(),
             record_count: 1,
+            corpus_record_count: 1,
+            sample: crate::stats::SampleSpec::full(),
+            stopped_early: false,
             scan_ms: 0,
             from_cache: false,
             neurons: creature
