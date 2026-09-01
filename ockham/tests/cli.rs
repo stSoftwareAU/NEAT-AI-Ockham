@@ -263,3 +263,55 @@ fn help_lists_the_ordering_flags() {
     assert!(text.contains("--ordering"), "{text}");
     assert!(text.contains("--ordering-random-quota"), "{text}");
 }
+
+/// Issue #77: a run that ends without adding a single uuid to the screened set
+/// while unchecked neurons remain must say so on stderr. The overnight plateau
+/// of #63 produced no signal at all; after this, eight silent runs are eight
+/// warnings.
+#[test]
+fn a_run_that_screens_nothing_warns_that_it_advanced_no_coverage() {
+    let tmp = tempfile::tempdir().unwrap();
+    let creature = tmp.path().join("creature.json");
+    std::fs::write(
+        &creature,
+        neat_core::creature_to_json_pretty(&hidden_identity_creature(0.0, 1.0)).unwrap(),
+    )
+    .unwrap();
+    let train = tmp.path().join("train");
+    std::fs::create_dir(&train).unwrap();
+    write_training(&train, 8);
+    let scorer = fake_scorer(
+        tmp.path(),
+        r#"{"baseline":{"score":0.5,"error":0.5,"complexityPenalty":1e-8,"recordCount":8,"costName":"MSE","timeTaken":0.01}}"#,
+    );
+
+    let out = bin()
+        .arg(&creature)
+        .arg(&train)
+        .arg("--output-dir")
+        .arg(tmp.path().join("out"))
+        .arg("--scorer")
+        .arg(&scorer)
+        .arg("--learnings-dir")
+        .arg(tmp.path().join("learnings"))
+        // Stops the loop before a single batch is filled.
+        .arg("--max-experiments")
+        .arg("0")
+        .arg("--timeout-seconds")
+        .arg("30")
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    let log = stderr(&out);
+    assert!(
+        log.contains("no progress: 0 newly screened uuid(s) this run"),
+        "a zero-progress run must warn: {log}"
+    );
+    assert!(
+        log.contains("hidden neuron(s) remain unchecked"),
+        "the warning must name the unchecked figure too: {log}"
+    );
+    let summary: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+    assert_eq!(summary["newlyScreened"], 0, "{summary}");
+}

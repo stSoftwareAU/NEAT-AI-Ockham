@@ -49,15 +49,24 @@ pub struct Report {
     pub full_calls: u64,
     /// Screen-coverage records filed across the run (Issue #36).
     pub screened: u64,
+    /// Sweeps rebuilt after visiting every hidden neuron (Issue #77).
+    ///
+    /// A restart says a run screened the creature end to end and rolled into
+    /// re-screening the stalest neurons — the opposite of the idle spin it
+    /// replaced.
+    pub sweep_restarts: u64,
     /// Hidden neurons on the incumbent at the last coverage record (Issue #37).
     pub hidden: Option<usize>,
     /// Hidden neurons carrying GRQ-provenance tags, at that same record (Issue #40).
     pub tagged: Option<usize>,
-    /// `hidden - tagged`: the coverage denominator, at that same record (Issue #40).
+    /// The coverage denominator — every hidden neuron, tagged included (#74).
+    ///
+    /// Derived from `hidden`, so a journal written before #74 is reported on
+    /// the new denominator rather than replaying the old overstatement.
     pub checkable: Option<usize>,
-    /// Checkable UUIDs screened at least once, at that same record.
+    /// Hidden UUIDs screened at least once, at that same record.
     pub checked: Option<usize>,
-    /// Checkable UUIDs still never screened, at that same record (Issue #40).
+    /// Hidden UUIDs still never screened, at that same record (Issue #40).
     pub unchecked: Option<usize>,
     /// Hidden neurons cut by the run that wrote that record (Issue #40).
     pub cut: Option<usize>,
@@ -112,6 +121,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         screen_calls: 0,
         full_calls: 0,
         screened: 0,
+        sweep_restarts: 0,
         hidden: None,
         tagged: None,
         checkable: None,
@@ -173,25 +183,34 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     report.experiments += 1;
                     candidates_seen += candidates as u64;
                 }
+                Event::SweepRestart { .. } => report.sweep_restarts += 1,
                 Event::Screen { .. } => report.screen_calls += 1,
                 Event::Screened { screened, .. } => report.screened += screened as u64,
                 Event::Coverage {
                     hidden,
                     tagged,
-                    checkable,
                     checked,
                     cut,
+                    tagged_cut,
+                    ..
                 } => {
                     // Coverage is a snapshot of one incumbent, not a total:
                     // the last record read is the current state. The percent
                     // comes from `Coverage` so the report can never disagree
                     // with the tag or the commit description.
+                    //
+                    // `checkable` is derived from `hidden` rather than read
+                    // back (#74): a journal written before #74 carries the old
+                    // `hidden - tagged` denominator, and replaying it would
+                    // report the very overstatement #74 removed. Deriving is
+                    // exact, not a guess — the two are the same number now.
                     let cov = Coverage {
                         hidden,
                         tagged,
-                        checkable,
+                        checkable: hidden,
                         checked,
                         cut,
+                        tagged_cut,
                     };
                     report.hidden = Some(cov.hidden);
                     report.tagged = Some(cov.tagged);
@@ -271,6 +290,12 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     final_hidden,
                     final_synapses,
                     elapsed_ms,
+                    // Per-run progress (Issue #77) is a property of one run
+                    // and this report sums many, so a total would be
+                    // meaningless: the same uuid is "newly screened" in at
+                    // most one of the journals being folded together, and the
+                    // figure belongs beside that run's own coverage block.
+                    newly_screened: _,
                 } => {
                     report.stop_reason = Some(reason);
                     report.accepts = accepts;
@@ -347,6 +372,7 @@ mod tests {
                 final_hidden: 1,
                 final_synapses: 8,
                 elapsed_ms: 3_600_000,
+                newly_screened: 40,
             },
         )
         .unwrap();
@@ -369,6 +395,31 @@ mod tests {
         assert_eq!(report.ordering_random_quota, Some(0.25));
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"ordering\":\"low-variance\""), "{json}");
+    }
+
+    /// Issue #77: a sweep restart is fleet news — a creature screened end to
+    /// end and recycled — so the report counts it rather than dropping it.
+    #[test]
+    fn report_counts_the_sweeps_a_run_rebuilt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        assert_eq!(summarise(&[&path]).unwrap().sweep_restarts, 0);
+        for restarts in 1..=2u64 {
+            journal::append(
+                &path,
+                &Event::SweepRestart {
+                    restarts,
+                    hidden: 40,
+                    newly_screened: 100,
+                },
+            )
+            .unwrap();
+        }
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.sweep_restarts, 2);
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"sweepRestarts\":2"), "{json}");
     }
 
     #[test]
@@ -431,6 +482,7 @@ mod tests {
                 final_hidden: 0,
                 final_synapses: 5,
                 elapsed_ms: 1_800_000,
+                newly_screened: 120,
             },
         )
         .unwrap();
@@ -496,30 +548,32 @@ mod tests {
             &Event::Coverage {
                 hidden: 12,
                 tagged: 2,
-                checkable: 10,
+                checkable: 12,
                 checked: 2,
                 cut: 0,
+                tagged_cut: 0,
             },
         )
         .unwrap();
-        // A later run screened more of the same creature.
+        // A later run cut two of them and screened more of what was left.
         journal::append(
             &path,
             &Event::Coverage {
                 hidden: 10,
                 tagged: 2,
-                checkable: 8,
+                checkable: 10,
                 checked: 3,
                 cut: 2,
+                tagged_cut: 0,
             },
         )
         .unwrap();
         let report = summarise(&[&path]).unwrap();
         assert_eq!(report.hidden, Some(10));
         assert_eq!(report.checked, Some(3));
-        assert_eq!(report.coverage_percent, Some(37.5));
+        assert_eq!(report.coverage_percent, Some(30.0));
         let json = serde_json::to_string(&report).unwrap();
-        assert!(json.contains("\"coveragePercent\":37.5"), "{json}");
+        assert!(json.contains("\"coveragePercent\":30.0"), "{json}");
     }
 
     /// Every figure of the commit-description block reaches `report` (#40).
@@ -533,19 +587,55 @@ mod tests {
             &Event::Coverage {
                 hidden: 5013,
                 tagged: 42,
-                checkable: 4971,
+                checkable: 5013,
                 checked: 1204,
                 cut: 7,
+                tagged_cut: 0,
             },
         )
         .unwrap();
         let report = summarise(&[&path]).unwrap();
         assert_eq!(report.tagged, Some(42));
-        assert_eq!(report.checkable, Some(4971));
-        assert_eq!(report.unchecked, Some(3767));
+        assert_eq!(
+            report.checkable,
+            Some(5013),
+            "tagged stay in the denominator"
+        );
+        assert_eq!(report.unchecked, Some(3809));
         assert_eq!(report.cut, Some(7));
         let json = serde_json::to_string(&report).unwrap();
-        assert!(json.contains("\"unchecked\":3767"), "{json}");
+        assert!(json.contains("\"unchecked\":3809"), "{json}");
+    }
+
+    /// A journal written before Issue #74 carries the old `hidden - tagged`
+    /// denominator. Replaying it verbatim would report the overstatement #74
+    /// removed, so the report derives the denominator from `hidden`.
+    #[test]
+    fn a_pre_issue_74_journal_is_reported_on_the_full_hidden_denominator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "{}{}\n",
+                std::fs::read_to_string(&path).unwrap(),
+                r#"{"record":"coverage","hidden":5013,"tagged":42,"checkable":4971,"checked":1204,"cut":7}"#
+            ),
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(
+            report.checkable,
+            Some(5013),
+            "the old denominator is not replayed"
+        );
+        assert_eq!(report.unchecked, Some(3809));
+        let percent = report.coverage_percent.expect("coverage percent");
+        assert!(
+            (percent - 1204.0 / 5013.0 * 100.0).abs() < f64::EPSILON,
+            "{percent}"
+        );
     }
 
     #[test]

@@ -52,8 +52,8 @@ The current Rust implementation includes:
   corpus, not capped by `--max-accepts`), then skip fresh failures; a replay
   accept stops immediately so the prune can check in;
 - fleet screen coverage: every candidate a batch actually scores — winners
-  **and** losers — leaves a record in `screens-<identity>/<host>.jsonl`, so
-  "which neurons have been checked" survives the run;
+  **and** losers — leaves a record in `screens/<host>.jsonl`, so "which neurons
+  have been checked" survives the run *and* a regenerated corpus (#76);
 - a single coverage calculation over the **current** incumbent — `checked X of
   Y hidden (Z%), N cut` — journalled at the end of each run and surfaced by
   `report`, and carried into the `ockham` check-in tag (the GRQ-sampler commit
@@ -63,8 +63,12 @@ The current Rust implementation includes:
   coverage block GRQ pastes into the sampler commit description, plus the same
   figures machine-readably, extended with what the run screened, confirmed,
   applied and carried forward;
-- tagged hidden neurons skipped as prune candidates (journal reason `tagged`)
-  so GRQ provenance check-in cannot fail;
+- every hidden neuron is a prune candidate: a GRQ provenance tag records where a
+  neuron came from and confers no exemption from the razor (#63);
+- `pruned-provenance.json` beside `best.json`: the tagged UUIDs a run
+  deliberately removed, and the tag names that left with them, declared on
+  **every** run with an `--output-dir` so GRQ's check-in guard can forgive
+  exactly those losses and stay fatal on every other one (#75);
 - named, reproducible candidate orderings with random as the measured control,
   plus the report measures needed to compare their discovery economics;
 - normal Rust CI, security and quality gates.
@@ -339,11 +343,11 @@ flowchart TD
 
 A neuron counts as **checked** once it has been proposed into a batch and
 scored. With `--learnings-dir` set, every checked candidate leaves one screen
-record in `screens-<identity>/<host>.jsonl` — winners and losers alike, and the
-same when `--screen-sample-rate 0` sends candidates straight to full scoring.
-A batch whose screen call fails files nothing: those candidates were never
-checked. Each batch also journals a `screened` record, so coverage is
-reconstructable from `experiments.jsonl` alone.
+record in `screens/<host>.jsonl` — winners and losers alike, and the same when
+`--screen-sample-rate 0` sends candidates straight to full scoring. A batch
+whose screen call fails files nothing: those candidates were never checked.
+Each batch also journals a `screened` record, so coverage is reconstructable
+from `experiments.jsonl` alone.
 
 A screen record is a coverage fact, never a prune verdict: only a full-corpus
 learnings verdict may accept or reject a cut, and a screens IO fault warns
@@ -356,9 +360,112 @@ flowchart LR
     C -->|Ok| W[winners + losers]
     C -->|Err| N["nothing filed<br/>(not checked)"]
     S -->|"0 — disabled"| D[straight to full scoring]
-    W --> R["screens-identity/host.jsonl"]
+    W --> R["screens/host.jsonl"]
     D --> R
     R --> J["journal: screened"]
+```
+
+#### Coverage outlives the corpus
+
+The screen path carries **no corpus identity** (#76). GRQ regenerates the
+training corpus before every Ockham run, so a corpus-keyed screen directory
+partitioned the fleet's coverage: each identity saw only its own slice and
+re-screened neurons another identity had already checked. Which corpus a neuron
+was looked at against does not change whether it has been looked at, so the
+identity is recorded on the record — `corpusIdentity`, `SCREENS_FORMAT_VERSION`
+2 — where anything wanting corpus-exact screening can still filter on it.
+
+Verdicts are the opposite and are untouched: a full-corpus `Accepted` /
+`Rejected` genuinely is a claim about one corpus, so those stay in
+`corpus-<identity>/`. A verdict from another corpus is still never loaded — a
+wrong `Rejected` suppresses that uuid fleet-wide for seven days.
+
+Pre-#76 `screens-<identity>/` directories are still **read**, so the first run
+after the change starts from the union of what the fleet already knows rather
+than from zero. They are never written to, and a record from either location
+counts once per uuid. A fault in one of those legacy directories is warned and
+skipped rather than failing the whole union: nothing rewrites them, so one
+truncated line would otherwise zero the fleet's coverage on every run — the
+plateau, reinstated. A fault in the live `screens/` directory is still an error.
+
+```mermaid
+flowchart LR
+    N["new screen record<br/>+ corpusIdentity"] --> S["screens/host.jsonl"]
+    L["pre-#76 history"] --> O["screens-identity/host.jsonl<br/>(read only)"]
+    S --> U["union → coverage +<br/>unchecked-first selection"]
+    O --> U
+    V["full-corpus verdict"] --> C["corpus-identity/host.jsonl<br/>(still corpus-keyed)"]
+    C --> P["replay / suppression"]
+```
+
+#### Every run advances the checked count
+
+The guarantee, stated rather than left to emerge (#77): **every run advances the
+checked count by up to the batch size until 100% of the hidden neurons have been
+tried, and at 100% the sweep restarts** and begins re-screening the stalest
+neurons. Four rules hold it up.
+
+- **An exhausted sweep is rebuilt, never idled on.** A run that has visited
+  every hidden neuron builds a fresh permutation, re-applies unchecked-first
+  selection and carries on; the restart is logged and journalled as a
+  `sweepRestart` record, because a creature screened end to end is fleet news,
+  not noise. Before this an exhausted sweep ended the run then and there with
+  the stop reason `exhausted`: whatever budget was left went unused, and a
+  creature the fleet had worked all the way through simply stopped being
+  screened instead of recycling its stalest neurons.
+- **Nothing spins, and nothing stops early.** An empty batch from a sweep that
+  still has neurons left is
+  normal — every candidate was skipped — and the sweep simply advances. An empty
+  batch from an exhausted sweep must restart or stop. A whole pass in which not
+  one hidden neuron proposed a candidate would restart into exactly the same
+  nothing, so the run stops with `no-candidates`.
+- **One screening batch is reserved from the wall clock.** The replay stage and
+  its full-corpus scoring can consume the whole budget before the first batch is
+  filled, leaving a run that screened nothing and looked identical to one that
+  screened a batch of losers. So once the budget left has fallen to the
+  estimated cost of one screening batch — and only while this run has screened
+  **nothing** — the replay stage stands down and the sweep takes what remains.
+  The reserve is claimed inside the budget: the batch starts before the
+  deadline and no scorer call is started after it, so the soft-budget contract
+  is untouched — the reserved screen may finish past the deadline exactly as any
+  other in-flight call does. Its size is deliberately
+  the smallest that can exist, exactly one batch, because the cost falls on
+  full-corpus scoring, which is where accepts actually come from — reserve too
+  much and the fleet screens diligently while pruning nothing, which looks like
+  healthy rising coverage and would read as success for weeks. The batch cost
+  is a measured screen where one exists, otherwise the full-corpus cost scaled
+  by `--screen-sample-rate` (by 1 when screening is disabled, where the batch
+  *is* a cohort). A batch that would cost more than half the run budget is not a
+  reserve but the whole plan, and none is taken.
+- **A run that advanced nothing says so.** The distinct UUIDs a run moved from
+  unscreened to screened are counted, reported in the `stop` journal record
+  (`newly_screened`), in the run summary (`newlyScreened`) and on the
+  `progress:` line of the commit description, and a run that ends with zero of
+  them while unchecked neurons remain logs a warning naming both figures. The
+  overnight plateau behind #63 ran for eight runs because every artefact was
+  well-formed and the only evidence was a number failing to change across
+  commits nobody compares.
+
+Two stop reasons move with this: `no-candidates` is new, and `exhausted` is
+retired — an exhausted sweep can no longer end a run, so the only way the loop
+falls out on its own is having no hidden neurons left (`no-hidden`).
+
+```mermaid
+flowchart TD
+    L["loop pass"] --> Y{"budget down to<br/>one batch and<br/>nothing screened?"}
+    Y -->|yes| B["fill batch — replay stands down"]
+    Y -->|no| RP["replay stage, then fill batch"]
+    RP --> B
+    B --> E{"sweep exhausted?"}
+    E -->|no| S["screen → file screen records"]
+    E -->|yes| P{"did this pass<br/>propose anything?"}
+    P -->|yes| R["restart sweep<br/>journal: sweepRestart"]
+    P -->|no| X["stop: no-candidates"]
+    R --> B
+    S --> N["newly screened count"]
+    N --> W{"0 while unchecked remain?"}
+    W -->|yes| G["⚠ warn, naming both figures"]
+    W -->|no| K["progress: N newly screened this run"]
 ```
 
 ### How far Ockham has got
@@ -367,31 +474,36 @@ flowchart LR
 one place so the tag, the commit description and `report` can never disagree:
 
 ```text
-checked 1204 of 4971 hidden (24.2%), 7 cut, 42 tagged skipped
+checked 1204 of 5013 hidden (24.0%), 7 cut, 42 tagged
 ```
 
-The denominator is the **current** incumbent, minus the tagged neurons Ockham
-never proposes:
+The denominator is every hidden neuron of the **current** incumbent:
 
 - a screen record for a uuid no longer on the creature is ignored — it raises
   neither `checked` nor `hidden`;
 - duplicate records for one uuid count once;
-- tagged (GRQ-provenance) neurons leave the denominator and are reported
-  separately, because they can never become checked;
+- tagged (GRQ-provenance) neurons stay in the denominator and a screened one
+  counts as checked (#74). Selection stopped exempting them in #63, so
+  deducting them here overstated progress; `tagged` is still reported beside
+  the percentage, never subtracted from it;
 - newly evolved neurons start unchecked and therefore *lower* the percentage.
   That is intended: coverage describes the creature in front of us, not a
   score that only ever rises.
 
 With `--learnings-dir` set, the run journals one `coverage` record at the end,
 so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`
-and `coveragePercent` across runs. Without a learnings dir there is no coverage
-state, and nothing is journalled — absent rather than a misleading 0%.
+and `coveragePercent` across runs. `checkable` keeps its key so `coverage.json`
+stays readable by anything already parsing it; since #74 it means "hidden
+neurons Ockham may try", which is all of them. Without a learnings dir there is
+no coverage state, and nothing is journalled — absent rather than a misleading
+0%.
 
 ```mermaid
 flowchart LR
-    H["hidden on current incumbent"] --> T{"tagged?"}
-    T -->|yes| K["skipped — reported separately"]
-    T -->|no| C["checkable = denominator"]
+    H["hidden on current incumbent"] --> C["checkable = every hidden neuron"]
+    C --> T{"tagged?"}
+    T -->|yes| G["also counted as tagged —<br/>reported beside the percentage"]
+    T -->|no| N["counted in the denominator only"]
     C --> S{"has a screen record?"}
     S -->|yes| D["checked"]
     S -->|no| U["unchecked"]
@@ -416,10 +528,12 @@ into `--output-dir`, beside `best.json`:
 
 ```text
 🪒 Ockham neuron screening coverage
-checked:   1204 of 4971 hidden (24.2%)
+checked:   1204 of 5013 hidden (24.0%)
 cut:       7 this run
-unchecked: 3767 remaining (~38 runs at 100/run)
-skipped:   42 tagged (GRQ provenance, never pruned)
+unchecked: 3809 remaining (~39 runs at 100/run)
+tagged:    42 carry GRQ provenance, screened like any other
+declared:  3 tagged neurons cut, listed in pruned-provenance.json
+progress:  100 newly screened this run
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
 bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped
 dropped:   12 entries over budget (est 18s/creature)
@@ -429,11 +543,18 @@ dropped:   12 entries over budget (est 18s/creature)
   `--candidates` batch size (`~1 run` when one batch would finish it), and the
   whole clause is **omitted** — never `inf` or `NaN` — when that batch size is
   zero or coverage is already complete;
-- the `skipped:` line is omitted when no neuron is tagged;
+- the `tagged:` line is omitted when no neuron is tagged;
+- the `declared:` line is omitted when the run cut nothing tagged — the
+  declaration file itself is still written, because an absent *file* means
+  something else entirely (see below);
+- the `progress:` line is **never** omitted, zero included (#77): coverage is
+  cumulative fleet state, so the per-run figure beside it is the only thing that
+  makes a plateau visible by reading two consecutive commits;
 - the `winners:` / `bundles:` / `dropped:` lines are each omitted when they have
-  nothing to report, so a run that screened nothing renders exactly the block it
-  did before they existed;
-- `coverage.json` carries the same figures under an additive `winners` key, and
+  nothing to report, so a run that screened nothing renders the coverage lines
+  alone, exactly as it did before they existed;
+- `coverage.json` carries the same per-run figure under `newlyScreened` and the
+  winner figures under an additive `winners` key, and
   still deserialises straight into `Coverage` for a consumer that ignores it, so
   nothing downstream needs to parse the prose.
 
@@ -450,6 +571,57 @@ flowchart LR
     C --> S["coverage.json — Coverage struct"]
     T --> G["GRQ: git commit description"]
     S --> G
+```
+
+### Declared pruned provenance
+
+GRQ's check-in guard refuses a candidate on which a source neuron that carried
+`tags` no longer carries them — provenance cannot be recovered from a checked-in
+file, so committing a creature that lost it is worse than committing nothing.
+Since #63 Ockham prunes tagged neurons legitimately, so it **declares** what it
+removed instead of the guard being switched off: a missing tag is forgiven only
+when its uuid is in the declaration, and every other missing tag stays fatal.
+
+`pruned-provenance.json` is written into `--output-dir`, beside `best.json`:
+
+```json
+{
+  "version": 1,
+  "pruned": [
+    { "uuid": "5f2c…", "tags": ["discovered", "intelligentDesign"] }
+  ]
+}
+```
+
+- **The list is a set difference, not a counter.** UUIDs carrying tags on the
+  *opening* creature that are absent from the *final* incumbent, computed once
+  at the end of the run — an incremental count would drift across the replay
+  stage, accepts and sweep restarts. Every removal path is therefore covered:
+  individual cut, bundle accept and replay alike.
+- **A surviving tagged neuron is never listed.** Every declared uuid is a tag
+  the guard stops checking, so an over-inclusive list would leave the guard
+  running and protecting nothing.
+- **The file is written on every run with an `--output-dir`, empty list
+  included** — including runs with no `--learnings-dir`, where the coverage
+  files are absent. An empty `pruned` means "nothing tagged was pruned"; an
+  absent *file* means "this build does not declare", and the guard must fail
+  closed on it. Overloading absence would wave through every provenance loss of
+  a run that crashed before writing, or of an older binary on one host.
+- **A write fault warns and the run still completes**, as `coverage.txt` does.
+  The cost is explicit: a run whose declaration failed to write has its check-in
+  refused, which is the correct outcome.
+- `Coverage` counts the same neurons as `taggedCut` in `coverage.json` and the
+  `declared:` line of the commit description, so the fleet history shows
+  provenance being spent rather than only the file recording it.
+
+```mermaid
+flowchart LR
+    O["opening creature<br/>tagged UUIDs"] --> D{"still on the<br/>final incumbent?"}
+    D -->|yes| K["not declared —<br/>its tags must survive"]
+    D -->|no| P["declared: uuid + tag names"]
+    P --> F["pruned-provenance.json"]
+    P --> C["taggedCut in coverage.json<br/>declared: line in coverage.txt"]
+    F --> G["GRQ guard: forgive these UUIDs only"]
 ```
 
 ### Unchecked-first selection
@@ -687,6 +859,7 @@ remains available as the control for every comparison.
 | `experiments.jsonl` | Append-only experiment journal. |
 | `coverage.txt` | Screening-coverage block for the GRQ commit description. Written only with `--learnings-dir`. |
 | `coverage.json` | The same coverage figures as JSON. Written only with `--learnings-dir`. |
+| `pruned-provenance.json` | Tagged UUIDs the run deliberately cut, with their tag names. Written on every run; an empty list is not the same as an absent file. |
 | `winners/` | Accepted intermediate Ockham incumbents. |
 | `workspace/` | Isolated run state, baseline and statistics caches. |
 | `population-candidate.json` | Written only after beating the supplied current global champion. |
@@ -716,6 +889,7 @@ Useful measures include:
 - authoritative local accepts per hour (`acceptsPerHour`);
 - sample and full scorer calls consumed (`screenCalls`, `fullCalls`);
 - screen-coverage records filed (`screened`);
+- sweeps rebuilt after reaching 100% of the hidden neurons (`sweepRestarts`);
 - screening coverage of the incumbent — every figure of the commit-description
   block (`hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`,
   `coveragePercent`);
@@ -808,7 +982,7 @@ NEAT-AI-Ockham/
 │       ├── journal.rs         # experiments.jsonl
 │       ├── reentry.rs         # population re-entry vs global champion
 │       ├── report.rs          # experiments.jsonl summary
-│       ├── tags.rs            # GRQ-sampler score/provenance tags
+│       ├── tags.rs            # GRQ-sampler score/provenance tags + pruned-provenance.json
 │       ├── learnings.rs       # fleet prune-verdict cache + screen coverage
 │       ├── coverage.rs       # checked/total/percent + coverage.txt / coverage.json
 │       ├── ordering.rs        # named candidate ordering strategies
@@ -833,8 +1007,10 @@ what makes them load-bearing.
 ## Implementation roadmap
 
 Shipped through the iterative loop, re-entry comparison, report command, GRQ
-check-in tags, learnings replay, tagged-neuron skip, and named candidate
-orderings (#1–#11, #23, #25–#27).
+check-in tags, learnings replay, and named candidate orderings
+(#1–#11, #23, #25–#27). Tagged neurons were exempt from screening under #26;
+issue #63 reversed that, so provenance tags no longer keep a hidden neuron out
+of the prune pool.
 
 The ordering experiment itself is now the work: run each named strategy against
 the seeded random control on a mature creature and let the report decide whether

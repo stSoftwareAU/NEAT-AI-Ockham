@@ -50,6 +50,20 @@ pub enum Event {
         /// Remaining unvisited hidden neurons.
         remaining: usize,
     },
+    /// The sweep ran out of neurons and was rebuilt (Issue #77).
+    ///
+    /// A run that has visited every hidden neuron restarts its sweep rather
+    /// than idling to the deadline, so this is a normal, meaningful step in the
+    /// fleet history: it says the creature was screened end to end and the run
+    /// rolled into re-screening the stalest neurons.
+    SweepRestart {
+        /// How many times the sweep has been rebuilt this run (1-based).
+        restarts: u64,
+        /// Hidden neurons the fresh sweep will visit.
+        hidden: usize,
+        /// Distinct UUIDs this run had newly screened when it restarted.
+        newly_screened: usize,
+    },
     /// Sampled screen result.
     Screen {
         /// Sampled winners promoted to full scoring.
@@ -78,16 +92,20 @@ pub enum Event {
     Coverage {
         /// Hidden neurons on the final incumbent.
         hidden: usize,
-        /// Hidden neurons carrying GRQ-provenance tags, skipped as candidates.
+        /// Hidden neurons carrying GRQ-provenance tags, screened like any other.
         #[serde(default)]
         tagged: usize,
-        /// `hidden - tagged`: the coverage denominator.
+        /// Hidden neurons Ockham may try — all of them, tagged included (#74).
         checkable: usize,
-        /// Checkable UUIDs with at least one screen record.
+        /// Hidden UUIDs with at least one screen record.
         checked: usize,
         /// Hidden neurons removed this run.
         #[serde(default)]
         cut: usize,
+        /// Tagged hidden neurons removed this run, declared in
+        /// `pruned-provenance.json` (Issue #75).
+        #[serde(default)]
+        tagged_cut: usize,
     },
     /// Full-corpus cohort result.
     Full {
@@ -177,6 +195,13 @@ pub enum Event {
         final_score: f64,
         /// Cumulative score gain from the opening parent.
         cumulative_delta: f64,
+        /// Distinct hidden UUIDs this run moved from unscreened to screened
+        /// (Issue #77).
+        ///
+        /// Zero while unchecked neurons remain is the plateau signature: the
+        /// run reported well-formed coverage without advancing it.
+        #[serde(default)]
+        newly_screened: usize,
         /// Hidden neurons left on the final incumbent.
         #[serde(default)]
         final_hidden: usize,

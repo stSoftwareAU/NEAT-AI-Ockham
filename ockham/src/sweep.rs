@@ -209,6 +209,10 @@ impl Sweep {
     }
 
     /// [`Self::fill_batch`] that skips UUIDs in `avoid` (fresh known failures).
+    ///
+    /// GRQ provenance tags confer no exemption (#63): every hidden neuron is a
+    /// candidate, tagged or not, and the only skips are known failures plus
+    /// the reasons proposing a candidate reports for itself.
     pub fn fill_batch_avoiding(
         &mut self,
         incumbent: &CreatureExport,
@@ -216,32 +220,12 @@ impl Sweep {
         size: usize,
         avoid: &HashSet<String>,
     ) -> (Vec<SweepCandidate>, Vec<SweepSkip>) {
-        self.fill_batch_skipping(incumbent, stats, size, avoid, &HashSet::new())
-    }
-
-    /// [`Self::fill_batch`] skipping known failures and tagged provenance neurons (#26).
-    pub fn fill_batch_skipping(
-        &mut self,
-        incumbent: &CreatureExport,
-        stats: &ActivationStats,
-        size: usize,
-        avoid: &HashSet<String>,
-        tagged: &HashSet<String>,
-    ) -> (Vec<SweepCandidate>, Vec<SweepSkip>) {
         let mut candidates = Vec::new();
         let mut skips = Vec::new();
         while candidates.len() < size && !self.exhausted() {
             let permutation_index = self.next;
             let uuid = self.order[permutation_index].clone();
             self.next += 1;
-            if tagged.contains(&uuid) {
-                skips.push(SweepSkip {
-                    uuid,
-                    permutation_index,
-                    reason: "tagged".into(),
-                });
-                continue;
-            }
             if avoid.contains(&uuid) {
                 skips.push(SweepSkip {
                     uuid,
@@ -944,21 +928,65 @@ mod tests {
         );
     }
 
+    /// `creature` serialised with a GRQ-style provenance tag on every hidden neuron.
+    fn tagged_json(creature: &CreatureExport) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&creature_to_json(creature).unwrap()).unwrap();
+        for n in value["neurons"].as_array_mut().unwrap() {
+            if n["type"] == "hidden" {
+                n.as_object_mut().unwrap().insert(
+                    "tags".into(),
+                    serde_json::json!([{"name": "discovered", "value": "ReLU6"}]),
+                );
+            }
+        }
+        serde_json::to_string(&value).unwrap()
+    }
+
+    /// The inverse of the removed `fill_batch_skips_tagged_neurons_as_tagged`:
+    /// provenance records where a neuron came from, it does not exempt it (#63).
     #[test]
-    fn fill_batch_skips_tagged_neurons_as_tagged() {
-        let creature = two_hidden();
+    fn every_hidden_neuron_is_a_candidate_even_when_all_are_tagged() {
+        let json = tagged_json(&two_hidden());
+        let meta = crate::tags::CreatureMeta::from_json(&json);
+        assert_eq!(
+            meta.neuron_tags.len(),
+            2,
+            "fixture must tag every hidden neuron: {:?}",
+            meta.neuron_tags
+        );
+        let creature = neat_core::parse_creature_json(&json).unwrap();
         let stats = stats_for(&creature);
         let mut sweep = Sweep::new(&creature, 9);
-        let blocked = sweep.order[0].clone();
-        let tagged = HashSet::from([blocked.clone()]);
-        let (batch, skips) =
-            sweep.fill_batch_skipping(&creature, &stats, 8, &HashSet::new(), &tagged);
-        assert!(batch.iter().all(|c| c.uuid != blocked));
+        let (batch, skips) = sweep.fill_batch_avoiding(&creature, &stats, 8, &HashSet::new());
+        assert!(skips.is_empty(), "a tag must not skip a neuron: {skips:?}");
+        let mut proposed: Vec<&str> = batch.iter().map(|c| c.uuid.as_str()).collect();
+        proposed.sort_unstable();
+        assert_eq!(proposed, vec!["h_a", "h_b"]);
+    }
+
+    #[test]
+    fn output_neurons_are_never_proposed() {
+        let creature = six_hidden();
+        let stats = varied_stats(&creature);
+        let outputs: Vec<&str> = creature
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "output")
+            .map(|n| n.uuid.as_str())
+            .collect();
+        assert_eq!(outputs, vec!["output-0", "output-1"]);
+        let mut sweep = Sweep::new(&creature, 4);
+        let mut visited = Vec::new();
+        while !sweep.exhausted() {
+            let (batch, skips) = sweep.fill_batch(&creature, &stats, 2);
+            visited.extend(batch.into_iter().map(|c| c.uuid));
+            visited.extend(skips.into_iter().map(|s| s.uuid));
+        }
+        assert_eq!(visited.len(), 6, "only the hidden neurons are visited");
         assert!(
-            skips
-                .iter()
-                .any(|s| s.uuid == blocked && s.reason == "tagged"),
-            "{skips:?}"
+            !visited.iter().any(|u| outputs.contains(&u.as_str())),
+            "an output neuron must never be proposed: {visited:?}"
         );
     }
 }
