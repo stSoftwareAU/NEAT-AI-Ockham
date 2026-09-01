@@ -183,6 +183,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     tagged,
                     checked,
                     cut,
+                    tagged_cut,
                     ..
                 } => {
                     // Coverage is a snapshot of one incumbent, not a total:
@@ -201,6 +202,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                         checkable: hidden,
                         checked,
                         cut,
+                        tagged_cut,
                     };
                     report.hidden = Some(cov.hidden);
                     report.tagged = Some(cov.tagged);
@@ -508,6 +510,7 @@ mod tests {
                 checkable: 12,
                 checked: 2,
                 cut: 0,
+                tagged_cut: 0,
             },
         )
         .unwrap();
@@ -520,6 +523,7 @@ mod tests {
                 checkable: 10,
                 checked: 3,
                 cut: 2,
+                tagged_cut: 0,
             },
         )
         .unwrap();
@@ -545,6 +549,7 @@ mod tests {
                 checkable: 5013,
                 checked: 1204,
                 cut: 7,
+                tagged_cut: 0,
             },
         )
         .unwrap();

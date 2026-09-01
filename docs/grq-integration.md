@@ -28,7 +28,7 @@ sequenceDiagram
     R->>R: select fittest samples/*.json → work dir copy
     R->>L: grq_ockham_learnings_prepare (pull)
     R->>O: grq_ockham_run (flags, --learnings-dir)
-    O-->>R: out/best.json (+ coverage.txt / coverage.json)
+    O-->>R: out/best.json (+ coverage.txt / coverage.json / pruned-provenance.json)
     R->>L: grq_ockham_learnings_publish (push, before the gate)
     R->>R: score gates · rebase · provenance · check-in gate
     R->>S: commit subject = ockham tag, description = coverage.txt
@@ -357,6 +357,67 @@ nothing, returns 0, and produces the byte-identical subject-only commit GRQ made
 before. The gap that sub-issues of #33 exist to close is therefore closed on the
 GRQ side; what remains is Ockham's own reporting quality, not the relay.
 
+## 5a. Declared pruned provenance (Issue #75)
+
+Unlike the rest of this audit, this section records a contract Ockham
+**publishes ahead of** its GRQ consumer: the matching guard relaxation is a
+separate child of #63 and is written against what is documented here.
+
+`grq_creature_guard_checkin_lineage` refuses a candidate on which a source
+neuron that carried `tags` no longer carries them (GRQ #4216). Ockham prunes
+tagged neurons deliberately since #63, so it publishes what it removed and the
+guard relaxes exactly that far — **a missing neuron tag is forgiven only when
+its uuid appears in the declaration; any other missing tag stays fatal**.
+
+**The file.** `<output-dir>/pruned-provenance.json`, written beside `best.json`
+by `ockham/src/tags.rs::write_pruned_provenance`:
+
+```json
+{
+  "version": 1,
+  "pruned": [
+    { "uuid": "5f2c…", "tags": ["discovered", "intelligentDesign"] }
+  ]
+}
+```
+
+| Key | Type | Meaning |
+|---|---|---|
+| `version` | integer | Schema version, `1` today. Read it before the list; an unknown version must be treated as no declaration. |
+| `pruned` | array | One entry per tagged neuron the run removed, uuid-ordered. Empty when the run cut nothing tagged. |
+| `pruned[].uuid` | string | Neuron uuid as it stood on the **source** creature. |
+| `pruned[].tags` | array of string | Tag *names* the neuron carried. Names only — the values left with the neuron; enough to report what provenance was given up. |
+
+**The fail-closed rule, and why it is the contract.** The file is written on
+**every** run with an `--output-dir`, empty list included:
+
+- **empty `pruned`** means *nothing tagged was pruned* — every source neuron
+  tag must still be present, and the guard checks all of them as before;
+- **absent file** means *this build does not declare* — an older binary on one
+  host, or a run that died before writing it. The guard must **refuse** the
+  check-in, not read absence as an empty list.
+
+Overloading absence is undetectable after the fact: the checked-in creature is
+the only record, so a waved-through provenance loss leaves nothing to compare
+against once it lands. A refusal, by contrast, is a skipped check-in that shows
+up in the `[provenance-guard]` lines.
+
+**What the list is.** The set difference between the tagged UUIDs on the opening
+creature and the neurons on the final incumbent, computed once at the end of the
+run — never an incremental counter, which would drift across the replay stage,
+accepts and sweep restarts. Every removal path is therefore covered: individual
+cut, bundle accept and replay. A tagged neuron that **survives** the run is
+never listed, because every listed uuid is a tag the guard stops checking.
+
+**A write fault is a warning, not a run failure**, matching `coverage.txt`. The
+consequence is deliberate: a run whose declaration failed to write has its
+check-in refused by the relaxed guard.
+
+The count of the same neurons also reaches the commit description as
+`declared:  N tagged neurons cut, listed in pruned-provenance.json` and
+`coverage.json` as `taggedCut`, so the fleet history shows provenance being
+spent. Both are reporting; this file is the contract.
+
 ## 6. Surface contract
 
 What GRQ reads out of Ockham. Changing any row breaks a live fleet worker.
@@ -367,7 +428,8 @@ What GRQ reads out of Ockham. Changing any row breaks a live fleet worker.
 | `score` creature tag | `grq_ockham_read_score` | Numeric (`^-?\d+(\.\d+)?([eE][-+]?\d+)?$`). Drives both score gates and `grq_ockham_verify_written_score`. |
 | `ockham` creature tag | `grq_ockham_read_message` | The commit **subject**, used verbatim. Must already carry its own single score clause. |
 | Other creature tag *names* | `grq_creature_guard_checkin_lineage` | Every source tag name must survive on the candidate, except `score` / `dataSha`. `error` is stamped by `stamp_acceptance` and matters here as a name. |
-| Per-neuron `tags` | `grq_creature_guard_checkin_lineage` | Must survive the prune. Cutting a tagged neuron loses provenance that cannot be recovered from the checked-in file. |
+| Per-neuron `tags` | `grq_creature_guard_checkin_lineage` | Must survive the prune. Cutting a tagged neuron loses provenance that cannot be recovered from the checked-in file. Since Issue #75 a loss is forgivable **only** when the uuid is in `pruned-provenance.json`. |
+| `<output-dir>/pruned-provenance.json` | the relaxed guard (GRQ-side child of #63) | Ockham's declaration of the tagged UUIDs it deliberately cut (section 5a). Written on every run with an `--output-dir`, empty list included. An empty `pruned` means nothing tagged was pruned; an **absent or unknown-version** file means no declaration, on which the guard must fail closed and refuse the check-in. |
 | `uuid` / `memetic` keys | `grq_creature_guard_checkin_lineage` | Must be **absent** from the written creature. |
 | `<output-dir>/coverage.txt` | `grq_ockham_read_coverage` | Line-oriented block relayed verbatim as the commit description. Since Issue #59 it may carry `winners:` / `bundles:` / `dropped:` lines after the coverage lines; each is omitted when it has nothing to report, and a run that screened nothing renders the coverage lines alone. Since Issue #74 the tagged line reads `tagged:    N carry GRQ provenance, screened like any other` — it replaced the `skipped:` line, and is still omitted when no neuron is tagged. Absent or blank is a supported no-op. |
 | `<output-dir>/coverage.json` | *nothing in GRQ today* | Written by Ockham; GRQ reads only `coverage.txt`. Since Issue #59 it carries an additive `winners` object beside the existing coverage fields. Issue #74 changed no key: `checkable` now counts **every** hidden neuron, tagged ones included, so the percentage no longer overstates progress. |

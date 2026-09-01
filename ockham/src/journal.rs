@@ -88,6 +88,10 @@ pub enum Event {
         /// Hidden neurons removed this run.
         #[serde(default)]
         cut: usize,
+        /// Tagged hidden neurons removed this run, declared in
+        /// `pruned-provenance.json` (Issue #75).
+        #[serde(default)]
+        tagged_cut: usize,
     },
     /// Full-corpus cohort result.
     Full {
