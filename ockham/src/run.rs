@@ -2301,23 +2301,90 @@ mod tests {
 
     /// A blocked declaration is reporting, and reporting must never lose
     /// pruning — the run completes and `best.json` still lands.
+    ///
+    /// The same config runs twice: once with the path blocked, once clean. The
+    /// clean run is the control — it proves the blocked run really did attempt
+    /// the write it could not make, rather than never reaching it.
     #[test]
     fn a_blocked_declaration_write_warns_rather_than_failing_the_run() {
         let tmp = tempfile::tempdir().unwrap();
         let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
-        let out = tmp.path().join("out");
+        let blocked = tmp.path().join("blocked");
         // A directory where the declaration belongs: the write cannot succeed.
-        std::fs::create_dir_all(out.join(crate::tags::PRUNED_PROVENANCE_FILE)).unwrap();
-        let cfg = coverage_files_cfg(creature, train, out, Some(tmp.path().join("learnings")));
+        std::fs::create_dir_all(blocked.join(crate::tags::PRUNED_PROVENANCE_FILE)).unwrap();
+        let cfg = coverage_files_cfg(
+            creature.clone(),
+            train.clone(),
+            blocked,
+            Some(tmp.path().join("learnings")),
+        );
 
         let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(run.optimisation, "complete");
         assert!(cfg.output_dir.join("best.json").exists());
         assert!(
             cfg.output_dir
+                .join(crate::tags::PRUNED_PROVENANCE_FILE)
+                .is_dir(),
+            "the blocker is still there, so nothing was declared"
+        );
+        assert!(
+            cfg.output_dir
                 .join(crate::coverage::COVERAGE_TEXT_FILE)
                 .exists(),
             "the rest of the reporting still runs"
+        );
+
+        let control = coverage_files_cfg(
+            creature,
+            train,
+            tmp.path().join("clean"),
+            Some(tmp.path().join("learnings-control")),
+        );
+        establish_run(&control, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert!(
+            control
+                .output_dir
+                .join(crate::tags::PRUNED_PROVENANCE_FILE)
+                .is_file(),
+            "the unblocked control run declares, so the blocked run tried to"
+        );
+    }
+
+    /// The other removal path: a sweep accept, with no replayable known win.
+    /// The declaration is a set difference over the final incumbent, so it
+    /// cannot care which path cut the neuron — this pins that.
+    #[test]
+    fn a_sweep_accept_declares_the_tagged_neuron_it_cut() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        tag_neurons(&creature, &["h_a", "h_b"]);
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(4),
+            max_accepts: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: Some(0.5),
+            ..OckhamConfig::default()
+        };
+
+        let run = establish_run(&cfg, &improving_scorer()).unwrap();
+        assert!(run.accepts >= 1, "stop={}", run.stop_reason);
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        let cut: Vec<String> = ["h_a", "h_b"]
+            .iter()
+            .filter(|u| !best.contains(**u))
+            .map(|u| (*u).to_string())
+            .collect();
+        assert!(!cut.is_empty(), "the sweep must have cut something: {best}");
+        assert_eq!(
+            declared_uuids(&cfg.output_dir),
+            cut,
+            "a search accept declares exactly what it removed"
         );
     }
 
