@@ -370,14 +370,14 @@ one place so the tag, the commit description and `report` can never disagree:
 checked 1204 of 4971 hidden (24.2%), 7 cut, 42 tagged skipped
 ```
 
-The denominator is the **current** incumbent, minus the tagged neurons Ockham
-never proposes:
+The denominator is the **current** incumbent, minus the tagged neurons:
 
 - a screen record for a uuid no longer on the creature is ignored — it raises
   neither `checked` nor `hidden`;
 - duplicate records for one uuid count once;
 - tagged (GRQ-provenance) neurons leave the denominator and are reported
-  separately, because they can never become checked;
+  separately. Selection no longer exempts them (#63), so this denominator
+  *undercounts* the true one until the coverage child of #63 lands;
 - newly evolved neurons start unchecked and therefore *lower* the percentage.
   That is intended: coverage describes the creature in front of us, not a
   score that only ever rises.
@@ -390,7 +390,7 @@ state, and nothing is journalled — absent rather than a misleading 0%.
 ```mermaid
 flowchart LR
     H["hidden on current incumbent"] --> T{"tagged?"}
-    T -->|yes| K["skipped — reported separately"]
+    T -->|yes| K["out of the denominator —<br/>still screened (#63)"]
     T -->|no| C["checkable = denominator"]
     C --> S{"has a screen record?"}
     S -->|yes| D["checked"]
@@ -419,7 +419,7 @@ into `--output-dir`, beside `best.json`:
 checked:   1204 of 4971 hidden (24.2%)
 cut:       7 this run
 unchecked: 3767 remaining (~38 runs at 100/run)
-skipped:   42 tagged (GRQ provenance, never pruned)
+skipped:   42 tagged (GRQ provenance, outside the denominator)
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
 bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped
 dropped:   12 entries over budget (est 18s/creature)

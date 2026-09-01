@@ -91,7 +91,7 @@ impl Coverage {
     /// checked:   1204 of 4971 hidden (24.2%)
     /// cut:       7 this run
     /// unchecked: 3767 remaining (~38 runs at 100/run)
-    /// skipped:   42 tagged (GRQ provenance, never pruned)
+    /// skipped:   42 tagged (GRQ provenance, outside the denominator)
     /// ```
     ///
     /// Line-oriented and stable: GRQ pastes it into a `git commit` description.
@@ -121,7 +121,7 @@ impl Coverage {
         out.push_str(&format!("{:<11}{unchecked} remaining{runs}", "unchecked:"));
         if self.tagged > 0 {
             out.push_str(&format!(
-                "\n{:<11}{} tagged (GRQ provenance, never pruned)",
+                "\n{:<11}{} tagged (GRQ provenance, outside the denominator)",
                 "skipped:", self.tagged
             ));
         }
@@ -461,7 +461,7 @@ mod tests {
                 "checked:   1204 of 4971 hidden (24.2%)\n",
                 "cut:       7 this run\n",
                 "unchecked: 3767 remaining (~38 runs at 100/run)\n",
-                "skipped:   42 tagged (GRQ provenance, never pruned)"
+                "skipped:   42 tagged (GRQ provenance, outside the denominator)"
             )
         );
     }
@@ -598,7 +598,7 @@ mod tests {
                 "checked:   1204 of 4971 hidden (24.2%)\n",
                 "cut:       7 this run\n",
                 "unchecked: 3767 remaining (~38 runs at 100/run)\n",
-                "skipped:   42 tagged (GRQ provenance, never pruned)\n",
+                "skipped:   42 tagged (GRQ provenance, outside the denominator)\n",
                 "winners:   38 screened · 22 confirmed · 1 applied · 21 carried\n",
                 "bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped\n",
                 "dropped:   12 entries over budget (est 18s/creature)"
