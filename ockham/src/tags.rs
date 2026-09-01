@@ -292,6 +292,66 @@ mod tests {
         assert_eq!(v["neurons"][0]["tags"][0]["name"], "discovered");
     }
 
+    /// #63 lets Ockham cut tagged neurons, so the cut uuid's provenance must
+    /// leave with it — a `tags` entry for a neuron that no longer exists is a
+    /// lie GRQ's check-in guard cannot catch.
+    #[test]
+    fn a_cut_tagged_neuron_leaves_no_tags_entry_and_the_survivors_keep_theirs() {
+        const TWO_TAGGED: &str = r#"{
+            "input":1,"output":1,
+            "neurons":[
+                {"type":"hidden","uuid":"h1","bias":0,"squash":"IDENTITY",
+                 "tags":[{"name":"discovered","value":"ReLU6"}]},
+                {"type":"hidden","uuid":"h2","bias":0,"squash":"IDENTITY",
+                 "tags":[{"name":"discovered","value":"MEAN"},{"name":"design","value":"grq"}]},
+                {"type":"output","uuid":"output-0","bias":0,"squash":"IDENTITY"}
+            ],
+            "synapses":[{"fromUUID":"input-0","toUUID":"h1","weight":1},
+                        {"fromUUID":"input-0","toUUID":"h2","weight":1},
+                        {"fromUUID":"h1","toUUID":"output-0","weight":1},
+                        {"fromUUID":"h2","toUUID":"output-0","weight":1}]
+        }"#;
+        let mut meta = CreatureMeta::from_json(TWO_TAGGED);
+        let before = meta.neuron_tags["h2"].clone();
+        let pruned = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h2", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h2", 1.0),
+                synapse("h2", "output-0", 1.0),
+            ],
+        );
+        meta.retain_neurons(&pruned);
+        assert!(
+            !meta.neuron_tags.contains_key("h1"),
+            "the cut uuid must leave the sidecar"
+        );
+        let v: Value = serde_json::from_str(&meta.serialize_with(&pruned, true).unwrap()).unwrap();
+        let neurons = v["neurons"].as_array().unwrap();
+        assert!(
+            !neurons.iter().any(|n| n["uuid"] == "h1"),
+            "the cut neuron itself is gone: {v}"
+        );
+        assert!(
+            !serde_json::to_string(&v).unwrap().contains("ReLU6"),
+            "no provenance may be claimed for a neuron that no longer exists: {v}"
+        );
+        let survivor = neurons.iter().find(|n| n["uuid"] == "h2").unwrap();
+        assert_eq!(
+            survivor["tags"],
+            serde_json::json!([
+                {"name":"discovered","value":"MEAN"},
+                {"name":"design","value":"grq"}
+            ]),
+            "the surviving tags must be written back byte-for-byte"
+        );
+        assert_eq!(meta.neuron_tags["h2"], before);
+    }
+
     #[test]
     fn replay_bundle_tag_names_the_origin_and_cut_count() {
         let msg = ockham_progress_message(&OckhamProgress {

@@ -622,20 +622,16 @@ fn ockham_loop(
         }
 
         if !replay_done {
-            let tagged: HashSet<String> = meta.neuron_tags.keys().cloned().collect();
-            if !tagged.is_empty() {
-                log::detail(&format!(
-                    "replay: leaving {} tagged neuron(s) untouched (GRQ #4216)",
-                    tagged.len()
-                ));
-            }
+            // A confirmed win on a GRQ-tagged uuid replays like any other (#63):
+            // provenance records where a neuron came from, not that it earns its
+            // place.
             // Accepted cuts and confirmed-but-unapplied ones, best measured
             // delta first (Issue #57): the largest-first plans below then drop
             // the weakest members rather than the most recently filed.
             let replayable: Vec<crate::learnings::ConfirmedWin> =
                 ranked_confirmed(&known, &incumbent.creature, config.min_improvement)
                     .into_iter()
-                    .filter(|c| !replay_skipped.contains(&c.uuid) && !tagged.contains(&c.uuid))
+                    .filter(|c| !replay_skipped.contains(&c.uuid))
                     .take(replay_cap(replay_cfg.max))
                     .collect();
             let accepted_only = replayable.iter().filter(|c| c.accepted).count();
@@ -857,20 +853,16 @@ fn ockham_loop(
             crate::incumbent::now_unix(),
             config.min_improvement,
         );
-        let tagged: HashSet<String> = meta.neuron_tags.keys().cloned().collect();
         if !avoid.is_empty() {
             log::detail(&format!(
                 "learnings: skipping {} known failure(s)",
                 avoid.len()
             ));
         }
-        let (candidates, skips) = sweep.fill_batch_skipping(
-            &incumbent.creature,
-            &activation,
-            config.candidates,
-            &avoid,
-            &tagged,
-        );
+        // Tagged neurons are candidates like any other (#63); `meta.neuron_tags`
+        // is still read below for coverage and the pruned-provenance manifest.
+        let (candidates, skips) =
+            sweep.fill_batch_avoiding(&incumbent.creature, &activation, config.candidates, &avoid);
         let remaining_s = deadline.saturating_duration_since(Instant::now()).as_secs();
         log::info(&format!(
             "batch {batch_idx}: {} candidates, {} skipped, {} hidden left, {remaining_s}s remaining",
@@ -1680,40 +1672,44 @@ mod tests {
         assert!(!best.contains("h_b"), "{best}");
     }
 
-    #[test]
-    fn replay_leaves_tagged_source_neurons_in_place() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (creature, train) = two_hidden_paths(tmp.path());
+    /// Add a GRQ-style provenance tag to each named neuron of a creature file.
+    fn tag_neurons(creature: &std::path::Path, uuids: &[&str]) {
         let mut v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&creature).unwrap()).unwrap();
-        if let Some(neurons) = v.get_mut("neurons").and_then(|n| n.as_array_mut()) {
-            for n in neurons {
-                if n.get("uuid").and_then(|u| u.as_str()) == Some("h_a") {
-                    n.as_object_mut().unwrap().insert(
-                        "tags".into(),
-                        serde_json::json!([{"name":"discovered","value":"keep"}]),
-                    );
-                }
+            serde_json::from_str(&std::fs::read_to_string(creature).unwrap()).unwrap();
+        for n in v["neurons"].as_array_mut().unwrap() {
+            let uuid = n["uuid"].as_str().unwrap_or_default().to_string();
+            if uuids.contains(&uuid.as_str()) {
+                n.as_object_mut().unwrap().insert(
+                    "tags".into(),
+                    serde_json::json!([{"name":"discovered","value":uuid}]),
+                );
             }
         }
-        std::fs::write(&creature, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+        std::fs::write(creature, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    }
+
+    /// Replaces `replay_leaves_tagged_source_neurons_in_place`: #63 reverses
+    /// #26, so a confirmed win on a tagged uuid replays like any other.
+    #[test]
+    fn replay_cuts_a_confirmed_win_on_a_tagged_neuron() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        tag_neurons(&creature, &["h_a"]);
         let learnings_dir = tmp.path().join("learnings");
         let td = TrainingDataConfig::new(1, 1);
         let corpus = crate::corpus::corpus_info(&train, &td).unwrap();
         let store = LearningsStore::new(&learnings_dir, corpus.identity.clone(), "t".into());
-        for uuid in ["h_a", "h_b"] {
-            store
-                .append(&crate::learnings::Learning {
-                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
-                    uuid: uuid.into(),
-                    kind: "identity".into(),
-                    outcome: Outcome::Accepted,
-                    unix_secs: 10,
-                    host: "t".into(),
-                    full_delta: None,
-                })
-                .unwrap();
-        }
+        store
+            .append(&crate::learnings::Learning {
+                version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                uuid: "h_a".into(),
+                kind: "identity".into(),
+                outcome: Outcome::Accepted,
+                unix_secs: 10,
+                host: "t".into(),
+                full_delta: None,
+            })
+            .unwrap();
         let cfg = OckhamConfig {
             creature,
             training_data: train,
@@ -1734,12 +1730,68 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.stop_reason, "replay-accepts");
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
-        assert!(best.contains("h_a"), "tagged neuron must survive: {best}");
         assert!(
-            run.accepts >= 1 || !best.contains("h_b"),
-            "untagged known win should prune or accept; accepts={} best={best}",
-            run.accepts
+            !best.contains("h_a"),
+            "a tagged known win must be replayable: {best}"
+        );
+        assert!(
+            !best.contains("discovered"),
+            "the cut neuron's provenance tag must not survive it: {best}"
+        );
+    }
+
+    #[test]
+    fn a_tagged_hidden_neuron_that_improves_the_score_is_proposed_screened_and_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        tag_neurons(&creature, &["h_a", "h_b"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train.clone(),
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(4),
+            max_accepts: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: Some(0.5),
+            learnings_dir: Some(learnings_dir.clone()),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert!(
+            run.accepts >= 1,
+            "a tagged neuron must be acceptable; accepts={} stop={}",
+            run.accepts,
+            run.stop_reason
+        );
+        // Screened: every tagged candidate the batch scored left a screen record.
+        let screened = screened_uuids(&screens_store(&learnings_dir, &train));
+        for uuid in ["h_a", "h_b"] {
+            assert!(
+                screened.iter().any(|s| s == uuid),
+                "{uuid} must reach the screen: {screened:?}"
+            );
+        }
+        // Proposed: the batch emitted both tagged neurons and skipped neither.
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            journal.contains(r#""candidates":2,"skipped":0"#),
+            "both tagged neurons must be proposed: {journal}"
+        );
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(
+            !best.contains("h_a") || !best.contains("h_b"),
+            "a tagged neuron must have been cut: {best}"
         );
     }
 

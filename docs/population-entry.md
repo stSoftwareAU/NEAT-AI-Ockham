@@ -88,8 +88,9 @@ at once is too rough; prefixes in the same cohort are load-bearing.
 
 Prod-83 replay-beat `Mac-Ultra-M2-forests.json` (+1.25e-5) but **check-in was
 refused**: one tagged source neuron was in the bundle (GRQ #4216). Replay and
-the random sweep now skip tagged UUIDs (journal reason `tagged`) so known
-untagged cuts can still publish. Overnight loop
+the random sweep then skipped tagged UUIDs (journal reason `tagged`) so known
+untagged cuts could still publish — reversed by #63, which returns every hidden
+neuron to the prune pool and moves the guard question to GRQ. Overnight loop
 is replay-only (`--max-experiments 2`): re-apply the cache onto the current
 fittest, check in, pull, repeat.
 
