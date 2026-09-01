@@ -367,31 +367,36 @@ flowchart LR
 one place so the tag, the commit description and `report` can never disagree:
 
 ```text
-checked 1204 of 4971 hidden (24.2%), 7 cut, 42 tagged skipped
+checked 1204 of 5013 hidden (24.0%), 7 cut, 42 tagged
 ```
 
-The denominator is the **current** incumbent, minus the tagged neurons:
+The denominator is every hidden neuron of the **current** incumbent:
 
 - a screen record for a uuid no longer on the creature is ignored — it raises
   neither `checked` nor `hidden`;
 - duplicate records for one uuid count once;
-- tagged (GRQ-provenance) neurons leave the denominator and are reported
-  separately. Selection no longer exempts them (#63), so this denominator
-  *undercounts* the true one until the coverage child of #63 lands;
+- tagged (GRQ-provenance) neurons stay in the denominator and a screened one
+  counts as checked (#74). Selection stopped exempting them in #63, so
+  deducting them here overstated progress; `tagged` is still reported beside
+  the percentage, never subtracted from it;
 - newly evolved neurons start unchecked and therefore *lower* the percentage.
   That is intended: coverage describes the creature in front of us, not a
   score that only ever rises.
 
 With `--learnings-dir` set, the run journals one `coverage` record at the end,
 so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`
-and `coveragePercent` across runs. Without a learnings dir there is no coverage
-state, and nothing is journalled — absent rather than a misleading 0%.
+and `coveragePercent` across runs. `checkable` keeps its key so `coverage.json`
+stays readable by anything already parsing it; since #74 it means "hidden
+neurons Ockham may try", which is all of them. Without a learnings dir there is
+no coverage state, and nothing is journalled — absent rather than a misleading
+0%.
 
 ```mermaid
 flowchart LR
-    H["hidden on current incumbent"] --> T{"tagged?"}
-    T -->|yes| K["out of the denominator —<br/>still screened (#63)"]
-    T -->|no| C["checkable = denominator"]
+    H["hidden on current incumbent"] --> C["checkable = every hidden neuron"]
+    C --> T{"tagged?"}
+    T -->|yes| G["also counted as tagged —<br/>reported beside the percentage"]
+    T -->|no| N["counted in the denominator only"]
     C --> S{"has a screen record?"}
     S -->|yes| D["checked"]
     S -->|no| U["unchecked"]
@@ -416,10 +421,10 @@ into `--output-dir`, beside `best.json`:
 
 ```text
 🪒 Ockham neuron screening coverage
-checked:   1204 of 4971 hidden (24.2%)
+checked:   1204 of 5013 hidden (24.0%)
 cut:       7 this run
-unchecked: 3767 remaining (~38 runs at 100/run)
-skipped:   42 tagged (GRQ provenance, outside the denominator)
+unchecked: 3809 remaining (~39 runs at 100/run)
+tagged:    42 carry GRQ provenance, screened like any other
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
 bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped
 dropped:   12 entries over budget (est 18s/creature)
@@ -429,10 +434,10 @@ dropped:   12 entries over budget (est 18s/creature)
   `--candidates` batch size (`~1 run` when one batch would finish it), and the
   whole clause is **omitted** — never `inf` or `NaN` — when that batch size is
   zero or coverage is already complete;
-- the `skipped:` line is omitted when no neuron is tagged;
+- the `tagged:` line is omitted when no neuron is tagged;
 - the `winners:` / `bundles:` / `dropped:` lines are each omitted when they have
-  nothing to report, so a run that screened nothing renders exactly the block it
-  did before they existed;
+  nothing to report, so a run that screened nothing renders the coverage lines
+  alone, exactly as it did before they existed;
 - `coverage.json` carries the same figures under an additive `winners` key, and
   still deserialises straight into `Coverage` for a consumer that ignores it, so
   nothing downstream needs to parse the prose.
