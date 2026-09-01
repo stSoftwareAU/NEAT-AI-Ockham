@@ -251,25 +251,41 @@ pub struct CoverageReport {
     /// Screening coverage of the final incumbent.
     #[serde(flatten)]
     pub coverage: Coverage,
+    /// Distinct hidden UUIDs **this run** screened for the first time (#77).
+    ///
+    /// Coverage is cumulative fleet state, so a run that advanced nothing
+    /// renders exactly like one that advanced a full batch. This is the
+    /// per-run figure beside it: two consecutive commits now show whether the
+    /// fleet is moving. `#[serde(default)]` so a pre-#77 `coverage.json` still
+    /// deserialises.
+    #[serde(default)]
+    pub newly_screened: usize,
     /// What the run tried and kept; absent when nothing was screened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub winners: Option<Winners>,
 }
 
 impl CoverageReport {
-    /// Coverage with no winner figures — the pre-Issue-#59 artefact.
+    /// Coverage with no per-run progress and no winner figures.
     pub fn new(coverage: Coverage) -> Self {
         Self {
             coverage,
+            newly_screened: 0,
             winners: None,
         }
     }
 
-    /// The full commit-description block: coverage lines, then winner lines.
+    /// The full commit-description block: coverage, progress, then winners.
     ///
-    /// With no winners this is byte-identical to [`Coverage::description`].
+    /// The `progress:` line is always rendered, zero included — a plateau is
+    /// only visible by reading two consecutive commits if the figure is there
+    /// in both.
     pub fn description(&self, candidates: usize) -> String {
         let mut out = self.coverage.description(candidates);
+        out.push_str(&format!(
+            "\n{:<11}{} newly screened this run",
+            "progress:", self.newly_screened
+        ));
         for line in self.winners.iter().flat_map(Winners::lines) {
             out.push('\n');
             out.push_str(&line);
@@ -691,7 +707,10 @@ mod tests {
         write_files(&dir, &CoverageReport::new(cov), 100).unwrap();
 
         let text = std::fs::read_to_string(dir.join(COVERAGE_TEXT_FILE)).unwrap();
-        assert_eq!(text, format!("{}\n", cov.description(100)));
+        assert_eq!(
+            text,
+            format!("{}\n", CoverageReport::new(cov).description(100))
+        );
 
         let json = std::fs::read_to_string(dir.join(COVERAGE_JSON_FILE)).unwrap();
         let back: Coverage = serde_json::from_str(&json).unwrap();
@@ -767,6 +786,7 @@ mod tests {
     fn the_winners_block_renders_exactly_as_grq_will_paste_it() {
         let report = CoverageReport {
             coverage: fleet_coverage(),
+            newly_screened: 100,
             winners: Some(fleet_winners()),
         };
         assert_eq!(
@@ -777,6 +797,7 @@ mod tests {
                 "cut:       7 this run\n",
                 "unchecked: 3809 remaining (~39 runs at 100/run)\n",
                 "tagged:    42 carry GRQ provenance, screened like any other\n",
+                "progress:  100 newly screened this run\n",
                 "winners:   38 screened · 22 confirmed · 1 applied · 21 carried\n",
                 "bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped\n",
                 "dropped:   12 entries over budget (est 18s/creature)"
@@ -784,13 +805,39 @@ mod tests {
         );
     }
 
+    /// Issue #77: the per-run figure is rendered on every run, zero included —
+    /// a plateau is only readable across two commits if both carry the line.
+    #[test]
+    fn a_run_that_advanced_nothing_still_renders_its_zero_progress() {
+        let report = CoverageReport::new(fleet_coverage());
+        let block = report.description(100);
+        assert!(
+            block.contains("\nprogress:  0 newly screened this run"),
+            "{block}"
+        );
+        assert!(
+            block.ends_with("progress:  0 newly screened this run"),
+            "{block}"
+        );
+    }
+
     /// The block is pasted into every fleet host's check-in commit, so a run
     /// with nothing to say must add no empty lines and no `0 of 0` filler.
+    ///
+    /// Since #77 it carries one line the coverage block itself does not: the
+    /// UUIDs this run newly screened, which is a per-run fact rather than a
+    /// property of the incumbent.
     #[test]
     fn a_run_with_no_winners_renders_exactly_todays_block() {
         let cov = fleet_coverage();
         let report = CoverageReport::new(cov);
-        assert_eq!(report.description(100), cov.description(100));
+        assert_eq!(
+            report.description(100),
+            format!(
+                "{}\nprogress:  0 newly screened this run",
+                cov.description(100)
+            )
+        );
         assert!(!report.description(100).contains("winners:"));
         assert!(!report.description(100).contains("bundles:"));
         assert!(!report.description(100).contains("dropped:"));
@@ -801,6 +848,7 @@ mod tests {
     fn each_winner_line_is_omitted_when_it_has_nothing_to_report() {
         let report = CoverageReport {
             coverage: fleet_coverage(),
+            newly_screened: 4,
             winners: Some(Winners {
                 screened: 4,
                 confirmed: 0,
@@ -819,6 +867,7 @@ mod tests {
     fn a_bundle_line_without_skips_omits_the_skipped_clause() {
         let report = CoverageReport {
             coverage: fleet_coverage(),
+            newly_screened: 38,
             winners: Some(Winners {
                 skipped: 0,
                 dropped: 0,
@@ -838,6 +887,7 @@ mod tests {
         let dir = tmp.path().join("out");
         let report = CoverageReport {
             coverage: fleet_coverage(),
+            newly_screened: 100,
             winners: Some(fleet_winners()),
         };
         write_files(&dir, &report, 100).unwrap();
@@ -848,7 +898,13 @@ mod tests {
         let back: CoverageReport = serde_json::from_str(&json).unwrap();
         assert_eq!(back, report, "the new key must round-trip");
         assert!(json.contains("\"checkable\": 5013"), "{json}");
+        assert!(json.contains("\"newlyScreened\": 100"), "{json}");
         assert!(json.contains("\"winners\": {"), "{json}");
+
+        // A pre-#77 artefact declares no per-run progress, not a missing field.
+        let pre_77 = r#"{"hidden":5013,"tagged":42,"checkable":5013,"checked":1204,"cut":7}"#;
+        let older: CoverageReport = serde_json::from_str(pre_77).unwrap();
+        assert_eq!(older, CoverageReport::new(fleet_coverage()));
 
         let text = std::fs::read_to_string(dir.join(COVERAGE_TEXT_FILE)).unwrap();
         assert_eq!(text, format!("{}\n", report.description(100)));

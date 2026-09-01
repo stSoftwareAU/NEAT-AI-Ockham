@@ -49,6 +49,12 @@ pub struct Report {
     pub full_calls: u64,
     /// Screen-coverage records filed across the run (Issue #36).
     pub screened: u64,
+    /// Sweeps rebuilt after visiting every hidden neuron (Issue #77).
+    ///
+    /// A restart says a run screened the creature end to end and rolled into
+    /// re-screening the stalest neurons — the opposite of the idle spin it
+    /// replaced.
+    pub sweep_restarts: u64,
     /// Hidden neurons on the incumbent at the last coverage record (Issue #37).
     pub hidden: Option<usize>,
     /// Hidden neurons carrying GRQ-provenance tags, at that same record (Issue #40).
@@ -115,6 +121,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         screen_calls: 0,
         full_calls: 0,
         screened: 0,
+        sweep_restarts: 0,
         hidden: None,
         tagged: None,
         checkable: None,
@@ -176,6 +183,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     report.experiments += 1;
                     candidates_seen += candidates as u64;
                 }
+                Event::SweepRestart { .. } => report.sweep_restarts += 1,
                 Event::Screen { .. } => report.screen_calls += 1,
                 Event::Screened { screened, .. } => report.screened += screened as u64,
                 Event::Coverage {
@@ -282,6 +290,10 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     final_hidden,
                     final_synapses,
                     elapsed_ms,
+                    // Per-run progress (Issue #77) is a property of one run,
+                    // and this report sums many; `screened` already carries
+                    // the per-journal count it would duplicate.
+                    newly_screened: _,
                 } => {
                     report.stop_reason = Some(reason);
                     report.accepts = accepts;
@@ -358,6 +370,7 @@ mod tests {
                 final_hidden: 1,
                 final_synapses: 8,
                 elapsed_ms: 3_600_000,
+                newly_screened: 40,
             },
         )
         .unwrap();
@@ -442,6 +455,7 @@ mod tests {
                 final_hidden: 0,
                 final_synapses: 5,
                 elapsed_ms: 1_800_000,
+                newly_screened: 120,
             },
         )
         .unwrap();

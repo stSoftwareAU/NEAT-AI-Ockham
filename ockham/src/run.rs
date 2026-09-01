@@ -57,6 +57,8 @@ pub struct BaselineRun {
     pub experiments: u64,
     /// Why the loop stopped.
     pub stop_reason: String,
+    /// Distinct hidden UUIDs this run screened for the first time (Issue #77).
+    pub newly_screened: usize,
     /// Cumulative score gain from the opening parent.
     pub cumulative_delta: f64,
     /// Population re-entry comparison, when a global champion was supplied.
@@ -214,6 +216,7 @@ pub fn establish_run(
         accepts: loop_out.accepts,
         experiments: loop_out.experiments,
         stop_reason: loop_out.stop_reason,
+        newly_screened: loop_out.newly_screened,
         cumulative_delta: loop_out.cumulative_delta,
         reentry,
         optimisation: "complete",
@@ -226,7 +229,59 @@ struct LoopOut {
     accepts: u64,
     experiments: u64,
     stop_reason: String,
+    newly_screened: usize,
     cumulative_delta: f64,
+}
+
+/// Distinct hidden UUIDs one run moved from unscreened to screened (Issue #77).
+///
+/// Coverage is re-derived from the fleet store on every run, so a run that
+/// advanced nothing renders the same well-formed block as one that advanced a
+/// full batch — that is what let the #63 plateau run for eight runs unnoticed.
+/// This counts only the UUIDs that had **no** screen record when the run
+/// opened, so re-screening the stalest neurons of an already-complete creature
+/// is honestly reported as zero new coverage.
+#[derive(Debug, Default)]
+struct ScreenProgress {
+    opening: HashSet<String>,
+    added: HashSet<String>,
+}
+
+impl ScreenProgress {
+    /// Snapshot what the fleet had already screened when the run opened.
+    fn new(screens: &[Screened]) -> Self {
+        Self {
+            opening: screens.iter().map(|s| s.uuid.clone()).collect(),
+            added: HashSet::new(),
+        }
+    }
+
+    /// Record one filed screen record; only a first-ever record counts.
+    fn observe(&mut self, uuid: &str) {
+        if !self.opening.contains(uuid) {
+            self.added.insert(uuid.to_string());
+        }
+    }
+
+    /// Distinct UUIDs newly screened so far this run.
+    fn count(&self) -> usize {
+        self.added.len()
+    }
+}
+
+/// The zero-progress warning, or `None` when the run advanced coverage.
+///
+/// A run that adds nothing to the screened set while unchecked neurons remain
+/// has not done the job it exists to do, whatever else it reported. The line
+/// names both figures so a plateau is legible from one run's log rather than
+/// only by diffing two commits.
+fn zero_progress_warning(newly_screened: usize, unchecked: usize) -> Option<String> {
+    (newly_screened == 0 && unchecked > 0).then(|| {
+        format!(
+            "no progress: 0 newly screened uuid(s) this run while {unchecked} hidden neuron(s) \
+             remain unchecked"
+        )
+    })
 }
 
 /// Most confirmed winners carried between batches (Issue #56).
@@ -516,7 +571,6 @@ fn ockham_loop(
     // neuron's tags at every accept, so only this snapshot can still say what
     // left; the declaration is a set difference against it, never a counter.
     let opening_meta = meta.clone();
-    let mut sweep = Sweep::with_ordering(&incumbent.creature, &activation, seed, ordering);
     log::info(&format!(
         "loop seed={seed}  ordering={}  randomQuota={}  hidden={}  budget={}s  candidates={}",
         ordering.strategy,
@@ -572,9 +626,15 @@ fn ockham_loop(
     // Coverage is fleet state, so it reprioritises the sweep one layer above
     // the ordering strategies — after the identity above is already fixed.
     let unchecked_first = config.unchecked_first_enabled();
-    if unchecked_first {
-        prefer_unchecked(&mut sweep, &screens, &incumbent.creature);
-    }
+    let mut progress = ScreenProgress::new(&screens);
+    let mut sweep = fresh_sweep(
+        &incumbent.creature,
+        &activation,
+        seed,
+        ordering,
+        unchecked_first,
+        &screens,
+    );
     journal::append(
         &journal_path,
         &Event::Start {
@@ -597,6 +657,12 @@ fn ockham_loop(
     let mut batch_idx = 0u64;
     let mut current_score = opening_score;
     let mut stop_reason = "exhausted".to_string();
+    // Sweep-restart bookkeeping (Issue #77). `pass_candidates` counts what the
+    // current permutation proposed, so a pass that proposed nothing stops the
+    // run instead of restarting into the same nothing.
+    let mut restarts = 0u64;
+    let mut pass_candidates = 0usize;
+    let mut screened_batches = 0u64;
     let mut replay_done = false;
     let mut replay_skipped = HashSet::new();
     // In-run state, deliberately not seeded from the cache: cross-run memory is
@@ -614,9 +680,35 @@ fn ockham_loop(
             stop_reason = "cancelled".into();
             break;
         }
+        // One screening batch is reserved from the wall clock (Issue #77).
+        //
+        // Sizing is the whole judgement here, and it is deliberately the
+        // smallest reserve that can exist: **one sampled screen, once, and
+        // only when the budget is already gone**. A reserve taken as a
+        // proportion of the budget would come out of full-corpus scoring,
+        // which is where accepts actually come from — and a fleet that screens
+        // diligently while pruning nothing looks like healthy rising coverage,
+        // so that mistake would read as success for weeks. This reserve cannot
+        // make that trade: it spends nothing while the budget holds, and when
+        // the budget has gone it buys coverage only. The reserved batch stops
+        // before full scoring, so the overrun is bounded by one sampled screen
+        // (`--screen-sample-rate` of a pass over one batch), never a cohort.
+        //
+        // With screening disabled there is nothing cheap to reserve — a
+        // candidate is only checked once it has been full-scored, which is the
+        // cost the budget just ran out of — so the run stops as it always did.
+        let mut reserving = false;
         if Instant::now() >= deadline {
-            stop_reason = "timeout".into();
-            break;
+            if screened_batches == 0 && config.screen_sample_rate.is_some() {
+                reserving = true;
+                log::warn(
+                    "budget spent before this run screened anything; screening one reserved \
+                     batch before stopping (#77)",
+                );
+            } else {
+                stop_reason = "timeout".into();
+                break;
+            }
         }
         if let Some(max) = config.max_experiments
             && experiments >= max
@@ -625,7 +717,9 @@ fn ockham_loop(
             break;
         }
 
-        if !replay_done {
+        // Replay spends the budget on the creature; the reserved batch spends
+        // it on coverage. When the reserve is in force the reserve wins.
+        if !replay_done && !reserving {
             // A confirmed win on a GRQ-tagged uuid replays like any other (#63):
             // provenance records where a neuron came from, not that it earns its
             // place.
@@ -847,9 +941,49 @@ fn ockham_loop(
             }
         }
 
+        // An exhausted sweep is rebuilt, never idled on (Issue #77). Before
+        // this the loop refilled nothing, journalled an empty batch each pass
+        // and burned the rest of the budget — indistinguishable in the log
+        // from a run that worked hard and ran out of time.
+        //
+        // `prefer_unchecked` already orders a fresh permutation unchecked
+        // first, then stalest-screened first, so a creature that is 100%
+        // screened rolls straight into re-screening its stalest neurons.
         if sweep.exhausted() {
-            stop_reason = "exhausted".into();
-            break;
+            if pass_candidates == 0 {
+                // A whole permutation that proposed nothing would restart into
+                // exactly the same nothing. Stop with a reason instead.
+                log::warn(&format!(
+                    "sweep: not one of {} hidden neuron(s) proposed a candidate; stopping",
+                    incumbent.hidden_neurons()
+                ));
+                stop_reason = "no-candidates".into();
+                break;
+            }
+            restarts += 1;
+            pass_candidates = 0;
+            sweep = fresh_sweep(
+                &incumbent.creature,
+                &activation,
+                seed.wrapping_add(accepts).wrapping_add(restarts),
+                ordering,
+                unchecked_first,
+                &screens,
+            );
+            log::info(&format!(
+                "sweep exhausted over {} hidden neuron(s); restart {restarts}, {} newly screened so far",
+                incumbent.hidden_neurons(),
+                progress.count()
+            ));
+            journal::append(
+                &journal_path,
+                &Event::SweepRestart {
+                    restarts,
+                    hidden: incumbent.hidden_neurons(),
+                    newly_screened: progress.count(),
+                },
+            )?;
+            continue;
         }
 
         let avoid = known_failures(
@@ -869,6 +1003,7 @@ fn ockham_loop(
         // is still read below for coverage and the pruned-provenance manifest.
         let (candidates, skips) =
             sweep.fill_batch_avoiding(&incumbent.creature, &activation, config.candidates, &avoid);
+        pass_candidates += candidates.len();
         let remaining_s = deadline.saturating_duration_since(Instant::now()).as_secs();
         log::info(&format!(
             "batch {batch_idx}: {} candidates, {} skipped, {} hidden left, {remaining_s}s remaining",
@@ -940,6 +1075,7 @@ fn ockham_loop(
                         file_batch_screens(
                             store,
                             &mut screens,
+                            &mut progress,
                             &coverage,
                             &journal_path,
                             batch_idx,
@@ -966,7 +1102,14 @@ fn ockham_loop(
                     .iter()
                     .map(|c| (c.uuid.as_str(), c.kind, ScreenOutcomeKind::Winner))
                     .collect();
-                file_batch_screens(store, &mut screens, &coverage, &journal_path, batch_idx)?;
+                file_batch_screens(
+                    store,
+                    &mut screens,
+                    &mut progress,
+                    &coverage,
+                    &journal_path,
+                    batch_idx,
+                )?;
                 candidates
                     .into_iter()
                     .map(|c| SampledWinner {
@@ -981,6 +1124,17 @@ fn ockham_loop(
 
         experiments += 1;
         batch_idx += 1;
+        screened_batches += 1;
+        if reserving {
+            // The reserve buys coverage, not a cohort: the screen records are
+            // filed, and full scoring is the cost the budget has already spent.
+            log::info(&format!(
+                "reserved batch screened: {} newly screened uuid(s); stopping on budget",
+                progress.count()
+            ));
+            stop_reason = "timeout".into();
+            break;
+        }
         if sampled.is_empty() {
             log::detail("no sampled winners; continuing sweep");
             continue;
@@ -1095,15 +1249,15 @@ fn ockham_loop(
                         stop_reason = "max-accepts".into();
                         break;
                     }
-                    sweep = Sweep::with_ordering(
+                    sweep = fresh_sweep(
                         &incumbent.creature,
                         &activation,
-                        seed.wrapping_add(accepts),
+                        seed.wrapping_add(accepts).wrapping_add(restarts),
                         ordering,
+                        unchecked_first,
+                        &screens,
                     );
-                    if unchecked_first {
-                        prefer_unchecked(&mut sweep, &screens, &incumbent.creature);
-                    }
+                    pass_candidates = 0;
                     // The pool was measured against the incumbent that just
                     // moved, so its members are candidates to re-try, not facts
                     // to re-apply; the ones the accept removed go now.
@@ -1167,17 +1321,25 @@ fn ockham_loop(
         )),
     }
 
+    // How far the run itself moved the fleet (Issue #77). Computed with or
+    // without a store: coverage state is only *reportable* with one, but a run
+    // that advanced nothing must say so either way.
+    let tagged: HashSet<String> = meta.neuron_tags.keys().cloned().collect();
+    let cov = crate::coverage::coverage(
+        &incumbent.creature,
+        &tagged,
+        &screens,
+        opening_hidden.saturating_sub(incumbent.hidden_neurons()),
+        declaration.pruned.len(),
+    );
+    let newly_screened = progress.count();
+    if let Some(warning) = zero_progress_warning(newly_screened, cov.unchecked()) {
+        log::warn(&warning);
+    }
+
     // Coverage is only meaningful with the screen store behind it; without one
     // there is no coverage state to report, so nothing is journalled.
     if store.is_some() {
-        let tagged: HashSet<String> = meta.neuron_tags.keys().cloned().collect();
-        let cov = crate::coverage::coverage(
-            &incumbent.creature,
-            &tagged,
-            &screens,
-            opening_hidden.saturating_sub(incumbent.hidden_neurons()),
-            declaration.pruned.len(),
-        );
         log::info(&cov.summary());
         journal::append(
             &journal_path,
@@ -1195,6 +1357,7 @@ fn ockham_loop(
         // cache: coverage is reporting, and reporting must never lose pruning.
         let report = crate::coverage::CoverageReport {
             coverage: cov,
+            newly_screened,
             winners: winners.has_any().then_some(winners),
         };
         match crate::coverage::write_files(&config.output_dir, &report, config.candidates) {
@@ -1218,10 +1381,12 @@ fn ockham_loop(
             final_hidden: incumbent.hidden_neurons(),
             final_synapses: incumbent.creature.synapses.len(),
             elapsed_ms: started.elapsed().as_millis() as u64,
+            newly_screened,
         },
     )?;
     log::info(&format!(
-        "stop reason={stop_reason}  accepts={accepts}  experiments={experiments}  Δ={:.3e}",
+        "stop reason={stop_reason}  accepts={accepts}  experiments={experiments}  \
+         newlyScreened={newly_screened}  restarts={restarts}  Δ={:.3e}",
         current_score - opening_score
     ));
 
@@ -1231,8 +1396,30 @@ fn ockham_loop(
         accepts,
         experiments,
         stop_reason,
+        newly_screened,
         cumulative_delta: current_score - opening_score,
     })
+}
+
+/// Build a sweep over the current incumbent, unchecked-first when enabled.
+///
+/// The one place a sweep is created (Issue #77): the opening sweep, the
+/// post-accept restart and the exhausted-sweep restart must all order the
+/// permutation the same way, or a restart would silently drop the
+/// coverage-driven selection the run started with.
+fn fresh_sweep(
+    creature: &CreatureExport,
+    activation: &ActivationStats,
+    seed: u64,
+    ordering: crate::ordering::OrderingConfig,
+    unchecked_first: bool,
+    screens: &[Screened],
+) -> Sweep {
+    let mut sweep = Sweep::with_ordering(creature, activation, seed, ordering);
+    if unchecked_first {
+        prefer_unchecked(&mut sweep, screens, creature);
+    }
+    sweep
 }
 
 /// Reorder the sweep's unvisited tail unchecked-first, stalest-first (Issue #38).
@@ -1278,14 +1465,22 @@ fn journal_full(
 /// Coverage only: nothing filed here accepts or rejects a prune. Store faults
 /// warn inside [`file_screens`], so a learnings IO fault can never fail the run
 /// — only the journal write, which is the run's own audit trail, can.
+///
+/// `progress` sees only the records that were actually filed (Issue #77): a
+/// record a store fault dropped is not coverage this run added.
 fn file_batch_screens(
     store: Option<&LearningsStore>,
     screens: &mut Vec<Screened>,
+    progress: &mut ScreenProgress,
     coverage: &[(&str, CandidateKind, ScreenOutcomeKind)],
     journal_path: &std::path::Path,
     batch: u64,
 ) -> Result<(), String> {
+    let before = screens.len();
     let n = file_screens(store, coverage, screens);
+    for filed in &screens[before..] {
+        progress.observe(&filed.uuid);
+    }
     if n > 0 {
         log::detail(&format!("screens: filed {n} screen record(s)"));
     }
@@ -2163,9 +2358,11 @@ mod tests {
         assert_eq!(cov.hidden, 4);
         assert_eq!(cov.checked, 2, "one batch of two candidates");
         assert_eq!(cov.checkable, 4);
+        let report: crate::coverage::CoverageReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(report.newly_screened, 2, "the run's own progress (#77)");
         assert_eq!(
             text,
-            format!("{}\n", cov.description(cfg.candidates)),
+            format!("{}\n", report.description(cfg.candidates)),
             "the text block must render the JSON figures"
         );
         assert!(
@@ -3278,5 +3475,309 @@ mod tests {
             !cfg.output_dir.join("learnings").exists(),
             "loop must not invent a learnings dir"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #77: per-run screening progress — restart, never spin, and report.
+    // ---------------------------------------------------------------------
+
+    /// Every journal record of `kind`, in the order they were written.
+    fn journal_records(out: &std::path::Path, kind: &str) -> Vec<serde_json::Value> {
+        let text = std::fs::read_to_string(out.join("experiments.jsonl")).unwrap();
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["record"] == kind)
+            .collect()
+    }
+
+    /// A scorer that prefers the incumbent to every candidate, so a run screens
+    /// batch after batch without ever accepting and restarting on a win.
+    fn losing_scorer() -> ScriptedScorer {
+        ScriptedScorer {
+            baseline_score: 0.80,
+            candidate_score: Some(0.10),
+            ..ScriptedScorer::ok(0.80, 0.20)
+        }
+    }
+
+    /// Config that exhausts its sweep every batch: two neurons, two candidates.
+    fn restart_cfg(
+        creature: std::path::PathBuf,
+        train: std::path::PathBuf,
+        out: std::path::PathBuf,
+        learnings_dir: Option<std::path::PathBuf>,
+        max_experiments: Option<u64>,
+    ) -> OckhamConfig {
+        OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: out,
+            timeout: Duration::from_secs(30),
+            max_experiments,
+            seed: Some(1),
+            candidates: 2,
+            learnings_dir,
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        }
+    }
+
+    /// The spin #77 removes: before this the loop refilled an exhausted sweep
+    /// with nothing, journalled an empty batch and went round again until the
+    /// deadline. Asserted on the batch records, never on wall-clock — a timing
+    /// assertion would pass on a fast machine and hide the spin.
+    #[test]
+    fn an_exhausted_sweep_restarts_rather_than_issuing_empty_batches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = restart_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(tmp.path().join("learnings")),
+            Some(4),
+        );
+        let run = establish_run(&cfg, &losing_scorer()).unwrap();
+
+        assert_eq!(run.stop_reason, "max-experiments");
+        let batches = journal_records(&cfg.output_dir, "batch");
+        assert_eq!(batches.len(), 4, "{batches:?}");
+        for batch in &batches {
+            assert_eq!(
+                batch["candidates"], 2,
+                "an exhausted sweep must refill, not issue an empty batch: {batch}"
+            );
+        }
+        let restarts = journal_records(&cfg.output_dir, "sweepRestart");
+        assert_eq!(
+            restarts.len(),
+            3,
+            "one restart per exhausted pass: {restarts:?}"
+        );
+        assert_eq!(restarts[0]["restarts"], 1);
+        assert_eq!(restarts[0]["hidden"], 2);
+        assert_eq!(restarts[2]["newly_screened"], 2, "{restarts:?}");
+    }
+
+    /// The recycling half of the restart: with every neuron already screened,
+    /// block A is empty and the fresh sweep is the stalest-first order itself.
+    #[test]
+    fn a_fully_screened_creature_refills_after_a_restart_stalest_first() {
+        let creature = hidden_creature(&["h_a", "h_b", "h_c"]);
+        let stats = stats_of(&creature);
+        // Oldest screen first: h_c was looked at longest ago.
+        let screens: Vec<Screened> = [("h_a", 30u64), ("h_b", 20), ("h_c", 10)]
+            .into_iter()
+            .map(|(uuid, unix_secs)| Screened {
+                version: crate::learnings::SCREENS_FORMAT_VERSION,
+                uuid: uuid.into(),
+                kind: "identity".into(),
+                outcome: ScreenOutcomeKind::Loser,
+                unix_secs,
+                host: "t".into(),
+                corpus_identity: None,
+            })
+            .collect();
+
+        let mut sweep = fresh_sweep(
+            &creature,
+            &stats,
+            7,
+            crate::ordering::OrderingConfig::default(),
+            true,
+            &screens,
+        );
+        assert_eq!(
+            sweep.order,
+            vec!["h_c".to_string(), "h_b".to_string(), "h_a".to_string()],
+            "a restart on a fully screened creature recycles stalest-first"
+        );
+        let (batch, skips) = sweep.fill_batch(&creature, &stats, 3);
+        assert!(skips.is_empty(), "{skips:?}");
+        assert_eq!(
+            batch.iter().map(|c| c.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["h_c", "h_b", "h_a"],
+            "the restart must still fill batches, in that order"
+        );
+    }
+
+    /// A restart that would re-exhaust immediately must stop with a reason.
+    /// Every neuron here is a fresh known failure, so no pass can ever propose.
+    #[test]
+    fn a_creature_that_can_never_propose_stops_instead_of_looping() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        let now = crate::incumbent::now_unix();
+        seed_verdicts(
+            &store,
+            &[
+                ("h_a", Outcome::Rejected, Some(-1.0), now),
+                ("h_b", Outcome::Rejected, Some(-1.0), now),
+            ],
+        );
+        let cfg = restart_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(learnings_dir),
+            None,
+        );
+        let run = establish_run(&cfg, &losing_scorer()).unwrap();
+
+        assert_eq!(run.stop_reason, "no-candidates");
+        assert_eq!(run.newly_screened, 0);
+        assert!(
+            journal_records(&cfg.output_dir, "sweepRestart").is_empty(),
+            "a barren pass must stop, not restart into the same nothing"
+        );
+    }
+
+    /// Issue #77 point 3: the run's job is to advance coverage, so one
+    /// screening batch is reserved even when the budget has gone on replay.
+    #[test]
+    fn a_run_whose_budget_is_gone_still_screens_one_reserved_batch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let learnings_dir = tmp.path().join("learnings");
+        // Replay work queued: without the reserve this run spends what is left
+        // on the replay stage and screens nothing at all.
+        known_wins(&learnings_dir, &train, &["h_a", "h_b"]);
+        let cfg = OckhamConfig {
+            timeout: Duration::ZERO,
+            ..restart_cfg(
+                creature,
+                train,
+                tmp.path().join("out"),
+                Some(learnings_dir),
+                None,
+            )
+        };
+        let run = establish_run(&cfg, &improving_scorer()).unwrap();
+
+        assert_eq!(run.stop_reason, "timeout");
+        assert_eq!(
+            run.newly_screened, 2,
+            "the reserved batch must screen a full batch of candidates"
+        );
+        assert_eq!(coverage_json(&cfg.output_dir).checked, 2);
+        let text = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            !text.contains(r#""record":"full""#),
+            "the reserve buys coverage, never a cohort the budget cannot pay for: {text}"
+        );
+    }
+
+    /// A zero-progress run must be self-reporting: the count is in the stop
+    /// record, in the run summary and in the coverage description block.
+    #[test]
+    fn the_stop_record_and_run_summary_carry_the_uuids_newly_screened() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let cfg = restart_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(tmp.path().join("learnings")),
+            Some(1),
+        );
+        let run = establish_run(&cfg, &losing_scorer()).unwrap();
+
+        assert_eq!(run.newly_screened, 2, "one batch of two candidates");
+        let stops = journal_records(&cfg.output_dir, "stop");
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0]["newly_screened"], 2, "{:?}", stops[0]);
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(
+            text.contains("progress:  2 newly screened this run"),
+            "{text}"
+        );
+    }
+
+    /// The plateau signature itself: nothing newly screened while unchecked
+    /// neurons remain. Eight silent runs become eight warnings.
+    #[test]
+    fn a_run_that_advanced_nothing_warns_naming_both_figures() {
+        let warning = zero_progress_warning(0, 190).expect("a plateau must warn");
+        assert!(warning.contains('0'), "{warning}");
+        assert!(warning.contains("190"), "{warning}");
+        assert!(warning.contains("unchecked"), "{warning}");
+        assert_eq!(
+            zero_progress_warning(1, 190),
+            None,
+            "a run that advanced coverage is not a plateau"
+        );
+        assert_eq!(
+            zero_progress_warning(0, 0),
+            None,
+            "a fully screened creature has nothing left to advance"
+        );
+    }
+
+    /// A run that stops before screening anything reports zero progress rather
+    /// than the same well-formed block a full batch renders.
+    #[test]
+    fn a_run_that_screened_nothing_reports_zero_progress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = restart_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(tmp.path().join("learnings")),
+            Some(0),
+        );
+        let run = establish_run(&cfg, &losing_scorer()).unwrap();
+
+        assert_eq!(run.stop_reason, "max-experiments");
+        assert_eq!(run.newly_screened, 0);
+        let cov = coverage_json(&cfg.output_dir);
+        assert_eq!(cov.unchecked(), 2, "the figures the warning names");
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(
+            text.contains("progress:  0 newly screened this run"),
+            "{text}"
+        );
+    }
+
+    /// The contract of #63, asserted end to end: every run advances the checked
+    /// count by the batch size, bounded by the unchecked remainder.
+    #[test]
+    fn two_successive_runs_advance_the_checked_count_by_the_batch_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c"]);
+        let learnings_dir = tmp.path().join("learnings");
+
+        let first = restart_cfg(
+            creature.clone(),
+            train.clone(),
+            tmp.path().join("out-1"),
+            Some(learnings_dir.clone()),
+            Some(1),
+        );
+        let first_run = establish_run(&first, &losing_scorer()).unwrap();
+        assert_eq!(first_run.newly_screened, 2, "a full batch");
+        assert_eq!(coverage_json(&first.output_dir).checked, 2);
+
+        let second = restart_cfg(
+            creature,
+            train,
+            tmp.path().join("out-2"),
+            Some(learnings_dir),
+            Some(1),
+        );
+        let second_run = establish_run(&second, &losing_scorer()).unwrap();
+        assert_eq!(
+            second_run.newly_screened, 1,
+            "bounded by the unchecked remainder, not the batch size"
+        );
+        let cov = coverage_json(&second.output_dir);
+        assert_eq!(cov.checked, 3);
+        assert_eq!(cov.unchecked(), 0);
     }
 }

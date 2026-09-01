@@ -398,6 +398,60 @@ flowchart LR
     C --> P["replay / suppression"]
 ```
 
+#### Every run advances the checked count
+
+The guarantee, stated rather than left to emerge (#77): **every run advances the
+checked count by up to the batch size until 100% of the hidden neurons have been
+tried, and at 100% the sweep restarts** and begins re-screening the stalest
+neurons. Four rules hold it up.
+
+- **An exhausted sweep is rebuilt, never idled on.** A run that has visited
+  every hidden neuron builds a fresh permutation, re-applies unchecked-first
+  selection and carries on; the restart is logged and journalled as a
+  `sweepRestart` record, because a creature screened end to end is fleet news,
+  not noise. Before this the run refilled nothing and burned the rest of its
+  budget, then exited with `timeout` — indistinguishable in the log from a run
+  that worked hard and ran out of time.
+- **Nothing spins.** An empty batch from a sweep that still has neurons left is
+  normal — every candidate was skipped — and the sweep simply advances. An empty
+  batch from an exhausted sweep must restart or stop. A whole pass in which not
+  one hidden neuron proposed a candidate would restart into exactly the same
+  nothing, so the run stops with `no-candidates`.
+- **One screening batch is reserved from the wall clock.** The replay stage and
+  its full-corpus scoring can consume the whole budget before the first batch is
+  filled, leaving a run that screened nothing and looked identical to one that
+  screened a batch of losers. The reserve is deliberately the smallest that can
+  exist — one sampled screen, once, and only once the budget has already gone:
+  a reserve taken as a *proportion* of the budget would come out of full-corpus
+  scoring, which is where accepts actually come from, and a fleet that screens
+  diligently while pruning nothing looks like healthy rising coverage. The
+  reserved batch stops before full scoring, so the overrun is bounded by one
+  sampled screen rather than a cohort. With `--screen-sample-rate 0` there is
+  nothing cheap to reserve — a candidate is only checked once it has been
+  full-scored — so the run stops as it otherwise would.
+- **A run that advanced nothing says so.** The distinct UUIDs a run moved from
+  unscreened to screened are counted, reported in the `stop` journal record
+  (`newly_screened`), in the run summary (`newlyScreened`) and on the
+  `progress:` line of the commit description, and a run that ends with zero of
+  them while unchecked neurons remain logs a warning naming both figures. The
+  overnight plateau behind #63 ran for eight runs because every artefact was
+  well-formed and the only evidence was a number failing to change across
+  commits nobody compares.
+
+```mermaid
+flowchart TD
+    B["fill batch"] --> E{"sweep exhausted?"}
+    E -->|no| S["screen → file screen records"]
+    E -->|yes| P{"did this pass<br/>propose anything?"}
+    P -->|yes| R["restart sweep<br/>journal: sweepRestart"]
+    P -->|no| X["stop: no-candidates"]
+    R --> B
+    S --> N["newly screened count"]
+    N --> W{"0 while unchecked remain?"}
+    W -->|yes| G["⚠ warn, naming both figures"]
+    W -->|no| K["progress: N newly screened this run"]
+```
+
 ### How far Ockham has got
 
 `coverage::coverage` turns those records into one answer, computed in exactly
@@ -463,6 +517,7 @@ cut:       7 this run
 unchecked: 3809 remaining (~39 runs at 100/run)
 tagged:    42 carry GRQ provenance, screened like any other
 declared:  3 tagged neurons cut, listed in pruned-provenance.json
+progress:  100 newly screened this run
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
 bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped
 dropped:   12 entries over budget (est 18s/creature)
@@ -476,10 +531,14 @@ dropped:   12 entries over budget (est 18s/creature)
 - the `declared:` line is omitted when the run cut nothing tagged — the
   declaration file itself is still written, because an absent *file* means
   something else entirely (see below);
+- the `progress:` line is **never** omitted, zero included (#77): coverage is
+  cumulative fleet state, so the per-run figure beside it is the only thing that
+  makes a plateau visible by reading two consecutive commits;
 - the `winners:` / `bundles:` / `dropped:` lines are each omitted when they have
   nothing to report, so a run that screened nothing renders the coverage lines
   alone, exactly as it did before they existed;
-- `coverage.json` carries the same figures under an additive `winners` key, and
+- `coverage.json` carries the same per-run figure under `newlyScreened` and the
+  winner figures under an additive `winners` key, and
   still deserialises straight into `Coverage` for a consumer that ignores it, so
   nothing downstream needs to parse the prose.
 
@@ -814,6 +873,7 @@ Useful measures include:
 - authoritative local accepts per hour (`acceptsPerHour`);
 - sample and full scorer calls consumed (`screenCalls`, `fullCalls`);
 - screen-coverage records filed (`screened`);
+- sweeps rebuilt after reaching 100% of the hidden neurons (`sweepRestarts`);
 - screening coverage of the incumbent — every figure of the commit-description
   block (`hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`,
   `coveragePercent`);
