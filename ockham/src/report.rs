@@ -53,11 +53,11 @@ pub struct Report {
     pub hidden: Option<usize>,
     /// Hidden neurons carrying GRQ-provenance tags, at that same record (Issue #40).
     pub tagged: Option<usize>,
-    /// `hidden - tagged`: the coverage denominator, at that same record (Issue #40).
+    /// The coverage denominator — every hidden neuron, tagged included (#74).
     pub checkable: Option<usize>,
-    /// Checkable UUIDs screened at least once, at that same record.
+    /// Hidden UUIDs screened at least once, at that same record.
     pub checked: Option<usize>,
-    /// Checkable UUIDs still never screened, at that same record (Issue #40).
+    /// Hidden UUIDs still never screened, at that same record (Issue #40).
     pub unchecked: Option<usize>,
     /// Hidden neurons cut by the run that wrote that record (Issue #40).
     pub cut: Option<usize>,
@@ -496,7 +496,7 @@ mod tests {
             &Event::Coverage {
                 hidden: 12,
                 tagged: 2,
-                checkable: 10,
+                checkable: 12,
                 checked: 2,
                 cut: 0,
             },
@@ -506,7 +506,7 @@ mod tests {
         journal::append(
             &path,
             &Event::Coverage {
-                hidden: 10,
+                hidden: 8,
                 tagged: 2,
                 checkable: 8,
                 checked: 3,
@@ -515,7 +515,7 @@ mod tests {
         )
         .unwrap();
         let report = summarise(&[&path]).unwrap();
-        assert_eq!(report.hidden, Some(10));
+        assert_eq!(report.hidden, Some(8));
         assert_eq!(report.checked, Some(3));
         assert_eq!(report.coverage_percent, Some(37.5));
         let json = serde_json::to_string(&report).unwrap();
@@ -533,7 +533,7 @@ mod tests {
             &Event::Coverage {
                 hidden: 5013,
                 tagged: 42,
-                checkable: 4971,
+                checkable: 5013,
                 checked: 1204,
                 cut: 7,
             },
@@ -541,11 +541,15 @@ mod tests {
         .unwrap();
         let report = summarise(&[&path]).unwrap();
         assert_eq!(report.tagged, Some(42));
-        assert_eq!(report.checkable, Some(4971));
-        assert_eq!(report.unchecked, Some(3767));
+        assert_eq!(
+            report.checkable,
+            Some(5013),
+            "tagged stay in the denominator"
+        );
+        assert_eq!(report.unchecked, Some(3809));
         assert_eq!(report.cut, Some(7));
         let json = serde_json::to_string(&report).unwrap();
-        assert!(json.contains("\"unchecked\":3767"), "{json}");
+        assert!(json.contains("\"unchecked\":3809"), "{json}");
     }
 
     #[test]

@@ -78,12 +78,12 @@ pub enum Event {
     Coverage {
         /// Hidden neurons on the final incumbent.
         hidden: usize,
-        /// Hidden neurons carrying GRQ-provenance tags, skipped as candidates.
+        /// Hidden neurons carrying GRQ-provenance tags, screened like any other.
         #[serde(default)]
         tagged: usize,
-        /// `hidden - tagged`: the coverage denominator.
+        /// Hidden neurons Ockham may try — all of them, tagged included (#74).
         checkable: usize,
-        /// Checkable UUIDs with at least one screen record.
+        /// Hidden UUIDs with at least one screen record.
         checked: usize,
         /// Hidden neurons removed this run.
         #[serde(default)]

@@ -388,7 +388,7 @@ mod tests {
         Some(Coverage {
             hidden: 5013,
             tagged: 42,
-            checkable: 4971,
+            checkable: 5013,
             checked: 1204,
             cut: 8,
         })
@@ -414,7 +414,7 @@ mod tests {
     fn search_carries_the_compact_coverage_clause() {
         assert_eq!(
             ockham_progress_message(&progress("search", some_coverage())),
-            "🪒 Ockham · search bundle · 3 accepts / 41 batches · score: 0.512345 (+1.20e-4) · checked 1204/4971 (24.2%)"
+            "🪒 Ockham · search bundle · 3 accepts / 41 batches · score: 0.512345 (+1.20e-4) · checked 1204/5013 (24.0%)"
         );
     }
 
@@ -423,7 +423,7 @@ mod tests {
         let msg = ockham_progress_message(&progress("replay", some_coverage()));
         assert_eq!(
             msg,
-            "🪒 Ockham · replay · 8 cuts · score: 0.512345 (+1.20e-4) · checked 1204/4971 (24.2%)"
+            "🪒 Ockham · replay · 8 cuts · score: 0.512345 (+1.20e-4) · checked 1204/5013 (24.0%)"
         );
         assert!(
             msg.starts_with("🪒 Ockham"),
@@ -439,16 +439,34 @@ mod tests {
     fn the_clause_is_compact_rather_than_the_full_summary() {
         let msg = ockham_progress_message(&progress("search", some_coverage()));
         assert!(!msg.contains("hidden"), "{msg}");
-        assert!(!msg.contains("tagged skipped"), "{msg}");
+        assert!(!msg.contains("tagged"), "{msg}");
     }
 
+    /// An all-tagged creature has a real denominator since Issue #74, so the
+    /// clause reports honest progress through it rather than `0/0`.
     #[test]
-    fn nothing_checkable_still_renders_an_honest_clause_when_coverage_exists() {
+    fn an_all_tagged_creature_still_renders_an_honest_clause() {
         let msg = ockham_progress_message(&progress(
             "search",
             Some(Coverage {
                 hidden: 2,
                 tagged: 2,
+                checkable: 2,
+                checked: 1,
+                cut: 0,
+            }),
+        ));
+        assert!(msg.contains("checked 1/2 (50.0%)"), "{msg}");
+    }
+
+    /// The only zero denominator left: a creature with no hidden neurons.
+    #[test]
+    fn nothing_checkable_still_renders_an_honest_clause_when_coverage_exists() {
+        let msg = ockham_progress_message(&progress(
+            "search",
+            Some(Coverage {
+                hidden: 0,
+                tagged: 0,
                 checkable: 0,
                 checked: 0,
                 cut: 0,
@@ -466,6 +484,6 @@ mod tests {
             .iter()
             .find(|t| t.name == "ockham")
             .expect("ockham tag");
-        assert!(ockham.value.contains("checked 1204/4971 (24.2%)"));
+        assert!(ockham.value.contains("checked 1204/5013 (24.0%)"));
     }
 }

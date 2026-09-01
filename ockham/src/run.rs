@@ -2078,6 +2078,44 @@ mod tests {
         );
     }
 
+    /// End-to-end detector for Issue #74: a fully tagged creature must report
+    /// its tagged neurons *inside* the denominator and screened records against
+    /// them as checked — the divergence that halves the fleet's percentage if
+    /// only one half of the change lands.
+    #[test]
+    fn a_run_over_a_fully_tagged_creature_counts_every_hidden_neuron() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuids = ["h_a", "h_b", "h_c", "h_d"];
+        let (creature, train) = hidden_paths(tmp.path(), &uuids);
+        tag_neurons(&creature, &uuids);
+        let cfg = coverage_files_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(tmp.path().join("learnings")),
+        );
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        let json =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_JSON_FILE))
+                .unwrap();
+        let cov: Coverage = serde_json::from_str(&json).unwrap();
+        assert_eq!(cov.hidden, 4);
+        assert_eq!(cov.tagged, 4, "every hidden neuron carries provenance");
+        assert_eq!(cov.checkable, 4, "tagged neurons stay in the denominator");
+        assert_eq!(cov.checked, 2, "screened tagged UUIDs count as checked");
+        assert_eq!(cov.percent(), 50.0);
+
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(
+            text.contains("tagged:    4 carry GRQ provenance, screened like any other"),
+            "{text}"
+        );
+        assert!(!text.contains("skipped"), "{text}");
+    }
+
     #[test]
     fn a_run_without_a_learnings_dir_writes_no_coverage_files() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2121,6 +2159,18 @@ mod tests {
         );
     }
 
+    /// Count the hidden neurons of a written `best.json`.
+    fn hidden_neurons(best: &std::path::Path) -> usize {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(best).unwrap()).unwrap();
+        v["neurons"]
+            .as_array()
+            .expect("neurons")
+            .iter()
+            .filter(|n| n["type"] == "hidden")
+            .count()
+    }
+
     /// Extract the `ockham` creature tag from a written `best.json`.
     fn ockham_tag(best: &std::path::Path) -> String {
         let v: serde_json::Value =
@@ -2161,12 +2211,13 @@ mod tests {
         };
         let run = establish_run(&cfg, &scorer).unwrap();
         assert_eq!(run.accepts, 1);
-        let tag = ockham_tag(&cfg.output_dir.join("best.json"));
+        let best = cfg.output_dir.join("best.json");
+        let tag = ockham_tag(&best);
         assert!(tag.starts_with("🪒 Ockham"), "{tag}");
         assert!(tag.contains(" · checked "), "{tag}");
         assert!(
-            tag.contains("/3 (") || tag.contains("/4 ("),
-            "denominator must be the checkable hidden count: {tag}"
+            tag.contains(&format!("/{} (", hidden_neurons(&best))),
+            "denominator must be every hidden neuron, tagged included (#74): {tag}"
         );
     }
 
