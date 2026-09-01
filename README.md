@@ -52,8 +52,8 @@ The current Rust implementation includes:
   corpus, not capped by `--max-accepts`), then skip fresh failures; a replay
   accept stops immediately so the prune can check in;
 - fleet screen coverage: every candidate a batch actually scores — winners
-  **and** losers — leaves a record in `screens-<identity>/<host>.jsonl`, so
-  "which neurons have been checked" survives the run;
+  **and** losers — leaves a record in `screens/<host>.jsonl`, so "which neurons
+  have been checked" survives the run *and* a regenerated corpus (#76);
 - a single coverage calculation over the **current** incumbent — `checked X of
   Y hidden (Z%), N cut` — journalled at the end of each run and surfaced by
   `report`, and carried into the `ockham` check-in tag (the GRQ-sampler commit
@@ -343,11 +343,11 @@ flowchart TD
 
 A neuron counts as **checked** once it has been proposed into a batch and
 scored. With `--learnings-dir` set, every checked candidate leaves one screen
-record in `screens-<identity>/<host>.jsonl` — winners and losers alike, and the
-same when `--screen-sample-rate 0` sends candidates straight to full scoring.
-A batch whose screen call fails files nothing: those candidates were never
-checked. Each batch also journals a `screened` record, so coverage is
-reconstructable from `experiments.jsonl` alone.
+record in `screens/<host>.jsonl` — winners and losers alike, and the same when
+`--screen-sample-rate 0` sends candidates straight to full scoring. A batch
+whose screen call fails files nothing: those candidates were never checked.
+Each batch also journals a `screened` record, so coverage is reconstructable
+from `experiments.jsonl` alone.
 
 A screen record is a coverage fact, never a prune verdict: only a full-corpus
 learnings verdict may accept or reject a cut, and a screens IO fault warns
@@ -360,9 +360,39 @@ flowchart LR
     C -->|Ok| W[winners + losers]
     C -->|Err| N["nothing filed<br/>(not checked)"]
     S -->|"0 — disabled"| D[straight to full scoring]
-    W --> R["screens-identity/host.jsonl"]
+    W --> R["screens/host.jsonl"]
     D --> R
     R --> J["journal: screened"]
+```
+
+#### Coverage outlives the corpus
+
+The screen path carries **no corpus identity** (#76). GRQ regenerates the
+training corpus before every Ockham run, so a corpus-keyed screen directory
+partitioned the fleet's coverage: each identity saw only its own slice and
+re-screened neurons another identity had already checked. Which corpus a neuron
+was looked at against does not change whether it has been looked at, so the
+identity is recorded on the record — `corpusIdentity`, `SCREENS_FORMAT_VERSION`
+2 — where anything wanting corpus-exact screening can still filter on it.
+
+Verdicts are the opposite and are untouched: a full-corpus `Accepted` /
+`Rejected` genuinely is a claim about one corpus, so those stay in
+`corpus-<identity>/`. A verdict from another corpus is still never loaded — a
+wrong `Rejected` suppresses that uuid fleet-wide for seven days.
+
+Pre-#76 `screens-<identity>/` directories are still **read**, so the first run
+after the change starts from the union of what the fleet already knows rather
+than from zero. They are never written to, and a record from either location
+counts once per uuid.
+
+```mermaid
+flowchart LR
+    N["new screen record<br/>+ corpusIdentity"] --> S["screens/host.jsonl"]
+    L["pre-#76 history"] --> O["screens-identity/host.jsonl<br/>(read only)"]
+    S --> U["union → coverage +<br/>unchecked-first selection"]
+    O --> U
+    V["full-corpus verdict"] --> C["corpus-identity/host.jsonl<br/>(still corpus-keyed)"]
+    C --> P["replay / suppression"]
 ```
 
 ### How far Ockham has got
