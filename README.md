@@ -63,8 +63,8 @@ The current Rust implementation includes:
   coverage block GRQ pastes into the sampler commit description, plus the same
   figures machine-readably, extended with what the run screened, confirmed,
   applied and carried forward;
-- tagged hidden neurons skipped as prune candidates (journal reason `tagged`)
-  so GRQ provenance check-in cannot fail;
+- every hidden neuron is a prune candidate: a GRQ provenance tag records where a
+  neuron came from and confers no exemption from the razor (#63);
 - named, reproducible candidate orderings with random as the measured control,
   plus the report measures needed to compare their discovery economics;
 - normal Rust CI, security and quality gates.
@@ -833,8 +833,9 @@ what makes them load-bearing.
 ## Implementation roadmap
 
 Shipped through the iterative loop, re-entry comparison, report command, GRQ
-check-in tags, learnings replay, tagged-neuron skip, and named candidate
-orderings (#1–#11, #23, #25–#27).
+check-in tags, learnings replay, and named candidate orderings (#1–#11, #23, #25
+to #27). Tagged neurons were exempt from screening under #26; #63 reversed that —
+provenance tags no longer keep a hidden neuron out of the prune pool.
 
 The ordering experiment itself is now the work: run each named strategy against
 the seeded random control on a mature creature and let the report decide whether
