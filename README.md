@@ -409,10 +409,12 @@ neurons. Four rules hold it up.
   every hidden neuron builds a fresh permutation, re-applies unchecked-first
   selection and carries on; the restart is logged and journalled as a
   `sweepRestart` record, because a creature screened end to end is fleet news,
-  not noise. Before this the run refilled nothing and burned the rest of its
-  budget, then exited with `timeout` — indistinguishable in the log from a run
-  that worked hard and ran out of time.
-- **Nothing spins.** An empty batch from a sweep that still has neurons left is
+  not noise. Before this an exhausted sweep ended the run then and there with
+  the stop reason `exhausted`: whatever budget was left went unused, and a
+  creature the fleet had worked all the way through simply stopped being
+  screened instead of recycling its stalest neurons.
+- **Nothing spins, and nothing stops early.** An empty batch from a sweep that
+  still has neurons left is
   normal — every candidate was skipped — and the sweep simply advances. An empty
   batch from an exhausted sweep must restart or stop. A whole pass in which not
   one hidden neuron proposed a candidate would restart into exactly the same
@@ -423,8 +425,10 @@ neurons. Four rules hold it up.
   screened a batch of losers. So once the budget left has fallen to the
   estimated cost of one screening batch — and only while this run has screened
   **nothing** — the replay stage stands down and the sweep takes what remains.
-  The reserve is claimed inside the budget: no scorer call is started after the
-  deadline, and the soft-budget contract is untouched. Its size is deliberately
+  The reserve is claimed inside the budget: the batch starts before the
+  deadline and no scorer call is started after it, so the soft-budget contract
+  is untouched — the reserved screen may finish past the deadline exactly as any
+  other in-flight call does. Its size is deliberately
   the smallest that can exist, exactly one batch, because the cost falls on
   full-corpus scoring, which is where accepts actually come from — reserve too
   much and the fleet screens diligently while pruning nothing, which looks like
@@ -441,6 +445,10 @@ neurons. Four rules hold it up.
   overnight plateau behind #63 ran for eight runs because every artefact was
   well-formed and the only evidence was a number failing to change across
   commits nobody compares.
+
+Two stop reasons move with this: `no-candidates` is new, and `exhausted` is
+retired — an exhausted sweep can no longer end a run, so the only way the loop
+falls out on its own is having no hidden neurons left (`no-hidden`).
 
 ```mermaid
 flowchart TD

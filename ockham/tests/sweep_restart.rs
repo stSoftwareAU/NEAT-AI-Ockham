@@ -1,5 +1,5 @@
 //! Issue #77, end to end through the real binary: a run that exhausts its
-//! sweep restarts it rather than idling out the rest of its budget.
+//! sweep restarts it rather than ending there with its budget unspent.
 //!
 //! Asserted on the journalled batch records, never on wall-clock: a timing
 //! assertion would pass on a fast machine and hide the spin this removes.

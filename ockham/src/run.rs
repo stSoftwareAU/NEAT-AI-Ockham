@@ -392,7 +392,17 @@ const MAX_SCREEN_RESERVE_SHARE: f64 = 0.5;
 /// diligently while pruning nothing — rising coverage that reads as success for
 /// weeks. Nothing is held back while the budget is healthy, and nothing is held
 /// back at all once the run has advanced coverage once.
-fn reserve_stands(cost: &CostModel, config: &OckhamConfig, remaining: std::time::Duration) -> bool {
+fn reserve_stands(
+    cost: &CostModel,
+    config: &OckhamConfig,
+    remaining: std::time::Duration,
+    screened_batches: u64,
+) -> bool {
+    if screened_batches > 0 {
+        // This run has already advanced coverage; there is nothing left to
+        // guarantee, and replay keeps every millisecond that remains.
+        return false;
+    }
     let Some(batch_ms) = cost.screen_batch_ms(config.candidates) else {
         // Nothing measured: guessing a reserve would cost replay a cohort for
         // a number we do not have.
@@ -677,9 +687,9 @@ fn ockham_loop(
     let mut current_score = opening_score;
     // The loop can only fall out of its `while` when the creature has no hidden
     // neurons left, either because it opened that way or because accepts pruned
-    // the last one. Every other exit sets its own reason and breaks. "exhausted"
-    // was retired with the spin it named (Issue #77): an exhausted sweep now
-    // restarts, so it can never be why a run stopped.
+    // the last one. Every other exit sets its own reason and breaks. The
+    // "exhausted" reason is retired (Issue #77): an exhausted sweep restarts,
+    // so it can never be why a run stopped.
     let mut stop_reason = "no-hidden".to_string();
     // Sweep-restart bookkeeping (Issue #77). `pass_candidates` counts what the
     // current permutation proposed, so a pass that proposed nothing stops the
@@ -720,14 +730,14 @@ fn ockham_loop(
         // coverage, and once the budget is down to a single batch and this run
         // has screened nothing, coverage wins. See `reserve_stands` for why the
         // reserve is one batch and not a share of the budget.
-        let reserving = screened_batches == 0
-            && reserve_stands(
-                &cost,
-                config,
-                deadline.saturating_duration_since(Instant::now()),
-            );
+        let reserving = reserve_stands(
+            &cost,
+            config,
+            deadline.saturating_duration_since(Instant::now()),
+            screened_batches,
+        );
         if reserving && !replay_done {
-            log::warn(&format!(
+            log::info(&format!(
                 "budget down to its last screening batch; standing the replay stage down so \
                  this run advances coverage (#77): {} newly screened so far",
                 progress.count()
@@ -956,9 +966,10 @@ fn ockham_loop(
         }
 
         // An exhausted sweep is rebuilt, never idled on (Issue #77). Before
-        // this the loop refilled nothing, journalled an empty batch each pass
-        // and burned the rest of the budget — indistinguishable in the log
-        // from a run that worked hard and ran out of time.
+        // this it ended the run with the stop reason `exhausted`: the budget
+        // left went unused, and a creature the fleet had worked all the way
+        // through stopped being screened rather than recycling its stalest
+        // neurons.
         //
         // `prefer_unchecked` already orders a fresh permutation unchecked
         // first, then stalest-screened first, so a creature that is 100%
@@ -968,7 +979,8 @@ fn ockham_loop(
                 // A whole permutation that proposed nothing would restart into
                 // exactly the same nothing. Stop with a reason instead.
                 log::warn(&format!(
-                    "sweep: not one of {} hidden neuron(s) proposed a candidate; stopping",
+                    "sweep: a whole pass over {} hidden neuron(s) produced no candidate — every \
+                     visit was skipped as a known failure or could not propose; stopping",
                     incumbent.hidden_neurons()
                 ));
                 stop_reason = "no-candidates".into();
@@ -3529,10 +3541,10 @@ mod tests {
         }
     }
 
-    /// The spin #77 removes: before this the loop refilled an exhausted sweep
-    /// with nothing, journalled an empty batch and went round again until the
-    /// deadline. Asserted on the batch records, never on wall-clock — a timing
-    /// assertion would pass on a fast machine and hide the spin.
+    /// What #77 removes: before this an exhausted sweep ended the run outright,
+    /// so a creature the fleet had already worked through stopped being
+    /// screened. Asserted on the batch records, never on wall-clock — a timing
+    /// assertion would pass on a fast machine and prove nothing either way.
     #[test]
     fn an_exhausted_sweep_restarts_rather_than_issuing_empty_batches() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3746,14 +3758,18 @@ mod tests {
         };
         let mut cost = CostModel::new(Some(0.05));
         assert!(
-            !reserve_stands(&cost, &cfg, Duration::from_millis(10)),
+            !reserve_stands(&cost, &cfg, Duration::from_millis(10), 0),
             "an unmeasured reserve must never cost replay a cohort"
         );
 
         cost.observe_screen(1_000, 100); // 10ms/creature → 1s a batch
-        assert!(!reserve_stands(&cost, &cfg, Duration::from_secs(4)));
-        assert!(reserve_stands(&cost, &cfg, Duration::from_millis(999)));
-        assert!(reserve_stands(&cost, &cfg, Duration::ZERO));
+        assert!(!reserve_stands(&cost, &cfg, Duration::from_secs(4), 0));
+        assert!(reserve_stands(&cost, &cfg, Duration::from_millis(999), 0));
+        assert!(reserve_stands(&cost, &cfg, Duration::ZERO, 0));
+        assert!(
+            !reserve_stands(&cost, &cfg, Duration::ZERO, 1),
+            "a run that has already screened has nothing left to guarantee"
+        );
 
         // A batch costing more than half the run is the whole plan, not a
         // reserve: the run keeps its pre-#77 behaviour.
@@ -3761,13 +3777,19 @@ mod tests {
             timeout: Duration::from_secs(1),
             ..cfg
         };
-        assert!(!reserve_stands(&cost, &tiny, Duration::from_millis(500)));
+        assert!(!reserve_stands(&cost, &tiny, Duration::from_millis(500), 0));
     }
 
     /// The behaviour those rules buy, end to end: a run whose budget has fallen
-    /// to its last batch stands the replay stage down and screens instead. The
-    /// scorer's per-creature delay spends the budget deterministically — the
-    /// assertions are on what was screened, never on elapsed time.
+    /// to its last batch stands the replay stage down and screens instead.
+    ///
+    /// The one test here that depends on the wall clock, unavoidably: the
+    /// reserve is a statement about time left, and the scorer's per-creature
+    /// delay is how a test spends a budget. The margin is deliberately wide —
+    /// the replay stage's 15 scored creatures nominally spend 1.5s of the 2s
+    /// budget, so it takes better than 30% jitter to reach the deadline first.
+    /// The assertions themselves are on what was screened and on record order,
+    /// never on elapsed time.
     #[test]
     fn a_run_down_to_its_last_batch_screens_it_rather_than_replaying() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3780,9 +3802,11 @@ mod tests {
         // left and the run screened nothing at all.
         known_wins(&learnings_dir, &train, &names[..10]);
         let cfg = OckhamConfig {
-            // The first replay round costs 16 scored creatures (1.6s); what is
-            // left is then below the 0.6s one screening batch is estimated to
-            // cost, so the reserve stands and the second round never starts.
+            // The replay stage scores 15 creatures before it would come round
+            // again (a combined-plan cohort, then a probe cohort, at 100ms a
+            // creature). What is left of the budget is then below the 0.6s one
+            // screening batch is estimated to cost, so the reserve stands and
+            // the stage never gets its next round.
             timeout: Duration::from_millis(2_000),
             candidates: 11,
             screen_sample_rate: Some(0.5),

@@ -290,9 +290,11 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     final_hidden,
                     final_synapses,
                     elapsed_ms,
-                    // Per-run progress (Issue #77) is a property of one run,
-                    // and this report sums many; `screened` already carries
-                    // the per-journal count it would duplicate.
+                    // Per-run progress (Issue #77) is a property of one run
+                    // and this report sums many, so a total would be
+                    // meaningless: the same uuid is "newly screened" in at
+                    // most one of the journals being folded together, and the
+                    // figure belongs beside that run's own coverage block.
                     newly_screened: _,
                 } => {
                     report.stop_reason = Some(reason);
@@ -393,6 +395,31 @@ mod tests {
         assert_eq!(report.ordering_random_quota, Some(0.25));
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"ordering\":\"low-variance\""), "{json}");
+    }
+
+    /// Issue #77: a sweep restart is fleet news — a creature screened end to
+    /// end and recycled — so the report counts it rather than dropping it.
+    #[test]
+    fn report_counts_the_sweeps_a_run_rebuilt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        assert_eq!(summarise(&[&path]).unwrap().sweep_restarts, 0);
+        for restarts in 1..=2u64 {
+            journal::append(
+                &path,
+                &Event::SweepRestart {
+                    restarts,
+                    hidden: 40,
+                    newly_screened: 100,
+                },
+            )
+            .unwrap();
+        }
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.sweep_restarts, 2);
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"sweepRestarts\":2"), "{json}");
     }
 
     #[test]

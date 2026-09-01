@@ -295,7 +295,7 @@ impl Winners {
 /// The commit-description artefact: coverage, plus the run's winner economics.
 ///
 /// [`Coverage`] is flattened, so a consumer that deserialises `coverage.json`
-/// straight into [`Coverage`] keeps working — serde ignores the extra key.
+/// straight into [`Coverage`] keeps working — serde ignores the extra keys.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageReport {
