@@ -33,6 +33,11 @@
 //! preserving the information the path was carrying. A verdict is the opposite:
 //! a full-corpus result genuinely is a claim about one corpus, so
 //! `corpus-<identity>/` stays keyed exactly as it was.
+//!
+//! The pre-#76 `<root>/screens-<identity>/<host>.jsonl` directories are still
+//! **read** — never written — so no fleet history is lost. Every `<root>` here
+//! is whichever learnings root the caller passed, so an island's own root has
+//! exactly the same shape.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -104,21 +109,24 @@ pub struct Learning {
 /// Current screen-record format version.
 ///
 /// Version 2 added [`Screened::corpus_identity`] and moved the records to the
-/// stable [`SCREENS_DIR`] (Issue #76). Version 1 records — the fleet history
-/// still sitting under `screens-<identity>/` — carry no identity and are read
-/// unchanged; only a version *newer* than this one is skipped.
+/// stable `screens/` directory (Issue #76). Version 1 records — the fleet
+/// history still sitting under `screens-<identity>/` — carry no identity and
+/// are read unchanged; every other version is skipped.
 pub const SCREENS_FORMAT_VERSION: u32 = 2;
+
+/// The only older screen version this reads: the pre-#76 fleet history.
+const LEGACY_SCREENS_FORMAT_VERSION: u32 = 1;
 
 /// Directory holding screen-coverage host files, under the learnings root.
 ///
 /// Stable across corpus identities on purpose — see the module docs.
-pub const SCREENS_DIR: &str = "screens";
+const SCREENS_DIR: &str = "screens";
 
 /// Prefix of the pre-#76 corpus-keyed screen directories.
 ///
 /// Read for their fleet history, never written: dropping them would re-create,
 /// once, exactly the coverage reset this change removes.
-const LEGACY_SCREENS_PREFIX: &str = "screens-";
+const LEGACY_SCREENS_PREFIX: &[u8] = b"screens-";
 
 /// Which side of a sampled screen a uuid landed on.
 ///
@@ -218,11 +226,6 @@ impl LearningsStore {
         self.corpus_dir().join(format!("{}.jsonl", self.host))
     }
 
-    /// The corpus identity this store files verdicts under.
-    pub fn corpus_identity(&self) -> &str {
-        &self.corpus_identity
-    }
-
     /// Directory holding the fleet's screen-coverage host files.
     ///
     /// A sibling of [`Self::corpus_dir`], never inside it: screen records are
@@ -247,10 +250,12 @@ impl LearningsStore {
         for entry in entries {
             let entry = entry.map_err(|e| format!("{}: {e}", self.root.display()))?;
             let path = entry.path();
+            // Matched on bytes, not `to_str()`: a name that is not valid UTF-8
+            // is still a directory the fleet may have written history into,
+            // and dropping it here would be silent.
             let is_legacy = path
                 .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(LEGACY_SCREENS_PREFIX));
+                .is_some_and(|n| n.as_encoded_bytes().starts_with(LEGACY_SCREENS_PREFIX));
             if is_legacy && path.is_dir() {
                 dirs.push(path);
             }
@@ -284,11 +289,29 @@ impl LearningsStore {
     /// `screens-<identity>/` directory, so the first run after the move starts
     /// from what the fleet already knows rather than from zero. Coverage and
     /// selection only — these are not prune verdicts.
+    ///
+    /// A fault in the live directory is an error, as it always was. A fault in
+    /// a legacy directory is **warned and skipped** instead: nothing rewrites
+    /// those files, so one truncated line in fleet history would otherwise
+    /// empty the whole union on every host of every run — reinstating exactly
+    /// the coverage reset this change removes (Issue #76). Loud, but contained
+    /// to the directory that is broken.
     pub fn load_screens(&self) -> Result<Vec<Screened>, String> {
-        let keep = |s: &Screened| s.version <= SCREENS_FORMAT_VERSION;
+        let keep = |s: &Screened| {
+            matches!(
+                s.version,
+                LEGACY_SCREENS_FORMAT_VERSION | SCREENS_FORMAT_VERSION
+            )
+        };
         let mut out = load_jsonl(&self.screens_dir(), keep)?;
         for legacy in self.legacy_screens_dirs()? {
-            out.extend(load_jsonl(&legacy, keep)?);
+            match load_jsonl(&legacy, keep) {
+                Ok(records) => out.extend(records),
+                Err(e) => crate::log::warn(&format!(
+                    "legacy screen coverage unreadable ({e}); skipping {}",
+                    legacy.display()
+                )),
+            }
         }
         Ok(out)
     }
@@ -978,6 +1001,46 @@ mod tests {
         let loaded = store.load_screens().unwrap();
         assert_eq!(loaded.len(), 1, "{loaded:?}");
         assert_eq!(loaded[0].uuid, "h_a");
+    }
+
+    /// A version older than the fleet history is unknown, not "legacy enough".
+    #[test]
+    fn a_below_legacy_screen_version_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        write_legacy_screen(
+            dir.path(),
+            "old-corpus",
+            "GRQ-23",
+            &legacy_screen_line("h_a", 5).replace(r#""version":1"#, r#""version":0"#),
+        );
+        let store = LearningsStore::new(dir.path(), "new-corpus".into(), "host-a".into());
+        assert!(store.load_screens().unwrap().is_empty());
+    }
+
+    /// One corrupt line in a directory nothing writes to any more must not
+    /// empty the fleet's whole coverage — that is the plateau itself.
+    #[test]
+    fn a_corrupt_legacy_screen_file_does_not_empty_the_union() {
+        let dir = tempfile::tempdir().unwrap();
+        write_legacy_screen(dir.path(), "corrupt-corpus", "GRQ-23", "{not json");
+        write_legacy_screen(
+            dir.path(),
+            "good-corpus",
+            "GRQ-24",
+            &legacy_screen_line("h_a", 5),
+        );
+        let store = LearningsStore::new(dir.path(), "new-corpus".into(), "host-a".into());
+        store
+            .append_screen(&screen("h_b", ScreenOutcomeKind::Winner, 9))
+            .unwrap();
+
+        let loaded = store.load_screens().unwrap();
+        let c = two_hidden();
+        assert_eq!(
+            screened_uuids(&loaded, &c),
+            HashSet::from(["h_a".to_string(), "h_b".to_string()]),
+            "a broken legacy directory must cost only its own records"
+        );
     }
 
     #[test]

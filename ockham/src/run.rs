@@ -1926,7 +1926,7 @@ mod tests {
                     outcome: ScreenOutcomeKind::Loser,
                     unix_secs: *unix_secs,
                     host: "t".into(),
-                    corpus_identity: Some(store.corpus_identity().to_string()),
+                    corpus_identity: Some("fixture-corpus".into()),
                 })
                 .unwrap();
         }

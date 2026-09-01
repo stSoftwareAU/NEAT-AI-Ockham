@@ -383,7 +383,10 @@ wrong `Rejected` suppresses that uuid fleet-wide for seven days.
 Pre-#76 `screens-<identity>/` directories are still **read**, so the first run
 after the change starts from the union of what the fleet already knows rather
 than from zero. They are never written to, and a record from either location
-counts once per uuid.
+counts once per uuid. A fault in one of those legacy directories is warned and
+skipped rather than failing the whole union: nothing rewrites them, so one
+truncated line would otherwise zero the fleet's coverage on every run — the
+plateau, reinstated. A fault in the live `screens/` directory is still an error.
 
 ```mermaid
 flowchart LR
