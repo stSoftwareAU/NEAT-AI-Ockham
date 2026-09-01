@@ -49,6 +49,12 @@ pub struct Report {
     pub full_calls: u64,
     /// Screen-coverage records filed across the run (Issue #36).
     pub screened: u64,
+    /// Sweeps rebuilt after visiting every hidden neuron (Issue #77).
+    ///
+    /// A restart says a run screened the creature end to end and rolled into
+    /// re-screening the stalest neurons — the opposite of the idle spin it
+    /// replaced.
+    pub sweep_restarts: u64,
     /// Hidden neurons on the incumbent at the last coverage record (Issue #37).
     pub hidden: Option<usize>,
     /// Hidden neurons carrying GRQ-provenance tags, at that same record (Issue #40).
@@ -115,6 +121,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         screen_calls: 0,
         full_calls: 0,
         screened: 0,
+        sweep_restarts: 0,
         hidden: None,
         tagged: None,
         checkable: None,
@@ -176,6 +183,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     report.experiments += 1;
                     candidates_seen += candidates as u64;
                 }
+                Event::SweepRestart { .. } => report.sweep_restarts += 1,
                 Event::Screen { .. } => report.screen_calls += 1,
                 Event::Screened { screened, .. } => report.screened += screened as u64,
                 Event::Coverage {
@@ -282,6 +290,12 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     final_hidden,
                     final_synapses,
                     elapsed_ms,
+                    // Per-run progress (Issue #77) is a property of one run
+                    // and this report sums many, so a total would be
+                    // meaningless: the same uuid is "newly screened" in at
+                    // most one of the journals being folded together, and the
+                    // figure belongs beside that run's own coverage block.
+                    newly_screened: _,
                 } => {
                     report.stop_reason = Some(reason);
                     report.accepts = accepts;
@@ -358,6 +372,7 @@ mod tests {
                 final_hidden: 1,
                 final_synapses: 8,
                 elapsed_ms: 3_600_000,
+                newly_screened: 40,
             },
         )
         .unwrap();
@@ -380,6 +395,31 @@ mod tests {
         assert_eq!(report.ordering_random_quota, Some(0.25));
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"ordering\":\"low-variance\""), "{json}");
+    }
+
+    /// Issue #77: a sweep restart is fleet news — a creature screened end to
+    /// end and recycled — so the report counts it rather than dropping it.
+    #[test]
+    fn report_counts_the_sweeps_a_run_rebuilt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        assert_eq!(summarise(&[&path]).unwrap().sweep_restarts, 0);
+        for restarts in 1..=2u64 {
+            journal::append(
+                &path,
+                &Event::SweepRestart {
+                    restarts,
+                    hidden: 40,
+                    newly_screened: 100,
+                },
+            )
+            .unwrap();
+        }
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.sweep_restarts, 2);
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"sweepRestarts\":2"), "{json}");
     }
 
     #[test]
@@ -442,6 +482,7 @@ mod tests {
                 final_hidden: 0,
                 final_synapses: 5,
                 elapsed_ms: 1_800_000,
+                newly_screened: 120,
             },
         )
         .unwrap();
