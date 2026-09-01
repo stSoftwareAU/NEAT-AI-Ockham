@@ -158,6 +158,57 @@ impl Coverage {
     }
 }
 
+/// Distinct hidden UUIDs one run moved from unscreened to screened (Issue #77).
+///
+/// Coverage is re-derived from the fleet store on every run, so a run that
+/// advanced nothing renders the same well-formed block as one that advanced a
+/// full batch — that is what let the #63 plateau run for eight runs unnoticed.
+/// This counts only the UUIDs that had **no** screen record when the run
+/// opened, so re-screening the stalest neurons of an already-complete creature
+/// is honestly reported as zero new coverage.
+#[derive(Debug, Default)]
+pub(crate) struct ScreenProgress {
+    opening: HashSet<String>,
+    added: HashSet<String>,
+}
+
+impl ScreenProgress {
+    /// Snapshot what the fleet had already screened when the run opened.
+    pub(crate) fn new(screens: &[Screened]) -> Self {
+        Self {
+            opening: screens.iter().map(|s| s.uuid.clone()).collect(),
+            added: HashSet::new(),
+        }
+    }
+
+    /// Record one filed screen record; only a first-ever record counts.
+    pub(crate) fn observe(&mut self, uuid: &str) {
+        if !self.opening.contains(uuid) {
+            self.added.insert(uuid.to_string());
+        }
+    }
+
+    /// Distinct UUIDs newly screened so far this run.
+    pub(crate) fn count(&self) -> usize {
+        self.added.len()
+    }
+}
+
+/// The zero-progress warning, or `None` when the run advanced coverage.
+///
+/// A run that adds nothing to the screened set while unchecked neurons remain
+/// has not done the job it exists to do, whatever else it reported. The line
+/// names both figures so a plateau is legible from one run's log rather than
+/// only by diffing two commits.
+pub(crate) fn zero_progress_warning(newly_screened: usize, unchecked: usize) -> Option<String> {
+    (newly_screened == 0 && unchecked > 0).then(|| {
+        format!(
+            "no progress: 0 newly screened uuid(s) this run while {unchecked} hidden neuron(s) \
+             remain unchecked"
+        )
+    })
+}
+
 /// What one run tried, kept and rejected (Issue #59).
 ///
 /// Coverage says how much of the creature has been looked at; this says whether
@@ -908,6 +959,46 @@ mod tests {
 
         let text = std::fs::read_to_string(dir.join(COVERAGE_TEXT_FILE)).unwrap();
         assert_eq!(text, format!("{}\n", report.description(100)));
+    }
+
+    /// The plateau signature itself: nothing newly screened while unchecked
+    /// neurons remain. Eight silent runs become eight warnings.
+    #[test]
+    fn a_run_that_advanced_nothing_warns_naming_both_figures() {
+        let warning = zero_progress_warning(0, 190).expect("a plateau must warn");
+        assert!(warning.contains('0'), "{warning}");
+        assert!(warning.contains("190"), "{warning}");
+        assert!(warning.contains("unchecked"), "{warning}");
+        assert_eq!(
+            zero_progress_warning(1, 190),
+            None,
+            "a run that advanced coverage is not a plateau"
+        );
+        assert_eq!(
+            zero_progress_warning(0, 0),
+            None,
+            "a fully screened creature has nothing left to advance"
+        );
+    }
+
+    /// Only a uuid the fleet had never screened counts as progress (#77):
+    /// recycling the stalest neurons of a complete creature advances nothing.
+    #[test]
+    fn only_a_first_ever_screen_record_counts_as_progress() {
+        let existing = vec![screen("h_a", 10)];
+        let mut progress = ScreenProgress::new(&existing);
+        assert_eq!(progress.count(), 0);
+        progress.observe("h_a");
+        assert_eq!(progress.count(), 0, "re-screening is not new coverage");
+        progress.observe("h_b");
+        progress.observe("h_b");
+        assert_eq!(
+            progress.count(),
+            1,
+            "a uuid counts once, however often it is screened"
+        );
+        progress.observe("h_c");
+        assert_eq!(progress.count(), 2);
     }
 
     #[test]

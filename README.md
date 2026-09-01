@@ -420,15 +420,19 @@ neurons. Four rules hold it up.
 - **One screening batch is reserved from the wall clock.** The replay stage and
   its full-corpus scoring can consume the whole budget before the first batch is
   filled, leaving a run that screened nothing and looked identical to one that
-  screened a batch of losers. The reserve is deliberately the smallest that can
-  exist — one sampled screen, once, and only once the budget has already gone:
-  a reserve taken as a *proportion* of the budget would come out of full-corpus
-  scoring, which is where accepts actually come from, and a fleet that screens
-  diligently while pruning nothing looks like healthy rising coverage. The
-  reserved batch stops before full scoring, so the overrun is bounded by one
-  sampled screen rather than a cohort. With `--screen-sample-rate 0` there is
-  nothing cheap to reserve — a candidate is only checked once it has been
-  full-scored — so the run stops as it otherwise would.
+  screened a batch of losers. So once the budget left has fallen to the
+  estimated cost of one screening batch — and only while this run has screened
+  **nothing** — the replay stage stands down and the sweep takes what remains.
+  The reserve is claimed inside the budget: no scorer call is started after the
+  deadline, and the soft-budget contract is untouched. Its size is deliberately
+  the smallest that can exist, exactly one batch, because the cost falls on
+  full-corpus scoring, which is where accepts actually come from — reserve too
+  much and the fleet screens diligently while pruning nothing, which looks like
+  healthy rising coverage and would read as success for weeks. The batch cost
+  is a measured screen where one exists, otherwise the full-corpus cost scaled
+  by `--screen-sample-rate` (by 1 when screening is disabled, where the batch
+  *is* a cohort). A batch that would cost more than half the run budget is not a
+  reserve but the whole plan, and none is taken.
 - **A run that advanced nothing says so.** The distinct UUIDs a run moved from
   unscreened to screened are counted, reported in the `stop` journal record
   (`newly_screened`), in the run summary (`newlyScreened`) and on the
@@ -440,7 +444,11 @@ neurons. Four rules hold it up.
 
 ```mermaid
 flowchart TD
-    B["fill batch"] --> E{"sweep exhausted?"}
+    L["loop pass"] --> Y{"budget down to<br/>one batch and<br/>nothing screened?"}
+    Y -->|yes| B["fill batch — replay stands down"]
+    Y -->|no| RP["replay stage, then fill batch"]
+    RP --> B
+    B --> E{"sweep exhausted?"}
     E -->|no| S["screen → file screen records"]
     E -->|yes| P{"did this pass<br/>propose anything?"}
     P -->|yes| R["restart sweep<br/>journal: sweepRestart"]

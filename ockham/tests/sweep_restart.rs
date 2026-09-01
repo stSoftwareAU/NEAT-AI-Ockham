@@ -3,6 +3,10 @@
 //!
 //! Asserted on the journalled batch records, never on wall-clock: a timing
 //! assertion would pass on a fast machine and hide the spin this removes.
+//!
+//! Kept beside the in-crate `an_exhausted_sweep_restarts_rather_than_issuing_empty_batches`
+//! rather than folded into it: this one is the reproduction, driving the shipped
+//! binary and the real journal file end to end, which a unit test cannot.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -15,8 +19,13 @@ fn fake_scorer(dir: &Path) -> PathBuf {
     // Scores whatever creatures the run put in the cohort directory: the
     // incumbent baseline wins, every candidate loses, so nothing is accepted.
     let script = r#"#!/bin/sh
-n=$#
-dir=$(eval echo "\${$((n-1))}")
+# The creature cohort directory is the second-to-last argument.
+dir=""
+prev=""
+for arg in "$@"; do
+  dir="$prev"
+  prev="$arg"
+done
 printf '{'
 first=1
 for f in "$dir"/*.json; do
@@ -93,7 +102,9 @@ fn an_exhausted_sweep_restarts_rather_than_idling() {
     let journal = std::fs::read_to_string(out_dir.join("experiments.jsonl")).unwrap();
     let records: Vec<serde_json::Value> = journal
         .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
+        // A line that does not parse fails the test rather than vanishing from
+        // the counts below.
+        .map(|l| serde_json::from_str(l).expect("journal line is JSON"))
         .collect();
     let batches: Vec<&serde_json::Value> =
         records.iter().filter(|v| v["record"] == "batch").collect();
