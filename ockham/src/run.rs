@@ -512,6 +512,10 @@ fn ockham_loop(
     let ordering = config.ordering_config();
     let started = Instant::now();
     let opening_hidden = incumbent.hidden_neurons();
+    // The provenance the run opened with (Issue #75). `meta` sheds a cut
+    // neuron's tags at every accept, so only this snapshot can still say what
+    // left; the declaration is a set difference against it, never a counter.
+    let opening_meta = meta.clone();
     let mut sweep = Sweep::with_ordering(&incumbent.creature, &activation, seed, ordering);
     log::info(&format!(
         "loop seed={seed}  ordering={}  randomQuota={}  hidden={}  budget={}s  candidates={}",
@@ -789,6 +793,7 @@ fn ockham_loop(
                                         "replay",
                                         store.map(|_| screens.as_slice()),
                                         opening_hidden,
+                                        &opening_meta,
                                     )?;
                                     stop_reason = "replay-accepts".into();
                                     break;
@@ -823,6 +828,7 @@ fn ockham_loop(
                             "replay",
                             store.map(|_| screens.as_slice()),
                             opening_hidden,
+                            &opening_meta,
                         )?;
                         stop_reason = "replay-accepts".into();
                         break;
@@ -1080,6 +1086,7 @@ fn ockham_loop(
                         "search",
                         store.map(|_| screens.as_slice()),
                         opening_hidden,
+                        &opening_meta,
                     )?;
                     search_accepts += 1;
                     if let Some(max) = config.max_accepts
@@ -1142,6 +1149,24 @@ fn ockham_loop(
         )?;
     }
 
+    // What provenance this run deliberately spent (Issue #75). Declared on
+    // every run with an output dir, empty list included: GRQ's check-in guard
+    // forgives a missing neuron tag only when its uuid is listed here, and must
+    // fail closed on an absent file, so "nothing pruned" and "no declaration"
+    // can never be the same artefact.
+    let declaration = opening_meta.pruned_provenance(&incumbent.creature);
+    match crate::tags::write_pruned_provenance(&config.output_dir, &declaration) {
+        Ok(()) => log::detail(&format!(
+            "provenance: declared {} pruned tagged neuron(s) in {}",
+            declaration.pruned.len(),
+            crate::tags::PRUNED_PROVENANCE_FILE
+        )),
+        Err(e) => log::warn(&format!(
+            "{} not written: {e}; GRQ will refuse this check-in, which is correct",
+            crate::tags::PRUNED_PROVENANCE_FILE
+        )),
+    }
+
     // Coverage is only meaningful with the screen store behind it; without one
     // there is no coverage state to report, so nothing is journalled.
     if store.is_some() {
@@ -1151,6 +1176,7 @@ fn ockham_loop(
             &tagged,
             &screens,
             opening_hidden.saturating_sub(incumbent.hidden_neurons()),
+            declaration.pruned.len(),
         );
         log::info(&cov.summary());
         journal::append(
@@ -1161,6 +1187,7 @@ fn ockham_loop(
                 checkable: cov.checkable,
                 checked: cov.checked,
                 cut: cov.cut,
+                tagged_cut: cov.tagged_cut,
             },
         )?;
         // The GRQ-facing commit-description artefacts (Issues #40, #59). A
@@ -1342,6 +1369,7 @@ fn apply_local_win(
     phase: &'static str,
     screens: Option<&[Screened]>,
     opening_hidden: usize,
+    opening_meta: &CreatureMeta,
 ) -> Result<(), String> {
     let last = win.candidate.kind;
     let cuts = win.candidate.uuids.len();
@@ -1371,6 +1399,9 @@ fn apply_local_win(
             &tagged_uuids,
             screens,
             opening_hidden.saturating_sub(hidden),
+            // Against the opening meta, for the same reason the end-of-run
+            // declaration is (#75): `meta` has already forgotten what left.
+            opening_meta.pruned_provenance(&win.creature).pruned.len(),
         )
     });
     meta.stamp_acceptance(&OckhamProgress {
@@ -2159,6 +2190,232 @@ mod tests {
             journal.contains(r#""record":"coverage""#),
             "coverage is still journalled: {journal}"
         );
+    }
+
+    /// Read the declaration a run wrote beside `best.json` (Issue #75).
+    fn declaration(out: &std::path::Path) -> crate::tags::PrunedProvenance {
+        let text = std::fs::read_to_string(out.join(crate::tags::PRUNED_PROVENANCE_FILE))
+            .expect("written");
+        serde_json::from_str(&text).expect("valid JSON")
+    }
+
+    /// The declared UUIDs, uuid-ordered.
+    fn declared_uuids(out: &std::path::Path) -> Vec<String> {
+        declaration(out)
+            .pruned
+            .into_iter()
+            .map(|p| p.uuid)
+            .collect()
+    }
+
+    /// File one accepted learning per uuid, so replay cuts them as one bundle.
+    fn known_wins(learnings_dir: &std::path::Path, train: &std::path::Path, uuids: &[&str]) {
+        let store = screens_store(learnings_dir, train);
+        let records: Vec<_> = uuids
+            .iter()
+            .enumerate()
+            .map(|(i, uuid)| (*uuid, Outcome::Accepted, None, 10 + i as u64))
+            .collect();
+        seed_verdicts(&store, &records);
+    }
+
+    /// A scorer that prefers every candidate to the incumbent.
+    fn improving_scorer() -> ScriptedScorer {
+        ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        }
+    }
+
+    /// Issue #75, the load-bearing case: a bundle accept that cuts one tagged
+    /// and one untagged neuron declares exactly the tagged one, with its tags.
+    #[test]
+    fn a_bundle_accept_declares_only_the_tagged_uuid_it_cut() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        tag_neurons(&creature, &["h_a"]);
+        let learnings_dir = tmp.path().join("learnings");
+        known_wins(&learnings_dir, &train, &["h_a", "h_b"]);
+        let cfg = replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None);
+
+        let run = establish_run(&cfg, &improving_scorer()).unwrap();
+        assert_eq!(run.stop_reason, "replay-accepts");
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(!best.contains("h_a") && !best.contains("h_b"), "{best}");
+
+        let decl = declaration(&cfg.output_dir);
+        assert_eq!(decl.version, crate::tags::PRUNED_PROVENANCE_VERSION);
+        assert_eq!(
+            decl.pruned,
+            vec![crate::tags::PrunedNeuron {
+                uuid: "h_a".into(),
+                tags: vec!["discovered".into()],
+            }],
+            "the untagged cut spent no provenance and must not be declared"
+        );
+    }
+
+    /// The over-inclusive direction, end to end: a tagged neuron still on the
+    /// final incumbent must not be in the list, or the guard stops checking a
+    /// tag that is still supposed to be there.
+    #[test]
+    fn a_surviving_tagged_neuron_stays_out_of_the_declaration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        tag_neurons(&creature, &["h_a", "h_b"]);
+        let learnings_dir = tmp.path().join("learnings");
+        known_wins(&learnings_dir, &train, &["h_a"]);
+        let cfg = replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None);
+
+        establish_run(&cfg, &improving_scorer()).unwrap();
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(best.contains("h_b"), "h_b must survive the run: {best}");
+        assert_eq!(
+            declared_uuids(&cfg.output_dir),
+            vec!["h_a".to_string()],
+            "only the neuron that actually left may be declared"
+        );
+    }
+
+    /// Point 3 of Issue #75: the file is written on every run with an output
+    /// dir — no learnings dir, no accepts, nothing tagged pruned — because a
+    /// guard cannot tell "nothing pruned" from "no declaration" otherwise.
+    #[test]
+    fn a_run_that_pruned_nothing_tagged_still_declares_an_empty_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuids = ["h_a", "h_b", "h_c", "h_d"];
+        let (creature, train) = hidden_paths(tmp.path(), &uuids);
+        tag_neurons(&creature, &uuids);
+        let cfg = coverage_files_cfg(creature, train, tmp.path().join("out"), None);
+
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_eq!(run.accepts, 0, "a flat scorer accepts nothing");
+        let decl = declaration(&cfg.output_dir);
+        assert_eq!(decl.version, crate::tags::PRUNED_PROVENANCE_VERSION);
+        assert!(
+            decl.pruned.is_empty(),
+            "every tagged neuron survived: {decl:?}"
+        );
+    }
+
+    /// A blocked declaration is reporting, and reporting must never lose
+    /// pruning — the run completes and `best.json` still lands.
+    ///
+    /// The same config runs twice: once with the path blocked, once clean. The
+    /// clean run is the control — it proves the blocked run really did attempt
+    /// the write it could not make, rather than never reaching it.
+    #[test]
+    fn a_blocked_declaration_write_warns_rather_than_failing_the_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let blocked = tmp.path().join("blocked");
+        // A directory where the declaration belongs: the write cannot succeed.
+        std::fs::create_dir_all(blocked.join(crate::tags::PRUNED_PROVENANCE_FILE)).unwrap();
+        let cfg = coverage_files_cfg(
+            creature.clone(),
+            train.clone(),
+            blocked,
+            Some(tmp.path().join("learnings")),
+        );
+
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_eq!(run.optimisation, "complete");
+        assert!(cfg.output_dir.join("best.json").exists());
+        assert!(
+            cfg.output_dir
+                .join(crate::tags::PRUNED_PROVENANCE_FILE)
+                .is_dir(),
+            "the blocker is still there, so nothing was declared"
+        );
+        assert!(
+            cfg.output_dir
+                .join(crate::coverage::COVERAGE_TEXT_FILE)
+                .exists(),
+            "the rest of the reporting still runs"
+        );
+
+        let control = coverage_files_cfg(
+            creature,
+            train,
+            tmp.path().join("clean"),
+            Some(tmp.path().join("learnings-control")),
+        );
+        establish_run(&control, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert!(
+            control
+                .output_dir
+                .join(crate::tags::PRUNED_PROVENANCE_FILE)
+                .is_file(),
+            "the unblocked control run declares, so the blocked run tried to"
+        );
+    }
+
+    /// The other removal path: a sweep accept, with no replayable known win.
+    /// The declaration is a set difference over the final incumbent, so it
+    /// cannot care which path cut the neuron — this pins that.
+    #[test]
+    fn a_sweep_accept_declares_the_tagged_neuron_it_cut() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        tag_neurons(&creature, &["h_a", "h_b"]);
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(4),
+            max_accepts: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: Some(0.5),
+            ..OckhamConfig::default()
+        };
+
+        let run = establish_run(&cfg, &improving_scorer()).unwrap();
+        assert!(run.accepts >= 1, "stop={}", run.stop_reason);
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        let cut: Vec<String> = ["h_a", "h_b"]
+            .iter()
+            .filter(|u| !best.contains(**u))
+            .map(|u| (*u).to_string())
+            .collect();
+        assert!(!cut.is_empty(), "the sweep must have cut something: {best}");
+        assert_eq!(
+            declared_uuids(&cfg.output_dir),
+            cut,
+            "a search accept declares exactly what it removed"
+        );
+    }
+
+    /// The count reaches the commit description and `coverage.json` too, so the
+    /// fleet history shows provenance being spent (Issue #75, point 5).
+    #[test]
+    fn the_coverage_artefacts_count_the_tagged_neuron_the_run_cut() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        tag_neurons(&creature, &["h_a"]);
+        let learnings_dir = tmp.path().join("learnings");
+        known_wins(&learnings_dir, &train, &["h_a"]);
+        let cfg = replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None);
+
+        establish_run(&cfg, &improving_scorer()).unwrap();
+        let json =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_JSON_FILE))
+                .unwrap();
+        let cov: Coverage = serde_json::from_str(&json).unwrap();
+        assert_eq!(cov.tagged_cut, 1);
+        assert_eq!(cov.cut, 1);
+
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(
+            text.contains("declared:  1 tagged neuron cut, listed in pruned-provenance.json"),
+            "{text}"
+        );
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(journal.contains(r#""tagged_cut":1"#), "{journal}");
     }
 
     /// Count the hidden neurons of a written `best.json`.

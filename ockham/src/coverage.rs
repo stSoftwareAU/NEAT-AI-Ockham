@@ -48,6 +48,14 @@ pub struct Coverage {
     pub checked: usize,
     /// Hidden neurons removed this run.
     pub cut: usize,
+    /// Tagged hidden neurons removed this run — provenance spent (Issue #75).
+    ///
+    /// The count only; `pruned-provenance.json`
+    /// ([`crate::tags::write_pruned_provenance`]) is the authoritative list.
+    /// `#[serde(default)]` so a `coverage.json` written before #75 still
+    /// deserialises, and so an added key stays backward-compatible.
+    #[serde(default)]
+    pub tagged_cut: usize,
 }
 
 impl Coverage {
@@ -97,13 +105,16 @@ impl Coverage {
     /// cut:       7 this run
     /// unchecked: 3809 remaining (~39 runs at 100/run)
     /// tagged:    42 carry GRQ provenance, screened like any other
+    /// declared:  3 tagged neurons cut, listed in pruned-provenance.json
     /// ```
     ///
     /// Line-oriented and stable: GRQ pastes it into a `git commit` description.
     /// `candidates` is the configured `--candidates` batch size; the
     /// runs-remaining clause is **omitted** rather than rendering `inf` when
     /// the batch size is zero, and there is nothing to estimate once coverage
-    /// is complete. The `tagged:` line is omitted when nothing is tagged.
+    /// is complete. The `tagged:` line is omitted when nothing is tagged, and
+    /// the `declared:` line when the run cut nothing tagged — the file is still
+    /// written in that case, because an absent file means something else there.
     /// No trailing newline — [`write_files`] adds one.
     pub fn description(&self, candidates: usize) -> String {
         let unchecked = self.unchecked();
@@ -128,6 +139,19 @@ impl Coverage {
             out.push_str(&format!(
                 "\n{:<11}{} carry GRQ provenance, screened like any other",
                 "tagged:", self.tagged
+            ));
+        }
+        if self.tagged_cut > 0 {
+            let plural = if self.tagged_cut == 1 {
+                "neuron"
+            } else {
+                "neurons"
+            };
+            out.push_str(&format!(
+                "\n{:<11}{} tagged {plural} cut, listed in {}",
+                "declared:",
+                self.tagged_cut,
+                crate::tags::PRUNED_PROVENANCE_FILE
             ));
         }
         out
@@ -276,14 +300,15 @@ pub fn write_files(dir: &Path, report: &CoverageReport, candidates: usize) -> Re
 /// Every hidden neuron is in the denominator, GRQ-provenance ones included
 /// (#74) — `tagged` only says how many of them carry provenance.
 ///
-/// `cut` is the number of hidden neurons removed this run — it is carried
-/// through rather than derived, because the creature in hand no longer holds
-/// the neurons that were cut.
+/// `cut` and `tagged_cut` are the hidden neurons — and the tagged subset of
+/// them — removed this run. Both are carried through rather than derived,
+/// because the creature in hand no longer holds the neurons that were cut.
 pub fn coverage(
     creature: &CreatureExport,
     tagged: &HashSet<String>,
     screens: &[Screened],
     cut: usize,
+    tagged_cut: usize,
 ) -> Coverage {
     let hidden_uuids: Vec<&str> = creature
         .neurons
@@ -310,6 +335,7 @@ pub fn coverage(
         checkable: hidden,
         checked: checked.len(),
         cut,
+        tagged_cut,
     }
 }
 
@@ -354,7 +380,7 @@ mod tests {
     fn tagged_neurons_stay_in_the_denominator_and_are_reported_separately() {
         let creature = hidden_creature(10);
         let screens = [screen("h2", 1), screen("h3", 2), screen("h4", 3)];
-        let cov = coverage(&creature, &tags(&["h0", "h1"]), &screens, 0);
+        let cov = coverage(&creature, &tags(&["h0", "h1"]), &screens, 0, 0);
         assert_eq!(cov.hidden, 10);
         assert_eq!(cov.tagged, 2);
         assert_eq!(cov.checkable, 10, "every hidden neuron is checkable");
@@ -373,7 +399,7 @@ mod tests {
             vec!["h0", "h1", "h2"],
             vec!["h0", "h1", "h2", "h3", "h4", "h5"],
         ] {
-            let cov = coverage(&creature, &tags(&tagged), &[], 0);
+            let cov = coverage(&creature, &tags(&tagged), &[], 0, 0);
             assert_eq!(cov.checkable, cov.hidden, "tagged: {tagged:?}");
             assert_eq!(cov.checkable, 6, "tagged: {tagged:?}");
             assert_eq!(cov.tagged, tagged.len(), "tagged: {tagged:?}");
@@ -391,7 +417,7 @@ mod tests {
             screen("h2", 3),
             screen("h3", 4),
         ];
-        let cov = coverage(&creature, &tags(&["h0", "h1", "h2", "h3"]), &screens, 0);
+        let cov = coverage(&creature, &tags(&["h0", "h1", "h2", "h3"]), &screens, 0, 0);
         assert_eq!(cov.hidden, 4);
         assert_eq!(cov.tagged, 4);
         assert_eq!(cov.checkable, 4);
@@ -403,7 +429,7 @@ mod tests {
     fn screens_for_departed_uuids_raise_neither_checked_nor_hidden() {
         let creature = hidden_creature(4);
         let screens = [screen("h0", 1), screen("gone-a", 2), screen("gone-b", 3)];
-        let cov = coverage(&creature, &HashSet::new(), &screens, 2);
+        let cov = coverage(&creature, &HashSet::new(), &screens, 2, 0);
         assert_eq!(cov.hidden, 4, "pruned neurons are not on the incumbent");
         assert_eq!(cov.checked, 1, "only still-present UUIDs are checked");
         assert_eq!(cov.cut, 2);
@@ -413,7 +439,7 @@ mod tests {
     fn a_uuid_screened_many_times_counts_once() {
         let creature = hidden_creature(4);
         let screens = [screen("h0", 1), screen("h0", 2), screen("h0", 3)];
-        let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+        let cov = coverage(&creature, &HashSet::new(), &screens, 0, 0);
         assert_eq!(cov.checked, 1);
         assert_eq!(cov.percent(), 25.0);
     }
@@ -423,7 +449,7 @@ mod tests {
     fn a_screened_tagged_uuid_counts_as_checked() {
         let creature = hidden_creature(4);
         let screens = [screen("h0", 1), screen("h1", 2)];
-        let cov = coverage(&creature, &tags(&["h1"]), &screens, 0);
+        let cov = coverage(&creature, &tags(&["h1"]), &screens, 0, 0);
         assert_eq!(cov.checkable, 4);
         assert_eq!(cov.checked, 2, "a tagged uuid is inside the coverage set");
         assert_eq!(cov.percent(), 50.0);
@@ -435,9 +461,9 @@ mod tests {
     #[test]
     fn newly_evolved_neurons_lower_the_percentage() {
         let screens = [screen("h0", 1), screen("h1", 2)];
-        let before = coverage(&hidden_creature(2), &HashSet::new(), &screens, 0);
+        let before = coverage(&hidden_creature(2), &HashSet::new(), &screens, 0, 0);
         assert_eq!(before.percent(), 100.0);
-        let after = coverage(&hidden_creature(4), &HashSet::new(), &screens, 0);
+        let after = coverage(&hidden_creature(4), &HashSet::new(), &screens, 0, 0);
         assert_eq!(after.percent(), 50.0, "two new neurons start unchecked");
         assert!(after.percent() < before.percent());
     }
@@ -447,7 +473,7 @@ mod tests {
     #[test]
     fn nothing_checked_yields_zero_percent_without_panicking() {
         let creature = hidden_creature(2);
-        let cov = coverage(&creature, &tags(&["h0", "h1"]), &[], 0);
+        let cov = coverage(&creature, &tags(&["h0", "h1"]), &[], 0, 0);
         assert_eq!(cov.checkable, 2);
         assert_eq!(cov.checked, 0);
         assert_eq!(cov.percent(), 0.0);
@@ -460,7 +486,7 @@ mod tests {
     /// The only zero denominator left: no hidden neurons at all.
     #[test]
     fn an_empty_denominator_yields_zero_percent_without_panicking() {
-        let cov = coverage(&hidden_creature(0), &HashSet::new(), &[], 0);
+        let cov = coverage(&hidden_creature(0), &HashSet::new(), &[], 0, 0);
         assert_eq!(cov.checkable, 0);
         assert_eq!(cov.percent(), 0.0);
         assert_eq!(cov.summary(), "checked 0 of 0 hidden (0.0%), 0 cut");
@@ -474,6 +500,7 @@ mod tests {
             checkable: 3,
             checked: 9,
             cut: 0,
+            tagged_cut: 0,
         };
         assert_eq!(cov.percent(), 100.0);
     }
@@ -482,7 +509,7 @@ mod tests {
     fn summary_omits_the_tagged_clause_when_nothing_is_tagged() {
         let creature = hidden_creature(4);
         let screens = [screen("h0", 1)];
-        let cov = coverage(&creature, &HashSet::new(), &screens, 3);
+        let cov = coverage(&creature, &HashSet::new(), &screens, 3, 0);
         assert_eq!(cov.summary(), "checked 1 of 4 hidden (25.0%), 3 cut");
         assert!(!cov.summary().contains("tagged"));
     }
@@ -491,7 +518,7 @@ mod tests {
     fn summary_appends_the_tagged_clause_when_neurons_carry_provenance() {
         let creature = hidden_creature(6);
         let screens = [screen("h2", 1), screen("h3", 2)];
-        let cov = coverage(&creature, &tags(&["h0"]), &screens, 1);
+        let cov = coverage(&creature, &tags(&["h0"]), &screens, 1, 0);
         assert_eq!(
             cov.summary(),
             "checked 2 of 6 hidden (33.3%), 1 cut, 1 tagged"
@@ -506,6 +533,7 @@ mod tests {
             checkable: 5013,
             checked: 1204,
             cut: 7,
+            tagged_cut: 0,
         }
     }
 
@@ -521,6 +549,48 @@ mod tests {
                 "tagged:    42 carry GRQ provenance, screened like any other"
             )
         );
+    }
+
+    /// The Issue #75 block: a run that spent provenance says so, exactly.
+    #[test]
+    fn the_description_block_declares_the_tagged_neurons_the_run_cut() {
+        let cov = Coverage {
+            tagged_cut: 3,
+            ..fleet_coverage()
+        };
+        assert_eq!(
+            cov.description(100),
+            concat!(
+                "🪒 Ockham neuron screening coverage\n",
+                "checked:   1204 of 5013 hidden (24.0%)\n",
+                "cut:       7 this run\n",
+                "unchecked: 3809 remaining (~39 runs at 100/run)\n",
+                "tagged:    42 carry GRQ provenance, screened like any other\n",
+                "declared:  3 tagged neurons cut, listed in pruned-provenance.json"
+            )
+        );
+    }
+
+    #[test]
+    fn a_single_declared_cut_reads_singular() {
+        let cov = Coverage {
+            tagged_cut: 1,
+            ..fleet_coverage()
+        };
+        assert!(
+            cov.description(100)
+                .ends_with("declared:  1 tagged neuron cut, listed in pruned-provenance.json"),
+            "{}",
+            cov.description(100)
+        );
+    }
+
+    /// The line is omitted, but the file is still written — absence of the line
+    /// says nothing was cut, absence of the *file* means something else (#75).
+    #[test]
+    fn the_description_omits_the_declared_line_when_no_tagged_neuron_was_cut() {
+        let block = fleet_coverage().description(100);
+        assert!(!block.contains("declared:"), "{block}");
     }
 
     /// Thousands of fleet commits carry this block: it must never say the
@@ -559,6 +629,7 @@ mod tests {
             checkable: 4,
             checked: 2,
             cut: 0,
+            tagged_cut: 0,
         };
         assert!(
             cov.description(100)
@@ -584,6 +655,7 @@ mod tests {
             checkable: 4,
             checked: 4,
             cut: 1,
+            tagged_cut: 0,
         };
         assert_eq!(
             cov.description(100),
@@ -604,6 +676,7 @@ mod tests {
             checkable: 3,
             checked: 9,
             cut: 0,
+            tagged_cut: 0,
         };
         assert_eq!(cov.unchecked(), 0);
         assert!(cov.description(10).contains("unchecked: 0 remaining"));
@@ -623,6 +696,42 @@ mod tests {
         let back: Coverage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, cov, "the machine-readable contract must round-trip");
         assert!(json.contains("\"checkable\": 5013"), "{json}");
+    }
+
+    /// The added key must not break a reader of the pre-#75 shape, and a
+    /// `coverage.json` written before #75 must still deserialise.
+    #[test]
+    fn the_tagged_cut_key_is_additive_in_both_directions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("out");
+        let cov = Coverage {
+            tagged_cut: 3,
+            ..fleet_coverage()
+        };
+        write_files(&dir, &CoverageReport::new(cov), 100).unwrap();
+
+        let json = std::fs::read_to_string(dir.join(COVERAGE_JSON_FILE)).unwrap();
+        assert!(json.contains("\"taggedCut\": 3"), "{json}");
+        let back: Coverage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, cov, "the new key must round-trip");
+
+        let pre_75 = r#"{"hidden":5013,"tagged":42,"checkable":5013,"checked":1204,"cut":7}"#;
+        let old: Coverage = serde_json::from_str(pre_75).unwrap();
+        assert_eq!(
+            old,
+            fleet_coverage(),
+            "an older artefact declares nothing, not a missing field"
+        );
+    }
+
+    #[test]
+    fn the_tagged_cut_count_is_carried_through_rather_than_derived() {
+        let cov = coverage(&hidden_creature(4), &tags(&["h0"]), &[], 3, 2);
+        assert_eq!(cov.cut, 3);
+        assert_eq!(
+            cov.tagged_cut, 2,
+            "the cut neurons are no longer on the creature to count"
+        );
     }
 
     /// A blocked write must name the file it could not write, so the caller's
@@ -746,7 +855,7 @@ mod tests {
 
     #[test]
     fn a_creature_with_no_hidden_neurons_is_complete_and_empty() {
-        let cov = coverage(&hidden_creature(0), &HashSet::new(), &[], 7);
+        let cov = coverage(&hidden_creature(0), &HashSet::new(), &[], 7, 0);
         assert_eq!(cov.hidden, 0);
         assert_eq!(cov.checkable, 0);
         assert_eq!(cov.percent(), 0.0);
