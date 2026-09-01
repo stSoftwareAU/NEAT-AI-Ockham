@@ -833,9 +833,10 @@ what makes them load-bearing.
 ## Implementation roadmap
 
 Shipped through the iterative loop, re-entry comparison, report command, GRQ
-check-in tags, learnings replay, and named candidate orderings (#1–#11, #23, #25
-to #27). Tagged neurons were exempt from screening under #26; #63 reversed that —
-provenance tags no longer keep a hidden neuron out of the prune pool.
+check-in tags, learnings replay, and named candidate orderings
+(#1–#11, #23, #25–#27). Tagged neurons were exempt from screening under #26;
+issue #63 reversed that, so provenance tags no longer keep a hidden neuron out
+of the prune pool.
 
 The ordering experiment itself is now the work: run each named strategy against
 the seeded random control on a mature creature and let the report decide whether

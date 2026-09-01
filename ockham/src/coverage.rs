@@ -8,10 +8,10 @@
 //! - **The current incumbent is the whole world.** A screen record for a uuid
 //!   that is no longer on the creature is ignored entirely — it neither raises
 //!   `checked` nor `hidden`.
-//! - **Tagged neurons are not checkable.** Ockham never proposes a
-//!   GRQ-provenance neuron as a prune candidate (Issue #26), so counting one in
-//!   the denominator would cap coverage below 100% forever. They are excluded
-//!   and reported separately.
+//! - **Tagged neurons are not counted as checkable.** They are excluded from
+//!   the denominator and reported separately. Selection no longer exempts them
+//!   (#63): Ockham proposes tagged neurons like any other, so this denominator
+//!   now *undercounts* the true one until the coverage child of #63 lands.
 //!
 //! Evolution keeps adding hidden neurons, and each new one starts unchecked and
 //! *lowers* the percentage. That is intended: coverage is a statement about the
