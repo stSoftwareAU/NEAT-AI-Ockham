@@ -18,11 +18,26 @@
 //! host, so a git-shared directory never conflicts. Nothing here talks to git.
 //!
 //! Screen **tries** ([`Screened`]) live in the sibling
-//! `<root>/screens-<identity>/<host>.jsonl`, deliberately outside the verdict
-//! directory: they record *coverage* ("this uuid has been looked at") and feed
+//! `<root>/screens/<host>.jsonl`, deliberately outside the verdict directory:
+//! they record *coverage* ("this uuid has been looked at") and feed
 //! unchecked-first selection. A screen record is never a prune verdict, so
 //! [`LearningsStore::load`], [`known_wins`] and [`known_failures`] never see
 //! one, and a corrupt screen log can never break verdict loading.
+//!
+//! That screen path carries **no corpus identity** (Issue #76). GRQ regenerates
+//! the training corpus before every run, so a path keyed by the identity
+//! pointed at a directory nothing had ever written and every run started from
+//! zero coverage — re-screening the same neurons forever. Whether a uuid has
+//! been looked at does not depend on what it was looked at against, so the
+//! identity is recorded on the record ([`Screened::corpus_identity`]) instead,
+//! preserving the information the path was carrying. A verdict is the opposite:
+//! a full-corpus result genuinely is a claim about one corpus, so
+//! `corpus-<identity>/` stays keyed exactly as it was.
+//!
+//! The pre-#76 `<root>/screens-<identity>/<host>.jsonl` directories are still
+//! **read** — never written — so no fleet history is lost. Every `<root>` here
+//! is whichever learnings root the caller passed, so an island's own root has
+//! exactly the same shape.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -92,7 +107,26 @@ pub struct Learning {
 }
 
 /// Current screen-record format version.
-pub const SCREENS_FORMAT_VERSION: u32 = 1;
+///
+/// Version 2 added [`Screened::corpus_identity`] and moved the records to the
+/// stable `screens/` directory (Issue #76). Version 1 records — the fleet
+/// history still sitting under `screens-<identity>/` — carry no identity and
+/// are read unchanged; every other version is skipped.
+pub const SCREENS_FORMAT_VERSION: u32 = 2;
+
+/// The only older screen version this reads: the pre-#76 fleet history.
+const LEGACY_SCREENS_FORMAT_VERSION: u32 = 1;
+
+/// Directory holding screen-coverage host files, under the learnings root.
+///
+/// Stable across corpus identities on purpose — see the module docs.
+const SCREENS_DIR: &str = "screens";
+
+/// Prefix of the pre-#76 corpus-keyed screen directories.
+///
+/// Read for their fleet history, never written: dropping them would re-create,
+/// once, exactly the coverage reset this change removes.
+const LEGACY_SCREENS_PREFIX: &[u8] = b"screens-";
 
 /// Which side of a sampled screen a uuid landed on.
 ///
@@ -128,6 +162,14 @@ pub struct Screened {
     pub unix_secs: u64,
     /// Host that filed it (`GRQ-23`).
     pub host: String,
+    /// Corpus identity this screen was measured against (Issue #76).
+    ///
+    /// Carried on the record rather than in the path, so a regenerated corpus
+    /// cannot reset coverage while anything wanting corpus-exact screening can
+    /// still filter on it. `None` on version-1 records, where the identity
+    /// lived in the directory name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpus_identity: Option<String>,
 }
 
 /// How many known wins to replay before the random sweep.
@@ -184,13 +226,42 @@ impl LearningsStore {
         self.corpus_dir().join(format!("{}.jsonl", self.host))
     }
 
-    /// Directory holding this corpus's screen-coverage host files.
+    /// Directory holding the fleet's screen-coverage host files.
     ///
     /// A sibling of [`Self::corpus_dir`], never inside it: screen records are
     /// coverage facts, so a corrupt or oversized screen log must not be able
-    /// to break verdict loading.
+    /// to break verdict loading. Not keyed by corpus identity (Issue #76) —
+    /// the identity rides on the record instead.
     pub fn screens_dir(&self) -> PathBuf {
-        self.root.join(format!("screens-{}", self.corpus_identity))
+        self.root.join(SCREENS_DIR)
+    }
+
+    /// Pre-#76 corpus-keyed screen directories, sorted, read-only.
+    ///
+    /// An unreadable root is an error rather than an empty list: silently
+    /// reading no history is how the fleet loses months of screening.
+    fn legacy_screens_dirs(&self) -> Result<Vec<PathBuf>, String> {
+        if !self.root.is_dir() {
+            return Ok(Vec::new());
+        }
+        let entries =
+            std::fs::read_dir(&self.root).map_err(|e| format!("{}: {e}", self.root.display()))?;
+        let mut dirs = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", self.root.display()))?;
+            let path = entry.path();
+            // Matched on bytes, not `to_str()`: a name that is not valid UTF-8
+            // is still a directory the fleet may have written history into,
+            // and dropping it here would be silent.
+            let is_legacy = path
+                .file_name()
+                .is_some_and(|n| n.as_encoded_bytes().starts_with(LEGACY_SCREENS_PREFIX));
+            if is_legacy && path.is_dir() {
+                dirs.push(path);
+            }
+        }
+        dirs.sort();
+        Ok(dirs)
     }
 
     /// This host's append-only screen-coverage file.
@@ -212,13 +283,37 @@ impl LearningsStore {
         append_jsonl(&self.corpus_dir(), &self.host_path(), learning)
     }
 
-    /// Load every screen record for this corpus from every host file.
+    /// Load every screen record the fleet has filed, whatever corpus it used.
     ///
-    /// Coverage and selection only — these are not prune verdicts.
+    /// The union of [`Self::screens_dir`] and every pre-#76
+    /// `screens-<identity>/` directory, so the first run after the move starts
+    /// from what the fleet already knows rather than from zero. Coverage and
+    /// selection only — these are not prune verdicts.
+    ///
+    /// A fault in the live directory is an error, as it always was. A fault in
+    /// a legacy directory is **warned and skipped** instead: nothing rewrites
+    /// those files, so one truncated line in fleet history would otherwise
+    /// empty the whole union on every host of every run — reinstating exactly
+    /// the coverage reset this change removes (Issue #76). Loud, but contained
+    /// to the directory that is broken.
     pub fn load_screens(&self) -> Result<Vec<Screened>, String> {
-        load_jsonl(&self.screens_dir(), |s: &Screened| {
-            s.version == SCREENS_FORMAT_VERSION
-        })
+        let keep = |s: &Screened| {
+            matches!(
+                s.version,
+                LEGACY_SCREENS_FORMAT_VERSION | SCREENS_FORMAT_VERSION
+            )
+        };
+        let mut out = load_jsonl(&self.screens_dir(), keep)?;
+        for legacy in self.legacy_screens_dirs()? {
+            match load_jsonl(&legacy, keep) {
+                Ok(records) => out.extend(records),
+                Err(e) => crate::log::warn(&format!(
+                    "legacy screen coverage unreadable ({e}); skipping {}",
+                    legacy.display()
+                )),
+            }
+        }
+        Ok(out)
     }
 
     /// Append one screen record to this host's screen file.
@@ -578,6 +673,7 @@ pub fn file_screens(
     let mut n = 0;
     let host = store.map(|s| s.host.clone()).unwrap_or_else(default_host);
     let unix_secs = now_secs();
+    let corpus_identity = store.map(|s| s.corpus_identity.clone());
     for (uuid, kind, outcome) in uuids {
         let screened = Screened {
             version: SCREENS_FORMAT_VERSION,
@@ -586,6 +682,7 @@ pub fn file_screens(
             outcome: *outcome,
             unix_secs,
             host: host.clone(),
+            corpus_identity: corpus_identity.clone(),
         };
         if let Some(store) = store
             && let Err(e) = store.append_screen(&screened)
@@ -728,7 +825,28 @@ mod tests {
             outcome,
             unix_secs: secs,
             host: "t".into(),
+            corpus_identity: Some("corp".into()),
         }
+    }
+
+    /// A pre-#76 screen record, written straight into `screens-<identity>/`.
+    fn write_legacy_screen(root: &Path, identity: &str, host: &str, line: &str) {
+        let dir = root.join(format!("screens-{identity}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(format!("{host}.jsonl")))
+            .unwrap();
+        writeln!(file, "{line}").unwrap();
+    }
+
+    /// The exact shape the fleet wrote before this change: version 1, no
+    /// `corpusIdentity`, and the identity in the directory name instead.
+    fn legacy_screen_line(uuid: &str, secs: u64) -> String {
+        format!(
+            r#"{{"version":1,"uuid":"{uuid}","kind":"ablation","outcome":"loser","unixSecs":{secs},"host":"legacy"}}"#
+        )
     }
 
     #[test]
@@ -773,6 +891,175 @@ mod tests {
         let known = store.load().unwrap();
         assert!(known_wins(&known, &c, ReplayConfig::default()).is_empty());
         assert!(known_failures(&known, &c, ReplayConfig::default(), 1_000_000, 1e-6).is_empty());
+    }
+
+    /// Issue #76: coverage is a fact about the uuid, not about the corpus.
+    #[test]
+    fn screens_survive_a_corpus_identity_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = LearningsStore::new(dir.path(), "corpus-a".into(), "host-a".into());
+        let s = screen("h_a", ScreenOutcomeKind::Winner, 9);
+        before.append_screen(&s).unwrap();
+
+        let after = LearningsStore::new(dir.path(), "corpus-b".into(), "host-a".into());
+        let loaded = after.load_screens().unwrap();
+        assert_eq!(
+            loaded.iter().map(|s| s.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["h_a"],
+            "a regenerated corpus must not reset screen coverage"
+        );
+    }
+
+    /// Issue #76: the fleet's pre-move history is read, not abandoned.
+    #[test]
+    fn legacy_corpus_keyed_screens_still_count_as_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        write_legacy_screen(
+            dir.path(),
+            "old-corpus",
+            "GRQ-23",
+            &legacy_screen_line("h_a", 5),
+        );
+        let store = LearningsStore::new(dir.path(), "new-corpus".into(), "host-a".into());
+        store
+            .append_screen(&screen("h_b", ScreenOutcomeKind::Winner, 9))
+            .unwrap();
+
+        let loaded = store.load_screens().unwrap();
+        assert_eq!(loaded.len(), 2, "{loaded:?}");
+        let c = two_hidden();
+        assert_eq!(
+            screened_uuids(&loaded, &c),
+            HashSet::from(["h_a".to_string(), "h_b".to_string()]),
+            "legacy records are coverage the fleet already paid for"
+        );
+        let legacy = loaded.iter().find(|s| s.uuid == "h_a").unwrap();
+        assert_eq!(legacy.version, 1);
+        assert_eq!(legacy.corpus_identity, None, "the identity was in the path");
+    }
+
+    /// The near miss this fix must not make: a verdict is a claim about one
+    /// corpus, so widening the screens path must not widen the verdict path.
+    #[test]
+    fn a_verdict_from_another_corpus_identity_is_still_not_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = LearningsStore::new(dir.path(), "corpus-a".into(), "host-a".into());
+        before.append(&rec("h_a", Outcome::Rejected, 9)).unwrap();
+
+        let after = LearningsStore::new(dir.path(), "corpus-b".into(), "host-a".into());
+        assert!(
+            after.load().unwrap().is_empty(),
+            "a foreign-corpus verdict must never suppress a candidate"
+        );
+        assert_eq!(
+            before.load().unwrap().len(),
+            1,
+            "its own corpus still sees it"
+        );
+    }
+
+    /// A corrupt screen line fails screens loudly and leaves verdicts alone.
+    #[test]
+    fn a_corrupt_screen_line_cannot_break_verdict_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        store.append(&rec("h_a", Outcome::Accepted, 9)).unwrap();
+        store
+            .append_screen(&screen("h_b", ScreenOutcomeKind::Winner, 9))
+            .unwrap();
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(store.screens_host_path())
+            .unwrap();
+        writeln!(file, "{{not json").unwrap();
+
+        assert!(store.load_screens().is_err(), "corruption must be loud");
+        assert_eq!(store.load().unwrap().len(), 1, "verdicts are unaffected");
+    }
+
+    /// An unknown-version line in the *legacy* location is skipped too, so the
+    /// migration cannot turn a forward-compatible record into a hard failure.
+    #[test]
+    fn unknown_version_legacy_screen_lines_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        write_legacy_screen(
+            dir.path(),
+            "old-corpus",
+            "GRQ-23",
+            &legacy_screen_line("h_a", 5),
+        );
+        write_legacy_screen(
+            dir.path(),
+            "old-corpus",
+            "GRQ-24",
+            &legacy_screen_line("h_b", 6).replace(
+                r#""version":1"#,
+                &format!(r#""version":{}"#, SCREENS_FORMAT_VERSION + 1),
+            ),
+        );
+        let store = LearningsStore::new(dir.path(), "new-corpus".into(), "host-a".into());
+        let loaded = store.load_screens().unwrap();
+        assert_eq!(loaded.len(), 1, "{loaded:?}");
+        assert_eq!(loaded[0].uuid, "h_a");
+    }
+
+    /// A version older than the fleet history is unknown, not "legacy enough".
+    #[test]
+    fn a_below_legacy_screen_version_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        write_legacy_screen(
+            dir.path(),
+            "old-corpus",
+            "GRQ-23",
+            &legacy_screen_line("h_a", 5).replace(r#""version":1"#, r#""version":0"#),
+        );
+        let store = LearningsStore::new(dir.path(), "new-corpus".into(), "host-a".into());
+        assert!(store.load_screens().unwrap().is_empty());
+    }
+
+    /// One corrupt line in a directory nothing writes to any more must not
+    /// empty the fleet's whole coverage — that is the plateau itself.
+    #[test]
+    fn a_corrupt_legacy_screen_file_does_not_empty_the_union() {
+        let dir = tempfile::tempdir().unwrap();
+        write_legacy_screen(dir.path(), "corrupt-corpus", "GRQ-23", "{not json");
+        write_legacy_screen(
+            dir.path(),
+            "good-corpus",
+            "GRQ-24",
+            &legacy_screen_line("h_a", 5),
+        );
+        let store = LearningsStore::new(dir.path(), "new-corpus".into(), "host-a".into());
+        store
+            .append_screen(&screen("h_b", ScreenOutcomeKind::Winner, 9))
+            .unwrap();
+
+        let loaded = store.load_screens().unwrap();
+        let c = two_hidden();
+        assert_eq!(
+            screened_uuids(&loaded, &c),
+            HashSet::from(["h_a".to_string(), "h_b".to_string()]),
+            "a broken legacy directory must cost only its own records"
+        );
+    }
+
+    #[test]
+    fn a_screen_record_carries_the_corpus_it_was_measured_against() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corpus-a".into(), "host-a".into());
+        let mut seen = Vec::new();
+        file_screens(
+            Some(&store),
+            &[("h_a", CandidateKind::Ablation, ScreenOutcomeKind::Winner)],
+            &mut seen,
+        );
+        assert_eq!(seen[0].corpus_identity.as_deref(), Some("corpus-a"));
+        assert_eq!(seen[0].version, SCREENS_FORMAT_VERSION);
+        assert_eq!(
+            store.load_screens().unwrap()[0].corpus_identity.as_deref(),
+            Some("corpus-a"),
+            "the path stopped carrying it, so the record must"
+        );
     }
 
     #[test]

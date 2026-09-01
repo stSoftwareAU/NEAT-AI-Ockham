@@ -236,8 +236,11 @@ is a full-corpus scorer call nobody has to pay again.
 **Layout.** From the file's own header:
 
 ```text
-learnings/corpus-<identity>/<host>.jsonl                general population
-learnings-team-<island>/corpus-<identity>/<host>.jsonl  one island
+learnings/corpus-<identity>/<host>.jsonl                verdicts, general population
+learnings/screens-<identity>/<host>.jsonl               screen coverage, pre-#76 (read only)
+learnings/screens/<host>.jsonl                          screen coverage, general population
+learnings-team-<island>/corpus-<identity>/<host>.jsonl  verdicts, one island
+learnings-team-<island>/screens/<host>.jsonl            screen coverage, one island
 ```
 
 Append-only, and **each host appends only to its own `<host>.jsonl`**, so two
@@ -246,6 +249,19 @@ resolves as a fast-forward or a clean rebase. A record names a **neuron UUID**,
 not a portable patch, so a replayed verdict is only useful while that UUID is
 still on the incumbent — the crate's own store does that filtering, and GRQ
 changes nothing about it.
+
+**Screen coverage is not keyed by the corpus; verdicts are** (#76). GRQ
+regenerates the training corpus before every run
+(`worker/trainDataStocks.sh --mode=ockham --current`), so a new identity —
+therefore a new `corpus-<identity>/` — is the normal case, not an exception.
+That is correct for a verdict, which is a claim about one corpus, and wrong for
+a screen record, which only says a uuid has been looked at: under the old
+`screens-<identity>/` layout each identity saw its own slice of coverage and
+re-screened neurons another identity had already checked. Screens now live in
+one stable `screens/` directory with the identity carried on the record
+(`corpusIdentity`, screen format version 2). The old directories are still read
+so no fleet history is lost, and nothing else in the GRQ path changes: publish
+still stages the whole learnings directory.
 
 Islands are `CLOSED_BIOSPHERE=1` by design and therefore get their own
 directory: an island stops paying twice for its own refusals without ever seeing

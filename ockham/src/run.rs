@@ -1926,6 +1926,7 @@ mod tests {
                     outcome: ScreenOutcomeKind::Loser,
                     unix_secs: *unix_secs,
                     host: "t".into(),
+                    corpus_identity: Some("fixture-corpus".into()),
                 })
                 .unwrap();
         }
@@ -2048,6 +2049,74 @@ mod tests {
         assert_eq!(report.hidden, Some(4));
         assert_eq!(report.checked, Some(2), "one batch of two candidates");
         assert_eq!(report.coverage_percent, Some(50.0));
+    }
+
+    /// A second training corpus over the same widths, so only the **identity**
+    /// differs from the one [`hidden_paths`] wrote.
+    fn regenerated_corpus(tmp: &std::path::Path) -> std::path::PathBuf {
+        let train = tmp.join("train-regenerated");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[(vec![3.0f32], vec![3.0f32]), (vec![4.0], vec![4.0])],
+        )
+        .unwrap();
+        train
+    }
+
+    /// Issue #76: coverage must survive GRQ regenerating the corpus between
+    /// runs. Two runs over one learnings root, second corpus different — the
+    /// second run's coverage must be strictly greater than the first's.
+    #[test]
+    fn a_second_run_against_a_regenerated_corpus_advances_fleet_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let learnings_dir = tmp.path().join("learnings");
+
+        let first = coverage_files_cfg(
+            creature.clone(),
+            train.clone(),
+            tmp.path().join("out-1"),
+            Some(learnings_dir.clone()),
+        );
+        establish_run(&first, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let first_cov = coverage_json(&first.output_dir);
+        assert_eq!(first_cov.checked, 2, "one batch of two candidates");
+
+        let regenerated = regenerated_corpus(tmp.path());
+        assert_ne!(
+            corpus_identity(&regenerated),
+            corpus_identity(&train),
+            "the fixture must actually change the corpus identity"
+        );
+        let second = coverage_files_cfg(
+            creature,
+            regenerated,
+            tmp.path().join("out-2"),
+            Some(learnings_dir),
+        );
+        establish_run(&second, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let second_cov = coverage_json(&second.output_dir);
+
+        assert!(
+            second_cov.checked > first_cov.checked,
+            "coverage reset when the corpus identity changed: {} then {}",
+            first_cov.checked,
+            second_cov.checked
+        );
+        assert_eq!(second_cov.checked, 4, "both batches must be counted");
+    }
+
+    fn corpus_identity(train: &std::path::Path) -> String {
+        crate::corpus::corpus_info(train, &TrainingDataConfig::new(1, 1))
+            .unwrap()
+            .identity
+    }
+
+    fn coverage_json(output_dir: &std::path::Path) -> Coverage {
+        let json =
+            std::fs::read_to_string(output_dir.join(crate::coverage::COVERAGE_JSON_FILE)).unwrap();
+        serde_json::from_str(&json).unwrap()
     }
 
     /// Config for the coverage-artefact tests: one batch over four neurons.
@@ -2630,7 +2699,7 @@ mod tests {
             .filter(|p| {
                 p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("screens-") || n == "learnings")
+                    .is_some_and(|n| n.starts_with("screens") || n == "learnings")
             })
             .collect();
         assert!(stray.is_empty(), "{stray:?}");

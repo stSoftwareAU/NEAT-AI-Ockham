@@ -367,6 +367,7 @@ mod tests {
             outcome: ScreenOutcomeKind::Loser,
             unix_secs,
             host: "GRQ-1".into(),
+            corpus_identity: Some("corp".into()),
         }
     }
 
