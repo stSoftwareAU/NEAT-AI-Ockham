@@ -2113,7 +2113,9 @@ mod tests {
             text.contains("tagged:    4 carry GRQ provenance, screened like any other"),
             "{text}"
         );
-        assert!(!text.contains("skipped"), "{text}");
+        // The old `skipped:` coverage line, not the `bundles: … skipped`
+        // clause, which is a legitimate winner figure.
+        assert!(!text.contains("skipped:"), "{text}");
     }
 
     #[test]

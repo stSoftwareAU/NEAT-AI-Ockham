@@ -394,8 +394,9 @@ no coverage state, and nothing is journalled — absent rather than a misleading
 ```mermaid
 flowchart LR
     H["hidden on current incumbent"] --> C["checkable = every hidden neuron"]
-    H --> T{"tagged?"}
-    T -->|yes| G["counted as tagged —<br/>reported beside the percentage"]
+    C --> T{"tagged?"}
+    T -->|yes| G["also counted as tagged —<br/>reported beside the percentage"]
+    T -->|no| N["counted in the denominator only"]
     C --> S{"has a screen record?"}
     S -->|yes| D["checked"]
     S -->|no| U["unchecked"]
@@ -435,8 +436,8 @@ dropped:   12 entries over budget (est 18s/creature)
   zero or coverage is already complete;
 - the `tagged:` line is omitted when no neuron is tagged;
 - the `winners:` / `bundles:` / `dropped:` lines are each omitted when they have
-  nothing to report, so a run that screened nothing renders exactly the block it
-  did before they existed;
+  nothing to report, so a run that screened nothing renders the coverage lines
+  alone, exactly as it did before they existed;
 - `coverage.json` carries the same figures under an additive `winners` key, and
   still deserialises straight into `Coverage` for a consumer that ignores it, so
   nothing downstream needs to parse the prose.

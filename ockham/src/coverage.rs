@@ -496,7 +496,6 @@ mod tests {
             cov.summary(),
             "checked 2 of 6 hidden (33.3%), 1 cut, 1 tagged"
         );
-        assert!(!cov.summary().contains("skipped"), "{}", cov.summary());
     }
 
     /// The fleet-scale example from Issue #40, rendered exactly.
