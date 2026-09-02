@@ -1,29 +1,20 @@
 //! Creature JSON tags for GRQ-sampler check-in (production).
 //!
-//! `neat_core::CreatureExport` does not round-trip `tags`. Forests and Lamarck
-//! keep them in a sidecar [`CreatureMeta`] and re-attach on write. Ockham must
-//! do the same: a better score that lost discovery / intelligent-design
-//! provenance is refused by GRQ's check-in guard.
+//! Tags are **informational metadata only** (Issue #87): they describe a neuron,
+//! they never change what Ockham does with it. `neat_core::CreatureExport` does
+//! not round-trip `tags`, so Forests and Lamarck keep them in a sidecar
+//! [`CreatureMeta`] and re-attach on write. Ockham does the same, so a surviving
+//! neuron keeps its tags byte-for-byte.
 //!
 //! Deliberately dropped on serialise: creature-level `uuid` and `memetic`
 //! (the structure changed, so those identities would be a lie).
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
 
 use neat_core::{CreatureExport, creature_to_json};
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::coverage::Coverage;
-
-/// Declared pruned provenance, written beside `best.json` (Issue #75).
-pub const PRUNED_PROVENANCE_FILE: &str = "pruned-provenance.json";
-
-/// Schema version of [`PrunedProvenance`].
-///
-/// Bumped only when the shape changes; GRQ's guard reads it before the list.
-pub const PRUNED_PROVENANCE_VERSION: u32 = 1;
 
 /// One `{ name, value }` tag.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,55 +65,6 @@ fn tags_value(tags: &[Tag]) -> Value {
     )
 }
 
-/// One tagged neuron a run deliberately removed, and the provenance it carried.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PrunedNeuron {
-    /// Neuron uuid as it stood on the opening creature.
-    pub uuid: String,
-    /// Tag names the neuron carried, in the order the source wrote them.
-    ///
-    /// Names only: the guard reports what provenance was given up, and the
-    /// values are already gone with the neuron.
-    pub tags: Vec<String>,
-}
-
-/// What a run declares it pruned — the cross-repo contract GRQ's check-in guard
-/// reads (Issue #75).
-///
-/// The guard refuses a candidate that lost a source neuron's `tags`. Ockham
-/// legitimately cuts tagged neurons (#63), so it declares exactly which ones:
-/// a missing tag is forgiven only when its uuid is listed here, and every other
-/// missing tag stays fatal.
-///
-/// **Absence of the file is not an empty list.** An empty `pruned` means
-/// "nothing tagged was pruned"; a missing file means "this build does not
-/// declare", on which the guard must fail closed — see `docs/grq-integration.md`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PrunedProvenance {
-    /// Schema version — [`PRUNED_PROVENANCE_VERSION`] for anything Ockham writes.
-    pub version: u32,
-    /// Tagged neurons absent from the final incumbent, uuid-ordered.
-    pub pruned: Vec<PrunedNeuron>,
-}
-
-/// Write `pruned-provenance.json` into `dir` (Issue #75).
-///
-/// Written on **every** run with an output dir, empty list included, so the
-/// guard can tell "nothing pruned" from "no declaration". The error names the
-/// file that failed; the caller warns rather than failing the run, matching the
-/// `coverage.txt` rule. Note what that costs: a run whose declaration failed to
-/// write has its check-in refused by the relaxed guard — the correct outcome,
-/// because the alternative is publishing provenance loss nobody declared.
-pub fn write_pruned_provenance(dir: &Path, declaration: &PrunedProvenance) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let json = serde_json::to_string_pretty(declaration)
-        .map_err(|e| format!("{PRUNED_PROVENANCE_FILE}: {e}"))?;
-    let path = dir.join(PRUNED_PROVENANCE_FILE);
-    std::fs::write(&path, format!("{json}\n")).map_err(|e| format!("{}: {e}", path.display()))
-}
-
 /// Metadata carried alongside a creature.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CreatureMeta {
@@ -171,33 +113,6 @@ impl CreatureMeta {
         let keep: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
         self.neuron_tags
             .retain(|uuid, _| keep.contains(uuid.as_str()));
-    }
-
-    /// Declare which of *this* meta's tagged neurons are absent from `creature`.
-    ///
-    /// Call it on the run's **opening** meta against the final incumbent: a set
-    /// difference, computed once. The live meta has had [`Self::retain_neurons`]
-    /// applied at every accept, so it has already forgotten what left and would
-    /// declare nothing; an incremental counter would drift across the replay
-    /// stage, accepts and sweep restarts.
-    ///
-    /// Only neurons that actually left are listed. Declaring a surviving tagged
-    /// uuid would tell the guard to stop checking a tag that is still supposed
-    /// to be there, which is the failure this artefact exists to avoid.
-    pub fn pruned_provenance(&self, creature: &CreatureExport) -> PrunedProvenance {
-        let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
-        PrunedProvenance {
-            version: PRUNED_PROVENANCE_VERSION,
-            pruned: self
-                .neuron_tags
-                .iter()
-                .filter(|(uuid, _)| !present.contains(uuid.as_str()))
-                .map(|(uuid, tags)| PrunedNeuron {
-                    uuid: uuid.clone(),
-                    tags: tags.iter().map(|t| t.name.clone()).collect(),
-                })
-                .collect(),
-        }
     }
 
     /// Update score/error and stamp a run-level Ockham summary for check-in.
@@ -378,9 +293,10 @@ mod tests {
         assert_eq!(v["neurons"][0]["tags"][0]["name"], "discovered");
     }
 
-    /// #63 lets Ockham cut tagged neurons, so the cut uuid's provenance must
-    /// leave with it — a `tags` entry for a neuron that no longer exists is a
-    /// lie GRQ's check-in guard cannot catch.
+    /// #63 lets Ockham cut tagged neurons, so the cut uuid's tags leave with
+    /// it — a `tags` entry for a neuron that no longer exists is a lie. The
+    /// survivors keep theirs verbatim, which is the whole of the tag contract
+    /// (Issue #87).
     #[test]
     fn a_cut_tagged_neuron_leaves_no_tags_entry_and_the_survivors_keep_theirs() {
         const TWO_TAGGED: &str = r#"{
@@ -424,7 +340,7 @@ mod tests {
         );
         assert!(
             !serde_json::to_string(&v).unwrap().contains("ReLU6"),
-            "no provenance may be claimed for a neuron that no longer exists: {v}"
+            "no tags may be claimed for a neuron that no longer exists: {v}"
         );
         let survivor = neurons.iter().find(|n| n["uuid"] == "h2").unwrap();
         assert_eq!(
@@ -436,115 +352,6 @@ mod tests {
             "the surviving tags must be written back byte-for-byte"
         );
         assert_eq!(meta.neuron_tags["h2"], before);
-    }
-
-    /// Creature JSON with two tagged hidden neurons and one untagged one.
-    const MIXED: &str = r#"{
-        "input":1,"output":1,
-        "neurons":[
-            {"type":"hidden","uuid":"h1","bias":0,"squash":"IDENTITY",
-             "tags":[{"name":"discovered","value":"ReLU6"},{"name":"design","value":"grq"}]},
-            {"type":"hidden","uuid":"h2","bias":0,"squash":"IDENTITY",
-             "tags":[{"name":"intelligentDesign","value":"true"}]},
-            {"type":"hidden","uuid":"h3","bias":0,"squash":"IDENTITY"},
-            {"type":"output","uuid":"output-0","bias":0,"squash":"IDENTITY"}
-        ],
-        "synapses":[{"fromUUID":"input-0","toUUID":"h1","weight":1},
-                    {"fromUUID":"h1","toUUID":"output-0","weight":1}]
-    }"#;
-
-    /// Creature holding only the named hidden UUIDs, plus the output neuron.
-    fn keeping(uuids: &[&str]) -> CreatureExport {
-        let mut neurons: Vec<_> = uuids
-            .iter()
-            .map(|u| neuron("hidden", u, 0.0, Some("IDENTITY")))
-            .collect();
-        neurons.push(neuron("output", "output-0", 0.0, Some("IDENTITY")));
-        let mut synapses = Vec::new();
-        for u in uuids {
-            synapses.push(synapse("input-0", u, 1.0));
-            synapses.push(synapse(u, "output-0", 1.0));
-        }
-        creature(1, 1, neurons, synapses)
-    }
-
-    #[test]
-    fn the_declaration_lists_the_tagged_uuids_that_left_with_their_tag_names() {
-        let meta = CreatureMeta::from_json(MIXED);
-        // h1 (tagged) and h3 (untagged) were cut; h2 (tagged) survived.
-        let decl = meta.pruned_provenance(&keeping(&["h2"]));
-        assert_eq!(decl.version, PRUNED_PROVENANCE_VERSION);
-        assert_eq!(
-            decl.pruned,
-            vec![PrunedNeuron {
-                uuid: "h1".into(),
-                tags: vec!["discovered".into(), "design".into()],
-            }],
-            "only the tagged neuron that left may be declared"
-        );
-    }
-
-    /// The over-inclusive direction is the dangerous one: every declared uuid is
-    /// a tag GRQ's guard stops checking.
-    #[test]
-    fn a_surviving_tagged_neuron_is_never_declared() {
-        let meta = CreatureMeta::from_json(MIXED);
-        let decl = meta.pruned_provenance(&keeping(&["h1", "h2", "h3"]));
-        assert!(
-            decl.pruned.is_empty(),
-            "nothing left the creature: {decl:?}"
-        );
-    }
-
-    #[test]
-    fn a_run_that_cut_nothing_tagged_declares_an_empty_list_with_a_version() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("out");
-        let decl = CreatureMeta::from_json(MIXED).pruned_provenance(&keeping(&["h1", "h2"]));
-        write_pruned_provenance(&dir, &decl).unwrap();
-
-        let text = std::fs::read_to_string(dir.join(PRUNED_PROVENANCE_FILE)).unwrap();
-        let v: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["version"], PRUNED_PROVENANCE_VERSION);
-        assert_eq!(v["pruned"], serde_json::json!([]));
-        let back: PrunedProvenance = serde_json::from_str(&text).unwrap();
-        assert_eq!(back, decl, "the declaration must round-trip");
-    }
-
-    #[test]
-    fn the_written_declaration_names_each_pruned_uuid_and_its_tags() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("out");
-        let decl = CreatureMeta::from_json(MIXED).pruned_provenance(&keeping(&["h3"]));
-        write_pruned_provenance(&dir, &decl).unwrap();
-
-        let v: Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.join(PRUNED_PROVENANCE_FILE)).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            v["pruned"],
-            serde_json::json!([
-                {"uuid":"h1","tags":["discovered","design"]},
-                {"uuid":"h2","tags":["intelligentDesign"]}
-            ]),
-            "uuid-ordered, one entry per tagged neuron that left: {v}"
-        );
-    }
-
-    /// A blocked write must name the file, so the caller's warning is
-    /// actionable rather than a silently absent declaration.
-    #[test]
-    fn a_blocked_declaration_write_returns_an_error_naming_the_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("out");
-        std::fs::create_dir_all(dir.join(PRUNED_PROVENANCE_FILE)).unwrap();
-        let err = write_pruned_provenance(
-            &dir,
-            &CreatureMeta::from_json(MIXED).pruned_provenance(&keeping(&[])),
-        )
-        .unwrap_err();
-        assert!(err.contains(PRUNED_PROVENANCE_FILE), "{err}");
     }
 
     #[test]
@@ -586,7 +393,6 @@ mod tests {
             checkable: 5013,
             checked: 1204,
             cut: 8,
-            tagged_cut: 0,
         })
     }
 
@@ -650,7 +456,6 @@ mod tests {
                 checkable: 2,
                 checked: 1,
                 cut: 0,
-                tagged_cut: 0,
             }),
         ));
         assert!(msg.contains("checked 1/2 (50.0%)"), "{msg}");
@@ -667,7 +472,6 @@ mod tests {
                 checkable: 0,
                 checked: 0,
                 cut: 0,
-                tagged_cut: 0,
             }),
         ));
         assert!(msg.contains("checked 0/0 (0.0%)"), "{msg}");

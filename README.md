@@ -63,12 +63,9 @@ The current Rust implementation includes:
   coverage block GRQ pastes into the sampler commit description, plus the same
   figures machine-readably, extended with what the run screened, confirmed,
   applied and carried forward;
-- every hidden neuron is a prune candidate: a GRQ provenance tag records where a
-  neuron came from and confers no exemption from the razor (#63);
-- `pruned-provenance.json` beside `best.json`: the tagged UUIDs a run
-  deliberately removed, and the tag names that left with them, declared on
-  **every** run with an `--output-dir` so GRQ's check-in guard can forgive
-  exactly those losses and stay fatal on every other one (#75);
+- every hidden neuron is a prune candidate: neuron tags are informational
+  metadata that record where a neuron came from, and they confer no exemption
+  from the razor (#63, #87);
 - named, reproducible candidate orderings with random as the measured control,
   plus the report measures needed to compare their discovery economics;
 - normal Rust CI, security and quality gates.
@@ -482,7 +479,7 @@ The denominator is every hidden neuron of the **current** incumbent:
 - a screen record for a uuid no longer on the creature is ignored — it raises
   neither `checked` nor `hidden`;
 - duplicate records for one uuid count once;
-- tagged (GRQ-provenance) neurons stay in the denominator and a screened one
+- tagged neurons stay in the denominator and a screened one
   counts as checked (#74). Selection stopped exempting them in #63, so
   deducting them here overstated progress; `tagged` is still reported beside
   the percentage, never subtracted from it;
@@ -531,8 +528,7 @@ into `--output-dir`, beside `best.json`:
 checked:   1204 of 5013 hidden (24.0%)
 cut:       7 this run
 unchecked: 3809 remaining (~39 runs at 100/run)
-tagged:    42 carry GRQ provenance, screened like any other
-declared:  3 tagged neurons cut, listed in pruned-provenance.json
+tagged:    42 carry tags, screened like any other
 progress:  100 newly screened this run
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
 bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped
@@ -543,10 +539,9 @@ dropped:   12 entries over budget (est 18s/creature)
   `--candidates` batch size (`~1 run` when one batch would finish it), and the
   whole clause is **omitted** — never `inf` or `NaN` — when that batch size is
   zero or coverage is already complete;
-- the `tagged:` line is omitted when no neuron is tagged;
-- the `declared:` line is omitted when the run cut nothing tagged — the
-  declaration file itself is still written, because an absent *file* means
-  something else entirely (see below);
+- the `tagged:` line is omitted when no neuron is tagged, and says only how many
+  hidden neurons carry tags — a tagged neuron the run cut is counted by `cut:`
+  like any other (#87);
 - the `progress:` line is **never** omitted, zero included (#77): coverage is
   cumulative fleet state, so the per-run figure beside it is the only thing that
   makes a plateau visible by reading two consecutive commits;
@@ -571,57 +566,6 @@ flowchart LR
     C --> S["coverage.json — Coverage struct"]
     T --> G["GRQ: git commit description"]
     S --> G
-```
-
-### Declared pruned provenance
-
-GRQ's check-in guard refuses a candidate on which a source neuron that carried
-`tags` no longer carries them — provenance cannot be recovered from a checked-in
-file, so committing a creature that lost it is worse than committing nothing.
-Since #63 Ockham prunes tagged neurons legitimately, so it **declares** what it
-removed instead of the guard being switched off: a missing tag is forgiven only
-when its uuid is in the declaration, and every other missing tag stays fatal.
-
-`pruned-provenance.json` is written into `--output-dir`, beside `best.json`:
-
-```json
-{
-  "version": 1,
-  "pruned": [
-    { "uuid": "5f2c…", "tags": ["discovered", "intelligentDesign"] }
-  ]
-}
-```
-
-- **The list is a set difference, not a counter.** UUIDs carrying tags on the
-  *opening* creature that are absent from the *final* incumbent, computed once
-  at the end of the run — an incremental count would drift across the replay
-  stage, accepts and sweep restarts. Every removal path is therefore covered:
-  individual cut, bundle accept and replay alike.
-- **A surviving tagged neuron is never listed.** Every declared uuid is a tag
-  the guard stops checking, so an over-inclusive list would leave the guard
-  running and protecting nothing.
-- **The file is written on every run with an `--output-dir`, empty list
-  included** — including runs with no `--learnings-dir`, where the coverage
-  files are absent. An empty `pruned` means "nothing tagged was pruned"; an
-  absent *file* means "this build does not declare", and the guard must fail
-  closed on it. Overloading absence would wave through every provenance loss of
-  a run that crashed before writing, or of an older binary on one host.
-- **A write fault warns and the run still completes**, as `coverage.txt` does.
-  The cost is explicit: a run whose declaration failed to write has its check-in
-  refused, which is the correct outcome.
-- `Coverage` counts the same neurons as `taggedCut` in `coverage.json` and the
-  `declared:` line of the commit description, so the fleet history shows
-  provenance being spent rather than only the file recording it.
-
-```mermaid
-flowchart LR
-    O["opening creature<br/>tagged UUIDs"] --> D{"still on the<br/>final incumbent?"}
-    D -->|yes| K["not declared —<br/>its tags must survive"]
-    D -->|no| P["declared: uuid + tag names"]
-    P --> F["pruned-provenance.json"]
-    P --> C["taggedCut in coverage.json<br/>declared: line in coverage.txt"]
-    F --> G["GRQ guard: forgive these UUIDs only"]
 ```
 
 ### Unchecked-first selection
@@ -653,7 +597,7 @@ screen store there is no coverage state to prefer, and the order is then
 identical to the raw seeded permutation. The `permutation_identity` in the
 journal is hashed **before** this reorder, so `--ordering` comparisons stay
 valid; the `start` record carries `unchecked_first` so a run is reconstructable.
-Tagged and known-failure skips still apply on top.
+Known-failure skips still apply on top; a tag never skips a neuron (#87).
 
 ## Where this sits in the literature
 
@@ -859,7 +803,6 @@ remains available as the control for every comparison.
 | `experiments.jsonl` | Append-only experiment journal. |
 | `coverage.txt` | Screening-coverage block for the GRQ commit description. Written only with `--learnings-dir`. |
 | `coverage.json` | The same coverage figures as JSON. Written only with `--learnings-dir`. |
-| `pruned-provenance.json` | Tagged UUIDs the run deliberately cut, with their tag names. Written on every run; an empty list is not the same as an absent file. |
 | `winners/` | Accepted intermediate Ockham incumbents. |
 | `workspace/` | Isolated run state, baseline and statistics caches. |
 | `population-candidate.json` | Written only after beating the supplied current global champion. |
@@ -982,7 +925,7 @@ NEAT-AI-Ockham/
 │       ├── journal.rs         # experiments.jsonl
 │       ├── reentry.rs         # population re-entry vs global champion
 │       ├── report.rs          # experiments.jsonl summary
-│       ├── tags.rs            # GRQ-sampler score/provenance tags + pruned-provenance.json
+│       ├── tags.rs            # GRQ-sampler creature/neuron tag sidecar
 │       ├── learnings.rs       # fleet prune-verdict cache + screen coverage
 │       ├── coverage.rs       # checked/total/percent + coverage.txt / coverage.json
 │       ├── ordering.rs        # named candidate ordering strategies
@@ -1009,7 +952,7 @@ what makes them load-bearing.
 Shipped through the iterative loop, re-entry comparison, report command, GRQ
 check-in tags, learnings replay, and named candidate orderings
 (#1–#11, #23, #25–#27). Tagged neurons were exempt from screening under #26;
-issue #63 reversed that, so provenance tags no longer keep a hidden neuron out
+issue #63 reversed that, so neuron tags no longer keep a hidden neuron out
 of the prune pool.
 
 The ordering experiment itself is now the work: run each named strategy against

@@ -134,7 +134,7 @@ pub struct BypassedSynapse {
     pub merged: bool,
 }
 
-/// Provenance of one emitted IDENTITY collapse.
+/// Record of one emitted IDENTITY collapse.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityCollapse {

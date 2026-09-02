@@ -187,7 +187,7 @@ impl fmt::Display for AblationSkip {
     }
 }
 
-/// Provenance of one emitted ablation candidate.
+/// Record of one emitted ablation candidate.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Ablation {
@@ -218,7 +218,7 @@ pub struct Ablation {
 /// Ablate hidden neuron `uuid` from a clone of `incumbent`.
 ///
 /// `mean` is the full-corpus mean post-activation of that neuron. `stats` is
-/// recorded in provenance when present; it is not consulted for the arithmetic.
+/// recorded on the candidate when present; it is not consulted for the arithmetic.
 pub fn ablate_mean(
     incumbent: &CreatureExport,
     uuid: &str,
