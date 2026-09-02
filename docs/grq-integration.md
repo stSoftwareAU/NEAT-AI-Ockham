@@ -13,12 +13,12 @@ Two things in this document correct assumptions that were true earlier and are
 not true at `6ad319f` — the commit **description** (section 5) and the meaning
 of **exit code 2** (section 6). Both are flagged where they appear.
 
-One thing runs **behind** this audit: since Issue #87 neuron tags are
-informational metadata only, so Ockham no longer writes the pruned-tag
-declaration GRQ's check-in guard consumed under Issue #78. Retiring the guard's
-declaration requirement is a GRQ-side change and must land **before** GRQ adopts
-the Ockham release carrying #87, or a run that cuts a tagged neuron has its
-check-in refused. Section 5a records the retirement.
+One thing is **half-retired**: since Issue #87 neuron tags are informational
+metadata only, so Ockham no longer writes the pruned-tag declaration GRQ's
+check-in guard consumed under GRQ's Issue #78. The guard half is still live on
+GRQ, so retiring its declaration requirement must land **before** GRQ adopts the
+Ockham release carrying #87 — otherwise a run that cuts a tagged neuron has its
+check-in refused. Section 5a records both halves and the ordering.
 
 ## At a glance
 
@@ -305,15 +305,17 @@ no-improvement outcome is a success, not a host failure.
    opened on, and judging it there discarded creatures the scorer had just
    preferred to the fleet champion.
 7. **Lineage guard.** `grq_creature_guard_checkin_lineage "Ockham" <source>
-   <candidate-before-rebase> <best> <rebase-base>`
+   <candidate-before-rebase> <best> <rebase-base> <pruned-provenance.json>`
    (`worker/shared/creature_provenance_guard.sh`) walks the publication lineage
    one hop at a time: creature-level tag *names* must survive (except `score`
    and `dataSha`, which NEAT-AI sheds at the mutation site), per-neuron `tags`
    must survive on every neuron that survives, and `uuid` / `memetic` must be
    absent. A refusal is a **skipped check-in**, exit 0 — not a stage failure.
-   Ockham cuts tagged neurons like any other (#63) and declares nothing about
-   them (#87); the guard's declaration argument is retired GRQ-side (section
-   5a).
+   The sixth argument is GRQ's Issue #78: for a pruning optimiser the "a TAGGED
+   neuron was cut" case is judged against Ockham's declaration of what it
+   removed. **That argument is live on GRQ today and Ockham no longer writes the
+   file** — retiring the requirement is the pending GRQ-side change tracked by
+   #89 (section 5a).
 8. **Check-in gate.** `grq_ockham_validate_for_checkin` (`worker/shared/ockham.sh`)
    delegates to `grq_validate_for_checkin <file> ockham 🪒`
    (`worker/shared/validate_for_checkin.sh`), which asks the TypeScript engine —
@@ -382,14 +384,15 @@ nothing, returns 0, and produces the byte-identical subject-only commit GRQ made
 before. The gap that sub-issues of #33 exist to close is therefore closed on the
 GRQ side; what remains is Ockham's own reporting quality, not the relay.
 
-## 5a. Retired: the pruned-tag declaration (Issues #75, #78, retired by #87)
+## 5a. The pruned-tag declaration: Ockham's half retired (Issues #75, #78, #87)
 
 Neuron tags are **informational metadata only**. They describe where a neuron
 came from; they never change what Ockham may prune, and cutting one needs no
 permission and no declaration. Ockham therefore publishes no declaration
-artefact: what it used to write beside `best.json` under Issue #75, and the
-sixth argument `worker/Ockham/run.sh` passed to
-`grq_creature_guard_checkin_lineage` under Issue #78, are both gone.
+artefact: the file it wrote beside `best.json` under Issue #75 is gone. **The
+GRQ half is still live** — `worker/Ockham/run.sh` passes the declaration path as
+the sixth argument of `grq_creature_guard_checkin_lineage`, and the guard fails
+closed when it cannot read one.
 
 What still holds, unchanged, is the tag round-trip: **a neuron that survives the
 run keeps its `tags` byte-for-byte**, and a neuron that is cut takes its tags
@@ -398,12 +401,14 @@ That is enforced by `ockham/src/tags.rs`
 (`a_cut_tagged_neuron_leaves_no_tags_entry_and_the_survivors_keep_theirs`) and
 by `ockham/src/sweep.rs`, where a tag never skips a neuron.
 
-**Release ordering.** GRQ's guard refuses a check-in on which a tagged neuron is
-missing undeclared. Retiring that requirement in
-`worker/shared/creature_provenance_guard.sh` is a GRQ-side change, and it must
-land **before** GRQ adopts the Ockham release carrying #87 — otherwise a run
-that legitimately cuts a tagged neuron has its check-in refused and the fleet
-silently stops making progress on tagged creatures.
+**Release ordering — the live hazard.** GRQ's guard refuses a check-in on which
+a tagged neuron is missing undeclared, and an absent declaration grants no
+relaxation. Ockham stopped writing that file at #87, so retiring the requirement
+in `worker/shared/creature_provenance_guard.sh` (and the sixth argument in
+`worker/Ockham/run.sh`) must land **before** GRQ adopts the Ockham release
+carrying #87. Until it does, a run that legitimately cuts a tagged neuron has
+its check-in refused — exit 0, silently skipped — and the fleet stops making
+progress on tagged creatures. Tracked by #89.
 
 ```mermaid
 flowchart LR
@@ -424,7 +429,8 @@ What GRQ reads out of Ockham. Changing any row breaks a live fleet worker.
 | `score` creature tag | `grq_ockham_read_score` | Numeric (`^-?\d+(\.\d+)?([eE][-+]?\d+)?$`). Drives both score gates and `grq_ockham_verify_written_score`. |
 | `ockham` creature tag | `grq_ockham_read_message` | The commit **subject**, used verbatim. Must already carry its own single score clause. |
 | Other creature tag *names* | `grq_creature_guard_checkin_lineage` | Every source tag name must survive on the candidate, except `score` / `dataSha`. `error` is stamped by `stamp_acceptance` and matters here as a name. |
-| Per-neuron `tags` | `grq_creature_guard_checkin_lineage` | Must survive on every neuron that **survives**, byte-for-byte. A neuron that is cut takes its tags with it: tags are informational metadata, so cutting a tagged neuron needs no declaration (Issue #87, section 5a). |
+| Per-neuron `tags` | `grq_creature_guard_checkin_lineage` | Must survive on every neuron that **survives**, byte-for-byte. A neuron that is cut takes its tags with it. GRQ still refuses an undeclared cut of a tagged neuron (its Issue #78); since Ockham's Issue #87 that refusal has nothing left to read, and retiring it is pending (#89, section 5a). |
+| `<output-dir>/pruned-provenance.json` | `grq_creature_guard_checkin_lineage`, sixth argument | **No longer written** since Issue #87 — neuron tags are informational, so a tagged cut is declared to nobody. GRQ still passes the path and fails closed on the absent file, so the guard must stop requiring it before adopting an Ockham release ≥ the one carrying #87 (#89). |
 | `uuid` / `memetic` keys | `grq_creature_guard_checkin_lineage` | Must be **absent** from the written creature. |
 | `<output-dir>/coverage.txt` | `grq_ockham_read_coverage` | Line-oriented block relayed verbatim as the commit description. Since Issue #59 it may carry `winners:` / `bundles:` / `dropped:` lines after the coverage lines; each is omitted when it has nothing to report, and a run that screened nothing renders the coverage lines alone. Since Issue #74 the tagged line reads `tagged:    N carry tags, screened like any other` — it replaced the `skipped:` line, and is still omitted when no neuron is tagged. Issue #87 removed the `declared:` line that followed it. Absent or blank is a supported no-op. |
 | `<output-dir>/coverage.json` | *nothing in GRQ today* | Written by Ockham; GRQ reads only `coverage.txt`. Since Issue #59 it carries an additive `winners` object beside the existing coverage fields. Issue #74 changed no key: `checkable` now counts **every** hidden neuron, tagged ones included, so the percentage no longer overstates progress. |
