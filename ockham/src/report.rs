@@ -614,6 +614,45 @@ mod tests {
         assert!(json.contains("\"unchecked\":3809"), "{json}");
     }
 
+    /// Issue #93: the tag, the commit description and `report` must agree, so
+    /// the blocked figure reaches the report too — and a journal written
+    /// before it existed reports no blocked neurons rather than failing.
+    #[test]
+    fn the_report_carries_the_blocked_figure_and_reads_a_pre_93_journal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Coverage {
+                hidden: 5013,
+                tagged: 42,
+                checkable: 5013,
+                checked: 4200,
+                blocked: 3000,
+                cut: 7,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.blocked, Some(3000));
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"blocked\":3000"), "{json}");
+
+        let older = tmp.path().join("pre-93.jsonl");
+        std::fs::write(
+            &older,
+            format!(
+                "{}\n",
+                r#"{"record":"coverage","hidden":10,"tagged":0,"checkable":10,"checked":4,"cut":0}"#
+            ),
+        )
+        .unwrap();
+        let old = summarise(&[&older]).unwrap();
+        assert_eq!(old.checked, Some(4));
+        assert_eq!(old.blocked, Some(0), "absent means none, not a failed read");
+    }
+
     /// A journal written before Issue #74 carries the old `hidden - tagged`
     /// denominator. Replaying it verbatim would report the overstatement #74
     /// removed, so the report derives the denominator from `hidden`.

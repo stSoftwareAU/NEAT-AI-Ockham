@@ -102,7 +102,7 @@ root); CI runs that stage for real. Every other stage was run in the foreground
 and passed: bash syntax, shellcheck, the neat-core version gate, markdownlint,
 actionlint, `cargo deny check` (advisories/bans/licenses/sources ok),
 `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace
---all-features` (249 + 34 tests, 0 failures) and `cargo doc` with
+--all-features` (250 + 34 tests, 0 failures) and `cargo doc` with
 `RUSTDOCFLAGS=-D warnings`.
 
 ## Deliberate test changes
@@ -138,6 +138,9 @@ Added:
 - `coverage::tests::the_description_reports_the_blocked_share_of_the_checked`
 - `coverage::tests::the_description_omits_the_blocked_line_when_nothing_is_blocked`
 - `coverage::tests::a_pre_93_coverage_json_reads_as_nothing_blocked`
+- `report::tests::the_report_carries_the_blocked_figure_and_reads_a_pre_93_journal`
+  — the tag, the description block and `report` must agree, and a pre-#93
+  journal still reads.
 
 Docs updated in the same change: the README's *Screen coverage*, *How far
 Ockham has got* and *GRQ commit-description contract* sections (including their
