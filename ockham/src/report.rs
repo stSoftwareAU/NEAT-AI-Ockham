@@ -66,6 +66,11 @@ pub struct Report {
     pub checkable: Option<usize>,
     /// Hidden UUIDs screened at least once, at that same record.
     pub checked: Option<usize>,
+    /// Checked UUIDs the razor could propose no cut for (Issue #93).
+    ///
+    /// A subset of `checked`: the sweep visited them and the structure — an
+    /// aggregate squash downstream, a typed synapse — left nothing to score.
+    pub blocked: Option<usize>,
     /// Hidden UUIDs still never screened, at that same record (Issue #40).
     pub unchecked: Option<usize>,
     /// Hidden neurons cut by the run that wrote that record (Issue #40).
@@ -126,6 +131,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         tagged: None,
         checkable: None,
         checked: None,
+        blocked: None,
         unchecked: None,
         cut: None,
         coverage_percent: None,
@@ -190,6 +196,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     hidden,
                     tagged,
                     checked,
+                    blocked,
                     cut,
                     ..
                 } => {
@@ -208,12 +215,14 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                         tagged,
                         checkable: hidden,
                         checked,
+                        blocked,
                         cut,
                     };
                     report.hidden = Some(cov.hidden);
                     report.tagged = Some(cov.tagged);
                     report.checkable = Some(cov.checkable);
                     report.checked = Some(cov.checked);
+                    report.blocked = Some(cov.blocked);
                     report.unchecked = Some(cov.unchecked());
                     report.cut = Some(cov.cut);
                     report.coverage_percent = Some(cov.percent());
@@ -548,6 +557,7 @@ mod tests {
                 tagged: 2,
                 checkable: 12,
                 checked: 2,
+                blocked: 0,
                 cut: 0,
             },
         )
@@ -560,6 +570,7 @@ mod tests {
                 tagged: 2,
                 checkable: 10,
                 checked: 3,
+                blocked: 0,
                 cut: 2,
             },
         )
@@ -585,6 +596,7 @@ mod tests {
                 tagged: 42,
                 checkable: 5013,
                 checked: 1204,
+                blocked: 0,
                 cut: 7,
             },
         )

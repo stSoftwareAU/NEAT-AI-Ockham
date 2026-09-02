@@ -51,9 +51,10 @@ The current Rust implementation includes:
 - fleet learnings cache: combined replay of still-present known wins (full
   corpus, not capped by `--max-accepts`), then skip fresh failures; a replay
   accept stops immediately so the prune can check in;
-- fleet screen coverage: every candidate a batch actually scores — winners
-  **and** losers — leaves a record in `screens/<host>.jsonl`, so "which neurons
-  have been checked" survives the run *and* a regenerated corpus (#76);
+- fleet screen coverage: every neuron a batch **visits** leaves a record in
+  `screens/<host>.jsonl` — the candidates it scored, winners and losers alike,
+  and the visits it could propose nothing for (#93) — so "which neurons have
+  been checked" survives the run *and* a regenerated corpus (#76);
 - a single coverage calculation over the **current** incumbent — `checked X of
   Y hidden (Z%), N cut` — journalled at the end of each run and surfaced by
   `report`, and carried into the `ockham` check-in tag (the GRQ-sampler commit
@@ -338,13 +339,29 @@ flowchart TD
 
 ### Screen coverage
 
-A neuron counts as **checked** once it has been proposed into a batch and
-scored. With `--learnings-dir` set, every checked candidate leaves one screen
-record in `screens/<host>.jsonl` — winners and losers alike, and the same when
-`--screen-sample-rate 0` sends candidates straight to full scoring. A batch
-whose screen call fails files nothing: those candidates were never checked.
-Each batch also journals a `screened` record, so coverage is reconstructable
-from `experiments.jsonl` alone.
+A neuron counts as **checked** once the sweep has **visited** it. With
+`--learnings-dir` set, every visit leaves one screen record in
+`screens/<host>.jsonl`:
+
+| Visit | Record `kind` | Counted as |
+|---|---|---|
+| Candidate the scorer screened, winner or loser | `identity` / `ablation` | checked |
+| Nothing could be proposed — an aggregate squash downstream, a typed synapse | `skipped` | checked **and** blocked |
+| A standing full-corpus verdict suppressed the try | `known-failure` | checked |
+
+The same records are filed when `--screen-sample-rate 0` sends candidates
+straight to full scoring. A batch whose screen call fails files nothing for its
+candidates — they were never checked — but the visits the sweep already made
+past them still count. Each batch also journals a `screened` record, so coverage
+is reconstructable from `experiments.jsonl` alone.
+
+Filing the unproposable visits is what fixed `checked` going *backwards*
+(#93). On a forest-heavy creature roughly four hidden neurons in five feed an
+aggregate squash and can never be ablated; while those visits filed nothing the
+numerator was pinned to the prunable minority, fell by one on every accepted cut
+and reported `1417/6969` one run, `1416/7005` the next. A visit is coverage even
+when there was nothing to try — and `blocked` says how much of `checked` was
+reached that way, so the percentage never claims a screen that never happened.
 
 A screen record is a coverage fact, never a prune verdict: only a full-corpus
 learnings verdict may accept or reject a cut, and a screens IO fault warns
@@ -352,12 +369,17 @@ rather than failing the run.
 
 ```mermaid
 flowchart LR
-    B[sweep batch] --> S{"--screen-sample-rate"}
+    V[sweep visit] --> Q{"candidate proposed?"}
+    Q -->|"no — aggregate or typed"| K["kind: skipped<br/>(checked, blocked)"]
+    Q -->|"no — known failure"| F["kind: known-failure<br/>(checked)"]
+    Q -->|yes| S{"--screen-sample-rate"}
     S -->|"rate > 0"| C[sampled screen]
     C -->|Ok| W[winners + losers]
     C -->|Err| N["nothing filed<br/>(not checked)"]
     S -->|"0 — disabled"| D[straight to full scoring]
-    W --> R["screens/host.jsonl"]
+    K --> R["screens/host.jsonl"]
+    F --> R
+    W --> R
     D --> R
     R --> J["journal: screened"]
 ```
@@ -459,10 +481,10 @@ flowchart TD
     P -->|yes| R["restart sweep<br/>journal: sweepRestart"]
     P -->|no| X["stop: no-candidates"]
     R --> B
-    S --> N["newly screened count"]
+    S --> N["newly checked count"]
     N --> W{"0 while unchecked remain?"}
     W -->|yes| G["⚠ warn, naming both figures"]
-    W -->|no| K["progress: N newly screened this run"]
+    W -->|no| K["progress: N newly checked this run"]
 ```
 
 ### How far Ockham has got
@@ -485,7 +507,10 @@ The denominator is every hidden neuron of the **current** incumbent:
   the percentage, never subtracted from it;
 - newly evolved neurons start unchecked and therefore *lower* the percentage.
   That is intended: coverage describes the creature in front of us, not a
-  score that only ever rises.
+  score that only ever rises;
+- a visit the razor could propose nothing for counts as checked and is reported
+  as `blocked` beside the percentage (#93), never deducted from it — the neuron
+  is on the creature and the sweep has been to it.
 
 With `--learnings-dir` set, the run journals one `coverage` record at the end,
 so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`
@@ -504,6 +529,9 @@ flowchart LR
     C --> S{"has a screen record?"}
     S -->|yes| D["checked"]
     S -->|no| U["unchecked"]
+    D --> B{"every record a<br/>skipped visit?"}
+    B -->|yes| K["also counted as blocked —<br/>reported beside the percentage"]
+    B -->|no| Q["the scorer screened it"]
     D --> P["percent = checked / checkable"]
 ```
 
@@ -528,8 +556,9 @@ into `--output-dir`, beside `best.json`:
 checked:   1204 of 5013 hidden (24.0%)
 cut:       7 this run
 unchecked: 3809 remaining (~39 runs at 100/run)
+blocked:   412 checked but structurally unprunable
 tagged:    42 carry tags, screened like any other
-progress:  100 newly screened this run
+progress:  100 newly checked this run
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
 bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped
 dropped:   12 entries over budget (est 18s/creature)
@@ -539,6 +568,9 @@ dropped:   12 entries over budget (est 18s/creature)
   `--candidates` batch size (`~1 run` when one batch would finish it), and the
   whole clause is **omitted** — never `inf` or `NaN` — when that batch size is
   zero or coverage is already complete;
+- the `blocked:` line is omitted when nothing is blocked, and says how many of
+  the `checked` were reached by a visit that could propose no cut (#93) — they
+  stay inside the percentage, because the sweep has been to them;
 - the `tagged:` line is omitted when no neuron is tagged, and says only how many
   hidden neurons carry tags — a tagged neuron the run cut is counted by `cut:`
   like any other (#87);

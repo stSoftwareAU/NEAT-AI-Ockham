@@ -3,7 +3,7 @@
 //! One place answers "how far has Ockham got through this creature?", so the
 //! `ockham` tag, the commit description and `--report` can never disagree.
 //!
-//! Two rules make the denominator honest:
+//! Three rules make the denominator honest:
 //!
 //! - **The current incumbent is the whole world.** A screen record for a uuid
 //!   that is no longer on the creature is ignored entirely — it neither raises
@@ -13,6 +13,13 @@
 //!   the denominator and a screened tagged uuid raises `checked`. `tagged`
 //!   survives as an informational count reported *beside* the percentage,
 //!   never deducted from it — deducting overstated progress by half.
+//! - **A visit counts, even when there was nothing to try** (Issue #93). Most
+//!   hidden neurons of a forest-heavy creature can never be ablated — they feed
+//!   an aggregate squash or carry a typed synapse — and while those visits left
+//!   no record the numerator was pinned to the prunable minority and could only
+//!   *fall*, one neuron per accepted cut. The sweep files coverage for them
+//!   too, and [`Coverage::blocked`] reports how many of the checked were
+//!   blocked, so a rising percentage never claims a screen that never happened.
 //!
 //! Evolution keeps adding hidden neurons, and each new one starts unchecked and
 //! *lowers* the percentage. That is intended: coverage is a statement about the
@@ -49,6 +56,16 @@ pub struct Coverage {
     pub checkable: usize,
     /// Hidden UUIDs with at least one screen record.
     pub checked: usize,
+    /// Checked UUIDs the razor could never propose a cut for (Issue #93).
+    ///
+    /// A subset of [`Self::checked`]: every record for the uuid is a skipped
+    /// visit, so it has been looked at but never scored. Reported beside the
+    /// percentage, never deducted from it — the neuron is on the creature and
+    /// the sweep has been to it.
+    ///
+    /// `#[serde(default)]` so a pre-#93 `coverage.json` still deserialises.
+    #[serde(default)]
+    pub blocked: usize,
     /// Hidden neurons removed this run.
     pub cut: usize,
 }
@@ -99,6 +116,7 @@ impl Coverage {
     /// checked:   1204 of 5013 hidden (24.0%)
     /// cut:       7 this run
     /// unchecked: 3809 remaining (~39 runs at 100/run)
+    /// blocked:   412 checked but structurally unprunable
     /// tagged:    42 carry tags, screened like any other
     /// ```
     ///
@@ -108,7 +126,10 @@ impl Coverage {
     /// the batch size is zero, and there is nothing to estimate once coverage
     /// is complete. The `tagged:` line is omitted when nothing is tagged, and
     /// says only how many neurons carry tags — cutting one needs no declaration
-    /// (Issue #87). No trailing newline — [`write_files`] adds one.
+    /// (Issue #87). The `blocked:` line is likewise omitted when nothing is
+    /// blocked, and says how much of `checked` was reached by a visit the razor
+    /// could propose nothing for (Issue #93). No trailing newline —
+    /// [`write_files`] adds one.
     pub fn description(&self, candidates: usize) -> String {
         let unchecked = self.unchecked();
         let runs = if candidates > 0 && unchecked > 0 {
@@ -128,6 +149,12 @@ impl Coverage {
         ));
         out.push_str(&format!("{:<11}{} this run\n", "cut:", self.cut));
         out.push_str(&format!("{:<11}{unchecked} remaining{runs}", "unchecked:"));
+        if self.blocked > 0 {
+            out.push_str(&format!(
+                "\n{:<11}{} checked but structurally unprunable",
+                "blocked:", self.blocked
+            ));
+        }
         if self.tagged > 0 {
             out.push_str(&format!(
                 "\n{:<11}{} carry tags, screened like any other",
@@ -138,14 +165,18 @@ impl Coverage {
     }
 }
 
-/// Distinct hidden UUIDs one run moved from unscreened to screened (Issue #77).
+/// Distinct hidden UUIDs one run moved from unchecked to checked (Issue #77).
 ///
 /// Coverage is re-derived from the fleet store on every run, so a run that
 /// advanced nothing renders the same well-formed block as one that advanced a
 /// full batch — that is what let the #63 plateau run for eight runs unnoticed.
 /// This counts only the UUIDs that had **no** screen record when the run
-/// opened, so re-screening the stalest neurons of an already-complete creature
+/// opened, so re-visiting the stalest neurons of an already-complete creature
 /// is honestly reported as zero new coverage.
+///
+/// Since #93 a visit the razor could propose nothing for files a record too, so
+/// this counts every uuid the run reached — which is why the rendered line says
+/// *newly checked* and [`Coverage::blocked`] says how many were never scored.
 #[derive(Debug, Default)]
 pub(crate) struct ScreenProgress {
     opening: HashSet<String>,
@@ -168,7 +199,17 @@ impl ScreenProgress {
         }
     }
 
-    /// Distinct UUIDs newly screened so far this run.
+    /// Whether this uuid already carries a screen record the run can see.
+    ///
+    /// The fleet's history at open, plus whatever this run has filed since.
+    /// A visit with nothing to score files a record only when this is `false`
+    /// (Issue #93): the record says "the sweep has been here", and repeating it
+    /// every pass would grow the shared append-only log without adding a fact.
+    pub(crate) fn seen(&self, uuid: &str) -> bool {
+        self.opening.contains(uuid) || self.added.contains(uuid)
+    }
+
+    /// Distinct UUIDs newly checked so far this run.
     pub(crate) fn count(&self) -> usize {
         self.added.len()
     }
@@ -183,7 +224,7 @@ impl ScreenProgress {
 pub(crate) fn zero_progress_warning(newly_screened: usize, unchecked: usize) -> Option<String> {
     (newly_screened == 0 && unchecked > 0).then(|| {
         format!(
-            "no progress: 0 newly screened uuid(s) this run while {unchecked} hidden neuron(s) \
+            "no progress: 0 newly checked uuid(s) this run while {unchecked} hidden neuron(s) \
              remain unchecked"
         )
     })
@@ -282,13 +323,14 @@ pub struct CoverageReport {
     /// Screening coverage of the final incumbent.
     #[serde(flatten)]
     pub coverage: Coverage,
-    /// Distinct hidden UUIDs **this run** screened for the first time (#77).
+    /// Distinct hidden UUIDs **this run** checked for the first time (#77).
     ///
     /// Coverage is cumulative fleet state, so a run that advanced nothing
     /// renders exactly like one that advanced a full batch. This is the
     /// per-run figure beside it: two consecutive commits now show whether the
     /// fleet is moving. `#[serde(default)]` so a pre-#77 `coverage.json` still
-    /// deserialises.
+    /// deserialises, and the key keeps its name so anything already reading it
+    /// keeps working — what widened in #93 is what counts as reaching a uuid.
     #[serde(default)]
     pub newly_screened: usize,
     /// What the run tried and kept; absent when nothing was screened.
@@ -314,7 +356,7 @@ impl CoverageReport {
     pub fn description(&self, candidates: usize) -> String {
         let mut out = self.coverage.description(candidates);
         out.push_str(&format!(
-            "\n{:<11}{} newly screened this run",
+            "\n{:<11}{} newly checked this run",
             "progress:", self.newly_screened
         ));
         for line in self.winners.iter().flat_map(Winners::lines) {
@@ -367,18 +409,24 @@ pub fn coverage(
         .filter(|uuid| tagged.contains(**uuid))
         .count();
     let hidden_uuids: HashSet<&str> = hidden_uuids.into_iter().collect();
-    // A HashSet of the screened UUIDs, so a uuid screened many times — by this
-    // host or another — still counts once.
-    let checked: HashSet<&str> = screens
+    // A map of the screened UUIDs, so a uuid screened many times — by this host
+    // or another — still counts once. The value is "every record so far was a
+    // skipped visit": one real screen anywhere in the fleet's history clears it
+    // permanently, so `blocked` never over-reports (Issue #93).
+    let mut checked: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
+    for s in screens
         .iter()
-        .map(|s| s.uuid.as_str())
-        .filter(|uuid| hidden_uuids.contains(uuid))
-        .collect();
+        .filter(|s| hidden_uuids.contains(s.uuid.as_str()))
+    {
+        let only_skips = checked.entry(s.uuid.as_str()).or_insert(true);
+        *only_skips &= s.is_skipped();
+    }
     Coverage {
         hidden,
         tagged: tagged_hidden,
         checkable: hidden,
         checked: checked.len(),
+        blocked: checked.values().filter(|only_skips| **only_skips).count(),
         cut,
     }
 }
@@ -412,6 +460,14 @@ mod tests {
             unix_secs,
             host: "GRQ-1".into(),
             corpus_identity: Some("corp".into()),
+        }
+    }
+
+    /// A visit the razor could propose nothing for (Issue #93).
+    fn visit(uuid: &str, unix_secs: u64) -> Screened {
+        Screened {
+            kind: crate::learnings::SCREEN_KIND_SKIPPED.into(),
+            ..screen(uuid, unix_secs)
         }
     }
 
@@ -500,6 +556,44 @@ mod tests {
         assert_eq!(cov.percent(), 50.0);
     }
 
+    /// Issue #93: a neuron the razor cannot propose a cut for is checked — the
+    /// sweep has been there — and reported as blocked rather than as a screen.
+    #[test]
+    fn a_visit_with_no_candidate_is_checked_and_reported_as_blocked() {
+        let creature = hidden_creature(4);
+        let screens = [screen("h0", 1), visit("h1", 2), visit("h2", 3)];
+        let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+        assert_eq!(cov.checked, 3, "every visited uuid counts as checked");
+        assert_eq!(cov.blocked, 2, "two of them were never scored");
+        assert_eq!(cov.percent(), 75.0);
+        assert_eq!(cov.unchecked(), 1, "only h3 was never reached");
+    }
+
+    /// `blocked` is about the uuid, not the record: one real screen anywhere in
+    /// the fleet's history says the razor could propose something for it.
+    #[test]
+    fn one_real_screen_clears_blocked_however_many_visits_surround_it() {
+        let creature = hidden_creature(2);
+        for screens in [
+            vec![visit("h0", 1), screen("h0", 2)],
+            vec![screen("h0", 1), visit("h0", 2)],
+            vec![visit("h0", 1), screen("h0", 2), visit("h0", 3)],
+        ] {
+            let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+            assert_eq!(cov.checked, 1, "{screens:?}");
+            assert_eq!(cov.blocked, 0, "{screens:?}");
+        }
+    }
+
+    #[test]
+    fn a_blocked_uuid_no_longer_on_the_creature_counts_for_nothing() {
+        let creature = hidden_creature(2);
+        let screens = [visit("gone", 1), visit("h0", 2)];
+        let cov = coverage(&creature, &HashSet::new(), &screens, 1);
+        assert_eq!(cov.checked, 1);
+        assert_eq!(cov.blocked, 1, "the departed uuid is not on the creature");
+    }
+
     /// Intended behaviour, not a bug: evolution adds hidden neurons, they start
     /// unchecked, and the percentage falls. Coverage describes the creature in
     /// front of us — do not "fix" this by remembering departed UUIDs.
@@ -544,6 +638,7 @@ mod tests {
             tagged: 0,
             checkable: 3,
             checked: 9,
+            blocked: 0,
             cut: 0,
         };
         assert_eq!(cov.percent(), 100.0);
@@ -576,6 +671,7 @@ mod tests {
             tagged: 42,
             checkable: 5013,
             checked: 1204,
+            blocked: 0,
             cut: 7,
         }
     }
@@ -610,6 +706,39 @@ mod tests {
         }
     }
 
+    /// Issue #93: the block says how much of `checked` was reached by a visit
+    /// with nothing to score, so a rising percentage never claims a screen that
+    /// never happened.
+    #[test]
+    fn the_description_reports_the_blocked_share_of_the_checked() {
+        let cov = Coverage {
+            blocked: 412,
+            ..fleet_coverage()
+        };
+        assert_eq!(
+            cov.description(100),
+            concat!(
+                "🪒 Ockham neuron screening coverage\n",
+                "checked:   1204 of 5013 hidden (24.0%)\n",
+                "cut:       7 this run\n",
+                "unchecked: 3809 remaining (~39 runs at 100/run)\n",
+                "blocked:   412 checked but structurally unprunable\n",
+                "tagged:    42 carry tags, screened like any other"
+            )
+        );
+        assert_eq!(
+            cov.percent(),
+            fleet_coverage().percent(),
+            "blocked neurons are reported beside the percentage, never deducted"
+        );
+    }
+
+    #[test]
+    fn the_description_omits_the_blocked_line_when_nothing_is_blocked() {
+        let block = fleet_coverage().description(100);
+        assert!(!block.contains("blocked:"), "{block}");
+    }
+
     #[test]
     fn the_description_omits_the_tagged_line_when_nothing_is_tagged() {
         let cov = Coverage {
@@ -633,6 +762,7 @@ mod tests {
             tagged: 0,
             checkable: 4,
             checked: 2,
+            blocked: 0,
             cut: 0,
         };
         assert!(
@@ -658,6 +788,7 @@ mod tests {
             tagged: 0,
             checkable: 4,
             checked: 4,
+            blocked: 0,
             cut: 1,
         };
         assert_eq!(
@@ -678,6 +809,7 @@ mod tests {
             tagged: 0,
             checkable: 3,
             checked: 9,
+            blocked: 0,
             cut: 0,
         };
         assert_eq!(cov.unchecked(), 0);
@@ -723,6 +855,16 @@ mod tests {
             fleet_coverage(),
             "an artefact from the declaring era still reads as ordinary coverage"
         );
+    }
+
+    /// Issue #93: the fleet runs mixed versions against one shared cache, so a
+    /// `coverage.json` written before `blocked` existed must still read.
+    #[test]
+    fn a_pre_93_coverage_json_reads_as_nothing_blocked() {
+        let pre_93 = r#"{"hidden":5013,"tagged":42,"checkable":5013,"checked":1204,"cut":7}"#;
+        let old: Coverage = serde_json::from_str(pre_93).unwrap();
+        assert_eq!(old, fleet_coverage());
+        assert_eq!(old.blocked, 0);
     }
 
     #[test]
@@ -778,7 +920,7 @@ mod tests {
                 "cut:       7 this run\n",
                 "unchecked: 3809 remaining (~39 runs at 100/run)\n",
                 "tagged:    42 carry tags, screened like any other\n",
-                "progress:  100 newly screened this run\n",
+                "progress:  100 newly checked this run\n",
                 "winners:   38 screened · 22 confirmed · 1 applied · 21 carried\n",
                 "bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped\n",
                 "dropped:   12 entries over budget (est 18s/creature)"
@@ -793,11 +935,11 @@ mod tests {
         let report = CoverageReport::new(fleet_coverage());
         let block = report.description(100);
         assert!(
-            block.contains("\nprogress:  0 newly screened this run"),
+            block.contains("\nprogress:  0 newly checked this run"),
             "{block}"
         );
         assert!(
-            block.ends_with("progress:  0 newly screened this run"),
+            block.ends_with("progress:  0 newly checked this run"),
             "{block}"
         );
     }
@@ -815,7 +957,7 @@ mod tests {
         assert_eq!(
             report.description(100),
             format!(
-                "{}\nprogress:  0 newly screened this run",
+                "{}\nprogress:  0 newly checked this run",
                 cov.description(100)
             )
         );

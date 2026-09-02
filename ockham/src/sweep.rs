@@ -64,6 +64,12 @@ pub struct SweepCandidate {
     pub creature: CreatureExport,
 }
 
+/// [`SweepSkip::reason`] of a visit a standing full-corpus verdict suppressed.
+///
+/// Named rather than spelled twice: the run classifies a skip by this exact
+/// reason when filing screen coverage (Issue #93).
+pub const KNOWN_FAILURE_REASON: &str = "known-failure";
+
 /// A visitation that did not emit a candidate.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -230,7 +236,7 @@ impl Sweep {
                 skips.push(SweepSkip {
                     uuid,
                     permutation_index,
-                    reason: "known-failure".into(),
+                    reason: KNOWN_FAILURE_REASON.into(),
                 });
                 continue;
             }

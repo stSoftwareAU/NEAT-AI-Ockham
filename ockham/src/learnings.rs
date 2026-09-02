@@ -117,6 +117,21 @@ pub const SCREENS_FORMAT_VERSION: u32 = 2;
 /// The only older screen version this reads: the pre-#76 fleet history.
 const LEGACY_SCREENS_FORMAT_VERSION: u32 = 1;
 
+/// [`Screened::kind`] of a visit no candidate could be proposed for (#93).
+///
+/// The razor cannot ablate a neuron that feeds an aggregate squash (`IF`,
+/// `MEAN`, `MINIMUM`, …) or that carries a typed synapse, and on a
+/// forest-heavy creature that is most of the hidden neurons. The visit is real
+/// coverage; nothing was scored, so it never claims a screen.
+pub const SCREEN_KIND_SKIPPED: &str = "skipped";
+
+/// [`Screened::kind`] of a visit a standing full-corpus verdict suppressed.
+///
+/// Distinct from [`SCREEN_KIND_SKIPPED`]: the fleet has already **fully
+/// scored** this uuid — that is why it is being skipped — so it is checked in
+/// the strongest sense, not structurally blocked.
+pub const SCREEN_KIND_KNOWN_FAILURE: &str = "known-failure";
+
 /// Directory holding screen-coverage host files, under the learnings root.
 ///
 /// Stable across corpus identities on purpose — see the module docs.
@@ -142,11 +157,21 @@ pub enum ScreenOutcomeKind {
     Loser,
 }
 
-/// One hidden neuron the fleet has screened at least once.
+/// One hidden neuron the fleet has looked at least once.
 ///
 /// A coverage fact — "this uuid has been looked at" — used for
 /// `checked X of Y hidden` reporting and unchecked-first selection. It is
 /// **never** a prune verdict: only [`Learning`] carries those.
+///
+/// [`Self::kind`] says *what happened on the visit*: `identity` or `ablation`
+/// for a candidate the scorer actually screened, and [`SCREEN_KIND_SKIPPED`] or
+/// [`SCREEN_KIND_KNOWN_FAILURE`] for a visit that produced no candidate to
+/// score (Issue #93). A visit that could not propose is still coverage — the
+/// sweep has been there and there was nothing to try — and filing it is what
+/// stops those neurons sitting in `unchecked` forever while the numerator only
+/// ever falls. Such a record carries [`ScreenOutcomeKind::Loser`] so an older
+/// host, which knows nothing of these kinds, reads it as ordinary coverage
+/// rather than failing to deserialise the whole fleet's screen history.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Screened {
@@ -170,6 +195,16 @@ pub struct Screened {
     /// lived in the directory name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corpus_identity: Option<String>,
+}
+
+impl Screened {
+    /// True when the razor could propose nothing for this visit (Issue #93).
+    ///
+    /// Coverage counts the uuid as checked either way; this is what separates
+    /// "looked at, nothing to try" from "the scorer screened a candidate".
+    pub fn is_skipped(&self) -> bool {
+        self.kind == SCREEN_KIND_SKIPPED
+    }
 }
 
 /// How many known wins to replay before the random sweep.
@@ -660,6 +695,39 @@ pub fn oldest_screened_first(screens: &[Screened], creature: &CreatureExport) ->
     still_present.into_iter().map(|s| s.uuid.clone()).collect()
 }
 
+/// One visit to file: the uuid the sweep looked at, and what came of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenTry<'a> {
+    /// Hidden neuron UUID that was visited.
+    pub uuid: &'a str,
+    /// `identity`, `ablation`, [`SCREEN_KIND_SKIPPED`] or
+    /// [`SCREEN_KIND_KNOWN_FAILURE`].
+    pub kind: &'a str,
+    /// Which side of the screen it landed on; a visit with no candidate to
+    /// score is filed as [`ScreenOutcomeKind::Loser`] — see [`Screened`].
+    pub outcome: ScreenOutcomeKind,
+}
+
+impl<'a> ScreenTry<'a> {
+    /// A candidate the scorer screened.
+    pub fn scored(uuid: &'a str, kind: CandidateKind, outcome: ScreenOutcomeKind) -> Self {
+        Self {
+            uuid,
+            kind: kind_label(kind),
+            outcome,
+        }
+    }
+
+    /// A visit that produced no candidate to score (Issue #93).
+    pub fn visited(uuid: &'a str, kind: &'a str) -> Self {
+        Self {
+            uuid,
+            kind,
+            outcome: ScreenOutcomeKind::Loser,
+        }
+    }
+}
+
 /// File screen tries onto `known` and the store. Returns how many were written.
 ///
 /// Coverage and selection only — nothing filed here can accept or reject a
@@ -667,19 +735,19 @@ pub fn oldest_screened_first(screens: &[Screened], creature: &CreatureExport) ->
 /// failing the run: a cache fault must never stop pruning.
 pub fn file_screens(
     store: Option<&LearningsStore>,
-    uuids: &[(&str, CandidateKind, ScreenOutcomeKind)],
+    tries: &[ScreenTry<'_>],
     known: &mut Vec<Screened>,
 ) -> usize {
     let mut n = 0;
     let host = store.map(|s| s.host.clone()).unwrap_or_else(default_host);
     let unix_secs = now_secs();
     let corpus_identity = store.map(|s| s.corpus_identity.clone());
-    for (uuid, kind, outcome) in uuids {
+    for t in tries {
         let screened = Screened {
             version: SCREENS_FORMAT_VERSION,
-            uuid: (*uuid).to_string(),
-            kind: kind_label(*kind).to_string(),
-            outcome: *outcome,
+            uuid: t.uuid.to_string(),
+            kind: t.kind.to_string(),
+            outcome: t.outcome,
             unix_secs,
             host: host.clone(),
             corpus_identity: corpus_identity.clone(),
@@ -879,8 +947,8 @@ mod tests {
         let written = file_screens(
             Some(&store),
             &[
-                ("h_a", CandidateKind::Ablation, ScreenOutcomeKind::Winner),
-                ("h_b", CandidateKind::Identity, ScreenOutcomeKind::Loser),
+                ScreenTry::scored("h_a", CandidateKind::Ablation, ScreenOutcomeKind::Winner),
+                ScreenTry::scored("h_b", CandidateKind::Identity, ScreenOutcomeKind::Loser),
             ],
             &mut seen,
         );
@@ -1050,7 +1118,11 @@ mod tests {
         let mut seen = Vec::new();
         file_screens(
             Some(&store),
-            &[("h_a", CandidateKind::Ablation, ScreenOutcomeKind::Winner)],
+            &[ScreenTry::scored(
+                "h_a",
+                CandidateKind::Ablation,
+                ScreenOutcomeKind::Winner,
+            )],
             &mut seen,
         );
         assert_eq!(seen[0].corpus_identity.as_deref(), Some("corpus-a"));
@@ -1093,7 +1165,11 @@ mod tests {
         let mut seen = Vec::new();
         let written = file_screens(
             Some(&store),
-            &[("h_a", CandidateKind::Ablation, ScreenOutcomeKind::Winner)],
+            &[ScreenTry::scored(
+                "h_a",
+                CandidateKind::Ablation,
+                ScreenOutcomeKind::Winner,
+            )],
             &mut seen,
         );
         assert_eq!(written, 0);
