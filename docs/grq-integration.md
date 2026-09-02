@@ -17,10 +17,10 @@ One thing is **being retired on both sides**: since Issue #87 neuron tags are
 informational metadata only, so Ockham no longer writes the pruned-tag
 declaration GRQ's check-in guard consumed under GRQ's Issue #78. The guard half
 is fixed on the GRQ branch `retire-pruned-provenance-declaration-ockham-89`
-(Issue #89) but is **still live on `Develop`** until that PR merges, so the merge
-must land **before** GRQ adopts the Ockham release carrying #87 — otherwise a run
-that cuts a tagged neuron has its check-in refused. Section 5a records both
-halves and the ordering.
+(Issue #89) but is **still live on `Develop`** until that branch merges, so the
+merge must land **before** GRQ adopts the Ockham release carrying #87 —
+otherwise a run that cuts a tagged neuron has its check-in refused. Section 5a
+records both halves and the ordering.
 
 ## At a glance
 
@@ -316,8 +316,9 @@ no-improvement outcome is a success, not a host failure.
    The sixth argument is GRQ's Issue #78: for a pruning optimiser the "a TAGGED
    neuron was cut" case was judged against Ockham's declaration of what it
    removed. **That argument is still live on GRQ `Develop` and Ockham no longer
-   writes the file** — the retirement is written and open on the GRQ branch
-   `retire-pruned-provenance-declaration-ockham-89`, unmerged (#89, section 5a).
+   writes the file** — the retirement is committed on the GRQ branch
+   `retire-pruned-provenance-declaration-ockham-89` and not yet merged (#89,
+   section 5a).
 8. **Check-in gate.** `grq_ockham_validate_for_checkin` (`worker/shared/ockham.sh`)
    delegates to `grq_validate_for_checkin <file> ockham 🪒`
    (`worker/shared/validate_for_checkin.sh`), which asks the TypeScript engine —
@@ -441,7 +442,7 @@ What GRQ reads out of Ockham. Changing any row breaks a live fleet worker.
 | `score` creature tag | `grq_ockham_read_score` | Numeric (`^-?\d+(\.\d+)?([eE][-+]?\d+)?$`). Drives both score gates and `grq_ockham_verify_written_score`. |
 | `ockham` creature tag | `grq_ockham_read_message` | The commit **subject**, used verbatim. Must already carry its own single score clause. |
 | Other creature tag *names* | `grq_creature_guard_checkin_lineage` | Every source tag name must survive on the candidate, except `score` / `dataSha`. `error` is stamped by `stamp_acceptance` and matters here as a name. |
-| Per-neuron `tags` | `grq_creature_guard_checkin_lineage` | Must survive on every neuron that **survives**, byte-for-byte. A neuron that is cut takes its tags with it. GRQ `Develop` still refuses an undeclared cut of a tagged neuron (its Issue #78); since Ockham's Issue #87 that refusal has nothing left to read, and the retirement is open and unmerged on the GRQ branch `retire-pruned-provenance-declaration-ockham-89` (#89, section 5a). |
+| Per-neuron `tags` | `grq_creature_guard_checkin_lineage` | Must survive on every neuron that **survives**, byte-for-byte. A neuron that is cut takes its tags with it. GRQ `Develop` still refuses an undeclared cut of a tagged neuron (its Issue #78); since Ockham's Issue #87 that refusal has nothing left to read, and the retirement is committed but unmerged on the GRQ branch `retire-pruned-provenance-declaration-ockham-89` (#89, section 5a). |
 | `<output-dir>/pruned-provenance.json` | `grq_creature_guard_checkin_lineage`, sixth argument | **No longer written** since Issue #87 — neuron tags are informational, so a tagged cut is declared to nobody. GRQ `Develop` still passes the path and fails closed on the absent file; the branch that stops requiring it must merge before GRQ adopts an Ockham release ≥ the one carrying #87 (#89). |
 | `uuid` / `memetic` keys | `grq_creature_guard_checkin_lineage` | Must be **absent** from the written creature. |
 | `<output-dir>/coverage.txt` | `grq_ockham_read_coverage` | Line-oriented block relayed verbatim as the commit description. Since Issue #59 it may carry `winners:` / `bundles:` / `dropped:` lines after the coverage lines; each is omitted when it has nothing to report, and a run that screened nothing renders the coverage lines alone. Since Issue #74 the tagged line reads `tagged:    N carry tags, screened like any other` — it replaced the `skipped:` line, and is still omitted when no neuron is tagged. Issue #87 removed the `declared:` line that followed it. Absent or blank is a supported no-op. |
