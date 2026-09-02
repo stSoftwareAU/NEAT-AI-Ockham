@@ -210,9 +210,9 @@ impl Sweep {
 
     /// [`Self::fill_batch`] that skips UUIDs in `avoid` (fresh known failures).
     ///
-    /// GRQ provenance tags confer no exemption (#63): every hidden neuron is a
-    /// candidate, tagged or not, and the only skips are known failures plus
-    /// the reasons proposing a candidate reports for itself.
+    /// Tags confer no exemption (#63): every hidden neuron is a candidate,
+    /// tagged or not, and the only skips are known failures plus the reasons
+    /// proposing a candidate reports for itself.
     pub fn fill_batch_avoiding(
         &mut self,
         incumbent: &CreatureExport,
@@ -928,7 +928,7 @@ mod tests {
         );
     }
 
-    /// `creature` serialised with a GRQ-style provenance tag on every hidden neuron.
+    /// `creature` serialised with a GRQ-style tag on every hidden neuron.
     fn tagged_json(creature: &CreatureExport) -> String {
         let mut value: serde_json::Value =
             serde_json::from_str(&creature_to_json(creature).unwrap()).unwrap();
@@ -944,7 +944,7 @@ mod tests {
     }
 
     /// The inverse of the removed `fill_batch_skips_tagged_neurons_as_tagged`:
-    /// provenance records where a neuron came from, it does not exempt it (#63).
+    /// a tag records where a neuron came from, it does not exempt it (#63).
     #[test]
     fn every_hidden_neuron_is_a_candidate_even_when_all_are_tagged() {
         let json = tagged_json(&two_hidden());

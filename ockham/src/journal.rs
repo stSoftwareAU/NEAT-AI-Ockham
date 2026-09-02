@@ -92,7 +92,7 @@ pub enum Event {
     Coverage {
         /// Hidden neurons on the final incumbent.
         hidden: usize,
-        /// Hidden neurons carrying GRQ-provenance tags, screened like any other.
+        /// Hidden neurons carrying tags, screened like any other (#87).
         #[serde(default)]
         tagged: usize,
         /// Hidden neurons Ockham may try — all of them, tagged included (#74).
@@ -102,10 +102,6 @@ pub enum Event {
         /// Hidden neurons removed this run.
         #[serde(default)]
         cut: usize,
-        /// Tagged hidden neurons removed this run, declared in
-        /// `pruned-provenance.json` (Issue #75).
-        #[serde(default)]
-        tagged_cut: usize,
     },
     /// Full-corpus cohort result.
     Full {
