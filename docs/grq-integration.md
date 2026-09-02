@@ -13,9 +13,9 @@ Two things in this document correct assumptions that were true earlier and are
 not true at `6ad319f` — the commit **description** (section 5) and the meaning
 of **exit code 2** (section 6). Both are flagged where they appear.
 
-One thing is **being retired on both sides**: since Issue #87 neuron tags are
-informational metadata only, so Ockham no longer writes the pruned-tag
-declaration GRQ's check-in guard consumed under GRQ's Issue #78. The guard half
+One thing is **retired on Ockham's side and pending on GRQ's**: since Issue #87
+neuron tags are informational metadata only, so Ockham no longer writes the
+pruned-tag declaration GRQ's check-in guard consumed under GRQ's #78. That half
 is fixed on the GRQ branch `retire-pruned-provenance-declaration-ockham-89`
 (Issue #89) but is **still live on `Develop`** until that branch merges, so the
 merge must land **before** GRQ adopts the Ockham release carrying #87 —
@@ -387,7 +387,7 @@ nothing, returns 0, and produces the byte-identical subject-only commit GRQ made
 before. The gap that sub-issues of #33 exist to close is therefore closed on the
 GRQ side; what remains is Ockham's own reporting quality, not the relay.
 
-## 5a. The pruned-tag declaration, retired both sides (Issues #75, #78, #87, #89)
+## 5a. The pruned-tag declaration: Ockham retired, GRQ pending (Issues #75, #78, #87, #89)
 
 Neuron tags are **informational metadata only**. They describe where a neuron
 came from; they never change what Ockham may prune, and cutting one needs no
@@ -422,6 +422,13 @@ release carrying #87. Until it does, a run that legitimately cuts a tagged
 neuron has its check-in refused — exit 0, silently skipped — and the fleet stops
 making progress on tagged creatures. A human releases and merges that GRQ PR;
 this repo cannot.
+
+**Re-pin when it merges.** This document audits GRQ `Develop` at `6ad319f`, so
+the branch name above is a temporary pointer. Once the retirement lands on
+`Develop`, four places describe the old state and must be re-pinned to the new
+commit: this section, the summary in the header, step 7 of section 4 (which
+still gives the six-argument call form live on `Develop` today) and the two
+`pruned-provenance` rows of the section 6 surface contract.
 
 ```mermaid
 flowchart LR
