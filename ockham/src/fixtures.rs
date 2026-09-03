@@ -81,6 +81,25 @@ pub fn sort_synapses_canonically(creature: &mut CreatureExport) {
     });
 }
 
+/// `hidden` hidden neurons, each fed by every input and feeding the one output.
+///
+/// The shape a cost measurement needs: every hidden neuron is prunable, so the
+/// razor's work per neuron is the whole of what is timed (Issue #91).
+pub fn wide_creature(inputs: usize, hidden: usize, squash: &str) -> CreatureExport {
+    let mut neurons = Vec::with_capacity(hidden + 1);
+    let mut synapses = Vec::with_capacity(hidden * (inputs + 1));
+    for h in 0..hidden {
+        let uuid = format!("h{h}");
+        neurons.push(neuron("hidden", &uuid, 0.01, Some(squash)));
+        for i in 0..inputs {
+            synapses.push(synapse(&format!("input-{i}"), &uuid, 0.1));
+        }
+        synapses.push(synapse(&uuid, "output-0", 1.0 / hidden as f64));
+    }
+    neurons.push(neuron("output", "output-0", 0.0, Some("IDENTITY")));
+    creature(inputs, 1, neurons, synapses)
+}
+
 /// Minimal forward-only creature: each output is the identity of `input-j`
 /// (or `input-0` when there are fewer inputs than outputs).
 pub fn identity_creature(inputs: usize, outputs: usize) -> CreatureExport {

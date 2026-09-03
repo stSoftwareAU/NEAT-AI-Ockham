@@ -492,14 +492,18 @@ neurons. Four rules hold it up.
   budget goes to screening, batch after batch, over a sweep rebuilt against the
   creature the accept just changed so unchecked-first selection applies to it.
   The stop reason still names the accept (`replay-accepts`, `max-accepts`),
-  because that is what ended the search; the tail's own end is in the log
-  (`coverage tail: N batch(es) screened after the accept`). A sampled winner
-  the tail turns up is left in the screen cache for the next run rather than
-  full-scored, which is what a run that ended on its last batch always did.
-  With `--screen-sample-rate 0`, or without `--learnings-dir`, no tail is
-  opened at all: the only check available without a sampled screen is a
-  full-corpus cohort — the search the accept just ended — and without a store
-  the records would not outlive the run.
+  because that is what ended the search; what ended the **tail** is journalled
+  separately as a `coverageTail` record carrying its batches, the candidates it
+  screened and its own end reason, so a tail that ran out of wall clock is not
+  confused with one that ran out of experiments. A sampled winner the tail turns
+  up is **left unchecked**: nothing in this run will score it, and filing it as
+  checked would bury it — the record would be the freshest in the store, so
+  unchecked-first would defer it behind every never-screened neuron on the
+  creature. Left unchecked, the next run screens *and* full-scores it. With
+  `--screen-sample-rate 0`, or without `--learnings-dir`, no tail is opened at
+  all: the only check available without a sampled screen is a full-corpus
+  cohort — the search the accept just ended — and without a store the records
+  would not outlive the run.
 
 Two stop reasons move with this: `no-candidates` is new, and `exhausted` is
 retired — an exhausted sweep can no longer end a run, so the only way the loop

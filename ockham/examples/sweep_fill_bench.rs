@@ -27,7 +27,7 @@ fn forest_creature(inputs: usize, hidden: usize, hubs: usize) -> CreatureExport 
         neurons.push(neuron("hidden", &uuid, (h % 7) as f64 * 0.01, Some("TANH")));
         for i in 0..inputs {
             let weight = ((h * inputs + i) % 13) as f64 * 0.05 - 0.3;
-            synapses.push(synapse(&format!("input-{}", i % inputs), &uuid, weight));
+            synapses.push(synapse(&format!("input-{i}"), &uuid, weight));
         }
         if h % 10 < BLOCKED_IN_TEN {
             synapses.push(synapse(&uuid, &format!("agg{}", (h / 10) % hubs), 0.5));

@@ -507,26 +507,10 @@ mod tests {
         (a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0)
     }
 
-    /// `hidden` TANH neurons, each fed by every input and feeding the output.
-    fn wide_creature(inputs: usize, hidden: usize) -> CreatureExport {
-        let mut neurons = Vec::with_capacity(hidden + 1);
-        let mut synapses = Vec::with_capacity(hidden * (inputs + 1));
-        for h in 0..hidden {
-            let uuid = format!("h{h}");
-            neurons.push(neuron("hidden", &uuid, 0.01, Some("TANH")));
-            for i in 0..inputs {
-                synapses.push(synapse(&format!("input-{i}"), &uuid, 0.1));
-            }
-            synapses.push(synapse(&uuid, "output-0", 1.0 / hidden as f64));
-        }
-        neurons.push(neuron("output", "output-0", 0.0, Some("IDENTITY")));
-        creature(inputs, 1, neurons, synapses)
-    }
-
     /// Seconds to propose the same ablation `ROUNDS` times on a `hidden`-wide creature.
     fn ablation_seconds(hidden: usize) -> f64 {
         const ROUNDS: usize = 3;
-        let wide = wide_creature(8, hidden);
+        let wide = crate::fixtures::wide_creature(8, hidden, "TANH");
         let started = std::time::Instant::now();
         for _ in 0..ROUNDS {
             ablate_mean(&wide, "h0", 0.25, None).expect("h0 feeds the output and is prunable");
@@ -542,13 +526,19 @@ mod tests {
     ///
     /// A ratio, never a wall-clock budget (the standards forbid those): the
     /// same work is timed at one size and four times that size on the same
-    /// machine, so a loaded runner slows both readings and the test still
+    /// machine, so a slower machine slows both readings and the test still
     /// holds. Growing with the creature is ~4x; growing with its square is
-    /// ~16x.
+    /// ~16x, and the unfixed scans measured 9.4x.
+    ///
+    /// The small reading is taken twice, on either side of the large one, and
+    /// the larger of the two is used: load that arrives *during* the test would
+    /// otherwise inflate only the second reading and fail a correct tree.
     #[test]
     fn one_ablation_costs_the_creature_not_its_square() {
-        let small = ablation_seconds(400).max(1e-9);
+        let before = ablation_seconds(400);
         let large = ablation_seconds(1_600);
+        let after = ablation_seconds(400);
+        let small = before.max(after).max(1e-9);
         let growth = large / small;
         assert!(
             growth < 8.0,

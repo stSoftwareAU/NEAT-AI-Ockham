@@ -701,6 +701,11 @@ fn ockham_loop(
     // `stop_reason` already names the accept that ended the search.
     let mut coverage_tail = false;
     let mut tail_batches = 0u64;
+    let mut tail_screened = 0usize;
+    // What ended the tail, journalled separately because `stop_reason` keeps
+    // naming the accept that ended the search (Issue #91). Empty until a
+    // benign end is reached; a fault fills it from `stop_reason` instead.
+    let mut tail_end = String::new();
     // The last accept's check-in tag, so a tail can re-stamp it with the
     // coverage the run finished on rather than the coverage at the cut (#91).
     let mut last_accept: Option<StampedAccept> = None;
@@ -721,10 +726,14 @@ fn ockham_loop(
         }
         // A coverage tail keeps the reason the accept set: running out of
         // budget or of experiments is how a tail is meant to end, and the
-        // fact worth reporting is still the accept that ended the search.
-        // A fault — cancellation, a broken scorer — overrides it below.
+        // fact worth reporting as the run's stop is still the accept that
+        // ended the search. What ended the tail is not lost — it is journalled
+        // as its own `coverageTail` record. A fault — cancellation, a broken
+        // scorer — overrides the stop reason as well.
         if Instant::now() >= deadline {
-            if !coverage_tail {
+            if coverage_tail {
+                tail_end = "timeout".into();
+            } else {
                 stop_reason = "timeout".into();
             }
             break;
@@ -732,7 +741,9 @@ fn ockham_loop(
         if let Some(max) = config.max_experiments
             && experiments >= max
         {
-            if !coverage_tail {
+            if coverage_tail {
+                tail_end = "max-experiments".into();
+            } else {
                 stop_reason = "max-experiments".into();
             }
             break;
@@ -932,7 +943,7 @@ fn ockham_loop(
                                         config,
                                         &incumbent,
                                         &activation,
-                                        seed.wrapping_add(accepts),
+                                        seed.wrapping_add(accepts).wrapping_add(restarts),
                                         ordering,
                                         unchecked_first,
                                         &screens,
@@ -983,7 +994,7 @@ fn ockham_loop(
                             config,
                             &incumbent,
                             &activation,
-                            seed.wrapping_add(accepts),
+                            seed.wrapping_add(accepts).wrapping_add(restarts),
                             ordering,
                             unchecked_first,
                             &screens,
@@ -1030,7 +1041,9 @@ fn ockham_loop(
                      visit was skipped as a known failure or could not propose; stopping",
                     incumbent.hidden_neurons()
                 ));
-                if !coverage_tail {
+                if coverage_tail {
+                    tail_end = "no-candidates".into();
+                } else {
                     stop_reason = "no-candidates".into();
                 }
                 break;
@@ -1165,12 +1178,22 @@ fn ockham_loop(
                             },
                         )?;
                         let mut coverage = visits.clone();
-                        for w in &screen.winners {
-                            coverage.push(ScreenTry::scored(
-                                w.candidate.uuid.as_str(),
-                                w.candidate.kind,
-                                ScreenOutcomeKind::Winner,
-                            ));
+                        // A sampled winner is a lead, and only full scoring
+                        // settles it. In a coverage tail nothing will score it,
+                        // so filing it as checked would bury it: the record is
+                        // the freshest in the store, `oldest_screened_first`
+                        // sorts it last, and unchecked-first would defer it
+                        // behind every never-screened neuron on the creature.
+                        // It stays unchecked, so the next run screens *and*
+                        // scores it (Issue #91).
+                        if !coverage_tail {
+                            for w in &screen.winners {
+                                coverage.push(ScreenTry::scored(
+                                    w.candidate.uuid.as_str(),
+                                    w.candidate.kind,
+                                    ScreenOutcomeKind::Winner,
+                                ));
+                            }
                         }
                         for l in &screen.losers {
                             coverage.push(ScreenTry::scored(
@@ -1249,14 +1272,15 @@ fn ockham_loop(
         batch_idx += 1;
         screened_batches += 1;
         if coverage_tail {
-            // The batch's screen records are filed; what the accept ended is
-            // the *search*, so a sampled winner here is a lead for the next
-            // run rather than a cut this one will score — exactly what a run
-            // that ended on its last batch has always left behind.
+            // The losers and the visits the razor could propose nothing for are
+            // filed: those are finished business. The winners are not — nothing
+            // in this run will score them — so they are left unchecked for the
+            // next run to screen and full-score.
             tail_batches += 1;
+            tail_screened += batch_size;
             if !sampled.is_empty() {
                 log::detail(&format!(
-                    "coverage: {} sampled winner(s) left in the screen cache for the next run",
+                    "coverage: {} sampled winner(s) left unchecked for the next run to score",
                     sampled.len()
                 ));
             }
@@ -1377,7 +1401,7 @@ fn ockham_loop(
                             config,
                             &incumbent,
                             &activation,
-                            seed.wrapping_add(accepts),
+                            seed.wrapping_add(accepts).wrapping_add(restarts),
                             ordering,
                             unchecked_first,
                             &screens,
@@ -1393,19 +1417,17 @@ fn ockham_loop(
                         coverage_tail = true;
                         continue;
                     }
-                    sweep = fresh_sweep(
-                        &incumbent.creature,
+                    restart_after_accept(
+                        &incumbent,
                         &activation,
-                        seed.wrapping_add(accepts),
+                        seed.wrapping_add(accepts).wrapping_add(restarts),
                         ordering,
                         unchecked_first,
                         &screens,
+                        &mut sweep,
+                        &mut pool,
+                        &mut pass_candidates,
                     );
-                    pass_candidates = 0;
-                    // The pool was measured against the incumbent that just
-                    // moved, so its members are candidates to re-try, not facts
-                    // to re-apply; the ones the accept removed go now.
-                    pool = standing_pool(&pool, &incumbent.creature, &activation);
                     log::detail(&format!(
                         "restarted sweep after accept; {} hidden remaining; {} confirmed winner(s) still standing",
                         incumbent.hidden_neurons(),
@@ -1425,11 +1447,27 @@ fn ockham_loop(
     }
 
     if coverage_tail {
+        // A fault ends the tail *and* the run, so it names both; anything else
+        // filled `tail_end` on its way out.
+        let ended = if tail_end.is_empty() {
+            stop_reason.clone()
+        } else {
+            tail_end
+        };
         log::info(&format!(
-            "coverage tail: {tail_batches} batch(es) screened after the accept; \
-             {} newly checked this run (#91)",
+            "coverage tail: {tail_batches} batch(es), {tail_screened} candidate(s) screened after \
+             the accept; {} newly checked this run; ended {ended} (#91)",
             progress.count()
         ));
+        journal::append(
+            &journal_path,
+            &Event::CoverageTail {
+                batches: tail_batches,
+                screened: tail_screened,
+                newly_checked: progress.count(),
+                ended,
+            },
+        )?;
     }
 
     // What the run tried, kept and rejected, for the commit description and
@@ -1478,7 +1516,7 @@ fn ockham_loop(
     if coverage_tail && let Some(stamp) = &last_accept {
         meta.stamp_acceptance(&OckhamProgress {
             accepts: stamp.accepts,
-            experiments,
+            experiments: stamp.experiments,
             opening: opening_score,
             score: stamp.score,
             error: stamp.error,
@@ -1600,6 +1638,43 @@ fn open_coverage_tail(
     {
         return false;
     }
+    restart_after_accept(
+        incumbent,
+        activation,
+        seed,
+        ordering,
+        unchecked_first,
+        screens,
+        sweep,
+        pool,
+        pass_candidates,
+    );
+    log::info(&format!(
+        "{reason}: the search is over; spending the remaining {}s screening for coverage (#91)",
+        remaining.as_secs()
+    ));
+    true
+}
+
+/// Rebuild the sweep and the carried pool against the creature an accept moved.
+///
+/// The one place a post-accept restart happens, so the search restart and the
+/// coverage tail cannot drift apart: both must re-apply unchecked-first
+/// selection to the *new* creature, and both must drop pool members the accept
+/// removed — those were measured against an incumbent that has moved, so they
+/// are candidates to re-try, never facts to re-apply.
+#[allow(clippy::too_many_arguments)]
+fn restart_after_accept(
+    incumbent: &Incumbent,
+    activation: &ActivationStats,
+    seed: u64,
+    ordering: crate::ordering::OrderingConfig,
+    unchecked_first: bool,
+    screens: &[Screened],
+    sweep: &mut Sweep,
+    pool: &mut Vec<BundleMember>,
+    pass_candidates: &mut usize,
+) {
     *sweep = fresh_sweep(
         &incumbent.creature,
         activation,
@@ -1609,14 +1684,7 @@ fn open_coverage_tail(
         screens,
     );
     *pass_candidates = 0;
-    // The pool was measured against the incumbent that just moved, so the
-    // members the accept removed go now; what stands is still reported carried.
     *pool = standing_pool(pool, &incumbent.creature, activation);
-    log::info(&format!(
-        "{reason}: the search is over; spending the remaining {}s screening for coverage (#91)",
-        remaining.as_secs()
-    ));
-    true
 }
 
 /// Build a sweep over the current incumbent, unchecked-first when enabled.
@@ -1844,6 +1912,13 @@ fn file_full_outcome(
 /// run's end-of-loop coverage rather than to freeze at the moment of the cut.
 struct StampedAccept {
     accepts: u64,
+    /// Search batches attempted when the accept landed.
+    ///
+    /// The re-stamp keeps this figure rather than the run's final count: the
+    /// tag renders it as `N accepts / M batches`, and a coverage tail's batches
+    /// bought no accept, so folding them in would inflate the fleet's own
+    /// health signal (Issue #91).
+    experiments: u64,
     score: f64,
     error: f64,
     last: &'static str,
@@ -1934,6 +2009,7 @@ fn apply_local_win(
     publish_best(config, meta, &win.creature, &win.checksum)?;
     let stamped = StampedAccept {
         accepts: *accepts,
+        experiments,
         score: *current_score,
         error: win.candidate.error,
         last,
@@ -2510,6 +2586,11 @@ mod tests {
     }
 
     /// Config for the coverage-tail tests: a seeded cache and screening on.
+    ///
+    /// `screen_threshold` is high enough that the scripted scorer's candidates
+    /// lose the sampled screen, which is what a real batch mostly does — and a
+    /// loser is the case the tail files coverage for. The winner case has its
+    /// own test.
     fn coverage_tail_cfg(
         creature: std::path::PathBuf,
         train: std::path::PathBuf,
@@ -2527,6 +2608,7 @@ mod tests {
             seed: Some(1),
             candidates,
             screen_sample_rate: Some(0.5),
+            screen_threshold: 1.0,
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
             ..OckhamConfig::default()
@@ -2575,8 +2657,13 @@ mod tests {
         );
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
-            journal.contains(r#""newlyScreened":4"#) || journal.contains(r#""newly_screened":4"#),
+            journal.contains(r#""newly_screened":4"#),
             "the stop record carries the coverage the run advanced: {journal}"
+        );
+        assert!(
+            journal.contains(r#""record":"coverageTail""#) && journal.contains(r#""ended":"#),
+            "the tail's own end is journalled, not folded into the accept's stop reason: \
+             {journal}"
         );
     }
 
@@ -2633,6 +2720,124 @@ mod tests {
             Vec::<String>::new(),
             "both hidden neurons were cut, so there is nothing left to screen"
         );
+    }
+
+    /// A sampled winner the tail finds is a lead nothing in this run will
+    /// score, so filing it as checked would bury it behind every unchecked
+    /// neuron on the next run's sweep (Issue #91). It stays unchecked.
+    #[test]
+    fn the_coverage_tail_leaves_its_sampled_winners_unchecked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        seed_verdicts(&store, &[("h_a", Outcome::Accepted, None, 10)]);
+        // Threshold 0: every scripted candidate beats the sampled incumbent,
+        // so the tail's whole batch is winners.
+        let cfg = OckhamConfig {
+            screen_threshold: 0.0,
+            ..coverage_tail_cfg(creature, train, tmp.path().join("out"), learnings_dir, 2, 3)
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+
+        assert_eq!(run.stop_reason, "replay-accepts");
+        assert_eq!(
+            screened_this_run(&store, 10),
+            Vec::<String>::new(),
+            "a winner nothing will score must not be filed as checked"
+        );
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            journal.contains(r#""record":"coverageTail""#),
+            "the tail still journals what it did: {journal}"
+        );
+    }
+
+    /// The `--max-accepts` stop opens a tail too: the same accept, the same
+    /// duty. `--max-accepts 1` is what GRQ passes in production.
+    #[test]
+    fn the_last_allowed_search_accept_still_screens_for_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let learnings_dir = tmp.path().join("learnings");
+        // Threshold 0 so the first batch's candidates clear the screen, reach
+        // full scoring and accept — the search accept this test is about.
+        let cfg = OckhamConfig {
+            max_accepts: Some(1),
+            screen_threshold: 0.0,
+            ..coverage_tail_cfg(creature, train, tmp.path().join("out"), learnings_dir, 1, 6)
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+
+        assert_eq!(run.accepts, 1);
+        assert_eq!(run.stop_reason, "max-accepts");
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            journal.contains(r#""record":"coverageTail""#),
+            "the max-accepts stop opens a coverage tail like any other accept: {journal}"
+        );
+        let report =
+            crate::report::summarise(&[&cfg.output_dir.join("experiments.jsonl")]).unwrap();
+        assert!(
+            report.coverage_tail_batches > 0,
+            "the report must show the batches the tail ran: {report:?}"
+        );
+    }
+
+    /// The tail is refused when there is no screen store to file coverage in,
+    /// and when there is no sampled screen to check candidates with.
+    #[test]
+    fn no_tail_without_a_screen_store_or_a_sampled_screen() {
+        for (label, learnings, sample_rate) in [
+            ("no store", false, Some(0.5)),
+            ("no sampled screen", true, None),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c"]);
+            let learnings_dir = tmp.path().join("learnings");
+            // The verdict cache is what makes the replay accept; without it the
+            // run cannot reach the accept at all, so the "no store" case uses a
+            // search accept instead.
+            let mut cfg = OckhamConfig {
+                creature,
+                training_data: train.clone(),
+                output_dir: tmp.path().join("out"),
+                timeout: Duration::from_secs(30),
+                max_experiments: Some(4),
+                max_accepts: Some(1),
+                seed: Some(1),
+                candidates: 1,
+                screen_sample_rate: sample_rate,
+                learnings_host: Some("t".into()),
+                ..OckhamConfig::default()
+            };
+            if learnings {
+                cfg.learnings_dir = Some(learnings_dir);
+            }
+            let scorer = ScriptedScorer {
+                baseline_score: 0.50,
+                candidate_score: Some(0.80),
+                ..ScriptedScorer::ok(0.50, 0.50)
+            };
+            let run = establish_run(&cfg, &scorer).unwrap();
+            assert_eq!(run.accepts, 1, "{label}");
+            let journal =
+                std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+            assert!(
+                !journal.contains(r#""record":"coverageTail""#),
+                "{label}: no tail can be opened here: {journal}"
+            );
+        }
     }
 
     #[test]
