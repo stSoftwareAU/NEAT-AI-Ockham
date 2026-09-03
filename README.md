@@ -496,9 +496,10 @@ neurons. Four rules hold it up.
   (`coverage tail: N batch(es) screened after the accept`). A sampled winner
   the tail turns up is left in the screen cache for the next run rather than
   full-scored, which is what a run that ended on its last batch always did.
-  With `--screen-sample-rate 0` no tail is opened at all: the only check
-  available there is a full-corpus cohort, and that is the search the accept
-  just ended.
+  With `--screen-sample-rate 0`, or without `--learnings-dir`, no tail is
+  opened at all: the only check available without a sampled screen is a
+  full-corpus cohort — the search the accept just ended — and without a store
+  the records would not outlive the run.
 
 Two stop reasons move with this: `no-candidates` is new, and `exhausted` is
 retired — an exhausted sweep can no longer end a run, so the only way the loop
