@@ -749,7 +749,9 @@ fn ockham_loop(
             deadline.saturating_duration_since(Instant::now()),
             screened_batches,
         );
-        if reserving && !replay_done {
+        // Silent in a coverage tail: the replay stage is already standing down
+        // there, so the reserve has nothing left to stand down (#91).
+        if reserving && !replay_done && !coverage_tail {
             log::info(&format!(
                 "budget down to its last screening batch; standing the replay stage down so \
                  this run advances coverage (#77): {} newly screened so far",
