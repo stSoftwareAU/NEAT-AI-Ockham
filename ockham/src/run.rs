@@ -937,6 +937,7 @@ fn ockham_loop(
                                         unchecked_first,
                                         &screens,
                                         deadline,
+                                        store.is_some(),
                                         &stop_reason,
                                         &mut sweep,
                                         &mut pool,
@@ -987,6 +988,7 @@ fn ockham_loop(
                             unchecked_first,
                             &screens,
                             deadline,
+                            store.is_some(),
                             &stop_reason,
                             &mut sweep,
                             &mut pool,
@@ -1380,6 +1382,7 @@ fn ockham_loop(
                             unchecked_first,
                             &screens,
                             deadline,
+                            store.is_some(),
                             &stop_reason,
                             &mut sweep,
                             &mut pool,
@@ -1568,9 +1571,11 @@ fn ockham_loop(
 /// re-applies unchecked-first selection (#38) against the records filed so far.
 ///
 /// Returns `false` — stop now, as before — when there is nothing left to screen:
-/// no hidden neurons, no budget, or no sampled screen to check them with. With
-/// `--screen-sample-rate 0` the only check available is a full-corpus cohort,
-/// and that is precisely the search this accept ended.
+/// no hidden neurons, no budget, no screen store to file the coverage in, or no
+/// sampled screen to check them with. With `--screen-sample-rate 0` the only
+/// check available is a full-corpus cohort, and that is precisely the search
+/// this accept ended; with no store there is no coverage to advance, because
+/// the records would not outlive the run.
 #[allow(clippy::too_many_arguments)]
 fn open_coverage_tail(
     config: &OckhamConfig,
@@ -1581,13 +1586,17 @@ fn open_coverage_tail(
     unchecked_first: bool,
     screens: &[Screened],
     deadline: Instant,
+    has_store: bool,
     reason: &str,
     sweep: &mut Sweep,
     pool: &mut Vec<BundleMember>,
     pass_candidates: &mut usize,
 ) -> bool {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    if incumbent.hidden_neurons() == 0 || remaining.is_zero() || config.screen_sample_rate.is_none()
+    if incumbent.hidden_neurons() == 0
+        || remaining.is_zero()
+        || !has_store
+        || config.screen_sample_rate.is_none()
     {
         return false;
     }
