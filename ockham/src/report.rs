@@ -48,6 +48,10 @@ pub struct Report {
     /// Full-corpus scorer cohort calls consumed.
     pub full_calls: u64,
     /// Screen-coverage records filed across the run (Issue #36).
+    ///
+    /// Since #93 this counts every neuron the sweep **visited** and filed a
+    /// record for, not only the candidates the scorer screened — so a series
+    /// spanning that release steps up where the definition widened.
     pub screened: u64,
     /// Sweeps rebuilt after visiting every hidden neuron (Issue #77).
     ///

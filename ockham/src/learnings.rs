@@ -117,19 +117,37 @@ pub const SCREENS_FORMAT_VERSION: u32 = 2;
 /// The only older screen version this reads: the pre-#76 fleet history.
 const LEGACY_SCREENS_FORMAT_VERSION: u32 = 1;
 
+/// Version of a **visit-only** record: the sweep looked, nothing was scored (#93).
+///
+/// Deliberately a version an older binary does not accept. The fleet runs mixed
+/// versions against one shared `screens/` directory, and a pre-#93 reader has no
+/// notion of a visit that scored nothing: it would count these as ordinary
+/// screens and publish a coverage percentage far above what it had actually
+/// screened — the overstatement [`crate::coverage::Coverage::blocked`] exists to
+/// prevent. Loading *skips* a record of an unknown version rather than
+/// failing the load, so an old host simply carries on with the figures it can
+/// justify until it is upgraded.
+pub const SCREENS_VISIT_FORMAT_VERSION: u32 = 3;
+
 /// [`Screened::kind`] of a visit no candidate could be proposed for (#93).
 ///
 /// The razor cannot ablate a neuron that feeds an aggregate squash (`IF`,
 /// `MEAN`, `MINIMUM`, …) or that carries a typed synapse, and on a
 /// forest-heavy creature that is most of the hidden neurons. The visit is real
 /// coverage; nothing was scored, so it never claims a screen.
+///
+/// Not necessarily *permanent*: an ablation can also fail on a non-finite
+/// measured mean, and the same neuron may well propose a candidate on a later
+/// pass. The record says what happened on that visit, nothing more — which is
+/// why the reason is logged and the rendered line claims no cut was proposed
+/// rather than that none ever could be.
 pub const SCREEN_KIND_SKIPPED: &str = "skipped";
 
 /// [`Screened::kind`] of a visit a standing full-corpus verdict suppressed.
 ///
 /// Distinct from [`SCREEN_KIND_SKIPPED`]: the fleet has already **fully
 /// scored** this uuid — that is why it is being skipped — so it is checked in
-/// the strongest sense, not structurally blocked.
+/// the strongest sense, with a cut that was proposed and judged.
 pub const SCREEN_KIND_KNOWN_FAILURE: &str = "known-failure";
 
 /// Directory holding screen-coverage host files, under the learnings root.
@@ -157,7 +175,7 @@ pub enum ScreenOutcomeKind {
     Loser,
 }
 
-/// One hidden neuron the fleet has looked at least once.
+/// One hidden neuron the fleet has already looked at.
 ///
 /// A coverage fact — "this uuid has been looked at" — used for
 /// `checked X of Y hidden` reporting and unchecked-first selection. It is
@@ -335,7 +353,9 @@ impl LearningsStore {
         let keep = |s: &Screened| {
             matches!(
                 s.version,
-                LEGACY_SCREENS_FORMAT_VERSION | SCREENS_FORMAT_VERSION
+                LEGACY_SCREENS_FORMAT_VERSION
+                    | SCREENS_FORMAT_VERSION
+                    | SCREENS_VISIT_FORMAT_VERSION
             )
         };
         let mut out = load_jsonl(&self.screens_dir(), keep)?;
@@ -706,6 +726,9 @@ pub struct ScreenTry<'a> {
     /// Which side of the screen it landed on; a visit with no candidate to
     /// score is filed as [`ScreenOutcomeKind::Loser`] — see [`Screened`].
     pub outcome: ScreenOutcomeKind,
+    /// [`SCREENS_FORMAT_VERSION`] for a scored candidate,
+    /// [`SCREENS_VISIT_FORMAT_VERSION`] for a visit that scored nothing.
+    pub version: u32,
 }
 
 impl<'a> ScreenTry<'a> {
@@ -715,15 +738,20 @@ impl<'a> ScreenTry<'a> {
             uuid,
             kind: kind_label(kind),
             outcome,
+            version: SCREENS_FORMAT_VERSION,
         }
     }
 
     /// A visit that produced no candidate to score (Issue #93).
+    ///
+    /// Filed at [`SCREENS_VISIT_FORMAT_VERSION`], so a host still running a
+    /// pre-#93 binary skips it rather than mistaking it for a screen.
     pub fn visited(uuid: &'a str, kind: &'a str) -> Self {
         Self {
             uuid,
             kind,
             outcome: ScreenOutcomeKind::Loser,
+            version: SCREENS_VISIT_FORMAT_VERSION,
         }
     }
 }
@@ -744,7 +772,7 @@ pub fn file_screens(
     let corpus_identity = store.map(|s| s.corpus_identity.clone());
     for t in tries {
         let screened = Screened {
-            version: SCREENS_FORMAT_VERSION,
+            version: t.version,
             uuid: t.uuid.to_string(),
             kind: t.kind.to_string(),
             outcome: t.outcome,
@@ -926,6 +954,56 @@ mod tests {
         assert_eq!(store.load_screens().unwrap(), vec![s]);
     }
 
+    /// Issue #93: a visit that scored nothing is written at a version a pre-#93
+    /// binary does not accept, so an old host in the mixed-version fleet skips
+    /// it instead of counting it as a screen and publishing a coverage figure
+    /// far above what it has actually screened. This host reads both.
+    #[test]
+    fn a_visit_only_record_is_written_at_a_version_older_hosts_skip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        let mut seen = Vec::new();
+        let written = file_screens(
+            Some(&store),
+            &[
+                ScreenTry::scored("h_a", CandidateKind::Ablation, ScreenOutcomeKind::Loser),
+                ScreenTry::visited("h_b", SCREEN_KIND_SKIPPED),
+                ScreenTry::visited("h_c", SCREEN_KIND_KNOWN_FAILURE),
+            ],
+            &mut seen,
+        );
+        assert_eq!(written, 3);
+
+        let pre_93_versions = [LEGACY_SCREENS_FORMAT_VERSION, SCREENS_FORMAT_VERSION];
+        assert!(
+            !pre_93_versions.contains(&SCREENS_VISIT_FORMAT_VERSION),
+            "the visit version must be one a pre-#93 reader rejects"
+        );
+
+        let loaded = store.load_screens().unwrap();
+        assert_eq!(loaded.len(), 3, "this host reads every one of them");
+        let by_uuid: HashMap<&str, &Screened> =
+            loaded.iter().map(|s| (s.uuid.as_str(), s)).collect();
+        assert_eq!(by_uuid["h_a"].version, SCREENS_FORMAT_VERSION);
+        assert!(!by_uuid["h_a"].is_skipped());
+        for uuid in ["h_b", "h_c"] {
+            assert_eq!(
+                by_uuid[uuid].version, SCREENS_VISIT_FORMAT_VERSION,
+                "{uuid} scored nothing, so an old host must skip its record"
+            );
+            assert_eq!(
+                by_uuid[uuid].outcome,
+                ScreenOutcomeKind::Loser,
+                "{uuid} claims no win it never earned"
+            );
+        }
+        assert!(by_uuid["h_b"].is_skipped(), "no cut could be proposed");
+        assert!(
+            !by_uuid["h_c"].is_skipped(),
+            "a known failure was proposed and judged, so it is not blocked"
+        );
+    }
+
     #[test]
     fn screens_live_outside_the_verdict_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -1062,7 +1140,7 @@ mod tests {
             "GRQ-24",
             &legacy_screen_line("h_b", 6).replace(
                 r#""version":1"#,
-                &format!(r#""version":{}"#, SCREENS_FORMAT_VERSION + 1),
+                &format!(r#""version":{}"#, SCREENS_VISIT_FORMAT_VERSION + 1),
             ),
         );
         let store = LearningsStore::new(dir.path(), "new-corpus".into(), "host-a".into());
@@ -1143,7 +1221,7 @@ mod tests {
             .unwrap();
         let mut future =
             serde_json::to_value(screen("h_b", ScreenOutcomeKind::Winner, 10)).unwrap();
-        future["version"] = serde_json::json!(SCREENS_FORMAT_VERSION + 1);
+        future["version"] = serde_json::json!(SCREENS_VISIT_FORMAT_VERSION + 1);
         let mut file = OpenOptions::new()
             .append(true)
             .open(store.screens_host_path())

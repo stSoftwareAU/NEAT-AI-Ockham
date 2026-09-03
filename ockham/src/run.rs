@@ -1046,9 +1046,14 @@ fn ockham_loop(
         // while those visits filed nothing the numerator was pinned to the
         // prunable minority and fell by one on every accepted cut.
         //
-        // Only the first such visit is filed. Nothing was scored, so a second
-        // record would carry no new fact — just another line in a log every
-        // host in the fleet reads end to end on every run.
+        // A uuid this run has already filed a record for is not filed again:
+        // nothing was scored, so the second record would carry no new fact —
+        // just another line in a log every host reads end to end on every run.
+        // A record another host files concurrently is deduplicated by uuid when
+        // coverage is counted, so the figures stand either way.
+        if !skips.is_empty() {
+            log::detail(&format!("skips: {}", skip_reason_tally(&skips)));
+        }
         let visits: Vec<ScreenTry<'_>> = skips
             .iter()
             .filter(|s| !progress.seen(&s.uuid))
@@ -1132,12 +1137,10 @@ fn ockham_loop(
                     Err(e) => {
                         consecutive_fail += 1;
                         log::warn(&format!("screen failed: {e}"));
-                        if consecutive_fail >= config.max_consecutive_scorer_failures {
-                            stop_reason = "scorer-failures".into();
-                            break;
-                        }
                         // The scorer lost the candidates, not the visits the
-                        // sweep already made past them (#93). A batch with
+                        // sweep already made past them (#93) — filed before the
+                        // failure limit is consulted, so the last batch's
+                        // coverage is not thrown away with the run. A batch with
                         // nothing to file journals nothing: an empty screened
                         // record would claim coverage work that never happened.
                         if !visits.is_empty() {
@@ -1149,6 +1152,10 @@ fn ockham_loop(
                                 &journal_path,
                                 batch_idx,
                             )?;
+                        }
+                        if consecutive_fail >= config.max_consecutive_scorer_failures {
+                            stop_reason = "scorer-failures".into();
+                            break;
                         }
                         batch_idx += 1;
                         experiments += 1;
@@ -1455,15 +1462,72 @@ fn fresh_sweep(
 
 /// Screen-record kind for a sweep skip, from the reason it carries (Issue #93).
 ///
-/// A standing full-corpus verdict is the strongest check there is, so it is
-/// never filed as structurally blocked; everything else the sweep could not
-/// propose is.
+/// A standing full-corpus verdict is the strongest check there is — the cut was
+/// proposed, scored and judged — so it is never filed as a skip; everything the
+/// sweep could not propose is.
 fn skip_kind(reason: &str) -> &'static str {
     if reason == crate::sweep::KNOWN_FAILURE_REASON {
         crate::learnings::SCREEN_KIND_KNOWN_FAILURE
     } else {
         crate::learnings::SCREEN_KIND_SKIPPED
     }
+}
+
+/// `aggregate target: 41, known-failure: 3` — one batch's skips, by reason.
+///
+/// The kind filed against a skipped visit is only two buckets wide, so the
+/// reason itself would otherwise be discarded: an unexpected skip — a
+/// non-finite mean, a candidate that failed `creature.validate()` — would be
+/// indistinguishable in the audit trail from the aggregate structure that
+/// accounts for most of them, and a neuron the razor could prune on a later
+/// pass would be silently filed alongside one it never can (Issue #93).
+/// Commonest first, so the head of the line answers "why is this creature not
+/// being pruned?".
+fn skip_reason_tally(skips: &[crate::sweep::SweepSkip]) -> String {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for skip in skips {
+        let class = skip_reason_class(&skip.reason);
+        match counts.iter_mut().find(|(seen, _)| *seen == class) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((class, 1)),
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    counts
+        .iter()
+        .map(|(class, n)| format!("{class}: {n}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The bounded class of one skip reason: no uuids, no squash names, no numbers.
+///
+/// Reasons name the neuron they are about, so tallying them verbatim would
+/// produce one class per neuron. Everything inside backticks is dropped, the
+/// remainder is cut at the first `(` or `;`, and the first three surviving
+/// words are kept — leaving a handful of stable classes (`squash is aggregate`,
+/// `aggregate target`, `typed synapse`, `non-finite mean`, …).
+fn skip_reason_class(reason: &str) -> String {
+    let mut out = String::new();
+    let mut quoted = false;
+    for part in reason.split('`') {
+        if !quoted {
+            out.push_str(part);
+            out.push(' ');
+        }
+        quoted = !quoted;
+    }
+    let head = out.split(['(', ';']).next().unwrap_or_default();
+    let words: Vec<&str> = head
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-'))
+        .filter(|w| !w.is_empty())
+        .take(3)
+        .collect();
+    if words.is_empty() {
+        return "unclassified".into();
+    }
+    words.join(" ")
 }
 
 /// Reorder the sweep's unvisited tail unchecked-first, stalest-first (Issue #38).
@@ -2547,7 +2611,7 @@ mod tests {
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            text.contains("blocked:   2 checked but structurally unprunable"),
+            text.contains("blocked:   2 checked with no cut proposed"),
             "{text}"
         );
         assert!(
@@ -3748,6 +3812,48 @@ mod tests {
             journal_records(&cfg.output_dir, "sweepRestart").is_empty(),
             "a barren pass must stop, not restart into the same nothing"
         );
+    }
+
+    /// Issue #93: the kind filed against a skip is two buckets wide, so the
+    /// reason is logged. It must classify by *what happened*, never by which
+    /// neuron it happened to, or the tally is one class per neuron.
+    #[test]
+    fn skip_reasons_are_tallied_by_class_not_by_neuron() {
+        use crate::sweep::SweepSkip;
+        let skip = |uuid: &str, reason: String| SweepSkip {
+            uuid: uuid.into(),
+            permutation_index: 0,
+            reason,
+        };
+        let aggregate = |uuid: &str| {
+            skip(
+                uuid,
+                format!("aggregate target `{uuid}-target` (`MEAN`); skipped"),
+            )
+        };
+        let skips = vec![
+            aggregate("h_a"),
+            aggregate("h_b"),
+            aggregate("h_c"),
+            skip(
+                "h_d",
+                "typed synapse `h_d`→`h_if` (condition); skipped".into(),
+            ),
+            skip("h_e", crate::sweep::KNOWN_FAILURE_REASON.into()),
+            skip("h_f", "non-finite mean NaN".into()),
+        ];
+        assert_eq!(
+            skip_reason_tally(&skips),
+            "aggregate target: 3, known-failure: 1, non-finite mean NaN: 1, typed synapse: 1",
+            "commonest first, then alphabetical, and no uuid in sight"
+        );
+        // The uuid leads this message, so a naive word-prefix tally would make
+        // one class per neuron.
+        assert_eq!(
+            skip_reason_class("`h_x` squash `MEAN` is aggregate; skipped"),
+            "squash is aggregate"
+        );
+        assert_eq!(skip_reason_class("`only-a-uuid`"), "unclassified");
     }
 
     /// Issue #77 point 3, the sizing rules, unit by unit. A measured screen is

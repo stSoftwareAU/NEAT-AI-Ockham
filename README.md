@@ -343,11 +343,19 @@ A neuron counts as **checked** once the sweep has **visited** it. With
 `--learnings-dir` set, every visit leaves one screen record in
 `screens/<host>.jsonl`:
 
-| Visit | Record `kind` | Counted as |
-|---|---|---|
-| Candidate the scorer screened, winner or loser | `identity` / `ablation` | checked |
-| Nothing could be proposed — an aggregate squash downstream, a typed synapse | `skipped` | checked **and** blocked |
-| A standing full-corpus verdict suppressed the try | `known-failure` | checked |
+| Visit | Record `kind` | Version | Counted as |
+|---|---|---|---|
+| Candidate the scorer screened, winner or loser | `identity` / `ablation` | 2 | checked |
+| Nothing could be proposed — an aggregate squash downstream, a typed synapse | `skipped` | 3 | checked **and** blocked |
+| A standing full-corpus verdict suppressed the try | `known-failure` | 3 | checked |
+
+A record for a visit that scored nothing is written at **version 3**, which a
+pre-#93 binary does not accept. The fleet runs mixed versions against one shared
+`screens/` directory, and an old reader has no notion of a visit with nothing to
+score: it would count these as screens and publish a percentage far above what
+it had screened. An unknown version is *skipped*, never a load failure, so an
+old host simply keeps reporting the figures it can justify until it is
+upgraded.
 
 The same records are filed when `--screen-sample-rate 0` sends candidates
 straight to full scoring. A batch whose screen call fails files nothing for its
@@ -362,6 +370,15 @@ numerator was pinned to the prunable minority, fell by one on every accepted cut
 and reported `1417/6969` one run, `1416/7005` the next. A visit is coverage even
 when there was nothing to try — and `blocked` says how much of `checked` was
 reached that way, so the percentage never claims a screen that never happened.
+Each batch also logs its skips by class (`aggregate target: 41, typed synapse:
+6`), because the two record kinds are coarser than the reasons behind them: an
+ablation can also fail on a non-finite measured mean, and that neuron may well
+propose a candidate on a later pass.
+
+Coverage is still a statement about the creature in front of us, not a score
+that only ever rises: a cut removes a checked neuron, so the count still steps
+down by what a run prunes. What #93 changed is that it now *rises* with every
+visit rather than only ever falling.
 
 A screen record is a coverage fact, never a prune verdict: only a full-corpus
 learnings verdict may accept or reject a cut, and a screens IO fault warns
@@ -510,7 +527,9 @@ The denominator is every hidden neuron of the **current** incumbent:
   score that only ever rises;
 - a visit the razor could propose nothing for counts as checked and is reported
   as `blocked` beside the percentage (#93), never deducted from it — the neuron
-  is on the creature and the sweep has been to it.
+  is on the creature and the sweep has been to it. `blocked` says no cut *was*
+  proposed on the visits so far, not that none ever could be: one real screen
+  anywhere in fleet history clears it.
 
 With `--learnings-dir` set, the run journals one `coverage` record at the end,
 so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`
@@ -556,7 +575,7 @@ into `--output-dir`, beside `best.json`:
 checked:   1204 of 5013 hidden (24.0%)
 cut:       7 this run
 unchecked: 3809 remaining (~39 runs at 100/run)
-blocked:   412 checked but structurally unprunable
+blocked:   412 checked with no cut proposed
 tagged:    42 carry tags, screened like any other
 progress:  100 newly checked this run
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
@@ -569,8 +588,8 @@ dropped:   12 entries over budget (est 18s/creature)
   whole clause is **omitted** — never `inf` or `NaN` — when that batch size is
   zero or coverage is already complete;
 - the `blocked:` line is omitted when nothing is blocked, and says how many of
-  the `checked` were reached by a visit that could propose no cut (#93) — they
-  stay inside the percentage, because the sweep has been to them;
+  the `checked` were reached by a visit that proposed no cut (#93) — they stay
+  inside the percentage, because the sweep has been to them;
 - the `tagged:` line is omitted when no neuron is tagged, and says only how many
   hidden neurons carry tags — a tagged neuron the run cut is counted by `cut:`
   like any other (#87);

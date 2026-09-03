@@ -25,7 +25,7 @@
 //! *lowers* the percentage. That is intended: coverage is a statement about the
 //! creature in front of us, not a monotonic score.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use neat_core::CreatureExport;
@@ -116,7 +116,7 @@ impl Coverage {
     /// checked:   1204 of 5013 hidden (24.0%)
     /// cut:       7 this run
     /// unchecked: 3809 remaining (~39 runs at 100/run)
-    /// blocked:   412 checked but structurally unprunable
+    /// blocked:   412 checked with no cut proposed
     /// tagged:    42 carry tags, screened like any other
     /// ```
     ///
@@ -151,7 +151,7 @@ impl Coverage {
         out.push_str(&format!("{:<11}{unchecked} remaining{runs}", "unchecked:"));
         if self.blocked > 0 {
             out.push_str(&format!(
-                "\n{:<11}{} checked but structurally unprunable",
+                "\n{:<11}{} checked with no cut proposed",
                 "blocked:", self.blocked
             ));
         }
@@ -413,7 +413,7 @@ pub fn coverage(
     // or another — still counts once. The value is "every record so far was a
     // skipped visit": one real screen anywhere in the fleet's history clears it
     // permanently, so `blocked` never over-reports (Issue #93).
-    let mut checked: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
+    let mut checked: HashMap<&str, bool> = HashMap::new();
     for s in screens
         .iter()
         .filter(|s| hidden_uuids.contains(s.uuid.as_str()))
@@ -591,7 +591,10 @@ mod tests {
         let screens = [visit("gone", 1), visit("h0", 2)];
         let cov = coverage(&creature, &HashSet::new(), &screens, 1);
         assert_eq!(cov.checked, 1);
-        assert_eq!(cov.blocked, 1, "the departed uuid is not on the creature");
+        assert_eq!(
+            cov.blocked, 1,
+            "h0 is blocked; the departed uuid counts for neither figure"
+        );
     }
 
     /// Intended behaviour, not a bug: evolution adds hidden neurons, they start
@@ -722,7 +725,7 @@ mod tests {
                 "checked:   1204 of 5013 hidden (24.0%)\n",
                 "cut:       7 this run\n",
                 "unchecked: 3809 remaining (~39 runs at 100/run)\n",
-                "blocked:   412 checked but structurally unprunable\n",
+                "blocked:   412 checked with no cut proposed\n",
                 "tagged:    42 carry tags, screened like any other"
             )
         );
