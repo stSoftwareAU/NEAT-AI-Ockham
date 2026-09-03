@@ -264,6 +264,26 @@ fn help_lists_the_ordering_flags() {
     assert!(text.contains("--ordering-random-quota"), "{text}");
 }
 
+/// Issue #96: the accept cap is gone — a run stops on its budget, never on an
+/// accept — so the flag is rejected outright rather than quietly ignored.
+#[test]
+fn max_accepts_is_gone_from_the_cli() {
+    let help = bin().arg("--help").output().unwrap();
+    assert!(help.status.success(), "{}", stderr(&help));
+    let text = stdout(&help);
+    assert!(!text.contains("--max-accepts"), "{text}");
+
+    let out = bin()
+        .arg("creature.json")
+        .arg("training")
+        .arg("--max-accepts")
+        .arg("1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--max-accepts"), "{}", stderr(&out));
+}
+
 /// Issue #77: a run that ends without adding a single uuid to the screened set
 /// while unchecked neurons remain must say so on stderr. The overnight plateau
 /// of #63 produced no signal at all; after this, eight silent runs are eight

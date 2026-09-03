@@ -494,7 +494,7 @@ mod tests {
         journal::append(
             &path,
             &Event::Stop {
-                reason: "max-accepts".into(),
+                reason: "timeout".into(),
                 accepts: 2,
                 experiments: 3,
                 final_score: 0.5002,

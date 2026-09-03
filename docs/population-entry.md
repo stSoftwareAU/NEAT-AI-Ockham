@@ -15,7 +15,8 @@ ago. Judging by tags overstates adoption.
 ## What we measured on GRQ-23
 
 - Forests / Lamarck leap the fittest creature faster than a random Ockham sweep
-  discovers a new cut. With `--max-accepts 1` and no cache, each loop paid
+  discovers a new cut. With the accept cap of the day (`--max-accepts 1`,
+  removed in #96) and no cache, each loop paid
   activation + one prune of a **new** champion, then Forests moved on.
 - Historical `runs/prod-*/source.json` vs `best.json` diffs found **52 unique**
   successful hidden-UUID cuts. **50 of those UUIDs were still on the next
@@ -52,8 +53,9 @@ Forests champion *after* the run — by then it is too late. Instead:
 4. Cap the whole run at **20 minutes** (`--timeout-seconds 1200`). A 45-minute
    random sweep on a champion Forests has already left is how we get beaten.
    After timeout, loop: pull sampler, take the new fittest, replay again.
-5. `--max-accepts 1` still stops **new** search discoveries so a single fresh
-   cut can check in the same hour if replay is dry.
+5. New search discoveries are no longer capped (#96): a run that is not
+   replaying keeps searching and screening until its budget ends, and every cut
+   it lands checks in with the run.
 
 Sampler commit subject is the creature `ockham` tag (🪒). Skim for
 `replay-bundle` vs `search`.

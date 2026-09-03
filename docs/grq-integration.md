@@ -107,7 +107,6 @@ The full argument vector is built in `grq_ockham_run`
 | `--timeout-seconds` | `grq_ockham_timeout_seconds` | see below |
 | `--candidates` | `100` | `GRQ_OCKHAM_CANDIDATES` |
 | `--screen-sample-rate` | `0.01` | `GRQ_OCKHAM_SCREEN_SAMPLE_RATE` |
-| `--max-accepts` | `1` | `GRQ_OCKHAM_MAX_ACCEPTS` |
 | `--max-full` | **not passed**; the companion GRQ change unsets `GRQ_OCKHAM_MAX_FULL` | `GRQ_OCKHAM_MAX_FULL` |
 | `--learnings-dir` | `${GRQ_OCKHAM_LEARNINGS_DIR}` | set by section 3 |
 | `--learnings-host` | `grq_ockham_learnings_host` | `GRQ_OCKHAM_LEARNINGS_HOST` |
@@ -134,6 +133,11 @@ Notes that matter to anyone changing Ockham's CLI:
   change is needed: those directories are already under the learnings root GRQ
   passes, and the verdicts are read as a **priority hint** only — never as
   verdicts, so nothing from another corpus can suppress, replay or accept a cut.
+- **`--max-accepts` no longer exists (#96).** The cap is gone from the CLI: a
+  run stops on its budget, and an accept restarts the sweep instead of ending
+  the search. Passing the flag now fails the run with an unknown-flag error, so
+  the companion GRQ change drops it — and must land **before** the fleet builds
+  an Ockham that rejects it.
 - **`--max-full` caps individual scoring only.** Since Issue #54 it no longer
   gates bundle construction: every screened winner reaches `bundle_plans`
   whatever the cap, so setting `GRQ_OCKHAM_MAX_FULL` again cannot re-create the

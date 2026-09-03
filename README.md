@@ -46,12 +46,11 @@ The current Rust implementation includes:
 - `population-candidate.json` only when Ockham wins that frontier comparison;
 - a `report` command for cumulative pruning economics;
 - GRQ-sampler `score` / `error` / `ockham` tags (🪒 prefix) preserved on write;
-- `--max-full` / `--max-accepts` so a cheap prune can be checked in quickly
-  (`--max-full` caps individual scoring only — it never shrinks a bundle);
+- `--max-full` so a cheap prune can be checked in quickly (it caps individual
+  scoring only — it never shrinks a bundle);
 - fleet learnings cache: combined replay of still-present known wins (full
-  corpus, not capped by `--max-accepts`), then skip fresh failures; a replay
-  accept ends the search so the prune can check in, and the budget it leaves
-  goes to screen coverage (#91);
+  corpus), then skip fresh failures; a replay accept ends the search so the
+  prune can check in, and the budget it leaves goes to screen coverage (#91);
 - fleet screen coverage: every neuron a batch **visits** leaves a record in
   `screens/<host>.jsonl` — the candidates it scored, winners and losers alike,
   and the visits it could propose nothing for (#93) — so "which neurons have
@@ -485,28 +484,30 @@ neurons. Four rules hold it up.
   overnight plateau behind #63 ran for eight runs because every artefact was
   well-formed and the only evidence was a number failing to change across
   commits nobody compares.
-- **An accept ends the search, not the run.** A replayed known win, or the last
-  accept `--max-accepts` allows, used to end the run the moment it landed —
-  and with it the run's other job. Nine consecutive GRQ-sampler check-ins
-  reported `progress: 0 newly screened this run` while the razor kept cutting,
-  because every one of those runs accepted before it had screened anything
-  (#91). The accept still ends the **search** — `best.json` is written, and
-  nothing after it replays, full-scores or accepts — but what is left of the
-  budget goes to screening, batch after batch, over a sweep rebuilt against the
-  creature the accept just changed so unchecked-first selection applies to it.
-  The stop reason still names the accept (`replay-accepts`, `max-accepts`),
-  because that is what ended the search; what ended the **tail** is journalled
-  separately as a `coverageTail` record carrying its batches, the candidates it
-  screened and its own end reason, so a tail that ran out of wall clock is not
-  confused with one that ran out of experiments. A sampled winner the tail turns
-  up is **left unchecked**: nothing in this run will score it, and filing it as
-  checked would bury it — the record would be the freshest in the store, so
-  unchecked-first would defer it behind every never-screened neuron on the
-  creature. Left unchecked, the next run screens *and* full-scores it. With
+- **A replay accept ends the search, not the run.** A replayed known win used
+  to end the run the moment it landed — and with it the run's other job. Nine
+  consecutive GRQ-sampler check-ins reported `progress: 0 newly screened this
+  run` while the razor kept cutting, because every one of those runs accepted
+  before it had screened anything (#91). The replay accept still ends the
+  **search** — `best.json` is written, and nothing after it replays,
+  full-scores or accepts — but what is left of the budget goes to screening,
+  batch after batch, over a sweep rebuilt against the creature the accept just
+  changed so unchecked-first selection applies to it. A **search** accept ends
+  nothing since #96 removed the accept cap: the sweep restarts over the changed
+  creature and the run searches on until its budget is spent. The stop reason
+  still names the replay accept (`replay-accepts`), because that is what ended
+  the search; what ended the **tail** is journalled separately as a
+  `coverageTail` record carrying its batches, the candidates it screened and its
+  own end reason, so a tail that ran out of wall clock is not confused with one
+  that ran out of experiments. A sampled winner the tail turns up is **left
+  unchecked**: nothing in this run will score it, and filing it as checked would
+  bury it — the record would be the freshest in the store, so unchecked-first
+  would defer it behind every never-screened neuron on the creature. Left
+  unchecked, the next run screens *and* full-scores it. With
   `--screen-sample-rate 0`, or without `--learnings-dir`, no tail is opened at
-  all: the only check available without a sampled screen is a full-corpus
-  cohort — the search the accept just ended — and without a store the records
-  would not outlive the run.
+  all: the only check available without a sampled screen is a full-corpus cohort
+  — the search the accept just ended — and replay reads its wins from the
+  learnings cache, so a run without one never reaches a replay accept.
 
 Two stop reasons move with this: `no-candidates` is new, and `exhausted` is
 retired — an exhausted sweep can no longer end a run, so the only way the loop
@@ -858,7 +859,6 @@ Common options:
 | `--screen-threshold` | `0` | Sampled Δscore required for promotion. |
 | `--stats-sample-records` | `100000` | Records sampled for hidden-neuron activation statistics; `0` scans the whole corpus. See [Activation statistics](#activation-statistics). |
 | `--max-full` | none | Cap sampled winners sent to full scoring (highest sample Δ first). |
-| `--max-accepts` | none | End the **search** after this many new full-corpus local accepts so a small win can be checked in quickly; the rest of the budget screens for coverage (#91). Replay of known wins is not counted. |
 | `--learnings-dir` | none | Shared full-corpus prune-verdict cache. Omitted: do not read or write. |
 | `--learnings-host` | hostname | Per-host jsonl label (unqualified `$HOSTNAME` / `$HOST` / `hostname`). |
 | `--learnings-replay` | `0` | Max known-win UUIDs to replay before the random sweep; `0` = all still present on the incumbent. |

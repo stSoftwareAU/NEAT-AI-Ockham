@@ -711,7 +711,6 @@ fn ockham_loop(
 
     let deadline = Instant::now() + config.timeout;
     let mut accepts = 0u64;
-    let mut search_accepts = 0u64;
     let mut experiments = 0u64;
     let mut consecutive_fail = 0u32;
     let mut batch_idx = 0u64;
@@ -984,7 +983,6 @@ fn ockham_loop(
                                         &screens,
                                         &prior,
                                         deadline,
-                                        store.is_some(),
                                         &stop_reason,
                                         &mut sweep,
                                         &mut pool,
@@ -1036,7 +1034,6 @@ fn ockham_loop(
                             &screens,
                             &prior,
                             deadline,
-                            store.is_some(),
                             &stop_reason,
                             &mut sweep,
                             &mut pool,
@@ -1430,32 +1427,6 @@ fn ockham_loop(
                         store.map(|_| screens.as_slice()),
                         opening_hidden,
                     )?);
-                    search_accepts += 1;
-                    if let Some(max) = config.max_accepts
-                        && search_accepts >= max
-                    {
-                        stop_reason = "max-accepts".into();
-                        if !open_coverage_tail(
-                            config,
-                            &incumbent,
-                            &activation,
-                            seed.wrapping_add(accepts).wrapping_add(restarts),
-                            ordering,
-                            unchecked_first,
-                            &screens,
-                            &prior,
-                            deadline,
-                            store.is_some(),
-                            &stop_reason,
-                            &mut sweep,
-                            &mut pool,
-                            &mut pass_candidates,
-                        ) {
-                            break;
-                        }
-                        coverage_tail = true;
-                        continue;
-                    }
                     restart_after_accept(
                         &incumbent,
                         &activation,
@@ -1633,27 +1604,31 @@ fn ockham_loop(
     })
 }
 
-/// Turn the run over to screening after an accept, or refuse when nothing is owed.
+/// Turn the run over to screening after a replay accept, or refuse when nothing
+/// is owed.
 ///
-/// An accept — a replayed known win, or the last one `--max-accepts` allows —
-/// used to end the run then and there, so the prune could check in. It also
-/// ended the run's *other* job: nine consecutive GRQ-sampler check-ins reported
-/// `progress: 0 newly screened this run` while the razor kept cutting, because
-/// every one of those runs accepted before it screened anything (Issue #91).
+/// A replayed known win used to end the run then and there, so the prune could
+/// check in. It also ended the run's *other* job: nine consecutive GRQ-sampler
+/// check-ins reported `progress: 0 newly screened this run` while the razor
+/// kept cutting, because every one of those runs accepted before it screened
+/// anything (Issue #91).
 ///
-/// The accept still ends the search — `best.json` is already written, and
-/// nothing after this replays, full-scores or accepts — but the budget it
+/// The replay accept still ends the search — `best.json` is already written,
+/// and nothing after this replays, full-scores or accepts — but the budget it
 /// leaves behind goes to coverage, one screening batch after another, so a run
-/// that accepts early still checks in with the ~100-per-batch the fleet expects.
-/// The sweep is rebuilt over the creature the accept just changed, which
-/// re-applies unchecked-first selection (#38) against the records filed so far.
+/// that accepts early still checks in with the ~100-per-batch the fleet
+/// expects. The sweep is rebuilt over the creature the accept just changed,
+/// which re-applies unchecked-first selection (#38) against the records filed
+/// so far. A *search* accept never comes here: since Issue #96 removed the
+/// accept cap it restarts the sweep and keeps searching, so a run stops only
+/// on its budget.
 ///
-/// Returns `false` — stop now, as before — when there is nothing left to screen:
-/// no hidden neurons, no budget, no screen store to file the coverage in, or no
-/// sampled screen to check them with. With `--screen-sample-rate 0` the only
-/// check available is a full-corpus cohort, and that is precisely the search
-/// this accept ended; with no store there is no coverage to advance, because
-/// the records would not outlive the run.
+/// Returns `false` — stop now, as before — when there is nothing left to
+/// screen: no hidden neurons, no budget, or no sampled screen to check the
+/// neurons with. With `--screen-sample-rate 0` the only check available is a
+/// full-corpus cohort, and that is precisely the search this accept ended. A
+/// screen store is not tested for: replay reads its wins from that store, so a
+/// run without one never reaches a replay accept.
 #[allow(clippy::too_many_arguments)]
 fn open_coverage_tail(
     config: &OckhamConfig,
@@ -1665,17 +1640,13 @@ fn open_coverage_tail(
     screens: &[Screened],
     prior: &PriorHint<'_>,
     deadline: Instant,
-    has_store: bool,
     reason: &str,
     sweep: &mut Sweep,
     pool: &mut Vec<BundleMember>,
     pass_candidates: &mut usize,
 ) -> bool {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    if incumbent.hidden_neurons() == 0
-        || remaining.is_zero()
-        || !has_store
-        || config.screen_sample_rate.is_none()
+    if incumbent.hidden_neurons() == 0 || remaining.is_zero() || config.screen_sample_rate.is_none()
     {
         return false;
     }
@@ -2330,8 +2301,11 @@ mod tests {
         uuids
     }
 
+    /// Replaces `max_accepts_still_stops_new_discoveries` (Issue #96): the cap
+    /// is gone, so an accept restarts the sweep instead of ending the search —
+    /// both hidden neurons are cut in the one run.
     #[test]
-    fn max_accepts_still_stops_new_discoveries() {
+    fn an_accept_keeps_the_search_going() {
         let tmp = tempfile::tempdir().unwrap();
         let (creature, train) = two_hidden_paths(tmp.path());
         let cfg = OckhamConfig {
@@ -2340,7 +2314,6 @@ mod tests {
             output_dir: tmp.path().join("out"),
             timeout: Duration::from_secs(30),
             max_experiments: Some(8),
-            max_accepts: Some(1),
             seed: Some(1),
             candidates: 8,
             screen_sample_rate: None,
@@ -2352,12 +2325,12 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let run = establish_run(&cfg, &scorer).unwrap();
-        assert_eq!(run.accepts, 1, "accepts={}", run.accepts);
-        assert_eq!(run.stop_reason, "max-accepts");
+        assert!(run.accepts > 1, "accepts={}", run.accepts);
+        assert_ne!(run.stop_reason, "max-accepts");
     }
 
     #[test]
-    fn replay_applies_every_known_win_ignoring_max_accepts() {
+    fn replay_applies_every_known_win() {
         let tmp = tempfile::tempdir().unwrap();
         let (creature, train) = two_hidden_paths(tmp.path());
         let learnings_dir = tmp.path().join("learnings");
@@ -2383,7 +2356,6 @@ mod tests {
             output_dir: tmp.path().join("out"),
             timeout: Duration::from_secs(30),
             max_experiments: Some(8),
-            max_accepts: Some(1),
             seed: Some(1),
             candidates: 8,
             screen_sample_rate: None,
@@ -2449,7 +2421,6 @@ mod tests {
             output_dir: tmp.path().join("out"),
             timeout: Duration::from_secs(30),
             max_experiments: Some(4),
-            max_accepts: Some(1),
             seed: Some(1),
             candidates: 8,
             screen_sample_rate: None,
@@ -2487,7 +2458,6 @@ mod tests {
             output_dir: tmp.path().join("out"),
             timeout: Duration::from_secs(30),
             max_experiments: Some(4),
-            max_accepts: Some(1),
             seed: Some(1),
             candidates: 8,
             screen_sample_rate: Some(0.5),
@@ -3017,17 +2987,19 @@ mod tests {
         );
     }
 
-    /// The `--max-accepts` stop opens a tail too: the same accept, the same
-    /// duty. `--max-accepts 1` is what GRQ passes in production.
+    /// Replaces `the_last_allowed_search_accept_still_screens_for_coverage`
+    /// (Issue #96): with the accept cap gone a search accept opens no tail —
+    /// it restarts the sweep and the run keeps searching and screening on the
+    /// budget it has left.
     #[test]
-    fn the_last_allowed_search_accept_still_screens_for_coverage() {
+    fn a_search_accept_keeps_searching_instead_of_opening_a_tail() {
         let tmp = tempfile::tempdir().unwrap();
         let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
         let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
         // Threshold 0 so the first batch's candidates clear the screen, reach
         // full scoring and accept — the search accept this test is about.
         let cfg = OckhamConfig {
-            max_accepts: Some(1),
             screen_threshold: 0.0,
             ..coverage_tail_cfg(creature, train, tmp.path().join("out"), learnings_dir, 1, 6)
         };
@@ -3038,65 +3010,58 @@ mod tests {
         };
         let run = establish_run(&cfg, &scorer).unwrap();
 
-        assert_eq!(run.accepts, 1);
-        assert_eq!(run.stop_reason, "max-accepts");
+        assert!(
+            run.accepts > 1,
+            "the search runs on past its first accept: {run:?}"
+        );
+        assert_ne!(run.stop_reason, "max-accepts", "the cap is gone");
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
-            journal.contains(r#""record":"coverageTail""#),
-            "the max-accepts stop opens a coverage tail like any other accept: {journal}"
+            !journal.contains(r#""record":"coverageTail""#),
+            "a search accept opens no tail — the search itself screens on: {journal}"
         );
-        let report =
-            crate::report::summarise(&[&cfg.output_dir.join("experiments.jsonl")]).unwrap();
         assert!(
-            report.coverage_tail_batches > 0,
-            "the report must show the batches the tail ran: {report:?}"
+            !screened_this_run(&store, 0).is_empty(),
+            "the run still advances coverage while it searches"
         );
     }
 
-    /// The tail is refused when there is no screen store to file coverage in,
-    /// and when there is no sampled screen to check candidates with.
+    /// The tail is refused when there is no sampled screen to check candidates
+    /// with. The "no screen store" half went with the accept cap (Issue #96):
+    /// the only caller left is the replay accept, and replay reads its wins
+    /// from the store, so a run without one never gets here.
     #[test]
-    fn no_tail_without_a_screen_store_or_a_sampled_screen() {
-        for (label, learnings, sample_rate) in [
-            ("no store", false, Some(0.5)),
-            ("no sampled screen", true, None),
-        ] {
-            let tmp = tempfile::tempdir().unwrap();
-            let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c"]);
-            let learnings_dir = tmp.path().join("learnings");
-            // The verdict cache is what makes the replay accept; without it the
-            // run cannot reach the accept at all, so the "no store" case uses a
-            // search accept instead.
-            let mut cfg = OckhamConfig {
-                creature,
-                training_data: train.clone(),
-                output_dir: tmp.path().join("out"),
-                timeout: Duration::from_secs(30),
-                max_experiments: Some(4),
-                max_accepts: Some(1),
-                seed: Some(1),
-                candidates: 1,
-                screen_sample_rate: sample_rate,
-                learnings_host: Some("t".into()),
-                ..OckhamConfig::default()
-            };
-            if learnings {
-                cfg.learnings_dir = Some(learnings_dir);
-            }
-            let scorer = ScriptedScorer {
-                baseline_score: 0.50,
-                candidate_score: Some(0.80),
-                ..ScriptedScorer::ok(0.50, 0.50)
-            };
-            let run = establish_run(&cfg, &scorer).unwrap();
-            assert_eq!(run.accepts, 1, "{label}");
-            let journal =
-                std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
-            assert!(
-                !journal.contains(r#""record":"coverageTail""#),
-                "{label}: no tail can be opened here: {journal}"
-            );
-        }
+    fn no_tail_without_a_sampled_screen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        seed_verdicts(&store, &[("h_a", Outcome::Accepted, None, 10)]);
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(4),
+            seed: Some(1),
+            candidates: 1,
+            screen_sample_rate: None,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.stop_reason, "replay-accepts");
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            !journal.contains(r#""record":"coverageTail""#),
+            "with no sampled screen there is nothing to screen with: {journal}"
+        );
     }
 
     #[test]
@@ -3635,7 +3600,6 @@ mod tests {
             output_dir: tmp.path().join("out"),
             timeout: Duration::from_secs(30),
             max_experiments: Some(8),
-            max_accepts: Some(1),
             seed: Some(1),
             candidates: 2,
             screen_sample_rate: None,
@@ -3649,7 +3613,7 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let run = establish_run(&cfg, &scorer).unwrap();
-        assert_eq!(run.accepts, 1);
+        assert!(run.accepts >= 1, "accepts={}", run.accepts);
         let best = cfg.output_dir.join("best.json");
         let tag = ockham_tag(&best);
         assert!(tag.starts_with("🪒 Ockham"), "{tag}");
@@ -3670,7 +3634,6 @@ mod tests {
             output_dir: tmp.path().join("out"),
             timeout: Duration::from_secs(30),
             max_experiments: Some(8),
-            max_accepts: Some(1),
             seed: Some(1),
             candidates: 2,
             screen_sample_rate: None,
@@ -3682,7 +3645,7 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let run = establish_run(&cfg, &scorer).unwrap();
-        assert_eq!(run.accepts, 1);
+        assert!(run.accepts >= 1, "accepts={}", run.accepts);
         let tag = ockham_tag(&cfg.output_dir.join("best.json"));
         assert!(tag.starts_with("🪒 Ockham"), "{tag}");
         assert!(
@@ -4116,7 +4079,6 @@ mod tests {
             output_dir: out,
             timeout: Duration::from_secs(30),
             max_experiments: Some(8),
-            max_accepts: Some(1),
             seed: Some(1),
             candidates: 8,
             screen_sample_rate: None,
@@ -4349,7 +4311,6 @@ mod tests {
             output_dir: tmp.path().join("out"),
             timeout: Duration::from_secs(600),
             max_experiments: Some(1),
-            max_accepts: Some(1),
             seed: Some(1),
             candidates: 4,
             ..OckhamConfig::default()
