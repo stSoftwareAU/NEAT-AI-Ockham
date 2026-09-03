@@ -31,6 +31,14 @@ pub enum Event {
         /// Whether unchecked-first selection reordered the sweep (Issue #38).
         #[serde(default)]
         unchecked_first: bool,
+        /// How many neurons old-corpus verdicts moved to the front (Issue #88).
+        ///
+        /// Beside `unchecked_first` for the same reason: both reorder the sweep
+        /// after `permutation_identity` is hashed, so a run whose order they
+        /// changed is only reconstructable if the journal says so. `0` on a run
+        /// with the priority off, no cache, or nothing left to prioritise.
+        #[serde(default)]
+        old_corpus_first: usize,
         /// Hidden neurons on the opening incumbent.
         hidden: usize,
         /// Synapses on the opening incumbent.

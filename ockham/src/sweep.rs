@@ -101,6 +101,12 @@ pub struct Sweep {
     /// Recorded so a run is reconstructable: [`Self::permutation_identity`]
     /// covers the pre-reorder order only.
     pub unchecked_first: bool,
+    /// Neurons old-corpus verdicts moved to the front of the tail (#88).
+    ///
+    /// Recorded for the same reason as [`Self::unchecked_first`]: it reorders
+    /// the sweep after the identity above is fixed. `0` when the priority is
+    /// off, there is no cache, or nothing qualified.
+    pub old_corpus_first: usize,
 }
 
 impl Sweep {
@@ -141,6 +147,7 @@ impl Sweep {
             order,
             next: 0,
             unchecked_first: false,
+            old_corpus_first: 0,
         }
     }
 
@@ -156,10 +163,12 @@ impl Sweep {
 
     /// Move still-unvisited `uuids` to the front of the remaining order.
     ///
-    /// Prefer-list order is preserved. Unknown or already-visited UUIDs are ignored.
-    pub fn prefer(&mut self, uuids: &[String]) {
+    /// Prefer-list order is preserved. Unknown or already-visited UUIDs are
+    /// ignored. Returns how many were actually moved, so a caller reporting the
+    /// reordering counts the neurons it moved rather than the ones it asked for.
+    pub fn prefer(&mut self, uuids: &[String]) -> usize {
         if self.next >= self.order.len() || uuids.is_empty() {
-            return;
+            return 0;
         }
         let mut remaining: Vec<String> = self.order.split_off(self.next);
         let mut front = Vec::new();
@@ -168,8 +177,10 @@ impl Sweep {
                 front.push(remaining.remove(i));
             }
         }
+        let moved = front.len();
         self.order.extend(front);
         self.order.extend(remaining);
+        moved
     }
 
     /// Partition the unvisited tail into unchecked-first, then stalest-first (#38).

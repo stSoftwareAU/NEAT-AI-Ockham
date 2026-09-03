@@ -78,6 +78,11 @@ pub struct OckhamConfig {
     /// `None` takes the default: on when [`Self::learnings_dir`] is set, off
     /// without it — with no screen store there is no coverage state to prefer.
     pub unchecked_first: Option<bool>,
+    /// Check neurons an older corpus once removed before the rest (issue #88).
+    ///
+    /// `None` takes the default: on when [`Self::learnings_dir`] is set, off
+    /// without it — with no cache there are no old-corpus verdicts to read.
+    pub old_corpus_first: Option<bool>,
     /// Cap on records visited by the activation scan; `0` = full corpus (#44).
     pub stats_sample_records: u64,
 }
@@ -107,6 +112,7 @@ impl Default for OckhamConfig {
             ordering: DEFAULT_ORDERING,
             ordering_random_quota: DEFAULT_ORDERING_RANDOM_QUOTA,
             unchecked_first: None,
+            old_corpus_first: None,
             stats_sample_records: DEFAULT_SAMPLE_RECORDS,
         }
     }
@@ -171,6 +177,15 @@ impl OckhamConfig {
             .unwrap_or_else(|| self.learnings_dir.is_some())
     }
 
+    /// Whether the sweep checks old-corpus wins first (issue #88).
+    ///
+    /// `--old-corpus-first` wins when given; otherwise it follows
+    /// `--learnings-dir`, because sibling `corpus-*` caches only exist there.
+    pub fn old_corpus_first_enabled(&self) -> bool {
+        self.old_corpus_first
+            .unwrap_or_else(|| self.learnings_dir.is_some())
+    }
+
     /// Machine-readable configuration dump (CLI stdout).
     pub fn report(&self) -> ConfigReport {
         ConfigReport {
@@ -197,6 +212,7 @@ impl OckhamConfig {
             ordering: self.ordering,
             ordering_random_quota: self.ordering_random_quota,
             unchecked_first: self.unchecked_first_enabled(),
+            old_corpus_first: self.old_corpus_first_enabled(),
             stats_sample_records: self.stats_sample_records,
             optimisation: "loop",
         }
@@ -253,6 +269,8 @@ pub struct ConfigReport {
     pub ordering_random_quota: f64,
     /// Resolved unchecked-first selection (defaults to `learnings_dir.is_some()`).
     pub unchecked_first: bool,
+    /// Resolved old-corpus-first priority (defaults to `learnings_dir.is_some()`).
+    pub old_corpus_first: bool,
     /// Cap on records visited by the activation scan (`0` = full corpus).
     pub stats_sample_records: u64,
     /// Optimisation status for this bootstrap issue (`deferred`).
@@ -360,6 +378,45 @@ mod tests {
         on.validate().unwrap();
         assert!(on.unchecked_first_enabled());
         assert!(on.report().unchecked_first);
+    }
+
+    /// Issue #88: the old-corpus priority is on wherever there is a cache to
+    /// read it from, and off wherever there is not.
+    #[test]
+    fn old_corpus_first_follows_the_learnings_dir_by_default() {
+        let without = OckhamConfig::default();
+        assert!(
+            !without.old_corpus_first_enabled(),
+            "no cache means no sibling corpus directories to read"
+        );
+        assert!(!without.report().old_corpus_first);
+
+        let with = OckhamConfig {
+            learnings_dir: Some("/tmp/learnings".into()),
+            ..OckhamConfig::default()
+        };
+        assert!(with.old_corpus_first_enabled());
+        assert!(with.report().old_corpus_first);
+    }
+
+    #[test]
+    fn an_explicit_old_corpus_first_flag_overrides_the_default() {
+        let off = OckhamConfig {
+            learnings_dir: Some("/tmp/learnings".into()),
+            old_corpus_first: Some(false),
+            ..OckhamConfig::default()
+        };
+        off.validate().unwrap();
+        assert!(!off.old_corpus_first_enabled());
+        assert!(!off.report().old_corpus_first);
+
+        let on = OckhamConfig {
+            old_corpus_first: Some(true),
+            ..OckhamConfig::default()
+        };
+        on.validate().unwrap();
+        assert!(on.old_corpus_first_enabled());
+        assert!(on.report().old_corpus_first);
     }
 
     #[test]
