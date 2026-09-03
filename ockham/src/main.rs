@@ -69,11 +69,6 @@ struct Cli {
     /// Omit to score every sampled winner individually.
     #[arg(long)]
     max_full: Option<usize>,
-    /// End the **search** after this many new authoritative local accepts so a win can be checked
-    /// in quickly; what is left of the budget then screens for coverage (Issue #91).
-    /// Replay of known wins from `--learnings-dir` is not counted against this cap.
-    #[arg(long)]
-    max_accepts: Option<u64>,
     /// Shared full-corpus prune-verdict cache. Omitted: do not read or write learnings.
     #[arg(long)]
     learnings_dir: Option<PathBuf>,
@@ -175,7 +170,6 @@ fn main() -> ExitCode {
         max_consecutive_scorer_failures: cli.max_consecutive_scorer_failures,
         global_champion: cli.global_champion,
         max_full: cli.max_full,
-        max_accepts: cli.max_accepts,
         learnings_dir: cli.learnings_dir,
         learnings_host: cli.learnings_host,
         learnings_replay: cli.learnings_replay,

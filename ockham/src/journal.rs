@@ -92,10 +92,11 @@ pub enum Event {
         /// Screen-coverage records filed for this batch.
         screened: usize,
     },
-    /// The screening a run did after an accept ended its search (Issue #91).
+    /// The screening a run did after a replay accept ended its search (#91).
     ///
-    /// The run's `stop` reason names the accept, because that is what ended the
-    /// search — so without this record the journal could not tell a tail that
+    /// A search accept opens no tail — since Issue #96 it restarts the sweep
+    /// and the search runs on. The run's `stop` reason names the replay accept,
+    /// because that is what ended the search — so without this record the journal could not tell a tail that
     /// ran out of wall clock from one that ran out of experiments or found a
     /// whole pass proposing nothing. A stop reason that answers three questions
     /// with one word is how a plateau hides (#77).

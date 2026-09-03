@@ -59,10 +59,6 @@ pub struct OckhamConfig {
     pub max_consecutive_scorer_failures: u32,
     /// Cap on sampled winners sent to full scoring (`None` = every sampled winner).
     pub max_full: Option<usize>,
-    /// Stop after this many **new** local accepts (`None` = until timeout).
-    ///
-    /// Does not cap replay of known wins from [`Self::learnings_dir`].
-    pub max_accepts: Option<u64>,
     /// Shared full-corpus prune-verdict cache (`None` = do not read or write).
     pub learnings_dir: Option<PathBuf>,
     /// Host label for the per-host jsonl file (`None` = [`crate::learnings::default_host`]).
@@ -105,7 +101,6 @@ impl Default for OckhamConfig {
             min_improvement: DEFAULT_MIN_IMPROVEMENT,
             max_consecutive_scorer_failures: DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES,
             max_full: None,
-            max_accepts: None,
             learnings_dir: None,
             learnings_host: None,
             learnings_replay: 0,
@@ -145,11 +140,6 @@ impl OckhamConfig {
             && n == 0
         {
             return Err("--max-full must be > 0".into());
-        }
-        if let Some(n) = self.max_accepts
-            && n == 0
-        {
-            return Err("--max-accepts must be > 0".into());
         }
         self.ordering_config().validate()?;
         Ok(())
@@ -205,7 +195,6 @@ impl OckhamConfig {
             min_improvement: self.min_improvement,
             max_consecutive_scorer_failures: self.max_consecutive_scorer_failures,
             max_full: self.max_full,
-            max_accepts: self.max_accepts,
             learnings_dir: self.learnings_dir.clone(),
             learnings_host: self.learnings_host.clone(),
             learnings_replay: self.learnings_replay,
@@ -255,8 +244,6 @@ pub struct ConfigReport {
     pub max_consecutive_scorer_failures: u32,
     /// Optional cap on sampled winners sent to full scoring.
     pub max_full: Option<usize>,
-    /// Optional cap on **new** local accepts (replay of known wins is uncapped).
-    pub max_accepts: Option<u64>,
     /// Shared learnings directory (`None` = cache disabled).
     pub learnings_dir: Option<PathBuf>,
     /// Optional host override for the per-host jsonl file.
@@ -327,11 +314,6 @@ mod tests {
             ..OckhamConfig::default()
         };
         assert!(bad.validate().unwrap_err().contains("--max-full"));
-        let bad = OckhamConfig {
-            max_accepts: Some(0),
-            ..OckhamConfig::default()
-        };
-        assert!(bad.validate().unwrap_err().contains("--max-accepts"));
         let bad = OckhamConfig {
             ordering_random_quota: 1.0,
             ..OckhamConfig::default()
