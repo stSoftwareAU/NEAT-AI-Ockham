@@ -386,7 +386,11 @@ fn synapse_sources(working: &CreatureExport) -> HashSet<&str> {
 
 /// UUIDs that are the destination of at least one synapse. See [`synapse_sources`].
 fn synapse_targets(working: &CreatureExport) -> HashSet<&str> {
-    working.synapses.iter().map(|s| s.to_uuid.as_str()).collect()
+    working
+        .synapses
+        .iter()
+        .map(|s| s.to_uuid.as_str())
+        .collect()
 }
 
 fn first_dead_non_output(working: &CreatureExport) -> Option<String> {

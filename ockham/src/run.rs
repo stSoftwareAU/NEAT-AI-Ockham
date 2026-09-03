@@ -1470,9 +1470,7 @@ fn ockham_loop(
     // finished on. Re-stamp it, or the check-in subject would still report the
     // stalled coverage this issue is about (#91). Only the tag changes: the
     // creature published is the one the accept produced.
-    if coverage_tail
-        && let Some(stamp) = &last_accept
-    {
+    if coverage_tail && let Some(stamp) = &last_accept {
         meta.stamp_acceptance(&OckhamProgress {
             accepts: stamp.accepts,
             experiments,
@@ -2535,14 +2533,7 @@ mod tests {
         let learnings_dir = tmp.path().join("learnings");
         let store = screens_store(&learnings_dir, &train);
         seed_verdicts(&store, &[("h_a", Outcome::Accepted, None, 10)]);
-        let cfg = coverage_tail_cfg(
-            creature,
-            train,
-            tmp.path().join("out"),
-            learnings_dir,
-            2,
-            4,
-        );
+        let cfg = coverage_tail_cfg(creature, train, tmp.path().join("out"), learnings_dir, 2, 4);
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
             candidate_score: Some(0.80),
@@ -2588,14 +2579,7 @@ mod tests {
         let store = screens_store(&learnings_dir, &train);
         seed_verdicts(&store, &[("h_a", Outcome::Accepted, None, 10)]);
         seed_screens(&store, &[("h_c", 10), ("h_d", 20), ("h_e", 30)]);
-        let cfg = coverage_tail_cfg(
-            creature,
-            train,
-            tmp.path().join("out"),
-            learnings_dir,
-            1,
-            2,
-        );
+        let cfg = coverage_tail_cfg(creature, train, tmp.path().join("out"), learnings_dir, 1, 2);
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
             candidate_score: Some(0.80),
@@ -2625,14 +2609,7 @@ mod tests {
                 ("h_b", Outcome::Accepted, None, 20),
             ],
         );
-        let cfg = coverage_tail_cfg(
-            creature,
-            train,
-            tmp.path().join("out"),
-            learnings_dir,
-            2,
-            8,
-        );
+        let cfg = coverage_tail_cfg(creature, train, tmp.path().join("out"), learnings_dir, 2, 8);
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
             candidate_score: Some(0.80),

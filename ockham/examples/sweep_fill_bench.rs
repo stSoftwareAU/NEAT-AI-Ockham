@@ -98,7 +98,13 @@ fn main() {
     let proposed = candidates.len();
     let mut reasons: Vec<(String, usize)> = Vec::new();
     for skip in &skips {
-        let class = skip.reason.split('`').next().unwrap_or("").trim().to_string();
+        let class = skip
+            .reason
+            .split('`')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
         match reasons.iter_mut().find(|(seen, _)| *seen == class) {
             Some((_, n)) => *n += 1,
             None => reasons.push((class, 1)),
@@ -113,29 +119,9 @@ fn main() {
     for (class, n) in reasons.iter().take(5) {
         println!("  skip: {class} × {n}");
     }
-    for skip in skips.iter().rev().take(2) {
-        println!("  example skip: {}", skip.reason);
-    }
 
-    // Growth: the same walk on a creature four times the size. A cost that
-    // scales with the creature grows about 4x; the pre-#91 scans, quadratic in
-    // neurons times synapses, grew about 16x.
-    for scale in [1usize, 4] {
-        let small = forest_creature(INPUTS, HIDDEN * scale / 4, HUBS);
-        let small_stats = stats_for(&small);
-        let mut walk = Sweep::new(&small, 42);
-        walk.order.truncate(50);
-        let started = Instant::now();
-        let (c, s) = walk.fill_batch(&small, &small_stats, 50);
-        println!(
-            "  growth: {} hidden → {:.2}ms per visit ({} candidates, {} skips)",
-            HIDDEN * scale / 4,
-            started.elapsed().as_secs_f64() * 1000.0 / (c.len() + s.len()) as f64,
-            c.len(),
-            s.len()
-        );
-    }
-
+    // The floor under a visit that does propose: one copy of the creature.
+    // A visit that cannot propose no longer pays it (Issue #91).
     let clone_started = Instant::now();
     let mut sink = 0usize;
     for _ in 0..20 {
