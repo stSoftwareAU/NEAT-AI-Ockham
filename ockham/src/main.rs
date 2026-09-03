@@ -69,7 +69,8 @@ struct Cli {
     /// Omit to score every sampled winner individually.
     #[arg(long)]
     max_full: Option<usize>,
-    /// Stop after this many **new** authoritative local accepts so a win can be checked in quickly.
+    /// End the **search** after this many new authoritative local accepts so a win can be checked
+    /// in quickly; what is left of the budget then screens for coverage (Issue #91).
     /// Replay of known wins from `--learnings-dir` is not counted against this cap.
     #[arg(long)]
     max_accepts: Option<u64>,

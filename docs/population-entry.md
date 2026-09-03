@@ -43,9 +43,10 @@ Forests champion *after* the run — by then it is too late. Instead:
 1. Always start from the **current** fittest `samples/*.json` (usually
    `GRQ-23-forests.json`).
 2. Combined replay of every still-present known win (prefixes 16/8/4 in the
-   same full-corpus cohort). If it accepts, stop (`replay-accepts`) and check
-   in immediately. That creature is a prune of *today’s* champion, so its
-   score can sit within ~1e-6–1e-5 of the frontier.
+   same full-corpus cohort). If it accepts, the search stops (`replay-accepts`)
+   and the cut is written; since #91 the rest of the budget screens for
+   coverage before the run checks in. That creature is a prune of *today’s*
+   champion, so its score can sit within ~1e-6–1e-5 of the frontier.
 3. If the giant bundle misses: probe up to 8 individuals; demote full-corpus
    losers from the success pile; remaining wins stay for the next loop.
 4. Cap the whole run at **20 minutes** (`--timeout-seconds 1200`). A 45-minute

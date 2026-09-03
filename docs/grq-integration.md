@@ -362,6 +362,13 @@ That tag is written by `CreatureMeta::stamp_acceptance` in `ockham/src/tags.rs`,
 which upserts `score`, `error` and `ockham`, the last rendered by
 `ockham_progress_message` in the same file.
 
+Since Issue #91 the tag is stamped **twice** on a run that keeps screening after
+its accept: once when the cut is applied and `best.json` is written, and again
+at the end of the run with the coverage and batch count the run finished on.
+Only the tag text changes — the creature `best.json` carries is the one the
+accept produced — so the subject's `checked X/Y` agrees with the `coverage.txt`
+block GRQ relays beside it instead of freezing at the figure at the cut.
+
 GRQ adds exactly two things to the subject:
 
 - the razor prefix `🪒` (with a trailing space) when the tag does not already

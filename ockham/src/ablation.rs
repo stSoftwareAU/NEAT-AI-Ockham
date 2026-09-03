@@ -14,6 +14,7 @@
 //! Unsupported aggregate/typed-synapse cases are skipped, never guessed. The
 //! final candidate must pass NEAT-AI-core `creature.validate()`.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use neat_core::{
@@ -251,20 +252,25 @@ pub fn ablate_mean(
         });
     }
 
-    let mut working = incumbent.clone();
-    working.memetic = None;
-    let before = StructureSnapshot::of(&working);
-
-    let outgoing = synapses_from(&working, uuid);
+    // Rejection is decided on the incumbent, before anything is copied
+    // (Issue #91). Most hidden neurons of a GRQ forest feed an aggregate
+    // squash, so most visits end here: cloning a 7,000-neuron creature first
+    // and throwing it away was the sweep paying full price for every neuron it
+    // could never prune.
+    let outgoing = synapses_from(incumbent, uuid);
     for syn in &outgoing {
         require_ordinary(syn)?;
-        let target = neuron_by_uuid(&working, &syn.to_uuid)
+        let target = neuron_by_uuid(incumbent, &syn.to_uuid)
             .ok_or_else(|| AblationSkip::UnknownNeuron(syn.to_uuid.clone()))?;
         reject_aggregate_neuron(target)?;
     }
-    for syn in &synapses_to(&working, uuid) {
+    for syn in &synapses_to(incumbent, uuid) {
         require_ordinary(syn)?;
     }
+
+    let mut working = incumbent.clone();
+    working.memetic = None;
+    let before = StructureSnapshot::of(&working);
 
     let mut compensations = Vec::new();
     let mut used_mean = false;
@@ -363,32 +369,46 @@ pub(crate) fn cleanup_cascade(
     Ok(())
 }
 
+/// UUIDs that are the source of at least one synapse.
+///
+/// One pass over the synapses, so the caller answers "has this neuron any
+/// outgoing?" for every neuron at once. Asking per neuron instead costs a scan
+/// of every synapse per neuron, and the cleanup loop asks on every iteration:
+/// on a 7,000-neuron GRQ forest that quadratic shape was the sweep's dominant
+/// cost, ~300ms per visited neuron (Issue #91).
+fn synapse_sources(working: &CreatureExport) -> HashSet<&str> {
+    working
+        .synapses
+        .iter()
+        .map(|s| s.from_uuid.as_str())
+        .collect()
+}
+
+/// UUIDs that are the destination of at least one synapse. See [`synapse_sources`].
+fn synapse_targets(working: &CreatureExport) -> HashSet<&str> {
+    working
+        .synapses
+        .iter()
+        .map(|s| s.to_uuid.as_str())
+        .collect()
+}
+
 fn first_dead_non_output(working: &CreatureExport) -> Option<String> {
-    working.neurons.iter().find_map(|n| {
-        if n.neuron_type == "output" {
-            return None;
-        }
-        let out = working
-            .synapses
-            .iter()
-            .filter(|s| s.from_uuid == n.uuid)
-            .count();
-        (out == 0).then(|| n.uuid.clone())
-    })
+    let sources = synapse_sources(working);
+    working
+        .neurons
+        .iter()
+        .find(|n| n.neuron_type != "output" && !sources.contains(n.uuid.as_str()))
+        .map(|n| n.uuid.clone())
 }
 
 fn first_hidden_without_incoming(working: &CreatureExport) -> Option<String> {
-    working.neurons.iter().find_map(|n| {
-        if n.neuron_type != "hidden" {
-            return None;
-        }
-        let incoming = working
-            .synapses
-            .iter()
-            .filter(|s| s.to_uuid == n.uuid)
-            .count();
-        (incoming == 0).then(|| n.uuid.clone())
-    })
+    let targets = synapse_targets(working);
+    working
+        .neurons
+        .iter()
+        .find(|n| n.neuron_type == "hidden" && !targets.contains(n.uuid.as_str()))
+        .map(|n| n.uuid.clone())
 }
 
 fn apply_bias_fold(
@@ -485,6 +505,46 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0)
+    }
+
+    /// Seconds to propose the same ablation `ROUNDS` times on a `hidden`-wide creature.
+    fn ablation_seconds(hidden: usize) -> f64 {
+        const ROUNDS: usize = 3;
+        let wide = crate::fixtures::wide_creature(8, hidden, "TANH");
+        let started = std::time::Instant::now();
+        for _ in 0..ROUNDS {
+            ablate_mean(&wide, "h0", 0.25, None).expect("h0 feeds the output and is prunable");
+        }
+        started.elapsed().as_secs_f64()
+    }
+
+    /// Issue #91: the cleanup scans counted a neuron's synapses by walking
+    /// every synapse, once per neuron, on every cleanup iteration — so one
+    /// ablation cost the square of the creature's size. On a 7,000-neuron GRQ
+    /// forest that was ~300ms per visited neuron, and a run screened two or
+    /// three batches an hour instead of filling batch after batch.
+    ///
+    /// A ratio, never a wall-clock budget (the standards forbid those): the
+    /// same work is timed at one size and four times that size on the same
+    /// machine, so a slower machine slows both readings and the test still
+    /// holds. Growing with the creature is ~4x; growing with its square is
+    /// ~16x, and the unfixed scans measured 9.4x.
+    ///
+    /// The small reading is taken twice, on either side of the large one, and
+    /// the larger of the two is used: load that arrives *during* the test would
+    /// otherwise inflate only the second reading and fail a correct tree.
+    #[test]
+    fn one_ablation_costs_the_creature_not_its_square() {
+        let before = ablation_seconds(400);
+        let large = ablation_seconds(1_600);
+        let after = ablation_seconds(400);
+        let small = before.max(after).max(1e-9);
+        let growth = large / small;
+        assert!(
+            growth < 8.0,
+            "four times the creature must not cost sixteen times the work: {growth:.1}x \
+             ({small:.4}s → {large:.4}s)"
+        );
     }
 
     fn two_hidden() -> CreatureExport {

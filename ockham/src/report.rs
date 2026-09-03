@@ -59,6 +59,12 @@ pub struct Report {
     /// re-screening the stalest neurons — the opposite of the idle spin it
     /// replaced.
     pub sweep_restarts: u64,
+    /// Screening batches run after an accept ended a run's search (Issue #91).
+    ///
+    /// The runs that carry these are the ones whose stop reason is an accept:
+    /// without the figure, a run that screened four hundred neurons after its
+    /// cut is indistinguishable in the report from one that screened none.
+    pub coverage_tail_batches: u64,
     /// Hidden neurons on the incumbent at the last coverage record (Issue #37).
     pub hidden: Option<usize>,
     /// Hidden neurons carrying tags, at that same record (Issue #40).
@@ -131,6 +137,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         full_calls: 0,
         screened: 0,
         sweep_restarts: 0,
+        coverage_tail_batches: 0,
         hidden: None,
         tagged: None,
         checkable: None,
@@ -194,6 +201,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     candidates_seen += candidates as u64;
                 }
                 Event::SweepRestart { .. } => report.sweep_restarts += 1,
+                Event::CoverageTail { batches, .. } => report.coverage_tail_batches += batches,
                 Event::Screen { .. } => report.screen_calls += 1,
                 Event::Screened { screened, .. } => report.screened += screened as u64,
                 Event::Coverage {

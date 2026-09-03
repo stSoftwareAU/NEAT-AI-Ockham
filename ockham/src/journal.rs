@@ -84,6 +84,24 @@ pub enum Event {
         /// Screen-coverage records filed for this batch.
         screened: usize,
     },
+    /// The screening a run did after an accept ended its search (Issue #91).
+    ///
+    /// The run's `stop` reason names the accept, because that is what ended the
+    /// search — so without this record the journal could not tell a tail that
+    /// ran out of wall clock from one that ran out of experiments or found a
+    /// whole pass proposing nothing. A stop reason that answers three questions
+    /// with one word is how a plateau hides (#77).
+    CoverageTail {
+        /// Screening batches the tail completed.
+        batches: u64,
+        /// Candidates the tail put through the sampled screen.
+        screened: usize,
+        /// Distinct UUIDs newly checked by the end of the tail.
+        newly_checked: usize,
+        /// What ended the tail: `timeout`, `max-experiments`, `no-candidates`,
+        /// `cancelled`, `scorer-failures`, or `no-hidden`.
+        ended: String,
+    },
     /// Screening coverage over the incumbent at the end of a run (Issue #37).
     ///
     /// Written only when a learnings dir is configured: without the screen
