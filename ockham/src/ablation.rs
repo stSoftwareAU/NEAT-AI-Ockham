@@ -503,6 +503,56 @@ mod tests {
         (a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0)
     }
 
+    /// `hidden` TANH neurons, each fed by every input and feeding the output.
+    fn wide_creature(inputs: usize, hidden: usize) -> CreatureExport {
+        let mut neurons = Vec::with_capacity(hidden + 1);
+        let mut synapses = Vec::with_capacity(hidden * (inputs + 1));
+        for h in 0..hidden {
+            let uuid = format!("h{h}");
+            neurons.push(neuron("hidden", &uuid, 0.01, Some("TANH")));
+            for i in 0..inputs {
+                synapses.push(synapse(&format!("input-{i}"), &uuid, 0.1));
+            }
+            synapses.push(synapse(&uuid, "output-0", 1.0 / hidden as f64));
+        }
+        neurons.push(neuron("output", "output-0", 0.0, Some("IDENTITY")));
+        creature(inputs, 1, neurons, synapses)
+    }
+
+    /// Seconds to propose the same ablation `ROUNDS` times on a `hidden`-wide creature.
+    fn ablation_seconds(hidden: usize) -> f64 {
+        const ROUNDS: usize = 3;
+        let wide = wide_creature(8, hidden);
+        let started = std::time::Instant::now();
+        for _ in 0..ROUNDS {
+            ablate_mean(&wide, "h0", 0.25, None).expect("h0 feeds the output and is prunable");
+        }
+        started.elapsed().as_secs_f64()
+    }
+
+    /// Issue #91: the cleanup scans counted a neuron's synapses by walking
+    /// every synapse, once per neuron, on every cleanup iteration — so one
+    /// ablation cost the square of the creature's size. On a 7,000-neuron GRQ
+    /// forest that was ~300ms per visited neuron, and a run screened two or
+    /// three batches an hour instead of filling batch after batch.
+    ///
+    /// A ratio, never a wall-clock budget (the standards forbid those): the
+    /// same work is timed at one size and four times that size on the same
+    /// machine, so a loaded runner slows both readings and the test still
+    /// holds. Growing with the creature is ~4x; growing with its square is
+    /// ~16x.
+    #[test]
+    fn one_ablation_costs_the_creature_not_its_square() {
+        let small = ablation_seconds(400).max(1e-9);
+        let large = ablation_seconds(1_600);
+        let growth = large / small;
+        assert!(
+            growth < 8.0,
+            "four times the creature must not cost sixteen times the work: {growth:.1}x \
+             ({small:.4}s → {large:.4}s)"
+        );
+    }
+
     fn two_hidden() -> CreatureExport {
         // input → h_a → output (weight 3)
         // input → h_b → output (weight 1)

@@ -104,7 +104,7 @@ fn main() {
             None => reasons.push((class, 1)),
         }
     }
-    reasons.sort_by(|a, b| b.1.cmp(&a.1));
+    reasons.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     println!(
         "{VISITS} visits: {proposed} candidates in {:.3}s ({:.2}ms per visit)",
         elapsed.as_secs_f64(),
@@ -115,6 +115,25 @@ fn main() {
     }
     for skip in skips.iter().rev().take(2) {
         println!("  example skip: {}", skip.reason);
+    }
+
+    // Growth: the same walk on a creature four times the size. A cost that
+    // scales with the creature grows about 4x; the pre-#91 scans, quadratic in
+    // neurons times synapses, grew about 16x.
+    for scale in [1usize, 4] {
+        let small = forest_creature(INPUTS, HIDDEN * scale / 4, HUBS);
+        let small_stats = stats_for(&small);
+        let mut walk = Sweep::new(&small, 42);
+        walk.order.truncate(50);
+        let started = Instant::now();
+        let (c, s) = walk.fill_batch(&small, &small_stats, 50);
+        println!(
+            "  growth: {} hidden → {:.2}ms per visit ({} candidates, {} skips)",
+            HIDDEN * scale / 4,
+            started.elapsed().as_secs_f64() * 1000.0 / (c.len() + s.len()) as f64,
+            c.len(),
+            s.len()
+        );
     }
 
     let clone_started = Instant::now();

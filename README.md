@@ -50,7 +50,8 @@ The current Rust implementation includes:
   (`--max-full` caps individual scoring only — it never shrinks a bundle);
 - fleet learnings cache: combined replay of still-present known wins (full
   corpus, not capped by `--max-accepts`), then skip fresh failures; a replay
-  accept stops immediately so the prune can check in;
+  accept ends the search so the prune can check in, and the budget it leaves
+  goes to screen coverage (#91);
 - fleet screen coverage: every neuron a batch **visits** leaves a record in
   `screens/<host>.jsonl` — the candidates it scored, winners and losers alike,
   and the visits it could propose nothing for (#93) — so "which neurons have
@@ -481,6 +482,23 @@ neurons. Four rules hold it up.
   overnight plateau behind #63 ran for eight runs because every artefact was
   well-formed and the only evidence was a number failing to change across
   commits nobody compares.
+- **An accept ends the search, not the run.** A replayed known win, or the last
+  accept `--max-accepts` allows, used to end the run the moment it landed —
+  and with it the run's other job. Nine consecutive GRQ-sampler check-ins
+  reported `progress: 0 newly screened this run` while the razor kept cutting,
+  because every one of those runs accepted before it had screened anything
+  (#91). The accept still ends the **search** — `best.json` is written, and
+  nothing after it replays, full-scores or accepts — but what is left of the
+  budget goes to screening, batch after batch, over a sweep rebuilt against the
+  creature the accept just changed so unchecked-first selection applies to it.
+  The stop reason still names the accept (`replay-accepts`, `max-accepts`),
+  because that is what ended the search; the tail's own end is in the log
+  (`coverage tail: N batch(es) screened after the accept`). A sampled winner
+  the tail turns up is left in the screen cache for the next run rather than
+  full-scored, which is what a run that ended on its last batch always did.
+  With `--screen-sample-rate 0` no tail is opened at all: the only check
+  available there is a full-corpus cohort, and that is the search the accept
+  just ended.
 
 Two stop reasons move with this: `no-candidates` is new, and `exhausted` is
 retired — an exhausted sweep can no longer end a run, so the only way the loop
@@ -498,6 +516,10 @@ flowchart TD
     P -->|yes| R["restart sweep<br/>journal: sweepRestart"]
     P -->|no| X["stop: no-candidates"]
     R --> B
+    S --> A{"accepted a cut?"}
+    A -->|no| L
+    A -->|yes| T["coverage tail:<br/>keep screening,<br/>no replay / full score"]
+    T --> B
     S --> N["newly checked count"]
     N --> W{"0 while unchecked remain?"}
     W -->|yes| G["⚠ warn, naming both figures"]
@@ -778,7 +800,7 @@ Common options:
 | `--screen-threshold` | `0` | Sampled Δscore required for promotion. |
 | `--stats-sample-records` | `100000` | Records sampled for hidden-neuron activation statistics; `0` scans the whole corpus. See [Activation statistics](#activation-statistics). |
 | `--max-full` | none | Cap sampled winners sent to full scoring (highest sample Δ first). |
-| `--max-accepts` | none | Stop after this many **new** full-corpus local accepts so a small win can be checked in quickly. Replay of known wins is not counted. |
+| `--max-accepts` | none | End the **search** after this many new full-corpus local accepts so a small win can be checked in quickly; the rest of the budget screens for coverage (#91). Replay of known wins is not counted. |
 | `--learnings-dir` | none | Shared full-corpus prune-verdict cache. Omitted: do not read or write. |
 | `--learnings-host` | hostname | Per-host jsonl label (unqualified `$HOSTNAME` / `$HOST` / `hostname`). |
 | `--learnings-replay` | `0` | Max known-win UUIDs to replay before the random sweep; `0` = all still present on the incumbent. |

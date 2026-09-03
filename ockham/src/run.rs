@@ -701,6 +701,9 @@ fn ockham_loop(
     // `stop_reason` already names the accept that ended the search.
     let mut coverage_tail = false;
     let mut tail_batches = 0u64;
+    // The last accept's check-in tag, so a tail can re-stamp it with the
+    // coverage the run finished on rather than the coverage at the cut (#91).
+    let mut last_accept: Option<StampedAccept> = None;
     // In-run state, deliberately not seeded from the cache: cross-run memory is
     // the learnings store's job (Issues #56, #57).
     let mut pool: Vec<BundleMember> = Vec::new();
@@ -906,7 +909,7 @@ fn ockham_loop(
                                 // replayed (Issue #57).
                                 file_full_outcome(store, &mut known, &probe, &probe_full);
                                 if let Some(win) = probe_full.winner {
-                                    apply_local_win(
+                                    last_accept = Some(apply_local_win(
                                         config,
                                         corpus,
                                         workspace,
@@ -921,7 +924,7 @@ fn ockham_loop(
                                         "replay",
                                         store.map(|_| screens.as_slice()),
                                         opening_hidden,
-                                    )?;
+                                    )?);
                                     stop_reason = "replay-accepts".into();
                                     if !open_coverage_tail(
                                         config,
@@ -956,7 +959,7 @@ fn ockham_loop(
                     }
                     file_full_outcome(store, &mut known, &sampled, &full);
                     if let Some(win) = full.winner {
-                        apply_local_win(
+                        last_accept = Some(apply_local_win(
                             config,
                             corpus,
                             workspace,
@@ -971,7 +974,7 @@ fn ockham_loop(
                             "replay",
                             store.map(|_| screens.as_slice()),
                             opening_hidden,
-                        )?;
+                        )?);
                         stop_reason = "replay-accepts".into();
                         if !open_coverage_tail(
                             config,
@@ -1345,7 +1348,7 @@ fn ockham_loop(
                 file_full_outcome(store, &mut known, &sampled, &full);
                 update_pool(&mut pool, &sampled, &full, config.min_improvement);
                 if let Some(win) = full.winner {
-                    apply_local_win(
+                    last_accept = Some(apply_local_win(
                         config,
                         corpus,
                         workspace,
@@ -1360,7 +1363,7 @@ fn ockham_loop(
                         "search",
                         store.map(|_| screens.as_slice()),
                         opening_hidden,
-                    )?;
+                    )?);
                     search_accepts += 1;
                     if let Some(max) = config.max_accepts
                         && search_accepts >= max
@@ -1460,6 +1463,29 @@ fn ockham_loop(
     let newly_screened = progress.count();
     if let Some(warning) = crate::coverage::zero_progress_warning(newly_screened, cov.unchecked()) {
         log::warn(&warning);
+    }
+
+    // The accept published `best.json` before the tail screened anything, so
+    // its `checked X/Y` is the figure at the cut rather than the one the run
+    // finished on. Re-stamp it, or the check-in subject would still report the
+    // stalled coverage this issue is about (#91). Only the tag changes: the
+    // creature published is the one the accept produced.
+    if coverage_tail
+        && let Some(stamp) = &last_accept
+    {
+        meta.stamp_acceptance(&OckhamProgress {
+            accepts: stamp.accepts,
+            experiments,
+            opening: opening_score,
+            score: stamp.score,
+            error: stamp.error,
+            last: stamp.last,
+            origin: stamp.origin,
+            cuts: stamp.cuts,
+            coverage: store.map(|_| cov),
+        });
+        publish_best(config, &meta, &incumbent.creature, &stamp.checksum)?;
+        log::detail("coverage: re-stamped the check-in tag with the run's final coverage");
     }
 
     // Coverage is only meaningful with the screen store behind it; without one
@@ -1801,6 +1827,43 @@ fn file_full_outcome(
     }
 }
 
+/// What an accept stamped on the `ockham` check-in tag.
+///
+/// Kept so a coverage tail can re-stamp the tag with the coverage the run
+/// finished on (Issue #91): the accept publishes `best.json` before the tail
+/// screens anything, and the tag's `checked X/Y` is meant to agree with the
+/// run's end-of-loop coverage rather than to freeze at the moment of the cut.
+struct StampedAccept {
+    accepts: u64,
+    score: f64,
+    error: f64,
+    last: &'static str,
+    origin: &'static str,
+    cuts: usize,
+    checksum: String,
+}
+
+/// Write the tagged creature to `best.json` and to the winners archive.
+fn publish_best(
+    config: &OckhamConfig,
+    meta: &CreatureMeta,
+    creature: &CreatureExport,
+    checksum: &str,
+) -> Result<(), String> {
+    let tagged = meta
+        .serialize_with(creature, true)
+        .map_err(|e| format!("tag best.json: {e}"))?;
+    std::fs::write(config.output_dir.join("best.json"), &tagged)
+        .map_err(|e| format!("best.json: {e}"))?;
+    let winners_dir = config.output_dir.join("winners");
+    if let Err(e) = std::fs::create_dir_all(&winners_dir)
+        .and_then(|_| std::fs::write(winners_dir.join(format!("{checksum}.json")), &tagged))
+    {
+        log::warn(&format!("winners archive not written: {e}"));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_local_win(
     config: &OckhamConfig,
@@ -1817,7 +1880,7 @@ fn apply_local_win(
     phase: &'static str,
     screens: Option<&[Screened]>,
     opening_hidden: usize,
-) -> Result<(), String> {
+) -> Result<StampedAccept, String> {
     let last = win.candidate.kind;
     let cuts = win.candidate.uuids.len();
     let origin = if phase == "replay" && cuts > 1 {
@@ -1859,17 +1922,16 @@ fn apply_local_win(
         cuts,
         coverage,
     });
-    let tagged = meta
-        .serialize_with(&win.creature, true)
-        .map_err(|e| format!("tag best.json: {e}"))?;
-    std::fs::write(config.output_dir.join("best.json"), &tagged)
-        .map_err(|e| format!("best.json: {e}"))?;
-    let winners_dir = config.output_dir.join("winners");
-    if let Err(e) = std::fs::create_dir_all(&winners_dir)
-        .and_then(|_| std::fs::write(winners_dir.join(format!("{}.json", win.checksum)), &tagged))
-    {
-        log::warn(&format!("winners archive not written: {e}"));
-    }
+    publish_best(config, meta, &win.creature, &win.checksum)?;
+    let stamped = StampedAccept {
+        accepts: *accepts,
+        score: *current_score,
+        error: win.candidate.error,
+        last,
+        origin,
+        cuts,
+        checksum: win.checksum.clone(),
+    };
     *incumbent =
         Incumbent::from_creature(win.creature, "ockham-best").map_err(|e| e.to_string())?;
     log::ok(&format!(
@@ -1886,7 +1948,7 @@ fn apply_local_win(
         crate::stats::DEFAULT_CHUNK_RECORDS,
         &config.stats_sample_spec(),
     )?;
-    Ok(())
+    Ok(stamped)
 }
 
 #[cfg(test)]
@@ -2503,6 +2565,12 @@ mod tests {
             "the accept ends the search, not the run's coverage duty"
         );
         assert_eq!(run.newly_screened, 4);
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(
+            best.contains("checked 4/4"),
+            "the check-in tag must report the coverage the run finished on, not the \
+             coverage at the cut: {best}"
+        );
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
             journal.contains(r#""newlyScreened":4"#) || journal.contains(r#""newly_screened":4"#),
