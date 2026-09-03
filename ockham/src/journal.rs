@@ -99,6 +99,9 @@ pub enum Event {
         checkable: usize,
         /// Hidden UUIDs with at least one screen record.
         checked: usize,
+        /// Checked UUIDs the razor could never propose a cut for (#93).
+        #[serde(default)]
+        blocked: usize,
         /// Hidden neurons removed this run.
         #[serde(default)]
         cut: usize,

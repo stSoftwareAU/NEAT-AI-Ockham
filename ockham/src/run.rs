@@ -18,9 +18,9 @@ use crate::corpus::corpus_info;
 use crate::incumbent::{Incumbent, IncumbentMeta, load_incumbent};
 use crate::journal::{self, Event};
 use crate::learnings::{
-    LearningsStore, Outcome, ReplayConfig, ScreenOutcomeKind, Screened, Verdict, default_host,
-    file_screens, file_verdicts, known_failures, oldest_screened_first, ranked_confirmed,
-    replay_cap, screened_uuids,
+    LearningsStore, Outcome, ReplayConfig, ScreenOutcomeKind, ScreenTry, Screened, Verdict,
+    default_host, file_screens, file_verdicts, known_failures, oldest_screened_first,
+    ranked_confirmed, replay_cap, screened_uuids,
 };
 use crate::promote::{
     BundleMember, FullConfig, FullOutcome, LocalWinner, REPLAY_PROBE_LIMIT, apply_available,
@@ -1040,7 +1040,36 @@ fn ockham_loop(
                 remaining: sweep.remaining(),
             },
         )?;
+        // Every visit is coverage, candidate or not (Issue #93). A neuron the
+        // razor cannot propose anything for — it feeds an aggregate squash, or
+        // carries a typed synapse — is most of a forest-heavy creature, and
+        // while those visits filed nothing the numerator was pinned to the
+        // prunable minority and fell by one on every accepted cut.
+        //
+        // A uuid this run has already filed a record for is not filed again:
+        // nothing was scored, so the second record would carry no new fact —
+        // just another line in a log every host reads end to end on every run.
+        // A record another host files concurrently is deduplicated by uuid when
+        // coverage is counted, so the figures stand either way.
+        if !skips.is_empty() {
+            log::detail(&format!("skips: {}", skip_reason_tally(&skips)));
+        }
+        let visits: Vec<ScreenTry<'_>> = skips
+            .iter()
+            .filter(|s| !progress.seen(&s.uuid))
+            .map(|s| ScreenTry::visited(&s.uuid, skip_kind(&s.reason)))
+            .collect();
         if candidates.is_empty() {
+            if !visits.is_empty() {
+                file_batch_screens(
+                    store,
+                    &mut screens,
+                    &mut progress,
+                    &visits,
+                    &journal_path,
+                    batch_idx,
+                )?;
+            }
             batch_idx += 1;
             experiments += 1;
             continue;
@@ -1080,17 +1109,20 @@ fn ockham_loop(
                                 ms: screen.screen_ms,
                             },
                         )?;
-                        let mut coverage: Vec<(&str, CandidateKind, ScreenOutcomeKind)> =
-                            Vec::new();
+                        let mut coverage = visits.clone();
                         for w in &screen.winners {
-                            coverage.push((
+                            coverage.push(ScreenTry::scored(
                                 w.candidate.uuid.as_str(),
                                 w.candidate.kind,
                                 ScreenOutcomeKind::Winner,
                             ));
                         }
                         for l in &screen.losers {
-                            coverage.push((l.uuid.as_str(), l.kind, ScreenOutcomeKind::Loser));
+                            coverage.push(ScreenTry::scored(
+                                l.uuid.as_str(),
+                                l.kind,
+                                ScreenOutcomeKind::Loser,
+                            ));
                         }
                         file_batch_screens(
                             store,
@@ -1105,6 +1137,22 @@ fn ockham_loop(
                     Err(e) => {
                         consecutive_fail += 1;
                         log::warn(&format!("screen failed: {e}"));
+                        // The scorer lost the candidates, not the visits the
+                        // sweep already made past them (#93) — filed before the
+                        // failure limit is consulted, so the last batch's
+                        // coverage is not thrown away with the run. A batch with
+                        // nothing to file journals nothing: an empty screened
+                        // record would claim coverage work that never happened.
+                        if !visits.is_empty() {
+                            file_batch_screens(
+                                store,
+                                &mut screens,
+                                &mut progress,
+                                &visits,
+                                &journal_path,
+                                batch_idx,
+                            )?;
+                        }
                         if consecutive_fail >= config.max_consecutive_scorer_failures {
                             stop_reason = "scorer-failures".into();
                             break;
@@ -1118,10 +1166,10 @@ fn ockham_loop(
             None => {
                 // Screening off: every candidate goes straight to full scoring,
                 // so every candidate is checked and must leave a screen record.
-                let coverage: Vec<(&str, CandidateKind, ScreenOutcomeKind)> = candidates
-                    .iter()
-                    .map(|c| (c.uuid.as_str(), c.kind, ScreenOutcomeKind::Winner))
-                    .collect();
+                let mut coverage = visits.clone();
+                coverage.extend(candidates.iter().map(|c| {
+                    ScreenTry::scored(c.uuid.as_str(), c.kind, ScreenOutcomeKind::Winner)
+                }));
                 file_batch_screens(
                     store,
                     &mut screens,
@@ -1338,6 +1386,7 @@ fn ockham_loop(
                 tagged: cov.tagged,
                 checkable: cov.checkable,
                 checked: cov.checked,
+                blocked: cov.blocked,
                 cut: cov.cut,
             },
         )?;
@@ -1411,6 +1460,76 @@ fn fresh_sweep(
     sweep
 }
 
+/// Screen-record kind for a sweep skip, from the reason it carries (Issue #93).
+///
+/// A standing full-corpus verdict is the strongest check there is — the cut was
+/// proposed, scored and judged — so it is never filed as a skip; everything the
+/// sweep could not propose is.
+fn skip_kind(reason: &str) -> &'static str {
+    if reason == crate::sweep::KNOWN_FAILURE_REASON {
+        crate::learnings::SCREEN_KIND_KNOWN_FAILURE
+    } else {
+        crate::learnings::SCREEN_KIND_SKIPPED
+    }
+}
+
+/// `aggregate target: 41, known-failure: 3` — one batch's skips, by reason.
+///
+/// The kind filed against a skipped visit is only two buckets wide, so the
+/// reason itself would otherwise be discarded: an unexpected skip — a
+/// non-finite mean, a candidate that failed `creature.validate()` — would be
+/// indistinguishable in the audit trail from the aggregate structure that
+/// accounts for most of them, and a neuron the razor could prune on a later
+/// pass would be silently filed alongside one it never can (Issue #93).
+/// Commonest first, so the head of the line answers "why is this creature not
+/// being pruned?".
+fn skip_reason_tally(skips: &[crate::sweep::SweepSkip]) -> String {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for skip in skips {
+        let class = skip_reason_class(&skip.reason);
+        match counts.iter_mut().find(|(seen, _)| *seen == class) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((class, 1)),
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    counts
+        .iter()
+        .map(|(class, n)| format!("{class}: {n}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The bounded class of one skip reason: no uuids, no squash names, no numbers.
+///
+/// Reasons name the neuron they are about, so tallying them verbatim would
+/// produce one class per neuron. Everything inside backticks is dropped, the
+/// remainder is cut at the first `(` or `;`, and the first three surviving
+/// words are kept — leaving a handful of stable classes (`squash is aggregate`,
+/// `aggregate target`, `typed synapse`, `non-finite mean`, …).
+fn skip_reason_class(reason: &str) -> String {
+    let mut out = String::new();
+    let mut quoted = false;
+    for part in reason.split('`') {
+        if !quoted {
+            out.push_str(part);
+            out.push(' ');
+        }
+        quoted = !quoted;
+    }
+    let head = out.split(['(', ';']).next().unwrap_or_default();
+    let words: Vec<&str> = head
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-'))
+        .filter(|w| !w.is_empty())
+        .take(3)
+        .collect();
+    if words.is_empty() {
+        return "unclassified".into();
+    }
+    words.join(" ")
+}
+
 /// Reorder the sweep's unvisited tail unchecked-first, stalest-first (Issue #38).
 ///
 /// Selection only: nothing here removes a neuron from the sweep, so a run that
@@ -1461,7 +1580,7 @@ fn file_batch_screens(
     store: Option<&LearningsStore>,
     screens: &mut Vec<Screened>,
     progress: &mut crate::coverage::ScreenProgress,
-    coverage: &[(&str, CandidateKind, ScreenOutcomeKind)],
+    coverage: &[ScreenTry<'_>],
     journal_path: &std::path::Path,
     batch: u64,
 ) -> Result<(), String> {
@@ -2398,6 +2517,181 @@ mod tests {
         // The old `skipped:` coverage line, not the `bundles: … skipped`
         // clause, which is a legitimate winner figure.
         assert!(!text.contains("skipped:"), "{text}");
+    }
+
+    /// Creature the razor can only prune one third of.
+    ///
+    /// `h_agg` is a `MEAN` aggregate, so it can never be ablated, and `h_fed`
+    /// feeds it, so it cannot be ablated either. Only `h_cut` is proposable —
+    /// the shape of the production creature, where forests put an aggregate
+    /// squash downstream of most hidden neurons (Issue #93).
+    fn aggregate_blocked_paths(tmp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        use crate::fixtures::{creature, neuron, synapse};
+        let c = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_cut", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_fed", 0.0, Some("TANH")),
+                neuron("hidden", "h_agg", 0.0, Some("MEAN")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_cut", 1.0),
+                synapse("input-0", "h_fed", 1.0),
+                synapse("input-0", "h_agg", 1.0),
+                synapse("h_cut", "output-0", 1.0),
+                synapse("h_fed", "h_agg", 1.0),
+                synapse("h_agg", "output-0", 1.0),
+            ],
+        );
+        let path = tmp.join("creature.json");
+        std::fs::write(&path, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
+        )
+        .unwrap();
+        (path, train)
+    }
+
+    /// Issue #93: the counter went backwards because a visit the razor could
+    /// propose nothing for filed no coverage. `checked` was pinned to the
+    /// prunable minority and fell by one on every accepted cut, so the fleet
+    /// reported `1417/6969` one run and `1416/7005` the next while the sweep
+    /// walked the same neurons over and over.
+    #[test]
+    fn a_visit_the_razor_cannot_propose_for_is_still_recorded_as_checked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = aggregate_blocked_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train.clone(),
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            learnings_dir: Some(learnings_dir.clone()),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        // Flat scorer: nothing is accepted, so the run's own coverage is the
+        // only thing that moves.
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        let store = screens_store(&learnings_dir, &train);
+        assert_eq!(
+            screened_uuids(&store),
+            vec!["h_agg", "h_cut", "h_fed"],
+            "one batch visited every hidden neuron, so every one is checked"
+        );
+        let kinds: std::collections::HashMap<String, String> = store
+            .load_screens()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.uuid, s.kind))
+            .collect();
+        assert_eq!(kinds["h_cut"], "identity", "the one proposable neuron");
+        assert_eq!(kinds["h_fed"], crate::learnings::SCREEN_KIND_SKIPPED);
+        assert_eq!(kinds["h_agg"], crate::learnings::SCREEN_KIND_SKIPPED);
+
+        let cov = coverage_json(&cfg.output_dir);
+        assert_eq!(cov.hidden, 3);
+        assert_eq!(cov.checked, 3, "coverage must count the visits");
+        assert_eq!(cov.percent(), 100.0);
+        assert_eq!(
+            cov.blocked, 2,
+            "the two unprunable neurons are reported, never counted as screened"
+        );
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(
+            text.contains("blocked:   2 checked with no cut proposed"),
+            "{text}"
+        );
+        assert!(
+            text.contains("progress:  3 newly checked this run"),
+            "{text}"
+        );
+
+        // A second run re-visits the same blocked neurons and files nothing:
+        // the record already says the sweep has been there, and repeating it
+        // every pass would grow the fleet's shared log without adding a fact.
+        let again = OckhamConfig {
+            output_dir: tmp.path().join("out-2"),
+            ..cfg.clone()
+        };
+        establish_run(&again, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let records = store.load_screens().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|r| r.uuid == "h_agg" || r.uuid == "h_fed")
+                .count(),
+            2,
+            "one visit record per blocked uuid, however many passes see it: {records:?}"
+        );
+        let second = coverage_json(&again.output_dir);
+        assert_eq!(second.checked, 3, "coverage held, it did not go backwards");
+        assert_eq!(second.blocked, 2);
+    }
+
+    /// A standing full-corpus verdict is the strongest check there is, so the
+    /// visit it suppresses is filed as checked but never as blocked (#93).
+    #[test]
+    fn a_known_failure_skip_is_checked_without_being_called_unprunable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let corpus = crate::corpus::corpus_info(&train, &TrainingDataConfig::new(1, 1)).unwrap();
+        let store = LearningsStore::new(&learnings_dir, corpus.identity, "t".into());
+        store
+            .append(&crate::learnings::Learning {
+                version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                uuid: "h_a".into(),
+                kind: "identity".into(),
+                outcome: Outcome::Rejected,
+                unix_secs: crate::incumbent::now_unix(),
+                host: "t".into(),
+                full_delta: Some(-1.0),
+            })
+            .unwrap();
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train.clone(),
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            learnings_dir: Some(learnings_dir.clone()),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        let screens = screens_store(&learnings_dir, &train)
+            .load_screens()
+            .unwrap();
+        let filed: Vec<(&str, &str)> = screens
+            .iter()
+            .map(|s| (s.uuid.as_str(), s.kind.as_str()))
+            .collect();
+        assert!(
+            filed.contains(&("h_a", crate::learnings::SCREEN_KIND_KNOWN_FAILURE)),
+            "the suppressed visit must still be coverage: {filed:?}"
+        );
+        let cov = coverage_json(&cfg.output_dir);
+        assert_eq!(cov.checked, 2, "both neurons were reached");
+        assert_eq!(
+            cov.blocked, 0,
+            "a fully scored uuid is checked, not structurally unprunable"
+        );
     }
 
     #[test]
@@ -3509,11 +3803,57 @@ mod tests {
         let run = establish_run(&cfg, &losing_scorer()).unwrap();
 
         assert_eq!(run.stop_reason, "no-candidates");
-        assert_eq!(run.newly_screened, 0);
+        // Was 0 before Issue #93: a visit a standing verdict suppressed filed
+        // nothing, so a barren pass reported no coverage at all. The pass still
+        // stops — nothing could be proposed — but the two visits it made are
+        // coverage, and pretending otherwise is what pinned `checked`.
+        assert_eq!(run.newly_screened, 2);
         assert!(
             journal_records(&cfg.output_dir, "sweepRestart").is_empty(),
             "a barren pass must stop, not restart into the same nothing"
         );
+    }
+
+    /// Issue #93: the kind filed against a skip is two buckets wide, so the
+    /// reason is logged. It must classify by *what happened*, never by which
+    /// neuron it happened to, or the tally is one class per neuron.
+    #[test]
+    fn skip_reasons_are_tallied_by_class_not_by_neuron() {
+        use crate::sweep::SweepSkip;
+        let skip = |uuid: &str, reason: String| SweepSkip {
+            uuid: uuid.into(),
+            permutation_index: 0,
+            reason,
+        };
+        let aggregate = |uuid: &str| {
+            skip(
+                uuid,
+                format!("aggregate target `{uuid}-target` (`MEAN`); skipped"),
+            )
+        };
+        let skips = vec![
+            aggregate("h_a"),
+            aggregate("h_b"),
+            aggregate("h_c"),
+            skip(
+                "h_d",
+                "typed synapse `h_d`→`h_if` (condition); skipped".into(),
+            ),
+            skip("h_e", crate::sweep::KNOWN_FAILURE_REASON.into()),
+            skip("h_f", "non-finite mean NaN".into()),
+        ];
+        assert_eq!(
+            skip_reason_tally(&skips),
+            "aggregate target: 3, known-failure: 1, non-finite mean NaN: 1, typed synapse: 1",
+            "commonest first, then alphabetical, and no uuid in sight"
+        );
+        // The uuid leads this message, so a naive word-prefix tally would make
+        // one class per neuron.
+        assert_eq!(
+            skip_reason_class("`h_x` squash `MEAN` is aggregate; skipped"),
+            "squash is aggregate"
+        );
+        assert_eq!(skip_reason_class("`only-a-uuid`"), "unclassified");
     }
 
     /// Issue #77 point 3, the sizing rules, unit by unit. A measured screen is
@@ -3670,7 +4010,7 @@ mod tests {
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            text.contains("progress:  2 newly screened this run"),
+            text.contains("progress:  2 newly checked this run"),
             "{text}"
         );
     }
@@ -3698,7 +4038,7 @@ mod tests {
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            text.contains("progress:  0 newly screened this run"),
+            text.contains("progress:  0 newly checked this run"),
             "{text}"
         );
     }

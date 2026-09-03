@@ -392,6 +392,7 @@ mod tests {
             tagged: 42,
             checkable: 5013,
             checked: 1204,
+            blocked: 0,
             cut: 8,
         })
     }
@@ -455,6 +456,7 @@ mod tests {
                 tagged: 2,
                 checkable: 2,
                 checked: 1,
+                blocked: 0,
                 cut: 0,
             }),
         ));
@@ -471,6 +473,7 @@ mod tests {
                 tagged: 0,
                 checkable: 0,
                 checked: 0,
+                blocked: 0,
                 cut: 0,
             }),
         ));

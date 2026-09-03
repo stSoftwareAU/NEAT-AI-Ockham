@@ -305,7 +305,7 @@ fn a_run_that_screens_nothing_warns_that_it_advanced_no_coverage() {
     assert!(out.status.success(), "{}", stderr(&out));
     let log = stderr(&out);
     assert!(
-        log.contains("no progress: 0 newly screened uuid(s) this run"),
+        log.contains("no progress: 0 newly checked uuid(s) this run"),
         "a zero-progress run must warn: {log}"
     );
     assert!(
