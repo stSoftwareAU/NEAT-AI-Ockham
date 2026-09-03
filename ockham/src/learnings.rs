@@ -302,11 +302,12 @@ impl LearningsStore {
         self.root.join(SCREENS_DIR)
     }
 
-    /// Pre-#76 corpus-keyed screen directories, sorted, read-only.
+    /// Sibling directories of the root whose name starts with `prefix`, sorted.
     ///
-    /// An unreadable root is an error rather than an empty list: silently
-    /// reading no history is how the fleet loses months of screening.
-    fn legacy_screens_dirs(&self) -> Result<Vec<PathBuf>, String> {
+    /// `skip` drops one path — the current corpus, which is never its own
+    /// history. An unreadable root is an error rather than an empty list:
+    /// silently reading no history is how the fleet loses months of screening.
+    fn dirs_named(&self, prefix: &[u8], skip: Option<&Path>) -> Result<Vec<PathBuf>, String> {
         if !self.root.is_dir() {
             return Ok(Vec::new());
         }
@@ -316,13 +317,16 @@ impl LearningsStore {
         for entry in entries {
             let entry = entry.map_err(|e| format!("{}: {e}", self.root.display()))?;
             let path = entry.path();
+            if skip == Some(path.as_path()) {
+                continue;
+            }
             // Matched on bytes, not `to_str()`: a name that is not valid UTF-8
             // is still a directory the fleet may have written history into,
             // and dropping it here would be silent.
-            let is_legacy = path
+            let matches = path
                 .file_name()
-                .is_some_and(|n| n.as_encoded_bytes().starts_with(LEGACY_SCREENS_PREFIX));
-            if is_legacy && path.is_dir() {
+                .is_some_and(|n| n.as_encoded_bytes().starts_with(prefix));
+            if matches && path.is_dir() {
                 dirs.push(path);
             }
         }
@@ -330,36 +334,14 @@ impl LearningsStore {
         Ok(dirs)
     }
 
+    /// Pre-#76 corpus-keyed screen directories, sorted, read-only.
+    fn legacy_screens_dirs(&self) -> Result<Vec<PathBuf>, String> {
+        self.dirs_named(LEGACY_SCREENS_PREFIX, None)
+    }
+
     /// Sibling `corpus-*` directories other than this run's, sorted (Issue #88).
-    ///
-    /// An unreadable root is an error rather than an empty list, for the same
-    /// reason [`Self::legacy_screens_dirs`] treats it as one: silently reading
-    /// no history is indistinguishable from a fleet that has learnt nothing.
     fn other_corpus_dirs(&self) -> Result<Vec<PathBuf>, String> {
-        if !self.root.is_dir() {
-            return Ok(Vec::new());
-        }
-        let mine = self.corpus_dir();
-        let entries =
-            std::fs::read_dir(&self.root).map_err(|e| format!("{}: {e}", self.root.display()))?;
-        let mut dirs = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("{}: {e}", self.root.display()))?;
-            let path = entry.path();
-            if path == mine {
-                continue;
-            }
-            // Matched on bytes for the same reason as `legacy_screens_dirs`: a
-            // directory name that is not valid UTF-8 still holds fleet history.
-            let is_corpus = path
-                .file_name()
-                .is_some_and(|n| n.as_encoded_bytes().starts_with(CORPUS_DIR_PREFIX));
-            if is_corpus && path.is_dir() {
-                dirs.push(path);
-            }
-        }
-        dirs.sort();
-        Ok(dirs)
+        self.dirs_named(CORPUS_DIR_PREFIX, Some(&self.corpus_dir()))
     }
 
     /// This host's append-only screen-coverage file.
@@ -704,12 +686,19 @@ pub fn ranked_confirmed(
 ///
 /// A hint, never a verdict. Every uuid returned here still faces the sample
 /// screen and full-corpus scoring; nothing in `prior` may suppress, replay or
-/// accept a cut. Old rejections are simply absent — failure suppression stays
-/// per-corpus, so an old `Rejected` neither promotes nor demotes a neuron.
+/// accept a cut.
 ///
-/// Ordered by [`ranked_confirmed`], so a host prioritising from the same records
-/// builds the same queue: applied cuts first, then the best measured delta,
-/// with recency and uuid breaking ties.
+/// Old rejections neither promote nor **demote**: the qualifying records are
+/// selected *before* the latest-per-uuid collapse, so a corpus that later
+/// rejected a uuid another corpus had accepted cannot cancel the hint. Filtering
+/// after the collapse — as replay does, where the newest verdict about *this*
+/// corpus is the only one that counts — would have made a foreign `Rejected`
+/// deprioritise a neuron, which is exactly the per-corpus suppression this hint
+/// must not reintroduce.
+///
+/// Within the qualifying records the ranking is [`ranked_confirmed`]'s, so a
+/// host prioritising from the same records builds the same queue: applied cuts
+/// first, then the best measured delta, with recency and uuid breaking ties.
 ///
 /// Screening is cross-corpus (Issue #76) but this filter is not: a uuid already
 /// looked at under *this* corpus needs no priority, while one screened only
@@ -727,7 +716,12 @@ pub fn prior_corpus_priority(
         .filter(|s| s.corpus_identity.as_deref() == Some(corpus_identity))
         .map(|s| s.uuid.as_str())
         .collect();
-    ranked_confirmed(prior, creature, min_improvement)
+    let qualifying: Vec<Learning> = prior
+        .iter()
+        .filter(|l| l.outcome == Outcome::Accepted || confirmed_positive(l, min_improvement))
+        .cloned()
+        .collect();
+    ranked_confirmed(&qualifying, creature, min_improvement)
         .into_iter()
         .filter(|win| !checked.contains(win.uuid.as_str()))
         .map(|win| win.uuid)
@@ -1663,6 +1657,30 @@ mod tests {
             confirmed("h_b", -1e-4, 11),
         ];
         assert!(prior_corpus_priority(&prior, &[], &c, "corp", 1e-6).is_empty());
+    }
+
+    /// The half of "rejections do not deprioritise" that is easy to lose: two
+    /// old corpora disagree, and the newer one rejected. Collapsing to the
+    /// latest record first would drop the win, reinstating per-corpus
+    /// suppression across corpora — the one thing this hint must not do.
+    #[test]
+    fn a_later_corpus_rejecting_does_not_cancel_an_earlier_corpus_win() {
+        let c = two_hidden();
+        let prior = vec![
+            rec("h_a", Outcome::Accepted, 10),
+            rec("h_a", Outcome::Rejected, 20),
+            confirmed("h_b", 9e-6, 10),
+            rec("h_b", Outcome::Rejected, 20),
+        ];
+        assert_eq!(
+            prior_corpus_priority(&prior, &[], &c, "corp", 1e-6),
+            vec!["h_a".to_string(), "h_b".to_string()],
+            "a uuid one corpus removed is still the likeliest to be removable"
+        );
+        assert!(
+            known_wins(&prior, &c, ReplayConfig::default()).is_empty(),
+            "replay still reads the latest verdict only — this widening is the hint's alone"
+        );
     }
 
     #[test]

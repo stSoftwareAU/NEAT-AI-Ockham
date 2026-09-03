@@ -668,14 +668,17 @@ fn ockham_loop(
         }
     }
     let store = store.as_ref();
-    let prior = if prior_records.is_empty() {
-        PriorHint::none()
-    } else {
+    // On only where there is a cache to have read old corpora from: without a
+    // store the hint has no records and nothing to say about them.
+    let prior = if store.is_some() && config.old_corpus_first_enabled() {
         PriorHint {
+            enabled: true,
             records: &prior_records,
             corpus_identity: &corpus.identity,
             min_improvement: config.min_improvement,
         }
+    } else {
+        PriorHint::none()
     };
 
     // Coverage is fleet state, so it reprioritises the sweep one layer above
@@ -699,6 +702,7 @@ fn ockham_loop(
             ordering_random_quota: ordering.random_quota,
             permutation_identity: sweep.permutation_identity.clone(),
             unchecked_first: sweep.unchecked_first,
+            old_corpus_first: sweep.old_corpus_first,
             hidden: incumbent.hidden_neurons(),
             synapses: incumbent.creature.synapses.len(),
             opening_score,
@@ -1754,9 +1758,13 @@ fn fresh_sweep(
 ///
 /// Held by reference and rebuilt into a uuid list on every sweep, because the
 /// list depends on the creature: an accept removes neurons, and a hint for a
-/// uuid that is no longer there is not a hint. Empty `records` — the flag off,
-/// no cache, or no sibling `corpus-*` directory — makes every use a no-op.
+/// uuid that is no longer there is not a hint.
 struct PriorHint<'a> {
+    /// Whether `--old-corpus-first` is in force for this run.
+    ///
+    /// Separate from an empty `records`, so a run with the priority **on** and
+    /// nothing to prioritise still says `0` rather than saying nothing at all.
+    enabled: bool,
     /// Verdicts loaded from sibling `corpus-*` directories, never from this one.
     records: &'a [Learning],
     /// This run's corpus: a uuid already screened under it needs no priority.
@@ -1766,9 +1774,10 @@ struct PriorHint<'a> {
 }
 
 impl PriorHint<'_> {
-    /// The hint with nothing in it — the disabled and no-cache case.
+    /// The hint switched off — the flag disabled, or no cache to read.
     fn none() -> Self {
         Self {
+            enabled: false,
             records: &[],
             corpus_identity: "",
             min_improvement: 0.0,
@@ -1784,13 +1793,16 @@ impl PriorHint<'_> {
 /// history at all. Selection only: [`Sweep::prefer`] reorders the same UUIDs,
 /// every one of them still faces the sample screen and full-corpus scoring, and
 /// nothing here changes how coverage is counted.
+///
+/// The count logged and recorded is what `prefer` actually **moved**, not what
+/// the hint asked for: a uuid the sweep no longer holds was not prioritised.
 fn prefer_prior_corpus(
     sweep: &mut Sweep,
     prior: &PriorHint<'_>,
     screens: &[Screened],
     creature: &CreatureExport,
 ) {
-    if prior.records.is_empty() {
+    if !prior.enabled {
         return;
     }
     let priority = prior_corpus_priority(
@@ -1800,10 +1812,10 @@ fn prefer_prior_corpus(
         prior.corpus_identity,
         prior.min_improvement,
     );
-    sweep.prefer(&priority);
+    sweep.old_corpus_first = sweep.prefer(&priority);
     log::info(&format!(
         "coverage: {} neuron(s) prioritised from older corpus caches (#88)",
-        priority.len()
+        sweep.old_corpus_first
     ));
 }
 
@@ -2685,6 +2697,10 @@ mod tests {
     }
 
     /// Config for the old-corpus priority tests: exactly one neuron per run.
+    ///
+    /// The same seeded, cache-backed single-batch run the unchecked-first tests
+    /// use, narrowed to one candidate so the uuid the sweep reaches first is the
+    /// only one screened.
     fn old_corpus_cfg(
         creature: std::path::PathBuf,
         train: std::path::PathBuf,
@@ -2693,17 +2709,9 @@ mod tests {
         old_corpus_first: Option<bool>,
     ) -> OckhamConfig {
         OckhamConfig {
-            creature,
-            training_data: train,
-            output_dir: out,
-            timeout: Duration::from_secs(30),
-            max_experiments: Some(1),
-            seed: Some(1),
             candidates: 1,
-            learnings_dir: Some(learnings_dir),
-            learnings_host: Some("t".into()),
             old_corpus_first,
-            ..OckhamConfig::default()
+            ..unchecked_first_cfg(creature, train, out, learnings_dir, None)
         }
     }
 
@@ -2770,6 +2778,10 @@ mod tests {
             vec![target.to_string()],
             "the old-corpus win must be checked before neurons with no history"
         );
+        // The reorder happens after `permutation_identity` is hashed, so the
+        // journal must say it happened for the run to be reconstructable.
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(journal.contains(r#""old_corpus_first":1"#), "{journal}");
     }
 
     #[test]

@@ -355,6 +355,7 @@ mod tests {
             ordering_random_quota: 0.25,
             permutation_identity: "x".into(),
             unchecked_first: false,
+            old_corpus_first: 0,
             hidden: 3,
             synapses: 10,
             opening_score: 0.50,

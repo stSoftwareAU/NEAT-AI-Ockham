@@ -694,10 +694,12 @@ at all.
 So Ockham reads every sibling `corpus-*` directory under `--learnings-dir` and
 moves that set to the **front** of the screening queue, ahead of block A:
 
-- **qualifying** — the uuid's latest foreign-corpus verdict is `Accepted`, or is
+- **qualifying** — *any* foreign-corpus record for the uuid is `Accepted`, or is
   a *confirmed but not applied* win: a `Rejected` record whose measured
   individual `fullDelta` beat `--min-improvement`, which lost its cohort to a
-  better candidate rather than failing (#52);
+  better candidate rather than failing (#52). One corpus rejecting later does
+  not cancel another corpus's win — that would be per-corpus suppression
+  crossing corpora, which is precisely what this hint must not do;
 - **still there** — the uuid is a hidden neuron of the current incumbent;
 - **not yet checked here** — no screen record naming this run's
   `corpusIdentity`. Screening itself stays cross-corpus (#76): this filter only
