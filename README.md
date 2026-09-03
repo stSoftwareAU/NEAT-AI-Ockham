@@ -46,7 +46,7 @@ The current Rust implementation includes:
 - `population-candidate.json` only when Ockham wins that frontier comparison;
 - a `report` command for cumulative pruning economics;
 - GRQ-sampler `score` / `error` / `ockham` tags (🪒 prefix) preserved on write;
-- `--max-full` so a cheap prune can be checked in quickly (it caps individual
+- `--max-full` to bound what a full-corpus cohort costs (it caps individual
   scoring only — it never shrinks a bundle);
 - fleet learnings cache: combined replay of still-present known wins (full
   corpus), then skip fresh failures; a replay accept ends the search so the
@@ -527,7 +527,10 @@ flowchart TD
     R --> B
     S --> A{"accepted a cut?"}
     A -->|no| L
-    A -->|yes| T["coverage tail:<br/>keep screening,<br/>no replay / full score"]
+    A -->|yes| C{"replay accept?"}
+    C -->|no| AR["rebuild sweep over<br/>the changed creature;<br/>keep searching"]
+    AR --> L
+    C -->|yes| T["coverage tail:<br/>keep screening,<br/>no replay / full score"]
     T --> B
     S --> N["newly checked count"]
     N --> W{"0 while unchecked remain?"}

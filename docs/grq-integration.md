@@ -134,10 +134,12 @@ Notes that matter to anyone changing Ockham's CLI:
   passes, and the verdicts are read as a **priority hint** only — never as
   verdicts, so nothing from another corpus can suppress, replay or accept a cut.
 - **`--max-accepts` no longer exists (#96).** The cap is gone from the CLI: a
-  run stops on its budget, and an accept restarts the sweep instead of ending
-  the search. Passing the flag now fails the run with an unknown-flag error, so
-  the companion GRQ change drops it — and must land **before** the fleet builds
-  an Ockham that rejects it.
+  **search** accept restarts the sweep instead of ending the search, so a run
+  that is not replaying keeps searching until its budget ends. (A **replay**
+  accept still ends the search and turns the rest of the budget over to screen
+  coverage — that is #91 and is unchanged.) Passing the flag now fails the run
+  with an unknown-flag error, so the companion GRQ change drops it — and must
+  land **before** the fleet builds an Ockham that rejects it.
 - **`--max-full` caps individual scoring only.** Since Issue #54 it no longer
   gates bundle construction: every screened winner reaches `bundle_plans`
   whatever the cap, so setting `GRQ_OCKHAM_MAX_FULL` again cannot re-create the

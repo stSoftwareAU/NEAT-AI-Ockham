@@ -729,10 +729,12 @@ fn ockham_loop(
     let mut screened_batches = 0u64;
     let mut replay_done = false;
     let mut replay_skipped = HashSet::new();
-    // An accept ends the search, not the run's coverage duty (Issue #91).
+    // A replay accept ends the search, not the run's coverage duty (Issue #91).
     // While this is set the run keeps screening on the budget the accept left
     // behind — no more replay, no more full scoring, no more accepts — and
-    // `stop_reason` already names the accept that ended the search.
+    // `stop_reason` already names the accept that ended the search. A search
+    // accept never sets this: since Issue #96 it restarts the sweep and the
+    // search runs on to the budget.
     let mut coverage_tail = false;
     let mut tail_batches = 0u64;
     let mut tail_screened = 0usize;
@@ -758,8 +760,8 @@ fn ockham_loop(
             stop_reason = "cancelled".into();
             break;
         }
-        // A coverage tail keeps the reason the accept set: running out of
-        // budget or of experiments is how a tail is meant to end, and the
+        // A coverage tail keeps the reason the replay accept set: running out
+        // of budget or of experiments is how a tail is meant to end, and the
         // fact worth reporting as the run's stop is still the accept that
         // ended the search. What ended the tail is not lost — it is journalled
         // as its own `coverageTail` record. A fault — cancellation, a broken
@@ -983,6 +985,7 @@ fn ockham_loop(
                                         &screens,
                                         &prior,
                                         deadline,
+                                        store.is_some(),
                                         &stop_reason,
                                         &mut sweep,
                                         &mut pool,
@@ -1034,6 +1037,7 @@ fn ockham_loop(
                             &screens,
                             &prior,
                             deadline,
+                            store.is_some(),
                             &stop_reason,
                             &mut sweep,
                             &mut pool,
@@ -1624,11 +1628,11 @@ fn ockham_loop(
 /// on its budget.
 ///
 /// Returns `false` — stop now, as before — when there is nothing left to
-/// screen: no hidden neurons, no budget, or no sampled screen to check the
-/// neurons with. With `--screen-sample-rate 0` the only check available is a
-/// full-corpus cohort, and that is precisely the search this accept ended. A
-/// screen store is not tested for: replay reads its wins from that store, so a
-/// run without one never reaches a replay accept.
+/// screen: no hidden neurons, no budget, no screen store to file the coverage
+/// in, or no sampled screen to check them with. With `--screen-sample-rate 0`
+/// the only check available is a full-corpus cohort, and that is precisely the
+/// search this accept ended; with no store there is no coverage to advance,
+/// because the records would not outlive the run.
 #[allow(clippy::too_many_arguments)]
 fn open_coverage_tail(
     config: &OckhamConfig,
@@ -1640,13 +1644,17 @@ fn open_coverage_tail(
     screens: &[Screened],
     prior: &PriorHint<'_>,
     deadline: Instant,
+    has_store: bool,
     reason: &str,
     sweep: &mut Sweep,
     pool: &mut Vec<BundleMember>,
     pass_candidates: &mut usize,
 ) -> bool {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    if incumbent.hidden_neurons() == 0 || remaining.is_zero() || config.screen_sample_rate.is_none()
+    if incumbent.hidden_neurons() == 0
+        || remaining.is_zero()
+        || !has_store
+        || config.screen_sample_rate.is_none()
     {
         return false;
     }
@@ -2326,7 +2334,10 @@ mod tests {
         };
         let run = establish_run(&cfg, &scorer).unwrap();
         assert!(run.accepts > 1, "accepts={}", run.accepts);
-        assert_ne!(run.stop_reason, "max-accepts");
+        assert_eq!(
+            run.stop_reason, "no-hidden",
+            "the search runs on until the creature has nothing left to cut"
+        );
     }
 
     #[test]
@@ -3014,7 +3025,11 @@ mod tests {
             run.accepts > 1,
             "the search runs on past its first accept: {run:?}"
         );
-        assert_ne!(run.stop_reason, "max-accepts", "the cap is gone");
+        assert_eq!(
+            run.stop_reason, "no-hidden",
+            "no accept stops it: the search runs on until nothing is left to \
+             cut, or the budget ends: {run:?}"
+        );
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
             !journal.contains(r#""record":"coverageTail""#),
@@ -3027,9 +3042,11 @@ mod tests {
     }
 
     /// The tail is refused when there is no sampled screen to check candidates
-    /// with. The "no screen store" half went with the accept cap (Issue #96):
-    /// the only caller left is the replay accept, and replay reads its wins
-    /// from the store, so a run without one never gets here.
+    /// with. The "no screen store" half of this test went with the accept cap
+    /// (Issue #96): it drove the refusal through a *search* accept, and a
+    /// search accept no longer opens a tail. The store guard itself stands —
+    /// `known` grows in-run even without a store — it is simply no longer
+    /// reachable from the run loop in a test.
     #[test]
     fn no_tail_without_a_sampled_screen() {
         let tmp = tempfile::tempdir().unwrap();

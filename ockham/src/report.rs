@@ -59,9 +59,9 @@ pub struct Report {
     /// re-screening the stalest neurons — the opposite of the idle spin it
     /// replaced.
     pub sweep_restarts: u64,
-    /// Screening batches run after an accept ended a run's search (Issue #91).
+    /// Screening batches run after a replay accept ended the search (#91).
     ///
-    /// The runs that carry these are the ones whose stop reason is an accept:
+    /// The runs that carry these are the `replay-accepts` runs:
     /// without the figure, a run that screened four hundred neurons after its
     /// cut is indistinguishable in the report from one that screened none.
     pub coverage_tail_batches: u64,
