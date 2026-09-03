@@ -190,7 +190,7 @@ Modified (documented, not deleted):
 - `report.rs` journal fixture — `"max-accepts"` → `"timeout"`, a reason the
   binary can still emit. No code branches on the string.
 
-Full gate: `cargo fmt --check`, clippy with the CONTRIBUTING flags,
-`cargo test --workspace --all-features`, `cargo doc` with `-D warnings`,
-`cargo deny check`, markdownlint and actionlint all pass. `codespell` could not
-run in this container (no `pip`, no root to install it); CI runs it for real.
+Full gate: `./quality.sh` passes end to end — shell syntax and shellcheck, the
+neat-core version gate, codespell, markdownlint, actionlint, `cargo deny check`,
+`cargo fmt --check`, clippy with the CONTRIBUTING flags,
+`cargo test --workspace --all-features`, and `cargo doc` with `-D warnings`.
