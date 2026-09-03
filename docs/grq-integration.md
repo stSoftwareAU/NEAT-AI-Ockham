@@ -122,12 +122,18 @@ Notes that matter to anyone changing Ockham's CLI:
 - **`--global-champion` is never passed** — deliberate. Ockham checks in a local
   prune of this run's own source even when Forests is ahead, because breeding
   reads every `samples/*.json`.
-- **`--ordering`, `--ordering-random-quota` and `--unchecked-first` are never
-  passed today.** `grq_ockham_run` builds no such arguments, so Ockham's own
-  defaults apply. For unchecked-first that means
+- **`--ordering`, `--ordering-random-quota`, `--unchecked-first` and
+  `--old-corpus-first` are never passed today.** `grq_ockham_run` builds no such
+  arguments, so Ockham's own defaults apply. For unchecked-first that means
   `OckhamConfig::unchecked_first_enabled` (`ockham/src/config.rs`) decides, and
   it follows `--learnings-dir` — so in production the flag is **on** whenever
   the shared cache is reachable, and off when it is not.
+  `old_corpus_first_enabled` follows exactly the same rule, so a production run
+  with the cache reachable also reads the sibling `corpus-*` directories of
+  earlier corpora and checks their still-present wins first (#88). No GRQ-side
+  change is needed: those directories are already under the learnings root GRQ
+  passes, and the verdicts are read as a **priority hint** only — never as
+  verdicts, so nothing from another corpus can suppress, replay or accept a cut.
 - **`--max-full` caps individual scoring only.** Since Issue #54 it no longer
   gates bundle construction: every screened winner reaches `bundle_plans`
   whatever the cap, so setting `GRQ_OCKHAM_MAX_FULL` again cannot re-create the

@@ -414,8 +414,11 @@ identity is recorded on the record — `corpusIdentity`, `SCREENS_FORMAT_VERSION
 
 Verdicts are the opposite and are untouched: a full-corpus `Accepted` /
 `Rejected` genuinely is a claim about one corpus, so those stay in
-`corpus-<identity>/`. A verdict from another corpus is still never loaded — a
-wrong `Rejected` suppresses that uuid fleet-wide for seven days.
+`corpus-<identity>/`. A verdict from another corpus is still never loaded **as a
+verdict** — a wrong `Rejected` suppresses that uuid fleet-wide for seven days —
+and it never joins the set that suppresses, replays or accepts. It is read for
+one purpose only, as a hint about *what to look at first*: see
+[Old-corpus priority](#old-corpus-priority).
 
 Pre-#76 `screens-<identity>/` directories are still **read**, so the first run
 after the change starts from the union of what the fleet already knows rather
@@ -677,6 +680,54 @@ journal is hashed **before** this reorder, so `--ordering` comparisons stay
 valid; the `start` record carries `unchecked_first` so a run is reconstructable.
 Known-failure skips still apply on top; a tag never skips a neuron (#87).
 
+### Old-corpus priority
+
+Unchecked-first says *do not repeat work*; this says *guess better about what is
+left* (#88). GRQ regenerates the training corpus before every run, so the
+`corpus-<identity>/` verdicts of earlier corpora are never consulted again even
+though the fleet paid full-corpus scoring for every one of them. A hidden neuron
+one of those corpora **removed** — and that is still on the incumbent, still
+unchecked against the corpus in hand — was removable under at least one set of
+training data, which makes it a better first guess than a neuron with no history
+at all.
+
+So Ockham reads every sibling `corpus-*` directory under `--learnings-dir` and
+moves that set to the **front** of the screening queue, ahead of block A:
+
+- **qualifying** — the uuid's latest foreign-corpus verdict is `Accepted`, or is
+  a *confirmed but not applied* win: a `Rejected` record whose measured
+  individual `fullDelta` beat `--min-improvement`, which lost its cohort to a
+  better candidate rather than failing (#52);
+- **still there** — the uuid is a hidden neuron of the current incumbent;
+- **not yet checked here** — no screen record naming this run's
+  `corpusIdentity`. Screening itself stays cross-corpus (#76): this filter only
+  decides what to look at *first*, and it never changes how coverage is counted;
+- **ordered** — best measured full-corpus delta first, applied cuts ahead of
+  confirmed-only ones, recency and uuid breaking ties, so every host in the
+  fleet builds the same queue.
+
+Old data is a hint, never proof. A prioritised neuron passes the sampled screen
+and full-corpus scoring exactly as any other candidate does, and nothing read
+from another corpus can suppress, replay or accept a cut — a foreign `Rejected`
+does not deprioritise anything either, because failure suppression stays
+per-corpus. A fault in one foreign directory is warned and skipped, so a single
+truncated line costs that corpus's hint and nothing else.
+
+```mermaid
+flowchart LR
+    P["sibling corpus-*/ verdicts"] --> Q{"accepted, or<br/>confirmed Δ &gt; min?"}
+    Q -->|no| X["not a hint —<br/>old rejections never demote"]
+    Q -->|yes| R{"still on the incumbent<br/>and unchecked here?"}
+    R -->|no| X
+    R -->|yes| F["front of the queue,<br/>best Δ first"]
+    F --> V["screen → full corpus<br/>(unchanged gates)"]
+```
+
+The flag defaults to on with `--learnings-dir` and off without it, and
+`--old-corpus-first=false` disables it. The count moved to the front is logged
+beside the coverage line — `coverage: 7 neuron(s) prioritised from older corpus
+caches (#88)` — so the reordering is observable in every run's log.
+
 ## Where this sits in the literature
 
 Structured pruning of trained networks is one of the best-studied problems in
@@ -813,6 +864,7 @@ Common options:
 | `--min-improvement` | `1e-6` | Strict authoritative improvement required locally. |
 | `--seed` | drawn | Reproducible random sweep seed. |
 | `--unchecked-first` | on with `--learnings-dir`, off without | Screen never-checked neurons first, then recycle the stalest; see [Unchecked-first selection](#unchecked-first-selection). Set `--unchecked-first=false` to keep the raw seeded permutation. |
+| `--old-corpus-first` | on with `--learnings-dir`, off without | Check hidden neurons an older corpus once removed before the rest; see [Old-corpus priority](#old-corpus-priority). A hint only — every one still faces the screen and the full corpus. Set `--old-corpus-first=false` to disable. |
 | `--ordering` | `random` | Named candidate ordering; see [Candidate ordering](#candidate-ordering). |
 | `--ordering-random-quota` | `0` | Fraction of sweep slots reserved for the random control, in `[0, 1)`. |
 | `--max-experiments` | none | Optional experiment cap in addition to timeout. |

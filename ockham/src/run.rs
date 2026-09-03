@@ -18,9 +18,9 @@ use crate::corpus::corpus_info;
 use crate::incumbent::{Incumbent, IncumbentMeta, load_incumbent};
 use crate::journal::{self, Event};
 use crate::learnings::{
-    LearningsStore, Outcome, ReplayConfig, ScreenOutcomeKind, ScreenTry, Screened, Verdict,
-    default_host, file_screens, file_verdicts, known_failures, oldest_screened_first,
-    ranked_confirmed, replay_cap, screened_uuids,
+    Learning, LearningsStore, Outcome, ReplayConfig, ScreenOutcomeKind, ScreenTry, Screened,
+    Verdict, default_host, file_screens, file_verdicts, known_failures, oldest_screened_first,
+    prior_corpus_priority, ranked_confirmed, replay_cap, screened_uuids,
 };
 use crate::promote::{
     BundleMember, FullConfig, FullOutcome, LocalWinner, REPLAY_PROBE_LIMIT, apply_available,
@@ -612,6 +612,9 @@ fn ockham_loop(
     let mut store = None;
     let mut known = Vec::new();
     let mut screens: Vec<Screened> = Vec::new();
+    // Deliberately its own set, never merged into `known` (Issue #88): a verdict
+    // from another corpus may reorder the sweep and nothing else.
+    let mut prior_records: Vec<Learning> = Vec::new();
     if let Some(dir) = &config.learnings_dir {
         let host = config.learnings_host.clone().unwrap_or_else(default_host);
         let s = LearningsStore::new(dir, corpus.identity.clone(), host.clone());
@@ -645,8 +648,35 @@ fn ockham_loop(
                 )),
             }
         }
+        // A hint, so a fault here costs the priority and nothing else (#88).
+        if let Some(s) = store.as_ref()
+            && config.old_corpus_first_enabled()
+        {
+            match s.load_prior_corpora() {
+                Ok(records) => {
+                    log::info(&format!(
+                        "prior corpora: {} verdict(s) from {} read as a priority hint",
+                        records.len(),
+                        dir.display()
+                    ));
+                    prior_records = records;
+                }
+                Err(e) => log::warn(&format!(
+                    "prior-corpus verdicts unreadable ({e}); continuing without the priority"
+                )),
+            }
+        }
     }
     let store = store.as_ref();
+    let prior = if prior_records.is_empty() {
+        PriorHint::none()
+    } else {
+        PriorHint {
+            records: &prior_records,
+            corpus_identity: &corpus.identity,
+            min_improvement: config.min_improvement,
+        }
+    };
 
     // Coverage is fleet state, so it reprioritises the sweep one layer above
     // the ordering strategies — after the identity above is already fixed.
@@ -659,6 +689,7 @@ fn ockham_loop(
         ordering,
         unchecked_first,
         &screens,
+        &prior,
     );
     journal::append(
         &journal_path,
@@ -947,6 +978,7 @@ fn ockham_loop(
                                         ordering,
                                         unchecked_first,
                                         &screens,
+                                        &prior,
                                         deadline,
                                         store.is_some(),
                                         &stop_reason,
@@ -998,6 +1030,7 @@ fn ockham_loop(
                             ordering,
                             unchecked_first,
                             &screens,
+                            &prior,
                             deadline,
                             store.is_some(),
                             &stop_reason,
@@ -1057,6 +1090,7 @@ fn ockham_loop(
                 ordering,
                 unchecked_first,
                 &screens,
+                &prior,
             );
             log::info(&format!(
                 "sweep exhausted over {} hidden neuron(s); restart {restarts}, {} newly screened so far",
@@ -1405,6 +1439,7 @@ fn ockham_loop(
                             ordering,
                             unchecked_first,
                             &screens,
+                            &prior,
                             deadline,
                             store.is_some(),
                             &stop_reason,
@@ -1424,6 +1459,7 @@ fn ockham_loop(
                         ordering,
                         unchecked_first,
                         &screens,
+                        &prior,
                         &mut sweep,
                         &mut pool,
                         &mut pass_candidates,
@@ -1623,6 +1659,7 @@ fn open_coverage_tail(
     ordering: crate::ordering::OrderingConfig,
     unchecked_first: bool,
     screens: &[Screened],
+    prior: &PriorHint<'_>,
     deadline: Instant,
     has_store: bool,
     reason: &str,
@@ -1645,6 +1682,7 @@ fn open_coverage_tail(
         ordering,
         unchecked_first,
         screens,
+        prior,
         sweep,
         pool,
         pass_candidates,
@@ -1671,6 +1709,7 @@ fn restart_after_accept(
     ordering: crate::ordering::OrderingConfig,
     unchecked_first: bool,
     screens: &[Screened],
+    prior: &PriorHint<'_>,
     sweep: &mut Sweep,
     pool: &mut Vec<BundleMember>,
     pass_candidates: &mut usize,
@@ -1682,6 +1721,7 @@ fn restart_after_accept(
         ordering,
         unchecked_first,
         screens,
+        prior,
     );
     *pass_candidates = 0;
     *pool = standing_pool(pool, &incumbent.creature, activation);
@@ -1700,12 +1740,71 @@ fn fresh_sweep(
     ordering: crate::ordering::OrderingConfig,
     unchecked_first: bool,
     screens: &[Screened],
+    prior: &PriorHint<'_>,
 ) -> Sweep {
     let mut sweep = Sweep::with_ordering(creature, activation, seed, ordering);
     if unchecked_first {
         prefer_unchecked(&mut sweep, screens, creature);
     }
+    prefer_prior_corpus(&mut sweep, prior, screens, creature);
     sweep
+}
+
+/// Old-corpus verdicts, and what turns them into a priority queue (Issue #88).
+///
+/// Held by reference and rebuilt into a uuid list on every sweep, because the
+/// list depends on the creature: an accept removes neurons, and a hint for a
+/// uuid that is no longer there is not a hint. Empty `records` — the flag off,
+/// no cache, or no sibling `corpus-*` directory — makes every use a no-op.
+struct PriorHint<'a> {
+    /// Verdicts loaded from sibling `corpus-*` directories, never from this one.
+    records: &'a [Learning],
+    /// This run's corpus: a uuid already screened under it needs no priority.
+    corpus_identity: &'a str,
+    /// Measured delta above which an unapplied old win still counts as one.
+    min_improvement: f64,
+}
+
+impl PriorHint<'_> {
+    /// The hint with nothing in it — the disabled and no-cache case.
+    fn none() -> Self {
+        Self {
+            records: &[],
+            corpus_identity: "",
+            min_improvement: 0.0,
+        }
+    }
+}
+
+/// Move old-corpus wins to the front of the sweep's unvisited tail (Issue #88).
+///
+/// A hidden neuron the fleet removed under earlier training data, still on the
+/// incumbent and unchecked under this corpus, is the likeliest thing on the
+/// creature to be removable again — so it is looked at before neurons with no
+/// history at all. Selection only: [`Sweep::prefer`] reorders the same UUIDs,
+/// every one of them still faces the sample screen and full-corpus scoring, and
+/// nothing here changes how coverage is counted.
+fn prefer_prior_corpus(
+    sweep: &mut Sweep,
+    prior: &PriorHint<'_>,
+    screens: &[Screened],
+    creature: &CreatureExport,
+) {
+    if prior.records.is_empty() {
+        return;
+    }
+    let priority = prior_corpus_priority(
+        prior.records,
+        screens,
+        creature,
+        prior.corpus_identity,
+        prior.min_improvement,
+    );
+    sweep.prefer(&priority);
+    log::info(&format!(
+        "coverage: {} neuron(s) prioritised from older corpus caches (#88)",
+        priority.len()
+    ));
 }
 
 /// Screen-record kind for a sweep skip, from the reason it carries (Issue #93).
@@ -2583,6 +2682,154 @@ mod tests {
         );
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(journal.contains(r#""unchecked_first":true"#), "{journal}");
+    }
+
+    /// Config for the old-corpus priority tests: exactly one neuron per run.
+    fn old_corpus_cfg(
+        creature: std::path::PathBuf,
+        train: std::path::PathBuf,
+        out: std::path::PathBuf,
+        learnings_dir: std::path::PathBuf,
+        old_corpus_first: Option<bool>,
+    ) -> OckhamConfig {
+        OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: out,
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 1,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            old_corpus_first,
+            ..OckhamConfig::default()
+        }
+    }
+
+    /// File one verdict under a corpus identity this run will never load.
+    fn seed_prior_corpus(
+        learnings_dir: &std::path::Path,
+        uuid: &str,
+        outcome: Outcome,
+        unix_secs: u64,
+    ) {
+        let store = LearningsStore::new(learnings_dir, "an-older-corpus".into(), "GRQ-23".into());
+        store
+            .append(&Learning {
+                version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                uuid: uuid.into(),
+                kind: "identity".into(),
+                outcome,
+                unix_secs,
+                host: "GRQ-23".into(),
+                full_delta: None,
+            })
+            .unwrap();
+    }
+
+    /// The one uuid a control run — same seed, no old-corpus hint — screens.
+    fn control_screened(tmp: &std::path::Path, uuids: &[&str]) -> String {
+        let (creature, train) = hidden_paths(tmp, uuids);
+        let learnings_dir = tmp.join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        let cfg = old_corpus_cfg(creature, train, tmp.join("out"), learnings_dir, None);
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let screened = screened_this_run(&store, 0);
+        assert_eq!(screened.len(), 1, "one batch of one: {screened:?}");
+        screened.into_iter().next().unwrap()
+    }
+
+    /// Issue #88: a neuron an older corpus removed is still on the incumbent and
+    /// unchecked here, so it is the first thing this run looks at — ahead of the
+    /// neurons the seeded permutation would otherwise have reached first.
+    #[test]
+    fn an_old_corpus_win_is_screened_before_neurons_with_no_history() {
+        let uuids = ["h_a", "h_b", "h_c", "h_d"];
+        let control = tempfile::tempdir().unwrap();
+        let reached = control_screened(control.path(), &uuids);
+        let target = uuids
+            .iter()
+            .find(|u| **u != reached)
+            .expect("a neuron the control run did not reach");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &uuids);
+        let learnings_dir = tmp.path().join("learnings");
+        seed_prior_corpus(&learnings_dir, target, Outcome::Accepted, 10);
+        let store = screens_store(&learnings_dir, &train);
+        let cfg = old_corpus_cfg(creature, train, tmp.path().join("out"), learnings_dir, None);
+        assert!(
+            cfg.old_corpus_first_enabled(),
+            "--learnings-dir turns it on"
+        );
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        assert_eq!(
+            screened_this_run(&store, 0),
+            vec![target.to_string()],
+            "the old-corpus win must be checked before neurons with no history"
+        );
+    }
+
+    #[test]
+    fn old_corpus_first_off_keeps_the_order_the_run_would_have_had() {
+        let uuids = ["h_a", "h_b", "h_c", "h_d"];
+        let control = tempfile::tempdir().unwrap();
+        let reached = control_screened(control.path(), &uuids);
+        let target = uuids.iter().find(|u| **u != reached).unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &uuids);
+        let learnings_dir = tmp.path().join("learnings");
+        seed_prior_corpus(&learnings_dir, target, Outcome::Accepted, 10);
+        let store = screens_store(&learnings_dir, &train);
+        let cfg = old_corpus_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            learnings_dir,
+            Some(false),
+        );
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        assert_eq!(
+            screened_this_run(&store, 0),
+            vec![reached],
+            "with the priority off the seeded permutation stands"
+        );
+    }
+
+    /// The near miss this must not make: old data is a hint, so a foreign-corpus
+    /// **rejection** must not suppress the candidate the way this corpus's own
+    /// fresh rejection does.
+    #[test]
+    fn a_prior_corpus_rejection_does_not_suppress_this_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for uuid in ["h_a", "h_b"] {
+            seed_prior_corpus(&learnings_dir, uuid, Outcome::Rejected, now);
+        }
+        let store = screens_store(&learnings_dir, &train);
+        let cfg = OckhamConfig {
+            candidates: 2,
+            ..old_corpus_cfg(creature, train, tmp.path().join("out"), learnings_dir, None)
+        };
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        let records = store.load_screens().unwrap();
+        assert_eq!(records.len(), 2, "{records:?}");
+        assert!(
+            records
+                .iter()
+                .all(|s| s.kind != crate::learnings::SCREEN_KIND_KNOWN_FAILURE),
+            "a foreign-corpus rejection must not suppress a candidate: {records:?}"
+        );
     }
 
     /// Config for the coverage-tail tests: a seeded cache and screening on.
@@ -4244,6 +4491,7 @@ mod tests {
             crate::ordering::OrderingConfig::default(),
             true,
             &screens,
+            &PriorHint::none(),
         );
         assert_eq!(
             sweep.order,

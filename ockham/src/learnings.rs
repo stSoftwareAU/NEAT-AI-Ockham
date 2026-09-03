@@ -38,6 +38,16 @@
 //! **read** — never written — so no fleet history is lost. Every `<root>` here
 //! is whichever learnings root the caller passed, so an island's own root has
 //! exactly the same shape.
+//!
+//! Verdicts filed against **older** corpora are read too, but only as a
+//! **priority hint** (Issue #88). [`LearningsStore::load_prior_corpora`] reads
+//! every sibling `corpus-*` directory, and [`prior_corpus_priority`] turns them
+//! into the still-present, still-unchecked uuids the fleet once removed under
+//! earlier training data. Those are checked first because they are the likeliest
+//! to be removable again — and nothing more: they never join
+//! [`LearningsStore::load`], so a foreign-corpus verdict still cannot suppress a
+//! candidate, replay a cut or accept a prune. Every prioritised uuid faces the
+//! sample screen and full-corpus scoring exactly as it would have done last.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -160,6 +170,9 @@ const SCREENS_DIR: &str = "screens";
 /// Read for their fleet history, never written: dropping them would re-create,
 /// once, exactly the coverage reset this change removes.
 const LEGACY_SCREENS_PREFIX: &[u8] = b"screens-";
+
+/// Prefix of the per-corpus verdict directories.
+const CORPUS_DIR_PREFIX: &[u8] = b"corpus-";
 
 /// Which side of a sampled screen a uuid landed on.
 ///
@@ -317,6 +330,38 @@ impl LearningsStore {
         Ok(dirs)
     }
 
+    /// Sibling `corpus-*` directories other than this run's, sorted (Issue #88).
+    ///
+    /// An unreadable root is an error rather than an empty list, for the same
+    /// reason [`Self::legacy_screens_dirs`] treats it as one: silently reading
+    /// no history is indistinguishable from a fleet that has learnt nothing.
+    fn other_corpus_dirs(&self) -> Result<Vec<PathBuf>, String> {
+        if !self.root.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mine = self.corpus_dir();
+        let entries =
+            std::fs::read_dir(&self.root).map_err(|e| format!("{}: {e}", self.root.display()))?;
+        let mut dirs = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", self.root.display()))?;
+            let path = entry.path();
+            if path == mine {
+                continue;
+            }
+            // Matched on bytes for the same reason as `legacy_screens_dirs`: a
+            // directory name that is not valid UTF-8 still holds fleet history.
+            let is_corpus = path
+                .file_name()
+                .is_some_and(|n| n.as_encoded_bytes().starts_with(CORPUS_DIR_PREFIX));
+            if is_corpus && path.is_dir() {
+                dirs.push(path);
+            }
+        }
+        dirs.sort();
+        Ok(dirs)
+    }
+
     /// This host's append-only screen-coverage file.
     pub fn screens_host_path(&self) -> PathBuf {
         self.screens_dir().join(format!("{}.jsonl", self.host))
@@ -334,6 +379,35 @@ impl LearningsStore {
     /// Append one verdict to this host's file.
     pub fn append(&self, learning: &Learning) -> Result<(), String> {
         append_jsonl(&self.corpus_dir(), &self.host_path(), learning)
+    }
+
+    /// Verdicts filed against **other** corpora — a priority hint only (#88).
+    ///
+    /// GRQ regenerates the training corpus before every run, so a prune the
+    /// fleet accepted under earlier training data is never consulted again by
+    /// [`Self::load`], which reads this corpus alone. These records say only
+    /// *this uuid was worth removing once*, which is why they may reorder the
+    /// sweep ([`prior_corpus_priority`]) and may never be mixed into `load`:
+    /// a foreign-corpus verdict must still not suppress, replay or accept
+    /// anything.
+    ///
+    /// A fault in one foreign directory is **warned and skipped** rather than
+    /// failing the load, matching [`Self::load_screens`]: nothing rewrites those
+    /// directories, and one truncated line must not cost the hint from every
+    /// other corpus. An unreadable root is still an error.
+    pub fn load_prior_corpora(&self) -> Result<Vec<Learning>, String> {
+        let keep = |l: &Learning| l.version == LEARNINGS_FORMAT_VERSION;
+        let mut out = Vec::new();
+        for dir in self.other_corpus_dirs()? {
+            match load_jsonl(&dir, keep) {
+                Ok(records) => out.extend(records),
+                Err(e) => crate::log::warn(&format!(
+                    "prior-corpus verdicts unreadable ({e}); skipping {}",
+                    dir.display()
+                )),
+            }
+        }
+        Ok(out)
     }
 
     /// Load every screen record the fleet has filed, whatever corpus it used.
@@ -618,6 +692,46 @@ pub fn ranked_confirmed(
             .then_with(|| a.uuid.cmp(&b.uuid))
     });
     out
+}
+
+/// Still-present uuids an **older** corpus once spoke well of (Issue #88).
+///
+/// The set the sweep checks first: a hidden neuron the fleet removed — or
+/// measured a positive full-corpus delta for — under earlier training data,
+/// that is still on the incumbent and has **not** been screened under
+/// `corpus_identity` yet. It was removable under at least one corpus, so it is
+/// a better first guess than a neuron with no history at all.
+///
+/// A hint, never a verdict. Every uuid returned here still faces the sample
+/// screen and full-corpus scoring; nothing in `prior` may suppress, replay or
+/// accept a cut. Old rejections are simply absent — failure suppression stays
+/// per-corpus, so an old `Rejected` neither promotes nor demotes a neuron.
+///
+/// Ordered by [`ranked_confirmed`], so a host prioritising from the same records
+/// builds the same queue: applied cuts first, then the best measured delta,
+/// with recency and uuid breaking ties.
+///
+/// Screening is cross-corpus (Issue #76) but this filter is not: a uuid already
+/// looked at under *this* corpus needs no priority, while one screened only
+/// under an older corpus — or by a pre-#76 record, which names no corpus — has
+/// still not been tried against the data in hand.
+pub fn prior_corpus_priority(
+    prior: &[Learning],
+    screens: &[Screened],
+    creature: &CreatureExport,
+    corpus_identity: &str,
+    min_improvement: f64,
+) -> Vec<String> {
+    let checked: HashSet<&str> = screens
+        .iter()
+        .filter(|s| s.corpus_identity.as_deref() == Some(corpus_identity))
+        .map(|s| s.uuid.as_str())
+        .collect();
+    ranked_confirmed(prior, creature, min_improvement)
+        .into_iter()
+        .filter(|win| !checked.contains(win.uuid.as_str()))
+        .map(|win| win.uuid)
+        .collect()
 }
 
 /// One full-corpus verdict to file.
@@ -1401,6 +1515,154 @@ mod tests {
         assert!(
             known_failures(&unmeasured, &c, ReplayConfig::default(), now, 1e-6).contains("h_a")
         );
+    }
+
+    /// Issue #88: an old corpus's verdicts are read as a hint, and are still
+    /// kept out of the verdict set that suppresses and replays.
+    #[test]
+    fn prior_corpus_verdicts_are_read_as_a_hint_and_never_as_verdicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = LearningsStore::new(dir.path(), "corpus-a".into(), "GRQ-23".into());
+        old.append(&rec("h_a", Outcome::Accepted, 10)).unwrap();
+        old.append(&confirmed("h_b", 9e-6, 11)).unwrap();
+        let now = LearningsStore::new(dir.path(), "corpus-b".into(), "host-a".into());
+
+        assert!(
+            now.load().unwrap().is_empty(),
+            "a foreign-corpus verdict must never join this corpus's verdicts"
+        );
+        let mut prior: Vec<String> = now
+            .load_prior_corpora()
+            .unwrap()
+            .into_iter()
+            .map(|l| l.uuid)
+            .collect();
+        prior.sort();
+        assert_eq!(prior, vec!["h_a".to_string(), "h_b".to_string()]);
+
+        let c = two_hidden();
+        assert!(
+            known_failures(
+                &now.load().unwrap(),
+                &c,
+                ReplayConfig::default(),
+                1_000_000,
+                1e-6
+            )
+            .is_empty(),
+            "the hint cannot suppress a candidate"
+        );
+    }
+
+    /// This run's own corpus is not its own prior corpus.
+    #[test]
+    fn the_current_corpus_is_excluded_from_the_prior_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        store.append(&rec("h_a", Outcome::Accepted, 10)).unwrap();
+        assert!(store.load_prior_corpora().unwrap().is_empty());
+        assert_eq!(store.load().unwrap().len(), 1);
+    }
+
+    /// Screen records are not verdicts, so `screens/` is not a corpus directory.
+    #[test]
+    fn the_screens_directory_is_never_read_as_a_prior_corpus() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        store
+            .append_screen(&screen("h_a", ScreenOutcomeKind::Winner, 9))
+            .unwrap();
+        write_legacy_screen(
+            dir.path(),
+            "old-corpus",
+            "GRQ-23",
+            &legacy_screen_line("h_b", 5),
+        );
+        assert!(store.load_prior_corpora().unwrap().is_empty());
+    }
+
+    /// One corrupt foreign directory must not cost the hint every other corpus
+    /// carries — the same containment rule the legacy screen union follows.
+    #[test]
+    fn a_corrupt_prior_corpus_directory_costs_only_its_own_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = LearningsStore::new(dir.path(), "corpus-good".into(), "GRQ-23".into());
+        good.append(&rec("h_a", Outcome::Accepted, 10)).unwrap();
+        let broken = dir.path().join("corpus-broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("GRQ-24.jsonl"), "{not json\n").unwrap();
+
+        let now = LearningsStore::new(dir.path(), "corpus-now".into(), "host-a".into());
+        let prior = now.load_prior_corpora().unwrap();
+        assert_eq!(prior.len(), 1, "{prior:?}");
+        assert_eq!(prior[0].uuid, "h_a");
+    }
+
+    #[test]
+    fn a_prior_hint_from_an_absent_root_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path().join("nothing-here"), "corp".into(), "h".into());
+        assert!(store.load_prior_corpora().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_prior_priority_is_still_present_unchecked_and_best_delta_first() {
+        let c = two_hidden();
+        let prior = vec![
+            confirmed("h_a", 2e-6, 10),
+            confirmed("h_b", 9e-6, 11),
+            confirmed("gone", 9e-3, 12),
+            confirmed("h_a", 1e-9, 5), // older and weak: the latest record wins
+        ];
+        assert_eq!(
+            prior_corpus_priority(&prior, &[], &c, "corp", 1e-6),
+            vec!["h_b".to_string(), "h_a".to_string()],
+            "the best measured delta leads, and a departed uuid is not a hint"
+        );
+    }
+
+    /// The filter that makes this a *priority* rather than a re-screen: a uuid
+    /// already looked at under this corpus is dropped, one looked at only under
+    /// an older corpus — or by a pre-#76 record naming none — is kept.
+    #[test]
+    fn a_uuid_already_screened_under_this_corpus_is_not_prioritised() {
+        let c = two_hidden();
+        let prior = vec![
+            rec("h_a", Outcome::Accepted, 10),
+            rec("h_b", Outcome::Accepted, 11),
+        ];
+        let this_corpus = screen("h_a", ScreenOutcomeKind::Loser, 12);
+        assert_eq!(this_corpus.corpus_identity.as_deref(), Some("corp"));
+        let older = Screened {
+            corpus_identity: Some("corpus-old".into()),
+            ..screen("h_b", ScreenOutcomeKind::Loser, 12)
+        };
+        assert_eq!(
+            prior_corpus_priority(&prior, &[this_corpus.clone(), older], &c, "corp", 1e-6),
+            vec!["h_b".to_string()]
+        );
+
+        let pre_76 = Screened {
+            corpus_identity: None,
+            ..screen("h_b", ScreenOutcomeKind::Loser, 12)
+        };
+        assert_eq!(
+            prior_corpus_priority(&prior, &[this_corpus, pre_76], &c, "corp", 1e-6),
+            vec!["h_b".to_string()],
+            "a record naming no corpus was not measured against this one"
+        );
+    }
+
+    /// Old rejections do not deprioritise: failure suppression stays per-corpus,
+    /// so an old `Rejected` simply never enters the hint.
+    #[test]
+    fn an_old_rejection_is_neither_a_hint_nor_a_penalty() {
+        let c = two_hidden();
+        let prior = vec![
+            rec("h_a", Outcome::Rejected, 10),
+            confirmed("h_b", -1e-4, 11),
+        ];
+        assert!(prior_corpus_priority(&prior, &[], &c, "corp", 1e-6).is_empty());
     }
 
     #[test]
