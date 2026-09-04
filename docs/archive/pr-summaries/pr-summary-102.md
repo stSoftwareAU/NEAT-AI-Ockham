@@ -48,8 +48,17 @@ flowchart LR
 
 Backend/CLI only — there is no web interface to screenshot. The evidence is the
 rendered artefacts, asserted verbatim by the tests below, plus the full gate:
-`./quality.sh` passes (shellcheck, codespell, markdownlint, cargo-deny, fmt,
-clippy `-D warnings`, 294 lib tests + integration tests, rustdoc `-D warnings`).
+the gate passes (shellcheck, markdownlint, actionlint, cargo-deny, fmt, clippy
+`-D warnings`, 306 lib tests + integration tests, rustdoc `-D warnings`). The
+`codespell` binary is absent from this container, so that one stage was not run
+locally; CI runs it on every push and its Spell Check job is green.
+
+Rebased onto `Develop` after #113 (Issue #101) landed. Two conflicts, both
+textual: the README bullet — kept #101's "inherits every previous epoch's
+learnings" clause alongside the new epoch-scoped wording — and the
+`ockham_loop` local declarations, where the new `screen_history` index now sits
+beside #101's `prior_records: Vec<HistoricalLearning>`. Crate version re-bumped
+to `0.1.39`, since #101 had taken `0.1.38`.
 
 The block a completed sweep now publishes, from
 `run::tests::a_finished_sweep_then_a_corpus_change_publishes_fresh_epoch_coverage`:
@@ -121,8 +130,9 @@ and found nothing else it could not trace to the issue.
 
 - **violation** — `ockham/Cargo.toml` version not bumped for a binary-affecting
   output change (CONTRIBUTING.md principle 8) — evidence: `ockham/Cargo.toml:3`
-  — reason: fixed here — bumped `0.1.37 → 0.1.38` via `scripts/auto-version.sh`,
-  with `Cargo.lock` updated in the same commit
+  — reason: fixed here — bumped via `scripts/auto-version.sh`, with `Cargo.lock`
+  updated in the same commit; now `0.1.39`, re-bumped after the rebase because
+  #101 shipped `0.1.38`
 - **violation** — commit subject missing the project's `🪒` prefix
   (CONTRIBUTING.md, "Commit messages") — evidence: `git log -1` on the first
   commit of this branch — reason: fixed here — the commit was amended to
