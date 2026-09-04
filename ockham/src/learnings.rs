@@ -39,6 +39,18 @@
 //! is whichever learnings root the caller passed, so an island's own root has
 //! exactly the same shape.
 //!
+//! What that identity on the record is *for* is Issue #100: coverage is only
+//! authoritative for the corpus it was measured against. The training corpus is
+//! extended every few days, and a screen taken against the old one says nothing
+//! about how the neuron behaves under the new data. So the records are all
+//! **kept and read**, and [`current_epoch_screens`] selects the ones filed under
+//! the corpus in hand — the current *screening epoch*. A corpus change starts a
+//! fresh epoch at `0 / hidden`; a repacked corpus with identical content hashes
+//! the same and keeps its coverage; and a host that moves back to an identity it
+//! screened before finds that epoch's records still there, because nothing was
+//! ever cleared. Selecting rather than clearing is what keeps #76's fix intact
+//! while the fleet sits on several live identities at once.
+//!
 //! Verdicts filed against **older** corpora are read too, but only as a
 //! **priority hint** (Issue #88). [`LearningsStore::load_prior_corpora`] reads
 //! every sibling `corpus-*` directory, and [`prior_corpus_priority`] turns them
@@ -236,6 +248,32 @@ impl Screened {
     pub fn is_skipped(&self) -> bool {
         self.kind == SCREEN_KIND_SKIPPED
     }
+
+    /// True when this record was measured against `corpus_identity` (#100).
+    ///
+    /// A pre-#76 record names no corpus, so it belongs to no epoch: it is
+    /// history the fleet can still read, never current-epoch coverage.
+    pub fn in_epoch(&self, corpus_identity: &str) -> bool {
+        self.corpus_identity.as_deref() == Some(corpus_identity)
+    }
+}
+
+/// The records of one screening epoch: those measured against this corpus (#100).
+///
+/// Consumes the loaded history and keeps the current epoch, so coverage and
+/// unchecked-first selection see the corpus in hand and nothing else. Every
+/// other record stays on disk — [`LearningsStore::load_screens`] still returns
+/// it, tagged with the corpus it was measured against — because this invalidates
+/// *coverage authority*, not history.
+///
+/// A neuron the previous epoch recorded as screened, `blocked`
+/// ([`SCREEN_KIND_SKIPPED`]) or [`SCREEN_KIND_KNOWN_FAILURE`] is therefore
+/// unchecked again under a new corpus, and eligible to be visited on its merits.
+pub fn current_epoch_screens(screens: Vec<Screened>, corpus_identity: &str) -> Vec<Screened> {
+    screens
+        .into_iter()
+        .filter(|s| s.in_epoch(corpus_identity))
+        .collect()
 }
 
 /// How many known wins to replay before the random sweep.
@@ -280,6 +318,13 @@ impl LearningsStore {
             corpus_identity,
             host,
         }
+    }
+
+    /// Identity of the corpus this store is reading and writing against.
+    ///
+    /// The screening epoch every record it appends is filed under (#100).
+    pub fn corpus_identity(&self) -> &str {
+        &self.corpus_identity
     }
 
     /// Directory holding this corpus's host files.
@@ -1147,12 +1192,20 @@ mod tests {
         assert!(known_failures(&known, &c, ReplayConfig::default(), 1_000_000, 1e-6).is_empty());
     }
 
-    /// Issue #76: coverage is a fact about the uuid, not about the corpus.
+    /// Issue #76: a corpus change never costs the fleet a screen **record**.
+    ///
+    /// Since #100 those records are no longer current-epoch coverage under the
+    /// new corpus — [`current_epoch_screens`] decides that — but they are still
+    /// read, still attributed to the corpus they were measured against, and
+    /// still there when a host returns to that corpus.
     #[test]
     fn screens_survive_a_corpus_identity_change() {
         let dir = tempfile::tempdir().unwrap();
         let before = LearningsStore::new(dir.path(), "corpus-a".into(), "host-a".into());
-        let s = screen("h_a", ScreenOutcomeKind::Winner, 9);
+        let s = Screened {
+            corpus_identity: Some("corpus-a".into()),
+            ..screen("h_a", ScreenOutcomeKind::Winner, 9)
+        };
         before.append_screen(&s).unwrap();
 
         let after = LearningsStore::new(dir.path(), "corpus-b".into(), "host-a".into());
@@ -1160,7 +1213,16 @@ mod tests {
         assert_eq!(
             loaded.iter().map(|s| s.uuid.as_str()).collect::<Vec<_>>(),
             vec!["h_a"],
-            "a regenerated corpus must not reset screen coverage"
+            "the record must remain readable across a corpus change"
+        );
+        assert!(
+            current_epoch_screens(loaded.clone(), "corpus-b").is_empty(),
+            "it is history under the new corpus, not current-epoch coverage"
+        );
+        assert_eq!(
+            current_epoch_screens(loaded, "corpus-a"),
+            vec![s],
+            "and its own epoch is intact when the host comes back to it"
         );
     }
 
@@ -1688,5 +1750,95 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
         assert!(store.load_screens().unwrap().is_empty());
+    }
+
+    /// A screen record filed under another corpus, kept for history (#100).
+    fn other_epoch(uuid: &str, identity: &str, secs: u64) -> Screened {
+        Screened {
+            corpus_identity: Some(identity.into()),
+            ..screen(uuid, ScreenOutcomeKind::Loser, secs)
+        }
+    }
+
+    /// Issue #100: only the records measured against the corpus in hand are
+    /// current-epoch coverage — whatever they said, and however old they are.
+    #[test]
+    fn the_current_epoch_is_the_records_filed_under_this_corpus() {
+        let history = vec![
+            screen("h_a", ScreenOutcomeKind::Winner, 30),
+            other_epoch("h_b", "corpus-old", 20),
+            Screened {
+                kind: SCREEN_KIND_SKIPPED.into(),
+                version: SCREENS_VISIT_FORMAT_VERSION,
+                ..other_epoch("h_c", "corpus-old", 21)
+            },
+            Screened {
+                kind: SCREEN_KIND_KNOWN_FAILURE.into(),
+                version: SCREENS_VISIT_FORMAT_VERSION,
+                ..other_epoch("h_d", "corpus-old", 22)
+            },
+            Screened {
+                corpus_identity: None,
+                ..screen("h_e", ScreenOutcomeKind::Loser, 10)
+            },
+        ];
+        let epoch = current_epoch_screens(history.clone(), "corp");
+        assert_eq!(
+            epoch.iter().map(|s| s.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["h_a"],
+            "a screened winner, a blocked visit and a known failure of the \
+             previous corpus are all outside this epoch"
+        );
+        assert_eq!(
+            history.len(),
+            5,
+            "the history itself is untouched — this invalidates authority, not records"
+        );
+    }
+
+    /// Coverage is *selected*, never cleared, so an identity a host screened
+    /// before still has its epoch when the host comes back to it.
+    #[test]
+    fn returning_to_an_earlier_corpus_finds_that_epoch_intact() {
+        let history = vec![
+            screen("h_a", ScreenOutcomeKind::Loser, 10),
+            other_epoch("h_b", "corpus-old", 20),
+        ];
+        for (identity, expected) in [("corp", "h_a"), ("corpus-old", "h_b")] {
+            let epoch = current_epoch_screens(history.clone(), identity);
+            assert_eq!(
+                epoch.iter().map(|s| s.uuid.as_str()).collect::<Vec<_>>(),
+                vec![expected],
+                "epoch {identity}"
+            );
+        }
+        assert!(
+            current_epoch_screens(history, "corpus-never-seen").is_empty(),
+            "an identity this host has not screened opens at zero coverage"
+        );
+    }
+
+    /// Every record the store appends is filed under the epoch it is reading,
+    /// so a run's own screens are always in its own epoch.
+    #[test]
+    fn records_a_store_files_belong_to_the_epoch_it_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp-9".into(), "host-a".into());
+        assert_eq!(store.corpus_identity(), "corp-9");
+        let mut known = Vec::new();
+        let filed = file_screens(
+            Some(&store),
+            &[ScreenTry::scored(
+                "h_a",
+                CandidateKind::Ablation,
+                ScreenOutcomeKind::Loser,
+            )],
+            &mut known,
+        );
+        assert_eq!(filed, 1);
+        let loaded = store.load_screens().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].in_epoch("corp-9"), "{:?}", loaded[0]);
+        assert_eq!(current_epoch_screens(loaded, "corp-9").len(), 1);
     }
 }

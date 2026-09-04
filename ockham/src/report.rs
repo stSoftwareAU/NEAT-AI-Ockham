@@ -572,6 +572,7 @@ mod tests {
                 checked: 2,
                 blocked: 0,
                 cut: 0,
+                corpus_identity: None,
             },
         )
         .unwrap();
@@ -585,6 +586,7 @@ mod tests {
                 checked: 3,
                 blocked: 0,
                 cut: 2,
+                corpus_identity: None,
             },
         )
         .unwrap();
@@ -611,6 +613,7 @@ mod tests {
                 checked: 1204,
                 blocked: 0,
                 cut: 7,
+                corpus_identity: None,
             },
         )
         .unwrap();
@@ -644,6 +647,7 @@ mod tests {
                 checked: 4200,
                 blocked: 3000,
                 cut: 7,
+                corpus_identity: None,
             },
         )
         .unwrap();

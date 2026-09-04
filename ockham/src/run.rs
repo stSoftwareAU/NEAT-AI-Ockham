@@ -636,12 +636,21 @@ fn ockham_loop(
         if let Some(s) = store.as_ref() {
             match s.load_screens() {
                 Ok(records) => {
+                    // Coverage is authoritative only for the corpus it was
+                    // measured against (#100): the whole history is read, and
+                    // the epoch of the corpus in hand is what counts as
+                    // coverage. Extending the training data therefore opens a
+                    // fresh epoch at 0/hidden without losing a single record.
+                    let history = records.len();
+                    let epoch = crate::learnings::current_epoch_screens(records, &corpus.identity);
                     log::info(&format!(
-                        "screens: {} record(s) from {} host={host}",
-                        records.len(),
-                        dir.display()
+                        "screens: {} of {history} record(s) from {} are current-epoch \
+                         coverage (corpus {}) host={host}",
+                        epoch.len(),
+                        dir.display(),
+                        corpus.identity
                     ));
-                    screens = records;
+                    screens = epoch;
                 }
                 Err(e) => log::warn(&format!(
                     "screen coverage unreadable ({e}); continuing without it"
@@ -1557,6 +1566,7 @@ fn ockham_loop(
                 checked: cov.checked,
                 blocked: cov.blocked,
                 cut: cov.cut,
+                corpus_identity: Some(corpus.identity.clone()),
             },
         )?;
         // The GRQ-facing commit-description artefacts (Issues #40, #59). A
@@ -1566,6 +1576,7 @@ fn ockham_loop(
             coverage: cov,
             newly_screened,
             winners: winners.has_any().then_some(winners),
+            corpus_identity: Some(corpus.identity.clone()),
         };
         match crate::coverage::write_files(&config.output_dir, &report, config.candidates) {
             Ok(()) => log::detail(&format!(
@@ -2599,6 +2610,10 @@ mod tests {
     }
 
     /// Seed one already-screened record per uuid, dated `unix_secs`.
+    ///
+    /// Filed under the store's own corpus identity: since #100 coverage counts
+    /// the epoch of the corpus in hand, so a fixture naming another corpus
+    /// would be read as history and seed no coverage at all.
     fn seed_screens(store: &LearningsStore, uuids: &[(&str, u64)]) {
         for (uuid, unix_secs) in uuids {
             store
@@ -2609,7 +2624,7 @@ mod tests {
                     outcome: ScreenOutcomeKind::Loser,
                     unix_secs: *unix_secs,
                     host: "t".into(),
-                    corpus_identity: Some("fixture-corpus".into()),
+                    corpus_identity: Some(store.corpus_identity().to_string()),
                 })
                 .unwrap();
         }
@@ -3138,24 +3153,104 @@ mod tests {
         assert_eq!(report.coverage_percent, Some(50.0));
     }
 
-    /// A second training corpus over the same widths, so only the **identity**
-    /// differs from the one [`hidden_paths`] wrote.
-    fn regenerated_corpus(tmp: &std::path::Path) -> std::path::PathBuf {
-        let train = tmp.join("train-regenerated");
+    /// A **repacked** corpus: the same records written to a fresh directory,
+    /// so the authoritative content — and therefore the identity — is identical.
+    fn repacked_corpus(tmp: &std::path::Path) -> std::path::PathBuf {
+        let train = tmp.join("train-repacked");
         std::fs::create_dir(&train).unwrap();
         write_bin_file(
             &train.join("0.bin"),
-            &[(vec![3.0f32], vec![3.0f32]), (vec![4.0], vec![4.0])],
+            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
         )
         .unwrap();
         train
     }
 
-    /// Issue #76: coverage must survive GRQ regenerating the corpus between
-    /// runs. Two runs over one learnings root, second corpus different — the
-    /// second run's coverage must be strictly greater than the first's.
+    /// An **extended** corpus: the fixture's records plus a third, which is what
+    /// the fleet actually does to the training data every few days.
+    fn extended_corpus(tmp: &std::path::Path) -> std::path::PathBuf {
+        let train = tmp.join("train-extended");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[
+                (vec![1.0f32], vec![1.0f32]),
+                (vec![2.0], vec![2.0]),
+                (vec![3.0], vec![3.0]),
+            ],
+        )
+        .unwrap();
+        train
+    }
+
+    /// Screen records in the store grouped by the corpus epoch they name.
+    fn screens_by_epoch(
+        learnings_dir: &std::path::Path,
+    ) -> std::collections::HashMap<String, Vec<String>> {
+        let any = LearningsStore::new(learnings_dir, "any".into(), "t".into());
+        let mut out: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for s in any.load_screens().unwrap() {
+            out.entry(s.corpus_identity.clone().unwrap_or_else(|| "none".into()))
+                .or_default()
+                .push(s.uuid);
+        }
+        for uuids in out.values_mut() {
+            uuids.sort();
+        }
+        out
+    }
+
+    /// Issue #76, kept as the case it was really about: GRQ regenerating the
+    /// corpus must not cost the fleet its coverage. Rewritten for #100 — what
+    /// makes it the *same* corpus is identical authoritative content, which
+    /// hashes to the same identity, so the second run stays in the same epoch
+    /// and its coverage is cumulative.
     #[test]
-    fn a_second_run_against_a_regenerated_corpus_advances_fleet_coverage() {
+    fn a_repacked_corpus_with_identical_content_keeps_its_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let learnings_dir = tmp.path().join("learnings");
+
+        let first = coverage_files_cfg(
+            creature.clone(),
+            train.clone(),
+            tmp.path().join("out-1"),
+            Some(learnings_dir.clone()),
+        );
+        establish_run(&first, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_eq!(
+            coverage_json(&first.output_dir).checked,
+            2,
+            "one batch of two candidates"
+        );
+
+        let repacked = repacked_corpus(tmp.path());
+        assert_eq!(
+            corpus_identity(&repacked),
+            corpus_identity(&train),
+            "identical content must be identified as the same corpus"
+        );
+        let second = coverage_files_cfg(
+            creature,
+            repacked,
+            tmp.path().join("out-2"),
+            Some(learnings_dir),
+        );
+        establish_run(&second, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        assert_eq!(
+            coverage_json(&second.output_dir).checked,
+            4,
+            "a repack is the same epoch: both batches must be counted"
+        );
+    }
+
+    /// Issue #100: extending the training corpus starts a fresh screening
+    /// epoch. Coverage reports from zero, every hidden neuron — the two the
+    /// previous epoch checked included — is eligible to be visited again, and
+    /// the previous epoch's records are still in the store, still named.
+    #[test]
+    fn an_extended_corpus_starts_a_new_epoch_and_keeps_the_old_records() {
         let tmp = tempfile::tempdir().unwrap();
         let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
         let learnings_dir = tmp.path().join("learnings");
@@ -3170,28 +3265,102 @@ mod tests {
         let first_cov = coverage_json(&first.output_dir);
         assert_eq!(first_cov.checked, 2, "one batch of two candidates");
 
-        let regenerated = regenerated_corpus(tmp.path());
+        let extended = extended_corpus(tmp.path());
         assert_ne!(
-            corpus_identity(&regenerated),
+            corpus_identity(&extended),
             corpus_identity(&train),
-            "the fixture must actually change the corpus identity"
+            "an extended corpus is a different corpus"
         );
         let second = coverage_files_cfg(
             creature,
-            regenerated,
+            extended.clone(),
             tmp.path().join("out-2"),
-            Some(learnings_dir),
+            Some(learnings_dir.clone()),
         );
-        establish_run(&second, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
-        let second_cov = coverage_json(&second.output_dir);
+        let second_run = establish_run(&second, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
 
-        assert!(
-            second_cov.checked > first_cov.checked,
-            "coverage reset when the corpus identity changed: {} then {}",
-            first_cov.checked,
-            second_cov.checked
+        let second_cov = coverage_json(&second.output_dir);
+        assert_eq!(
+            second_cov.checked, 2,
+            "the new epoch counts its own batch alone, not the old corpus's"
         );
-        assert_eq!(second_cov.checked, 4, "both batches must be counted");
+        assert_eq!(second_cov.checkable, 4, "every hidden neuron is checkable");
+        assert_eq!(
+            second_run.newly_screened, 2,
+            "a uuid checked under the old corpus is new coverage under the new one"
+        );
+
+        let epochs = screens_by_epoch(&learnings_dir);
+        assert_eq!(epochs.len(), 2, "{epochs:?}");
+        let old = &epochs[&corpus_identity(&train)];
+        let new = &epochs[&corpus_identity(&extended)];
+        assert_eq!(old.len(), 2, "the previous epoch's records are still there");
+        assert_eq!(
+            old, new,
+            "the neurons the old epoch checked are eligible again: {epochs:?}"
+        );
+
+        // The artefact names the epoch its figures belong to, so `100%` can be
+        // read as "100% of this corpus".
+        let json =
+            std::fs::read_to_string(second.output_dir.join(crate::coverage::COVERAGE_JSON_FILE))
+                .unwrap();
+        let report: crate::coverage::CoverageReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            report.corpus_identity.as_deref(),
+            Some(corpus_identity(&extended).as_str())
+        );
+    }
+
+    /// The neurons a previous epoch could propose nothing for — `blocked`, and
+    /// a standing full-corpus failure — are unchecked again under a new corpus,
+    /// so a new epoch never opens already claiming coverage it has not measured.
+    #[test]
+    fn a_blocked_or_failed_neuron_is_eligible_again_in_the_new_epoch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, train) = hidden_paths(tmp.path(), &["h_a", "h_b"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let old = screens_store(&learnings_dir, &train);
+        for (uuid, kind) in [
+            ("h_a", crate::learnings::SCREEN_KIND_SKIPPED),
+            ("h_b", crate::learnings::SCREEN_KIND_KNOWN_FAILURE),
+        ] {
+            old.append_screen(&Screened {
+                version: crate::learnings::SCREENS_VISIT_FORMAT_VERSION,
+                uuid: uuid.into(),
+                kind: kind.into(),
+                outcome: ScreenOutcomeKind::Loser,
+                unix_secs: 10,
+                host: "t".into(),
+                corpus_identity: Some(old.corpus_identity().to_string()),
+            })
+            .unwrap();
+        }
+        let creature = hidden_creature(&["h_a", "h_b"]);
+        let history = old.load_screens().unwrap();
+        let before = crate::coverage::coverage(&creature, &HashSet::new(), &history, 0);
+        assert_eq!(before.checked, 2, "both were visited under the old corpus");
+        assert_eq!(before.blocked, 1);
+
+        let extended = extended_corpus(tmp.path());
+        let new = screens_store(&learnings_dir, &extended);
+        let epoch = crate::learnings::current_epoch_screens(
+            new.load_screens().unwrap(),
+            new.corpus_identity(),
+        );
+        let after = crate::coverage::coverage(&creature, &HashSet::new(), &epoch, 0);
+        assert_eq!(after.checked, 0, "neither is checked under the new corpus");
+        assert_eq!(after.blocked, 0);
+        assert_eq!(
+            after.unchecked(),
+            2,
+            "both are eligible to be visited again"
+        );
+        assert_eq!(
+            new.load_screens().unwrap().len(),
+            2,
+            "and both records are still readable"
+        );
     }
 
     fn corpus_identity(train: &std::path::Path) -> String {
@@ -4506,7 +4675,9 @@ mod tests {
         let (creature, train) = two_hidden_paths(tmp.path());
         let learnings_dir = tmp.path().join("learnings");
         let store = screens_store(&learnings_dir, &train);
-        // h_b was looked at longest ago, so it is the stalest of the two.
+        // h_b was looked at longest ago, so it is the stalest of the two. Both
+        // are filed under the run's own corpus, so they are current-epoch
+        // coverage rather than history (#100).
         for (uuid, unix_secs) in [("h_a", 200u64), ("h_b", 100)] {
             store
                 .append_screen(&Screened {
@@ -4516,7 +4687,7 @@ mod tests {
                     outcome: ScreenOutcomeKind::Loser,
                     unix_secs,
                     host: "seed".into(),
-                    corpus_identity: None,
+                    corpus_identity: Some(store.corpus_identity().to_string()),
                 })
                 .unwrap();
         }
