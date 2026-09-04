@@ -767,6 +767,120 @@ mod tests {
         assert_eq!(old.blocked, Some(0), "absent means none, not a failed read");
     }
 
+    /// Issue #103: the breakdown reaches `report` too, and the dominant
+    /// category is named — that is the figure the next proposal path is aimed
+    /// at, and reading it out of the journal must not need a live run.
+    #[test]
+    fn the_report_names_the_blocked_breakdown_and_its_dominant_category() {
+        use crate::blocked::{BlockedBreakdown, BlockedReason};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        let mut reasons = BlockedBreakdown::default();
+        for _ in 0..380 {
+            reasons.add(BlockedReason::AggregateSquash);
+        }
+        for _ in 0..32 {
+            reasons.add(BlockedReason::MissingActivation);
+        }
+        journal::append(
+            &path,
+            &Event::Coverage {
+                blocked_by_reason: reasons,
+                hidden: 5013,
+                tagged: 0,
+                checkable: 5013,
+                checked: 4200,
+                blocked: 412,
+                cut: 0,
+                corpus_identity: Some("corp-aaaa1111".into()),
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.blocked, Some(412));
+        assert_eq!(
+            report.blocked_by_reason.map(|b| b.total()),
+            Some(412),
+            "the breakdown accounts for every blocked uuid"
+        );
+        assert_eq!(
+            report.dominant_blocked_reason.as_deref(),
+            Some("aggregate-squash")
+        );
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"aggregateSquash\":380"), "{json}");
+    }
+
+    /// The historical half of Issue #103: one entry per screening epoch, each
+    /// holding that epoch's freshest breakdown, so how the blocked categories
+    /// moved across corpus changes is readable from the journals alone.
+    #[test]
+    fn blocked_reasons_are_reported_per_epoch_across_corpus_changes() {
+        use crate::blocked::{BlockedBreakdown, BlockedReason};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        let breakdown = |reason: BlockedReason, n: usize| {
+            let mut out = BlockedBreakdown::default();
+            for _ in 0..n {
+                out.add(reason);
+            }
+            out
+        };
+        let coverage = |identity: &str, blocked: usize, reasons: BlockedBreakdown| Event::Coverage {
+            blocked_by_reason: reasons,
+            hidden: 100,
+            tagged: 0,
+            checkable: 100,
+            checked: 90,
+            blocked,
+            cut: 0,
+            corpus_identity: Some(identity.into()),
+        };
+        // Two runs under the old corpus, then one under the new: the first
+        // epoch keeps its freshest figures rather than a second row.
+        journal::append(
+            &path,
+            &coverage("corp-old", 40, breakdown(BlockedReason::AggregateSquash, 40)),
+        )
+        .unwrap();
+        journal::append(
+            &path,
+            &coverage("corp-old", 30, breakdown(BlockedReason::AggregateSquash, 30)),
+        )
+        .unwrap();
+        journal::append(
+            &path,
+            &coverage("corp-new", 5, breakdown(BlockedReason::MissingActivation, 5)),
+        )
+        .unwrap();
+
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.blocked_epochs.len(), 2, "{:?}", report.blocked_epochs);
+        assert_eq!(
+            report.blocked_epochs[0].corpus_identity.as_deref(),
+            Some("corp-old")
+        );
+        assert_eq!(report.blocked_epochs[0].blocked, 30, "the freshest snapshot");
+        assert_eq!(
+            report.blocked_epochs[0].blocked_by_reason.aggregate_squash,
+            30
+        );
+        assert_eq!(
+            report.blocked_epochs[1].corpus_identity.as_deref(),
+            Some("corp-new")
+        );
+        assert_eq!(
+            report.blocked_epochs[1].blocked_by_reason.missing_activation,
+            5,
+            "the new epoch is its own row, never folded into the old one"
+        );
+        // The current-epoch figures stay the latest snapshot, as before.
+        assert_eq!(report.blocked, Some(5));
+        assert_eq!(report.corpus_identity.as_deref(), Some("corp-new"));
+    }
+
     /// Issue #102: `report` names the epoch its coverage figures belong to, and
     /// says whether that sweep finished — so a `100%` read out of a journal is
     /// readable as "100% of that corpus", and a later epoch replaces both.
