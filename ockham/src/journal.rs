@@ -172,6 +172,29 @@ pub enum Event {
         #[serde(default)]
         elapsed_ms: u64,
     },
+    /// Estimated versus actual structural saving of an accepted cut (#106).
+    ///
+    /// The cascade dry-run that ranked the candidate is a topology-only
+    /// prediction; this is what the accepted creature actually shed. Recorded
+    /// per accept so the prediction can be audited against the outcome instead
+    /// of being trusted — a ranking signal that drifts from what the razor
+    /// really removes is a ranking signal to stop paying for.
+    Cascade {
+        /// Hidden neurons the accepted winner was asked to cut.
+        cuts: usize,
+        /// Hidden neurons the dry-run predicted, requested plus cascade.
+        estimated_hidden: usize,
+        /// Synapses the dry-run predicted.
+        estimated_synapses: usize,
+        /// Growth units the dry-run predicted.
+        estimated_growth_units: f64,
+        /// Hidden neurons the accepted creature actually removed.
+        actual_hidden: usize,
+        /// Synapses the accepted creature actually removed.
+        actual_synapses: usize,
+        /// Growth units the accepted creature actually removed.
+        actual_growth_units: f64,
+    },
     /// Cohort sizing against the wall clock (Issue #58).
     ///
     /// Written after every full cohort so `--report` can show whether runs are

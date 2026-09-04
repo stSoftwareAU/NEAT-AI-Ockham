@@ -2070,6 +2070,43 @@ struct StampedAccept {
     checksum: String,
 }
 
+/// Journal what the cascade dry-run predicted beside what the accept removed.
+///
+/// The prediction is topology-only and the accepted creature is whatever the
+/// scorer actually preferred — an IDENTITY collapse, a constant substitution
+/// that keeps the edge, or a bundle — so the two legitimately differ. Recording
+/// both is what makes the ranking signal auditable rather than assumed
+/// (Issue #106).
+fn journal_cascade(
+    path: &std::path::Path,
+    before: &CreatureExport,
+    after: &CreatureExport,
+    uuids: &[String],
+) -> Result<(), String> {
+    let estimate = crate::cascade::estimate_cut(before, uuids);
+    let opening = crate::ablation::StructureSnapshot::of(before);
+    let closing = crate::ablation::StructureSnapshot::of(after);
+    let actual_growth_units = opening.growth_units - closing.growth_units;
+    log::detail(&format!(
+        "cascade: estimated {:.1} growth units, removed {actual_growth_units:.1}",
+        estimate.growth_units
+    ));
+    journal::append(
+        path,
+        &Event::Cascade {
+            cuts: uuids.len(),
+            estimated_hidden: estimate.hidden_neurons(),
+            estimated_synapses: estimate.synapses,
+            estimated_growth_units: estimate.growth_units,
+            actual_hidden: opening
+                .hidden_neurons
+                .saturating_sub(closing.hidden_neurons),
+            actual_synapses: opening.synapses.saturating_sub(closing.synapses),
+            actual_growth_units,
+        },
+    )
+}
+
 /// Write the tagged creature to `best.json` and to the winners archive.
 fn publish_best(
     config: &OckhamConfig,
@@ -2119,6 +2156,15 @@ fn apply_local_win(
     };
     *current_score = win.candidate.score;
     *accepts += 1;
+    // Before the incumbent is replaced: the estimate that ranked this cut was
+    // made against the creature being cut, so it is checked against the same
+    // one (Issue #106).
+    journal_cascade(
+        &config.output_dir.join("experiments.jsonl"),
+        &incumbent.creature,
+        &win.creature,
+        &win.candidate.uuids,
+    )?;
     meta.retain_neurons(&win.creature);
     // Coverage over the creature we are about to publish, so the tag agrees
     // with the run's end-of-loop coverage journal. Absent without a screen
@@ -2563,6 +2609,54 @@ mod tests {
             !best.contains("h_a") || !best.contains("h_b"),
             "a tagged neuron must have been cut: {best}"
         );
+    }
+
+    /// Issue #106: a cut is ranked on a topology-only prediction, so the run
+    /// has to record what that prediction was worth once the scorer accepted
+    /// it. Without the record the ranking signal can drift from the structure
+    /// the razor really removes and nothing says so.
+    #[test]
+    fn an_accepted_cut_journals_the_estimated_cascade_beside_the_actual_saving() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(2),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            ordering: crate::ordering::Ordering::CascadeSaving,
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert!(run.accepts >= 1, "stop={}", run.stop_reason);
+        let journal_path = cfg.output_dir.join("experiments.jsonl");
+        let journal = std::fs::read_to_string(&journal_path).unwrap();
+        assert!(journal.contains(r#""record":"cascade""#), "{journal}");
+        assert!(journal.contains("estimated_growth_units"), "{journal}");
+        let report = crate::report::summarise(&[&journal_path]).unwrap();
+        let estimated = report
+            .cascade_estimated_growth_units
+            .expect("an accept must record its estimate");
+        let actual = report
+            .cascade_actual_growth_units
+            .expect("an accept must record what it removed");
+        assert!(estimated > 0.0 && actual > 0.0, "{estimated} vs {actual}");
+        // Under `1.0` because the winner was an exact IDENTITY collapse: it
+        // rewires `input-0 → output-0` where the topology dry-run predicted
+        // both synapses would go. Recording the difference is the point — the
+        // estimate ranks candidates, it does not describe the transform the
+        // scorer ends up accepting.
+        let ratio = report.cascade_estimate_ratio.expect("estimate and actual");
+        assert!(ratio > 0.5 && ratio <= 1.0, "{ratio}: {journal}");
     }
 
     #[test]

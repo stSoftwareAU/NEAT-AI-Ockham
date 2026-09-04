@@ -1070,6 +1070,8 @@ scoring exactly as it does under the random control.
 | `low-fan-out` | Fewest outgoing synapses (smallest structural blast radius). |
 | `high-growth-saving` | Largest growth-unit saving per removed structure. |
 | `identity-first` | `IDENTITY` neurons — exact-fold opportunities. |
+| `cascade-saving` | Largest **cascade-aware** growth-unit saving; see [Cascade-aware structural saving](#cascade-aware-structural-saving). |
+| `cascade-risk-ratio` | Least `mean_abs_activation × Σ abs(outgoing weight)` per cascade growth unit. |
 
 Every strategy starts from the seeded random permutation and then applies a
 **stable** sort by its ranking key, so ties keep an unbiased random order and
@@ -1102,6 +1104,76 @@ flowchart LR
 The default ordering changes only if benchmark evidence shows better
 scorer-verified improvement economics. Until then `random` stays the default and
 remains available as the control for every comparison.
+
+## Cascade-aware structural saving
+
+Cutting one hidden neuron strands structure on both sides of it. A neuron that
+fed only the cut neuron now feeds nothing; a neuron the cut neuron was the only
+source for now folds to a constant. The ablation already removes that structure
+recursively **after** a candidate is built — `cascade-saving` asks how much it
+would remove **before** any scorer time is spent on the candidate.
+
+The dry run is topology only and never touches the incumbent: it indexes the
+creature once, then applies the same two exact rules the cleanup applies until
+nothing more is strandable.
+
+```mermaid
+flowchart LR
+    C[incumbent] --> I[index once per creature]
+    I --> D["dry-run cut of neuron N"]
+    D --> R1{"non-output with<br/>no outgoing?"}
+    D --> R2{"hidden with<br/>no incoming?"}
+    R1 -->|remove| D
+    R2 -->|"fold to constant,<br/>remove"| D
+    D --> E["estimate: hidden, folded,<br/>synapses, growth_units"]
+    E --> O[ordering key]
+```
+
+Both rules only ever remove structure, so the fixpoint does not depend on the
+order they are applied in: the estimate for a creature and a cut is the same on
+every run and under any listing order. Estimates are built once per creature and
+reused for every candidate, so ranking a whole sweep costs one index, not one
+clone per neuron.
+
+`high-growth-saving` counts only the neuron and the synapses touching it, so a
+neuron with many edges outranks a chain head with two — even when cutting the
+chain head takes five neurons with it. `cascade-saving` sees the chain.
+`cascade-risk-ratio` divides the downstream sensitivity
+`mean_abs_activation × Σ abs(outgoing weight)` by the cascade saving, so a quiet
+cut that removes a lot of structure is tried before a loud one that removes
+little.
+
+```bash
+cargo run --release --example cascade_ordering_bench
+```
+
+On a synthetic creature of 2,000 lone hidden neurons and 200 five-neuron chains,
+the first 200 visits are worth:
+
+| `--ordering` | Growth units in 200 visits | Per visit |
+|---|---|---|
+| `random` | 543.8 | 2.72 |
+| `high-growth-saving` | 260.0 | 1.30 |
+| `cascade-saving` | 1120.0 | 5.60 |
+| `cascade-risk-ratio` | 1120.0 | 5.60 |
+
+The estimate is a **prioritisation signal only**. It reasons about topology and
+knows nothing of aggregate squashes, typed synapses or behaviour: a candidate it
+ranks first can still be blocked when it is proposed, and can still lose. Only
+the full-corpus scorer accepts a cut — so every accept journals what the dry-run
+predicted beside what the accepted creature actually removed:
+
+```json
+{"record":"cascade","cuts":1,"estimated_hidden":3,"estimated_synapses":4,
+ "estimated_growth_units":3.4,"actual_hidden":3,"actual_synapses":4,
+ "actual_growth_units":3.4}
+```
+
+`report` folds those records into `cascadeEstimatedGrowthUnits`,
+`cascadeActualGrowthUnits` and `cascadeEstimateRatio`. A ratio below `1.0` means
+the dry run over-promised — an exact IDENTITY collapse rewires an edge the
+topology said would go — and a signal that drifts from what the razor really
+removes is a signal to stop paying for.
 
 ## Outputs
 
@@ -1138,6 +1210,11 @@ Useful measures include:
 - time to the first authoritative local winner (`firstWinMs`);
 - candidates screened before that first win (`candidatesBeforeFirstWin`);
 - authoritative local accepts per hour (`acceptsPerHour`);
+- confirmed cuts and growth units removed per hour (`cutsPerHour`,
+  `growthUnitsSavedPerHour`) — the two economics an ordering is judged on;
+- estimated versus actual cascade saving across accepted cuts
+  (`cascadeEstimatedGrowthUnits`, `cascadeActualGrowthUnits`,
+  `cascadeEstimateRatio`);
 - sample and full scorer calls consumed (`screenCalls`, `fullCalls`);
 - screen-coverage records filed (`screened`);
 - sweeps rebuilt after reaching 100% of the hidden neurons (`sweepRestarts`);
@@ -1160,6 +1237,17 @@ neat_ai_ockham creature.json training/ --seed 42 --ordering low-variance \
   --output-dir runs/low-variance
 neat_ai_ockham report runs/control/experiments.jsonl
 neat_ai_ockham report runs/low-variance/experiments.jsonl
+```
+
+The same recipe benchmarks the cascade orderings against the edge-count ranking
+they replace. `cutsPerHour` and `growthUnitsSavedPerHour` are what to compare:
+
+```bash
+for o in random high-growth-saving cascade-saving cascade-risk-ratio; do
+  neat_ai_ockham creature.json training/ --seed 42 --ordering "$o" \
+    --output-dir "runs/$o"
+  neat_ai_ockham report "runs/$o/experiments.jsonl"
+done
 ```
 
 ## Safety invariants
@@ -1239,6 +1327,7 @@ NEAT-AI-Ockham/
 │       ├── learnings.rs       # fleet prune-verdict cache + screen coverage
 │       ├── coverage.rs       # checked/total/percent + coverage.txt / coverage.json
 │       ├── ordering.rs        # named candidate ordering strategies
+│       ├── cascade.rs         # topology-only cascade dry-run for ordering
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs
