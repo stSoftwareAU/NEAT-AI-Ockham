@@ -2,18 +2,21 @@
 //!
 //! Every candidate the sweep visits costs scorer time, so what an ordering is
 //! worth is the structure the razor gets to remove per visit. This measures
-//! exactly that: for a fixed number of visits it sums the growth units the
-//! cascade dry-run says those cuts would remove, under each ordering, on a
-//! creature that carries both lone neurons and chains of structure that only
+//! exactly that, on a creature carrying both lone neurons and chains that only
 //! come out together.
 //!
-//! It also times building the order, because a ranking nobody can afford is
-//! not a ranking: the dry-run indexes the creature once and estimates every
-//! hidden neuron from that index.
+//! The score is **not** the cascade estimate — scoring a ranking by its own
+//! ranking key proves nothing. Each visited neuron is put through the real
+//! [`neat_ai_ockham::ablate_mean`], recursive cleanup and all, and what that
+//! transform actually removes is what is summed.
+//!
+//! Building the order is timed too, because a ranking nobody can afford is not
+//! a ranking: the dry run indexes the creature once and estimates every hidden
+//! neuron from that index.
 
 use std::time::Instant;
 
-use neat_ai_ockham::cascade::CascadeIndex;
+use neat_ai_ockham::ablate_mean;
 use neat_ai_ockham::fixtures::{creature, neuron, synapse};
 use neat_ai_ockham::ordering::{Ordering, OrderingConfig, hidden_order};
 use neat_ai_ockham::stats::{ActivationStats, NeuronStats};
@@ -89,14 +92,12 @@ fn main() {
 
     let creature = mixed_creature(INPUTS, LONE, CHAINS, LENGTH);
     let stats = stats_for(&creature);
-    let index = CascadeIndex::new(&creature);
-    let estimates = index.hidden_estimates();
     println!(
         "creature: {} neurons, {} synapses ({LONE} lone, {CHAINS} chains of {LENGTH})",
         creature.neurons.len(),
         creature.synapses.len()
     );
-    println!("first {VISITS} visits, by ordering:");
+    println!("first {VISITS} visits, scored by what ablate_mean really removes:");
 
     for strategy in [
         Ordering::Random,
@@ -107,21 +108,21 @@ fn main() {
         let started = Instant::now();
         let order = hidden_order(&creature, &stats, OrderingConfig::new(strategy), 42);
         let build_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let saving: f64 = order
-            .iter()
-            .take(VISITS)
-            .filter_map(|uuid| estimates.get(uuid.as_str()))
-            .map(|e| e.growth_units)
-            .sum();
-        let hidden: usize = order
-            .iter()
-            .take(VISITS)
-            .filter_map(|uuid| estimates.get(uuid.as_str()))
-            .map(|e| e.hidden_neurons())
-            .sum();
+        let (mut saving, mut hidden, mut blocked) = (0.0f64, 0usize, 0usize);
+        for uuid in order.iter().take(VISITS) {
+            match ablate_mean(&creature, uuid, 0.1, None) {
+                Ok(ablation) => {
+                    saving += ablation.before.growth_units - ablation.after.growth_units;
+                    hidden += ablation.before.hidden_neurons - ablation.after.hidden_neurons;
+                }
+                // A visit the razor cannot propose for buys nothing, which is
+                // exactly what a ranking is supposed to avoid spending on.
+                Err(_) => blocked += 1,
+            }
+        }
         println!(
-            "  {:<20} {saving:8.1} growth units, {hidden:5} hidden neurons \
-             ({:.2} units per visit, order built in {build_ms:.1}ms)",
+            "  {:<20} {saving:8.1} growth units, {hidden:5} hidden neurons, \
+             {blocked:3} blocked ({:.2} units per visit, order built in {build_ms:.1}ms)",
             strategy.name(),
             saving / VISITS as f64,
         );

@@ -1132,8 +1132,14 @@ flowchart LR
 Both rules only ever remove structure, so the fixpoint does not depend on the
 order they are applied in: the estimate for a creature and a cut is the same on
 every run and under any listing order. Estimates are built once per creature and
-reused for every candidate, so ranking a whole sweep costs one index, not one
-clone per neuron.
+reused for every candidate, so ranking a whole sweep costs one index and no
+clone of the creature.
+
+Structure the transform would refuse is predicted too. An aggregate or unknown
+squash, an aggregate fold target and a typed edge each make the ablation fail
+closed, so a cut the razor could never build is reported as saving nothing and
+ranks last — it keeps its place in the sweep, because the constant substitution
+may still propose a candidate for it.
 
 `high-growth-saving` counts only the neuron and the synapses touching it, so a
 neuron with many edges outranks a chain head with two — even when cutting the
@@ -1148,7 +1154,8 @@ cargo run --release --example cascade_ordering_bench
 ```
 
 On a synthetic creature of 2,000 lone hidden neurons and 200 five-neuron chains,
-the first 200 visits are worth:
+the first 200 visits are worth — scored by putting every visited neuron through
+the real ablation and its recursive cleanup, not by the ranking key:
 
 | `--ordering` | Growth units in 200 visits | Per visit |
 |---|---|---|
@@ -1157,6 +1164,11 @@ the first 200 visits are worth:
 | `cascade-saving` | 1120.0 | 5.60 |
 | `cascade-risk-ratio` | 1120.0 | 5.60 |
 
+Building the order is a once-per-sweep cost, and the dry run pays for itself
+against the ranking it replaces: at 7,000 hidden neurons and 19,200 synapses,
+`cascade-saving` builds its order in 184 ms against `high-growth-saving`'s
+232 ms.
+
 The estimate is a **prioritisation signal only**. It reasons about topology and
 knows nothing of aggregate squashes, typed synapses or behaviour: a candidate it
 ranks first can still be blocked when it is proposed, and can still lose. Only
@@ -1164,16 +1176,19 @@ the full-corpus scorer accepts a cut — so every accept journals what the dry-r
 predicted beside what the accepted creature actually removed:
 
 ```json
-{"record":"cascade","cuts":1,"estimated_hidden":3,"estimated_synapses":4,
- "estimated_growth_units":3.4,"actual_hidden":3,"actual_synapses":4,
- "actual_growth_units":3.4}
+{"record":"cascade","kind":"individual","cuts":1,"estimated_hidden":3,
+ "estimated_synapses":4,"estimated_growth_units":3.4,"actual_hidden":3,
+ "actual_synapses":4,"actual_growth_units":3.4}
 ```
 
-`report` folds those records into `cascadeEstimatedGrowthUnits`,
-`cascadeActualGrowthUnits` and `cascadeEstimateRatio`. A ratio below `1.0` means
-the dry run over-promised — an exact IDENTITY collapse rewires an edge the
-topology said would go — and a signal that drifts from what the razor really
-removes is a signal to stop paying for.
+`report` folds those records into `cascadeAccepts`,
+`cascadeEstimatedGrowthUnits`, `cascadeActualGrowthUnits` and
+`cascadeEstimateRatio`. A ratio below `1.0` means the accept removed less than
+the dry run predicted — an exact IDENTITY collapse rewires an edge the topology
+said would go, and a constant substitution keeps one — and a signal that drifts
+from what the razor really removes is a signal to stop paying for. The record is
+written on every accept, whatever ordering the run used, so the control runs
+measure the predictor too.
 
 ## Outputs
 
@@ -1213,8 +1228,8 @@ Useful measures include:
 - confirmed cuts and growth units removed per hour (`cutsPerHour`,
   `growthUnitsSavedPerHour`) — the two economics an ordering is judged on;
 - estimated versus actual cascade saving across accepted cuts
-  (`cascadeEstimatedGrowthUnits`, `cascadeActualGrowthUnits`,
-  `cascadeEstimateRatio`);
+  (`cascadeAccepts`, `cascadeEstimatedGrowthUnits`,
+  `cascadeActualGrowthUnits`, `cascadeEstimateRatio`);
 - sample and full scorer calls consumed (`screenCalls`, `fullCalls`);
 - screen-coverage records filed (`screened`);
 - sweeps rebuilt after reaching 100% of the hidden neurons (`sweepRestarts`);

@@ -151,6 +151,12 @@ pub struct Report {
     pub cuts_per_hour: Option<f64>,
     /// Growth units removed per hour of loop wall-clock (Issue #106).
     pub growth_units_saved_per_hour: Option<f64>,
+    /// Accepted winners carrying an estimated-versus-actual record (#106).
+    ///
+    /// Beside the two totals so a missing ratio is never ambiguous: `0` says no
+    /// accept was recorded, and a non-zero count with no ratio says the
+    /// accepted cuts were predicted to save nothing.
+    pub cascade_accepts: u64,
     /// Growth units the cascade dry-run predicted across accepted cuts (#106).
     pub cascade_estimated_growth_units: Option<f64>,
     /// Growth units those accepted cuts actually removed (Issue #106).
@@ -236,6 +242,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         growth_units_saved: None,
         cuts_per_hour: None,
         growth_units_saved_per_hour: None,
+        cascade_accepts: 0,
         cascade_estimated_growth_units: None,
         cascade_actual_growth_units: None,
         cascade_estimate_ratio: None,
@@ -244,7 +251,6 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
     };
     let mut cascade_estimated = 0.0f64;
     let mut cascade_actual = 0.0f64;
-    let mut cascade_accepts = 0u64;
     let mut candidates_seen = 0u64;
     for path in paths {
         let path = path.as_ref();
@@ -291,7 +297,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                 } => {
                     cascade_estimated += estimated_growth_units;
                     cascade_actual += actual_growth_units;
-                    cascade_accepts += 1;
+                    report.cascade_accepts += 1;
                 }
                 Event::CoverageTail { batches, .. } => report.coverage_tail_batches += batches,
                 Event::Screen { .. } => report.screen_calls += 1,
@@ -458,7 +464,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         report.cuts_per_hour = Some(report.accepted_cuts as f64 * per_hour);
         report.growth_units_saved_per_hour = report.growth_units_saved.map(|g| g * per_hour);
     }
-    if cascade_accepts > 0 {
+    if report.cascade_accepts > 0 {
         report.cascade_estimated_growth_units = Some(cascade_estimated);
         report.cascade_actual_growth_units = Some(cascade_actual);
         if cascade_estimated > 0.0 {
@@ -699,6 +705,7 @@ mod tests {
         journal::append(
             &path,
             &Event::Cascade {
+                kind: "individual".into(),
                 cuts: 1,
                 estimated_hidden: 3,
                 estimated_synapses: 4,
@@ -712,6 +719,7 @@ mod tests {
         journal::append(
             &path,
             &Event::Cascade {
+                kind: "individual".into(),
                 cuts: 1,
                 estimated_hidden: 2,
                 estimated_synapses: 6,
@@ -725,6 +733,7 @@ mod tests {
         )
         .unwrap();
         let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.cascade_accepts, 2);
         assert_eq!(report.cascade_estimated_growth_units, Some(6.0));
         assert_eq!(report.cascade_actual_growth_units, Some(4.8));
         let ratio = report.cascade_estimate_ratio.expect("two accepted cuts");
@@ -737,8 +746,39 @@ mod tests {
         let path = tmp.path().join("experiments.jsonl");
         journal::append(&path, &start(Ordering::Random)).unwrap();
         let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.cascade_accepts, 0);
         assert_eq!(report.cascade_estimated_growth_units, None);
         assert_eq!(report.cascade_actual_growth_units, None);
+        assert_eq!(report.cascade_estimate_ratio, None);
+    }
+
+    /// A cut the transform refuses is predicted to save nothing, so an accept
+    /// that came from another path — a collapse, a substitution — carries a
+    /// zero estimate. The count still says an accept was recorded; only the
+    /// ratio is absent, and the two together say which case this is.
+    #[test]
+    fn an_accept_predicted_to_save_nothing_is_counted_without_a_ratio() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::CascadeSaving)).unwrap();
+        journal::append(
+            &path,
+            &Event::Cascade {
+                kind: "individual".into(),
+                cuts: 1,
+                estimated_hidden: 0,
+                estimated_synapses: 0,
+                estimated_growth_units: 0.0,
+                actual_hidden: 1,
+                actual_synapses: 0,
+                actual_growth_units: 1.0,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.cascade_accepts, 1);
+        assert_eq!(report.cascade_estimated_growth_units, Some(0.0));
+        assert_eq!(report.cascade_actual_growth_units, Some(1.0));
         assert_eq!(report.cascade_estimate_ratio, None);
     }
 

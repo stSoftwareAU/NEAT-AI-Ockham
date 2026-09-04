@@ -9,32 +9,42 @@
 //!
 //! The dry run never touches the incumbent. It walks an index of the creature
 //! and counts, applying the same two exact rules the cleanup cascade of
-//! [`crate::ablation::ablate_mean`] applies:
+//! [`crate::ablation::ablate_mean`] applies, in the same priority order:
 //!
 //! 1. a listed non-output neuron with no outgoing synapse is removed;
 //! 2. a hidden neuron with no incoming synapse folds to a constant and is
 //!    removed with its outgoing synapses.
 //!
-//! Both rules only ever *remove* structure, so the fixpoint does not depend on
-//! the order they are applied in: the estimate for a given creature and cut is
-//! the same on every run and under any listing order.
+//! Both rules only ever *remove* structure and rule 1 is drained before rule 2
+//! is considered, so the estimate for a given creature and cut is the same on
+//! every run and under any listing order.
 //!
-//! The estimate is a prioritisation signal only. It reasons about topology and
-//! knows nothing of aggregate squashes, typed synapses or behaviour, so a
-//! candidate it ranks first can still be blocked when it is proposed and can
+//! Structure the transform refuses is predicted too: an aggregate or unknown
+//! squash, an aggregate fold target and a typed edge each make the ablation
+//! fail closed, and a cut the razor could never build is reported as saving
+//! nothing rather than as the largest cascade on the creature.
+//!
+//! The estimate is still a prioritisation signal only. It reasons about
+//! topology and knows nothing of behaviour, so a candidate it ranks first can
 //! still lose. Only the full-corpus scorer accepts a cut.
 
 use std::collections::HashMap;
 
-use neat_core::CreatureExport;
-use serde::Serialize;
+use neat_core::{CreatureExport, NeuronExport, parse_squash_name};
 
 use crate::ablation::growth_units;
 
 /// Structure a cut is estimated to remove once recursive cleanup has run.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct CascadeEstimate {
+    /// Whether the transform would refuse this cut outright.
+    ///
+    /// An aggregate or unknown squash, an aggregate fold target or a typed edge
+    /// makes the ablation fail closed, so nothing is removed and the estimate
+    /// is zero. The candidate keeps its place in the sweep — the constant
+    /// substitution may still propose one — but it ranks last rather than
+    /// first, which is the whole point of predicting the refusal.
+    pub blocked: bool,
     /// Requested hidden neurons that are actually on the creature.
     pub requested_neurons: usize,
     /// Further hidden neurons the cleanup would strand and remove.
@@ -73,21 +83,37 @@ enum Kind {
 
 /// Topology index of one creature, reused across every candidate cut.
 ///
-/// Built once per creature (`O(neurons + synapses)`), then each estimate costs
-/// a degree-vector reset plus the structure it actually walks — which is what
-/// makes ranking every hidden neuron of a large creature affordable.
+/// Built once per creature, `O(neurons + synapses)`. Each estimate then resets
+/// scratch state proportional to the creature and walks the structure the cut
+/// reaches, so ranking every hidden neuron costs one index and no clone of the
+/// creature — where estimating through a real ablation would cost one clone per
+/// candidate.
 #[derive(Debug, Clone)]
 pub struct CascadeIndex<'a> {
     /// Endpoint name → slot; covers listed neurons and implicit inputs.
     slots: HashMap<&'a str, usize>,
     kind: Vec<Kind>,
     uuid: Vec<&'a str>,
+    /// Whether the neuron's squash has no scalar the cleanup can fold.
+    aggregate: Vec<bool>,
     out_syn: Vec<Vec<usize>>,
     in_syn: Vec<Vec<usize>>,
     syn_from: Vec<usize>,
     syn_to: Vec<usize>,
+    /// Whether the synapse carries a role a bias cannot absorb.
+    typed: Vec<bool>,
     out_deg: Vec<usize>,
     in_deg: Vec<usize>,
+}
+
+/// Whether `neuron`'s squash has no scalar value the cleanup could fold.
+///
+/// Aggregate squashes are not a sum of their inputs, and a squash NEAT-AI-core
+/// cannot parse has no known semantics at all: the transform refuses both
+/// rather than guessing, so the dry run counts both as unfoldable.
+fn unfoldable(neuron: &NeuronExport) -> bool {
+    parse_squash_name(neuron.squash.as_deref().unwrap_or("IDENTITY"))
+        .map_or(true, |squash| squash.is_aggregate())
 }
 
 impl<'a> CascadeIndex<'a> {
@@ -97,10 +123,12 @@ impl<'a> CascadeIndex<'a> {
             slots: HashMap::with_capacity(creature.neurons.len() + creature.input),
             kind: Vec::with_capacity(creature.neurons.len() + creature.input),
             uuid: Vec::with_capacity(creature.neurons.len() + creature.input),
+            aggregate: Vec::with_capacity(creature.neurons.len() + creature.input),
             out_syn: Vec::new(),
             in_syn: Vec::new(),
             syn_from: Vec::with_capacity(creature.synapses.len()),
             syn_to: Vec::with_capacity(creature.synapses.len()),
+            typed: Vec::with_capacity(creature.synapses.len()),
             out_deg: Vec::new(),
             in_deg: Vec::new(),
         };
@@ -110,7 +138,8 @@ impl<'a> CascadeIndex<'a> {
                 "output" => Kind::Output,
                 _ => Kind::Listed,
             };
-            index.slot_of(neuron.uuid.as_str(), kind);
+            let slot = index.slot_of(neuron.uuid.as_str(), kind);
+            index.aggregate[slot] = unfoldable(neuron);
         }
         index.out_syn = vec![Vec::new(); index.kind.len()];
         index.in_syn = vec![Vec::new(); index.kind.len()];
@@ -124,6 +153,7 @@ impl<'a> CascadeIndex<'a> {
             index.in_syn[to].push(i);
             index.syn_from.push(from);
             index.syn_to.push(to);
+            index.typed.push(synapse.synapse_type.is_some());
         }
         index.out_deg = index.out_syn.iter().map(Vec::len).collect();
         index.in_deg = index.in_syn.iter().map(Vec::len).collect();
@@ -139,6 +169,7 @@ impl<'a> CascadeIndex<'a> {
         self.slots.insert(uuid, slot);
         self.kind.push(kind);
         self.uuid.push(uuid);
+        self.aggregate.push(false);
         self.out_syn.push(Vec::new());
         self.in_syn.push(Vec::new());
         slot
@@ -149,6 +180,12 @@ impl<'a> CascadeIndex<'a> {
     /// UUIDs the creature does not carry as hidden neurons contribute nothing:
     /// only hidden neurons are cut targets. Cutting several at once counts the
     /// structure they share once, so a bundle is not over-credited.
+    ///
+    /// The cleanup sweeps the whole creature, not only the neighbourhood of the
+    /// cut, so structure already stranded on the incumbent is counted too —
+    /// that is what the transform really removes, and the estimate is what the
+    /// accept is audited against. It is the same addition for every candidate,
+    /// so it does not disturb the ranking.
     pub fn estimate(&self, uuids: &[&str]) -> CascadeEstimate {
         let mut state = Sweeper {
             index: self,
@@ -156,7 +193,8 @@ impl<'a> CascadeIndex<'a> {
             in_deg: self.in_deg.clone(),
             removed: vec![false; self.kind.len()],
             cut_synapse: vec![false; self.syn_from.len()],
-            queue: Vec::new(),
+            dead_queue: (0..self.kind.len()).collect(),
+            fold_queue: (0..self.kind.len()).collect(),
             estimate: CascadeEstimate::default(),
         };
         for uuid in uuids {
@@ -166,11 +204,23 @@ impl<'a> CascadeIndex<'a> {
             if self.kind[slot] != Kind::Hidden || state.removed[slot] {
                 continue;
             }
+            if state.cut_blocked(slot) {
+                return CascadeEstimate {
+                    blocked: true,
+                    ..CascadeEstimate::default()
+                };
+            }
             state.estimate.requested_neurons += 1;
             state.strike(slot);
         }
         state.drain();
         let mut estimate = state.estimate;
+        if estimate.blocked {
+            return CascadeEstimate {
+                blocked: true,
+                ..CascadeEstimate::default()
+            };
+        }
         estimate.growth_units = growth_units(estimate.hidden_neurons(), estimate.synapses);
         estimate
     }
@@ -199,7 +249,10 @@ struct Sweeper<'a, 'c> {
     in_deg: Vec<usize>,
     removed: Vec<bool>,
     cut_synapse: Vec<bool>,
-    queue: Vec<usize>,
+    /// Slots to re-test against rule 1 (dead structure).
+    dead_queue: Vec<usize>,
+    /// Slots to re-test against rule 2 (constant fold).
+    fold_queue: Vec<usize>,
     estimate: CascadeEstimate,
 }
 
@@ -216,7 +269,7 @@ impl Sweeper<'_, '_> {
             self.estimate.synapses += 1;
             let to = self.index.syn_to[syn];
             self.in_deg[to] -= 1;
-            self.queue.push(to);
+            self.revisit(to);
         }
         for i in 0..self.index.in_syn[slot].len() {
             let syn = self.index.in_syn[slot][i];
@@ -227,37 +280,74 @@ impl Sweeper<'_, '_> {
             self.estimate.synapses += 1;
             let from = self.index.syn_from[syn];
             self.out_deg[from] -= 1;
-            self.queue.push(from);
+            self.revisit(from);
         }
     }
 
+    /// Re-test `slot` against both rules once the graph around it changed.
+    fn revisit(&mut self, slot: usize) {
+        self.dead_queue.push(slot);
+        self.fold_queue.push(slot);
+    }
+
+    /// Whether the real transform would refuse to fold `slot` away.
+    ///
+    /// The cleanup folds a neuron with no incoming synapse into its targets'
+    /// biases, and fails the whole candidate when it cannot: an aggregate or
+    /// unknown squash has no scalar to fold, an aggregate target is not a sum,
+    /// and a typed edge carries a role a bias cannot. Mirroring the refusal is
+    /// what keeps the estimate from promising structure the razor can never
+    /// take.
+    fn fold_blocked(&self, slot: usize) -> bool {
+        if self.index.aggregate[slot] {
+            return true;
+        }
+        self.index.out_syn[slot].iter().any(|&syn| {
+            !self.cut_synapse[syn]
+                && (self.index.typed[syn] || self.index.aggregate[self.index.syn_to[syn]])
+        })
+    }
+
+    /// Whether the transform would refuse the requested cut of `slot` itself.
+    fn cut_blocked(&self, slot: usize) -> bool {
+        self.fold_blocked(slot)
+            || self.index.in_syn[slot]
+                .iter()
+                .any(|&syn| !self.cut_synapse[syn] && self.index.typed[syn])
+    }
+
     /// Apply both cleanup rules until nothing more is strandable.
+    ///
+    /// Rule 1 has strict priority, as it does in the cleanup: dead structure is
+    /// drained completely before any constant fold is considered, so a neuron
+    /// whose targets die first is counted as dead rather than folded — and
+    /// never blocks the candidate for a fold that would not have happened.
     fn drain(&mut self) {
-        while let Some(slot) = self.queue.pop() {
-            if self.removed[slot] {
-                continue;
-            }
-            let dead = self.out_deg[slot] == 0;
-            let stranded = match self.index.kind[slot] {
-                Kind::External | Kind::Output => false,
-                // Rule 1 (dead) is applied before rule 2 (constant fold), as
-                // the cleanup applies them, so a neuron with neither incoming
-                // nor outgoing structure is counted as dead, not as a fold.
-                Kind::Hidden => dead || self.in_deg[slot] == 0,
-                Kind::Listed => dead,
-            };
-            if !stranded {
-                continue;
-            }
-            match self.index.kind[slot] {
-                Kind::Hidden => {
-                    self.estimate.cascade_hidden += 1;
-                    if !dead {
-                        self.estimate.folded_hidden += 1;
-                    }
+        loop {
+            while let Some(slot) = self.dead_queue.pop() {
+                if self.removed[slot] || self.out_deg[slot] > 0 {
+                    continue;
                 }
-                _ => self.estimate.cascade_constants += 1,
+                match self.index.kind[slot] {
+                    Kind::External | Kind::Output => continue,
+                    Kind::Hidden => self.estimate.cascade_hidden += 1,
+                    Kind::Listed => self.estimate.cascade_constants += 1,
+                }
+                self.strike(slot);
             }
+            let Some(slot) = self.fold_queue.pop() else {
+                return;
+            };
+            if self.removed[slot] || self.index.kind[slot] != Kind::Hidden || self.in_deg[slot] > 0
+            {
+                continue;
+            }
+            if self.fold_blocked(slot) {
+                self.estimate.blocked = true;
+                return;
+            }
+            self.estimate.cascade_hidden += 1;
+            self.estimate.folded_hidden += 1;
             self.strike(slot);
         }
     }
@@ -364,11 +454,18 @@ mod tests {
 
     #[test]
     fn the_estimate_matches_the_structure_the_ablation_actually_removes() {
-        for fixture in [chain(), fold()] {
-            for uuid in ["f1", "f2", "hub", "keep", "src", "tail", "other"] {
-                let Ok(ablation) = ablate_mean(&fixture, uuid, 0.1, None) else {
-                    continue;
-                };
+        let mut compared = 0;
+        for fixture in [chain(), fold(), already_stranded()] {
+            let hidden: Vec<String> = fixture
+                .neurons
+                .iter()
+                .filter(|n| n.neuron_type == "hidden")
+                .map(|n| n.uuid.clone())
+                .collect();
+            for uuid in &hidden {
+                let ablation = ablate_mean(&fixture, uuid, 0.1, None)
+                    .unwrap_or_else(|e| panic!("{uuid} must be ablatable on this fixture: {e}"));
+                compared += 1;
                 let got = estimate(&fixture, uuid);
                 let removed_hidden = ablation.before.hidden_neurons - ablation.after.hidden_neurons;
                 let removed_synapses = ablation.before.synapses - ablation.after.synapses;
@@ -382,6 +479,113 @@ mod tests {
                 );
             }
         }
+        // A parity test that silently compared nothing would pass green while
+        // the estimate drifted from the cleanup it claims to mirror.
+        assert!(compared >= 10, "only {compared} comparisons ran");
+    }
+
+    /// The `chain()` topology plus structure the incumbent already stranded.
+    ///
+    /// `orphan` has no incoming synapse and `dead_end` feeds nothing, so the
+    /// cleanup removes both on *any* accepted cut. The estimate has to count
+    /// them, or the estimated-versus-actual audit reads as drift.
+    fn already_stranded() -> CreatureExport {
+        let mut creature = chain();
+        creature
+            .neurons
+            .push(neuron("hidden", "orphan", 0.5, Some("TANH")));
+        creature
+            .neurons
+            .push(neuron("hidden", "dead_end", 0.0, Some("TANH")));
+        creature.synapses.push(synapse("orphan", "output-0", 0.25));
+        creature.synapses.push(synapse("input-0", "dead_end", 1.0));
+        crate::fixtures::sort_synapses_canonically(&mut creature);
+        creature
+    }
+
+    #[test]
+    fn structure_the_incumbent_already_stranded_is_counted_like_the_cleanup_counts_it() {
+        let got = estimate(&already_stranded(), "keep");
+        // `keep` and its two synapses, plus the folded `orphan` (one synapse)
+        // and the dead `dead_end` (one synapse) any cut takes with it.
+        assert_eq!(got.hidden_neurons(), 3, "{got:?}");
+        assert_eq!(got.folded_hidden, 1, "orphan folds to a constant: {got:?}");
+        assert_eq!(got.synapses, 4, "{got:?}");
+    }
+
+    /// `input-0 → src → sink → output-0` where `sink` uses `squash`.
+    ///
+    /// Cutting `src` leaves `sink` with no incoming synapse, so the cleanup has
+    /// to fold it — which an aggregate squash refuses.
+    fn fold_into(squash: &str, typed: bool) -> CreatureExport {
+        let edge = if typed {
+            crate::fixtures::typed_synapse("sink", "output-0", 1.0, "condition")
+        } else {
+            synapse("sink", "output-0", 1.0)
+        };
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "src", 0.0, Some("TANH")),
+                neuron("hidden", "sink", 0.0, Some(squash)),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "src", 1.0),
+                synapse("src", "sink", 1.0),
+                edge,
+            ],
+        )
+    }
+
+    #[test]
+    fn a_cut_the_transform_would_refuse_is_estimated_as_saving_nothing() {
+        for (squash, typed) in [("MEAN", false), ("NOT_A_SQUASH", false), ("TANH", true)] {
+            let fixture = fold_into(squash, typed);
+            let got = estimate(&fixture, "src");
+            assert!(got.blocked, "{squash} typed={typed}: {got:?}");
+            assert_eq!(got.growth_units, 0.0, "{squash} typed={typed}: {got:?}");
+            // The transform really does refuse it, which is what the estimate
+            // is predicting rather than guessing at.
+            assert!(
+                ablate_mean(&fixture, "src", 0.1, None).is_err(),
+                "{squash} typed={typed} must block the real ablation too"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cut_whose_own_structure_is_aggregate_is_estimated_as_saving_nothing() {
+        let fixture = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "agg", 0.0, Some("MEAN")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "agg", 1.0),
+                synapse("agg", "output-0", 1.0),
+            ],
+        );
+        let got = estimate(&fixture, "agg");
+        assert!(got.blocked, "{got:?}");
+        assert_eq!(got.growth_units, 0.0, "{got:?}");
+        assert!(ablate_mean(&fixture, "agg", 0.1, None).is_err());
+    }
+
+    #[test]
+    fn an_empty_cut_and_a_creature_without_hidden_neurons_estimate_nothing() {
+        let creature = chain();
+        assert_eq!(
+            CascadeIndex::new(&creature).estimate(&[]),
+            CascadeEstimate::default()
+        );
+        let bare = crate::fixtures::identity_creature(1, 1);
+        let index = CascadeIndex::new(&bare);
+        assert!(index.hidden_estimates().is_empty());
+        assert_eq!(index.estimate(&["output-0"]), CascadeEstimate::default());
     }
 
     #[test]

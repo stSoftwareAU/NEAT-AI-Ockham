@@ -239,12 +239,15 @@ fn rank_key(
             if identity { 0.0 } else { 1.0 }
         }
         // Negated so the largest cascade saving sorts first. A neuron the
-        // estimate does not cover sorts last rather than being dropped.
+        // estimate does not cover, and one whose cut the transform would
+        // refuse, sorts last rather than being dropped.
         Ordering::CascadeSaving => -cascade_saving(cascade, uuid).unwrap_or(0.0),
         Ordering::CascadeRiskRatio => match (neuron_stats, cascade_saving(cascade, uuid)) {
-            // The saving is at least one growth unit — the candidate itself —
-            // so the ratio is never a division by zero.
-            (Some(s), Some(saving)) => s.mean_abs * outgoing_weight_sum(creature, uuid) / saving,
+            // No predicted saving is a refused cut, not a free one: it ranks
+            // last rather than dividing by zero.
+            (Some(s), Some(saving)) if saving > 0.0 => {
+                s.mean_abs * outgoing_weight_sum(creature, uuid) / saving
+            }
             _ => f64::INFINITY,
         },
     }
@@ -593,6 +596,40 @@ mod tests {
         // with the smallest cascade is tried last however many edges it has.
         assert_eq!(got[0], "hub", "{got:?}");
         assert_eq!(got[3], "loud", "{got:?}");
+    }
+
+    /// Issue #106: the razor cannot build a cut whose fold hits an aggregate
+    /// squash, so ranking one first spends a visit on a certain refusal. Both
+    /// cascade strategies must leave it behind the cuts that can be built.
+    #[test]
+    fn a_cut_the_transform_would_refuse_ranks_behind_one_it_can_build() {
+        let mut creature = cascading();
+        // `hub` now feeds an aggregate, so cutting any chain member ends in a
+        // fold the ablation refuses — even though the chain is the largest
+        // topological cascade on the creature.
+        creature
+            .neurons
+            .push(neuron("hidden", "agg", 0.0, Some("MEAN")));
+        creature.synapses.push(synapse("hub", "agg", 1.0));
+        creature.synapses.push(synapse("agg", "output-1", 1.0));
+        crate::fixtures::sort_synapses_canonically(&mut creature);
+        let mut stats = cascading_stats();
+        stats.neurons.push(NeuronStats {
+            uuid: "agg".into(),
+            neuron_index: 4,
+            count: 10,
+            mean: 0.0,
+            variance: 0.1,
+            std_dev: 0.316,
+            mean_abs: 0.1,
+            min: -0.1,
+            max: 0.1,
+        });
+        for strategy in [Ordering::CascadeSaving, Ordering::CascadeRiskRatio] {
+            let got = hidden_order(&creature, &stats, OrderingConfig::new(strategy), 7);
+            assert_eq!(got[0], "loud", "{strategy}: {got:?}");
+            assert!(got[1..].contains(&"hub".to_string()), "{strategy}: {got:?}");
+        }
     }
 
     #[test]

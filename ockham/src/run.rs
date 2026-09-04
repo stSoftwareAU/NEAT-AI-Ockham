@@ -2082,26 +2082,30 @@ fn journal_cascade(
     before: &CreatureExport,
     after: &CreatureExport,
     uuids: &[String],
+    kind: &str,
 ) -> Result<(), String> {
     let estimate = crate::cascade::estimate_cut(before, uuids);
     let opening = crate::ablation::StructureSnapshot::of(before);
     let closing = crate::ablation::StructureSnapshot::of(after);
     let actual_growth_units = opening.growth_units - closing.growth_units;
+    // Signed, so a transform that adds structure on one axis while its growth
+    // units still fall is recorded as the addition it is (a collapse rewiring
+    // a fan-in × fan-out neuron can do exactly that).
+    let removed = |before: usize, after: usize| before as i64 - after as i64;
     log::detail(&format!(
-        "cascade: estimated {:.1} growth units, removed {actual_growth_units:.1}",
+        "cascade: {kind} estimated {:.1} growth units, removed {actual_growth_units:.1}",
         estimate.growth_units
     ));
     journal::append(
         path,
         &Event::Cascade {
+            kind: kind.to_string(),
             cuts: uuids.len(),
             estimated_hidden: estimate.hidden_neurons(),
             estimated_synapses: estimate.synapses,
             estimated_growth_units: estimate.growth_units,
-            actual_hidden: opening
-                .hidden_neurons
-                .saturating_sub(closing.hidden_neurons),
-            actual_synapses: opening.synapses.saturating_sub(closing.synapses),
+            actual_hidden: removed(opening.hidden_neurons, closing.hidden_neurons),
+            actual_synapses: removed(opening.synapses, closing.synapses),
             actual_growth_units,
         },
     )
@@ -2164,6 +2168,7 @@ fn apply_local_win(
         &incumbent.creature,
         &win.creature,
         &win.candidate.uuids,
+        last,
     )?;
     meta.retain_neurons(&win.creature);
     // Coverage over the creature we are about to publish, so the tag agrees
