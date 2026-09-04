@@ -283,7 +283,7 @@ pub fn apply_bundle(
         if current.neurons.iter().all(|n| n.uuid != *uuid) {
             return Err(format!("bundle: `{uuid}` already gone after a prior step"));
         }
-        let (_, next) = propose(&current, stats, uuid)?;
+        let (_, next) = propose(&current, stats, uuid).map_err(|blocked| blocked.to_string())?;
         current = next;
     }
     validate_creature(&current).map_err(|e| e.to_string())?;

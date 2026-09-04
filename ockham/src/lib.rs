@@ -34,6 +34,7 @@
 
 pub mod ablation;
 pub mod baseline;
+pub mod blocked;
 pub mod cancel;
 pub mod collapse;
 pub mod config;
@@ -51,11 +52,13 @@ pub mod report;
 pub mod run;
 pub mod scorer;
 pub mod stats;
+pub mod substitute;
 pub mod sweep;
 pub mod tags;
 
 pub use ablation::{Ablation, AblationSkip, TransformClass, ablate_mean};
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
+pub use blocked::{BlockedBreakdown, BlockedReason};
 pub use cancel::CancelToken;
 pub use collapse::{CollapseOptions, CollapseSkip, IdentityCollapse, collapse_identity};
 pub use config::{
@@ -73,6 +76,7 @@ pub use report::{Report, summarise};
 pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
 pub use stats::{ActivationStats, NeuronStats, SampleSpec, ensure_activation_stats};
+pub use substitute::{ConstantSubstitution, SubstitutionSkip, substitute_constant};
 pub use sweep::{
     ScreenConfig, ScreenOutcome, ScreenedLoser, Sweep, SweepCandidate, draw_seed, screen_batch,
 };

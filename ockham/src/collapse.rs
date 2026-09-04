@@ -24,6 +24,7 @@ use neat_core::{CreatureExport, SquashType, SynapseExport, parse_squash_name};
 use serde::Serialize;
 
 use crate::ablation::{StructureSnapshot, TransformClass, cleanup_cascade};
+use crate::blocked::BlockedReason;
 use crate::fixtures::sort_synapses_canonically;
 use crate::incumbent::validate_creature;
 
@@ -83,6 +84,28 @@ pub enum CollapseSkip {
     },
     /// Final candidate failed `creature.validate()`.
     Invalid(String),
+}
+
+impl CollapseSkip {
+    /// The reason code this skip is counted under (Issue #103).
+    ///
+    /// A collapse skip only reaches a screen record when the ablation fallback
+    /// has nothing to work with, so these codes describe the collapse itself
+    /// rather than the missing statistic beside it.
+    pub fn blocked_reason(&self) -> BlockedReason {
+        match self {
+            Self::AggregateTarget { .. } => BlockedReason::AggregateSquash,
+            Self::UnknownNeuron(_)
+            | Self::NotHidden { .. }
+            | Self::TypedSynapse { .. }
+            | Self::SelfLoop { .. } => BlockedReason::UnsafeTopology,
+            Self::Invalid(_) => BlockedReason::ValidationFailed,
+            // An IDENTITY that costs more to collapse than to keep, and a
+            // neuron that was never IDENTITY, are both explicit findings
+            // rather than a category the razor could build a path for.
+            Self::NotIdentity { .. } | Self::CostIncrease { .. } => BlockedReason::Other,
+        }
+    }
 }
 
 impl fmt::Display for CollapseSkip {

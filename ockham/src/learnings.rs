@@ -82,6 +82,7 @@ use neat_core::CreatureExport;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::blocked::BlockedReason;
 use crate::sweep::CandidateKind;
 
 /// Current learnings format version.
@@ -255,6 +256,20 @@ pub struct Screened {
     /// against rather than in none at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corpus_identity: Option<String>,
+    /// Why no candidate could be proposed, on a [`SCREEN_KIND_SKIPPED`] record.
+    ///
+    /// The per-neuron half of Issue #103: the breakdown every reporting surface
+    /// counts is derived from these, so a blocked category can be inspected
+    /// neuron by neuron and epoch by epoch rather than as one opaque total.
+    ///
+    /// `None` on every other kind — a scored candidate and a standing verdict
+    /// are not blocked — and on a record filed before #103, which
+    /// [`Self::blocked_category`] reads as
+    /// [`BlockedReason::Unrecorded`] rather than guessing at. Carried as a
+    /// **code string** so an unknown code from a newer host reads as `other`
+    /// instead of failing the whole load (see [`crate::blocked`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<BlockedReason>,
 }
 
 impl Screened {
@@ -264,6 +279,17 @@ impl Screened {
     /// "looked at, nothing to try" from "the scorer screened a candidate".
     pub fn is_skipped(&self) -> bool {
         self.kind == SCREEN_KIND_SKIPPED
+    }
+
+    /// Why this visit was blocked, for a blocked record (Issue #103).
+    ///
+    /// A record filed before reasons existed reads as
+    /// [`BlockedReason::Unrecorded`] rather than as a guess: the sum of the
+    /// reasons must still equal the blocked total, so a missing reason is a
+    /// category of its own instead of a dropped neuron.
+    pub fn blocked_category(&self) -> Option<BlockedReason> {
+        self.is_skipped()
+            .then(|| self.blocked_reason.unwrap_or(BlockedReason::Unrecorded))
     }
 
     /// True when this record was measured against `corpus_identity` (#100).
@@ -680,6 +706,7 @@ pub fn kind_label(kind: CandidateKind) -> &'static str {
     match kind {
         CandidateKind::Identity => "identity",
         CandidateKind::Ablation => "ablation",
+        CandidateKind::Constant => "constant",
     }
 }
 
@@ -1046,6 +1073,8 @@ pub struct ScreenTry<'a> {
     /// [`SCREENS_FORMAT_VERSION`] for a scored candidate,
     /// [`SCREENS_VISIT_FORMAT_VERSION`] for a visit that scored nothing.
     pub version: u32,
+    /// Why the razor could propose nothing, on a blocked visit (Issue #103).
+    pub blocked_reason: Option<BlockedReason>,
 }
 
 impl<'a> ScreenTry<'a> {
@@ -1056,6 +1085,7 @@ impl<'a> ScreenTry<'a> {
             kind: kind_label(kind),
             outcome,
             version: SCREENS_FORMAT_VERSION,
+            blocked_reason: None,
         }
     }
 
@@ -1069,6 +1099,22 @@ impl<'a> ScreenTry<'a> {
             kind,
             outcome: ScreenOutcomeKind::Loser,
             version: SCREENS_VISIT_FORMAT_VERSION,
+            blocked_reason: None,
+        }
+    }
+
+    /// A visit the razor could propose nothing for, and why (Issue #103).
+    ///
+    /// The [`SCREEN_KIND_SKIPPED`] half of [`Self::visited`], with the reason
+    /// carried onto the record so the blocked population can be broken down
+    /// long after the run that filed it has gone.
+    pub fn blocked(uuid: &'a str, reason: BlockedReason) -> Self {
+        Self {
+            uuid,
+            kind: SCREEN_KIND_SKIPPED,
+            outcome: ScreenOutcomeKind::Loser,
+            version: SCREENS_VISIT_FORMAT_VERSION,
+            blocked_reason: Some(reason),
         }
     }
 }
@@ -1096,6 +1142,7 @@ pub fn file_screens(
             unix_secs,
             host: host.clone(),
             corpus_identity: corpus_identity.clone(),
+            blocked_reason: t.blocked_reason,
         };
         if let Some(store) = store
             && let Err(e) = store.append_screen(&screened)
@@ -1232,6 +1279,7 @@ mod tests {
 
     fn screen(uuid: &str, outcome: ScreenOutcomeKind, secs: u64) -> Screened {
         Screened {
+            blocked_reason: Default::default(),
             version: SCREENS_FORMAT_VERSION,
             uuid: uuid.into(),
             kind: "ablation".into(),
@@ -1611,6 +1659,87 @@ mod tests {
             Some("corpus-a"),
             "the path stopped carrying it, so the record must"
         );
+    }
+
+    /// Issue #103: the reason is written with the record and read back off it,
+    /// so a blocked category can be inspected long after the run that filed it.
+    #[test]
+    fn a_blocked_visit_round_trips_its_reason_through_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        let mut known = Vec::new();
+        let filed = file_screens(
+            Some(&store),
+            &[
+                ScreenTry::blocked("h_agg", BlockedReason::AggregateSquash),
+                ScreenTry::visited("h_known", SCREEN_KIND_KNOWN_FAILURE),
+                ScreenTry::scored("h_ok", CandidateKind::Ablation, ScreenOutcomeKind::Loser),
+            ],
+            &mut known,
+        );
+        assert_eq!(filed, 3);
+
+        let text = std::fs::read_to_string(store.screens_host_path()).unwrap();
+        assert!(
+            text.contains("\"blockedReason\":\"aggregate-squash\""),
+            "the code is on the record, not only in the log: {text}"
+        );
+        let by_uuid: HashMap<String, Screened> = store
+            .load_screens()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.uuid.clone(), s))
+            .collect();
+        assert_eq!(
+            by_uuid["h_agg"].blocked_category(),
+            Some(BlockedReason::AggregateSquash)
+        );
+        assert_eq!(
+            by_uuid["h_agg"].version, SCREENS_VISIT_FORMAT_VERSION,
+            "a blocked visit is still a version-3 record a pre-#93 host skips"
+        );
+        assert_eq!(
+            by_uuid["h_known"].blocked_category(),
+            None,
+            "a standing verdict is checked, not blocked"
+        );
+        assert_eq!(by_uuid["h_ok"].blocked_category(), None);
+    }
+
+    /// A blocked record filed before #103 carries no reason, and reads as the
+    /// `unrecorded` category rather than being guessed at or dropped: the sum
+    /// of the reasons must still equal the blocked total.
+    #[test]
+    fn a_pre_103_blocked_record_reads_as_unrecorded() {
+        let pre_103 = Screened {
+            kind: SCREEN_KIND_SKIPPED.into(),
+            version: SCREENS_VISIT_FORMAT_VERSION,
+            blocked_reason: None,
+            ..screen("h_old", ScreenOutcomeKind::Loser, 1)
+        };
+        let json = serde_json::to_string(&pre_103).unwrap();
+        assert!(
+            !json.contains("blockedReason"),
+            "no reason is written when there is none: {json}"
+        );
+        let back: Screened = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.blocked_category(), Some(BlockedReason::Unrecorded));
+    }
+
+    /// A code from a newer host is read as `other` rather than failing the
+    /// whole load: the fleet runs mixed versions against one shared store.
+    #[test]
+    fn an_unknown_reason_code_from_a_newer_host_still_loads() {
+        let mut record = serde_json::to_value(Screened {
+            kind: SCREEN_KIND_SKIPPED.into(),
+            version: SCREENS_VISIT_FORMAT_VERSION,
+            blocked_reason: Some(BlockedReason::AggregateSquash),
+            ..screen("h_future", ScreenOutcomeKind::Loser, 1)
+        })
+        .unwrap();
+        record["blockedReason"] = serde_json::json!("some-reason-invented-later");
+        let back: Screened = serde_json::from_value(record).unwrap();
+        assert_eq!(back.blocked_category(), Some(BlockedReason::Other));
     }
 
     #[test]
