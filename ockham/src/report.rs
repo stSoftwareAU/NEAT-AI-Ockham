@@ -147,6 +147,26 @@ pub struct Report {
     pub final_growth_units: Option<f64>,
     /// `opening - final` growth units; positive means structure was removed.
     pub growth_units_saved: Option<f64>,
+    /// Hidden neurons cut per hour of loop wall-clock (Issue #106).
+    pub cuts_per_hour: Option<f64>,
+    /// Growth units removed per hour of loop wall-clock (Issue #106).
+    pub growth_units_saved_per_hour: Option<f64>,
+    /// Accepted winners carrying an estimated-versus-actual record (#106).
+    ///
+    /// Beside the two totals so a missing ratio is never ambiguous: `0` says no
+    /// accept was recorded, and a non-zero count with no ratio says the
+    /// accepted cuts were predicted to save nothing.
+    pub cascade_accepts: u64,
+    /// Growth units the cascade dry-run predicted across accepted cuts (#106).
+    pub cascade_estimated_growth_units: Option<f64>,
+    /// Growth units those accepted cuts actually removed (Issue #106).
+    pub cascade_actual_growth_units: Option<f64>,
+    /// `actual / estimated` across accepted cuts; `1.0` is a perfect estimate.
+    ///
+    /// Below `1.0` the dry-run over-promised — an accepted winner kept
+    /// structure the topology said would go, which a constant substitution or a
+    /// bundle legitimately does. Above `1.0` it under-promised.
+    pub cascade_estimate_ratio: Option<f64>,
     /// Last stop reason.
     pub stop_reason: Option<String>,
     /// Effective seed from the first start record.
@@ -220,9 +240,17 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         opening_growth_units: None,
         final_growth_units: None,
         growth_units_saved: None,
+        cuts_per_hour: None,
+        growth_units_saved_per_hour: None,
+        cascade_accepts: 0,
+        cascade_estimated_growth_units: None,
+        cascade_actual_growth_units: None,
+        cascade_estimate_ratio: None,
         stop_reason: None,
         seed: None,
     };
+    let mut cascade_estimated = 0.0f64;
+    let mut cascade_actual = 0.0f64;
     let mut candidates_seen = 0u64;
     for path in paths {
         let path = path.as_ref();
@@ -262,6 +290,15 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     candidates_seen += candidates as u64;
                 }
                 Event::SweepRestart { .. } => report.sweep_restarts += 1,
+                Event::Cascade {
+                    estimated_growth_units,
+                    actual_growth_units,
+                    ..
+                } => {
+                    cascade_estimated += estimated_growth_units;
+                    cascade_actual += actual_growth_units;
+                    report.cascade_accepts += 1;
+                }
                 Event::CoverageTail { batches, .. } => report.coverage_tail_batches += batches,
                 Event::Screen { .. } => report.screen_calls += 1,
                 Event::Screened { screened, .. } => report.screened += screened as u64,
@@ -420,7 +457,19 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         report.growth_units_saved = Some(open - fin);
     }
     if let Some(ms) = report.elapsed_ms.filter(|ms| *ms > 0) {
-        report.accepts_per_hour = Some(report.accepts as f64 * 3_600_000.0 / ms as f64);
+        let per_hour = 3_600_000.0 / ms as f64;
+        report.accepts_per_hour = Some(report.accepts as f64 * per_hour);
+        // The two economics an ordering is judged on (Issue #106): confirmed
+        // cuts bought per hour, and how much structure they took with them.
+        report.cuts_per_hour = Some(report.accepted_cuts as f64 * per_hour);
+        report.growth_units_saved_per_hour = report.growth_units_saved.map(|g| g * per_hour);
+    }
+    if report.cascade_accepts > 0 {
+        report.cascade_estimated_growth_units = Some(cascade_estimated);
+        report.cascade_actual_growth_units = Some(cascade_actual);
+        if cascade_estimated > 0.0 {
+            report.cascade_estimate_ratio = Some(cascade_actual / cascade_estimated);
+        }
     }
     Ok(report)
 }
@@ -642,6 +691,95 @@ mod tests {
         assert_eq!(report.opening_growth_units, Some(growth_units(3, 10)));
         assert_eq!(report.final_growth_units, Some(growth_units(0, 5)));
         assert_eq!(report.growth_units_saved, Some(3.5));
+        // Half an hour of loop: three cuts and 3.5 growth units become six
+        // cuts and seven growth units an hour (Issue #106).
+        assert_eq!(report.cuts_per_hour, Some(6.0));
+        assert_eq!(report.growth_units_saved_per_hour, Some(7.0));
+    }
+
+    #[test]
+    fn accepted_cuts_report_the_estimated_cascade_beside_the_actual_saving() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::CascadeSaving)).unwrap();
+        journal::append(
+            &path,
+            &Event::Cascade {
+                kind: "individual".into(),
+                cuts: 1,
+                estimated_hidden: 3,
+                estimated_synapses: 4,
+                estimated_growth_units: 3.4,
+                actual_hidden: 3,
+                actual_synapses: 4,
+                actual_growth_units: 3.4,
+            },
+        )
+        .unwrap();
+        journal::append(
+            &path,
+            &Event::Cascade {
+                kind: "individual".into(),
+                cuts: 1,
+                estimated_hidden: 2,
+                estimated_synapses: 6,
+                estimated_growth_units: 2.6,
+                // A constant substitution kept the edge the topology said would
+                // go, so the accept removed less than the dry-run promised.
+                actual_hidden: 1,
+                actual_synapses: 4,
+                actual_growth_units: 1.4,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.cascade_accepts, 2);
+        assert_eq!(report.cascade_estimated_growth_units, Some(6.0));
+        assert_eq!(report.cascade_actual_growth_units, Some(4.8));
+        let ratio = report.cascade_estimate_ratio.expect("two accepted cuts");
+        assert!((ratio - 0.8).abs() < 1e-9, "{ratio}");
+    }
+
+    #[test]
+    fn a_journal_with_no_accepted_cuts_reports_no_cascade_comparison() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.cascade_accepts, 0);
+        assert_eq!(report.cascade_estimated_growth_units, None);
+        assert_eq!(report.cascade_actual_growth_units, None);
+        assert_eq!(report.cascade_estimate_ratio, None);
+    }
+
+    /// A cut the transform refuses is predicted to save nothing, so an accept
+    /// that came from another path — a collapse, a substitution — carries a
+    /// zero estimate. The count still says an accept was recorded; only the
+    /// ratio is absent, and the two together say which case this is.
+    #[test]
+    fn an_accept_predicted_to_save_nothing_is_counted_without_a_ratio() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::CascadeSaving)).unwrap();
+        journal::append(
+            &path,
+            &Event::Cascade {
+                kind: "individual".into(),
+                cuts: 1,
+                estimated_hidden: 0,
+                estimated_synapses: 0,
+                estimated_growth_units: 0.0,
+                actual_hidden: 1,
+                actual_synapses: 0,
+                actual_growth_units: 1.0,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.cascade_accepts, 1);
+        assert_eq!(report.cascade_estimated_growth_units, Some(0.0));
+        assert_eq!(report.cascade_actual_growth_units, Some(1.0));
+        assert_eq!(report.cascade_estimate_ratio, None);
     }
 
     #[test]

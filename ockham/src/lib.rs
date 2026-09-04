@@ -27,6 +27,7 @@
 //! | GRQ check-in tags | [`tags`] | #25 |
 //! | fleet learnings store + replay | [`learnings`] | #27 |
 //! | named candidate orderings | [`ordering`] | #11 |
+//! | cascade-aware structural saving | [`cascade`] | #106 |
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
 //! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
 
@@ -36,6 +37,7 @@ pub mod ablation;
 pub mod baseline;
 pub mod blocked;
 pub mod cancel;
+pub mod cascade;
 pub mod collapse;
 pub mod config;
 pub mod corpus;
@@ -60,6 +62,7 @@ pub use ablation::{Ablation, AblationSkip, TransformClass, ablate_mean};
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
 pub use blocked::{BlockedBreakdown, BlockedReason};
 pub use cancel::CancelToken;
+pub use cascade::{CascadeEstimate, CascadeIndex, estimate_cut};
 pub use collapse::{CollapseOptions, CollapseSkip, IdentityCollapse, collapse_identity};
 pub use config::{
     ConfigReport, DEFAULT_CANDIDATE_COUNT, DEFAULT_MIN_IMPROVEMENT, DEFAULT_SCREEN_SAMPLE_RATE,
