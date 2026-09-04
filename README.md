@@ -510,9 +510,9 @@ flowchart LR
 #### Every run advances the checked count
 
 The guarantee, stated rather than left to emerge (#77): **every run advances the
-checked count by up to the batch size until 100% of the hidden neurons have been
-tried, and at 100% the sweep restarts** and begins re-screening the stalest
-neurons. Four rules hold it up.
+checked count by up to the batch size until 100% of the epoch's hidden neurons
+have been tried, and at 100% the sweep restarts** and begins re-screening the
+stalest neurons. Four rules hold it up.
 
 - **An exhausted sweep is rebuilt, never idled on.** A run that has visited
   every hidden neuron builds a fresh permutation, re-applies unchecked-first
@@ -614,7 +614,7 @@ flowchart TD
 one place so the tag, the commit description and `report` can never disagree:
 
 ```text
-checked 1204 of 5013 hidden (24.0%), 7 cut, 42 tagged
+sweep 1204/5013 checked (24.0% of epoch), 7 cut, 42 tagged
 ```
 
 The denominator is every hidden neuron of the **current** incumbent:
@@ -640,8 +640,9 @@ The denominator is every hidden neuron of the **current** incumbent:
   [A sweep can finish; Ockham never finishes](#a-sweep-can-finish-ockham-never-finishes).
 
 With `--learnings-dir` set, the run journals one `coverage` record at the end,
-so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`
-and `coveragePercent` across runs. `checkable` keeps its key so `coverage.json`
+so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`,
+`cut`, `coveragePercent` and — since #102 — the `corpusIdentity` those figures
+were measured against with `sweepComplete` beside it, across runs. `checkable` keeps its key so `coverage.json`
 stays readable by anything already parsing it; since #74 it means "hidden
 neurons Ockham may try", which is all of them. Without a learnings dir there is
 no coverage state, and nothing is journalled — absent rather than a misleading

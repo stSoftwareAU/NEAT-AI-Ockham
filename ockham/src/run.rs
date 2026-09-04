@@ -1573,7 +1573,7 @@ fn ockham_loop(
     }
 
     // The accept published `best.json` before the tail screened anything, so
-    // its `checked X/Y` is the figure at the cut rather than the one the run
+    // its `sweep X/Y` is the figure at the cut rather than the one the run
     // finished on. Re-stamp it, or the check-in subject would still report the
     // stalled coverage this issue is about (#91). Only the tag changes: the
     // creature published is the one the accept produced.
@@ -2064,7 +2064,7 @@ fn file_full_outcome(
 ///
 /// Kept so a coverage tail can re-stamp the tag with the coverage the run
 /// finished on (Issue #91): the accept publishes `best.json` before the tail
-/// screens anything, and the tag's `checked X/Y` is meant to agree with the
+/// screens anything, and the tag's `sweep X/Y` is meant to agree with the
 /// run's end-of-loop coverage rather than to freeze at the moment of the cut.
 struct StampedAccept {
     accepts: u64,

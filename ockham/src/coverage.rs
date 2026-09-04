@@ -389,7 +389,11 @@ impl Winners {
 pub struct History {
     /// Hidden neurons on the current incumbent checked in *any* epoch.
     pub checked_ever: usize,
-    /// Distinct corpus epochs the screen store holds records for.
+    /// Distinct corpus epochs those checks were spread across.
+    ///
+    /// Scoped to the same creature as [`Self::checked_ever`], so the two halves
+    /// of the rendered line describe one thing: an epoch that reached nothing
+    /// still on the creature contributed no check, and is not counted.
     pub epochs: usize,
 }
 
@@ -399,7 +403,7 @@ impl History {
         self.epochs > 0
     }
 
-    /// The description line, or `None` when the store holds no records.
+    /// The description line, or `None` when nothing was ever checked.
     fn line(&self, checkable: usize) -> Option<String> {
         self.has_any().then(|| {
             let unit = if self.epochs == 1 { "epoch" } else { "epochs" };
@@ -419,21 +423,24 @@ impl History {
 /// current-epoch percentage to zero.
 #[derive(Debug, Clone, Default)]
 pub struct ScreenHistory {
-    uuids: HashSet<String>,
-    epochs: HashSet<Option<String>>,
+    /// UUIDs reached, indexed by the epoch that reached them.
+    ///
+    /// Keyed by epoch rather than flattened, so [`Self::over`] can report a
+    /// count of epochs that is about the same creature as the count of checks
+    /// beside it.
+    by_epoch: HashMap<Option<String>, HashSet<String>>,
 }
 
 impl ScreenHistory {
-    /// Index every record: which UUIDs were ever reached, under how many epochs.
+    /// Index every record: which UUIDs were reached, under which epoch.
     ///
     /// A record written before the corpus identity was recorded (#76) carries
     /// `None`, and counts as one epoch of its own — "an epoch we cannot name"
     /// is still an epoch, and dropping it would understate the history.
     pub fn new(screens: &[crate::learnings::Screened]) -> Self {
-        Self {
-            uuids: screens.iter().map(|s| s.uuid.clone()).collect(),
-            epochs: screens.iter().map(|s| s.corpus_identity.clone()).collect(),
-        }
+        let mut history = Self::default();
+        history.merge(screens);
+        history
     }
 
     /// Fold in more records — the ones this run filed after the index was built.
@@ -443,8 +450,10 @@ impl ScreenHistory {
     /// history line.
     pub fn merge(&mut self, screens: &[crate::learnings::Screened]) {
         for s in screens {
-            self.uuids.insert(s.uuid.clone());
-            self.epochs.insert(s.corpus_identity.clone());
+            self.by_epoch
+                .entry(s.corpus_identity.clone())
+                .or_default()
+                .insert(s.uuid.clone());
         }
     }
 
@@ -452,15 +461,33 @@ impl ScreenHistory {
     ///
     /// Scoped to the creature in hand for the same reason current coverage is
     /// (#37): a record for a uuid that has been pruned away describes a
-    /// creature that no longer exists.
+    /// creature that no longer exists. The epoch count is scoped the same way,
+    /// so the rendered line cannot say "0 ever checked across 7 epochs" — an
+    /// epoch that reached nothing still on the creature reached nothing to
+    /// report.
     pub fn over(&self, creature: &CreatureExport) -> History {
-        History {
-            checked_ever: creature
-                .neurons
+        let hidden: HashSet<&str> = creature
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .map(|n| n.uuid.as_str())
+            .collect();
+        let mut checked: HashSet<&str> = HashSet::new();
+        let mut epochs = 0;
+        for uuids in self.by_epoch.values() {
+            let reached = uuids
                 .iter()
-                .filter(|n| n.neuron_type == "hidden" && self.uuids.contains(&n.uuid))
-                .count(),
-            epochs: self.epochs.len(),
+                .filter_map(|u| hidden.get(u.as_str()).copied())
+                .collect::<Vec<&str>>();
+            if reached.is_empty() {
+                continue;
+            }
+            epochs += 1;
+            checked.extend(reached);
+        }
+        History {
+            checked_ever: checked.len(),
+            epochs,
         }
     }
 }
@@ -1503,6 +1530,37 @@ mod tests {
         let after = index.over(&hidden_creature(4));
         assert_eq!(after.checked_ever, 4);
         assert_eq!(after.epochs, 4);
+    }
+
+    /// Both halves of the line are about the same creature: an epoch whose only
+    /// records are for uuids this creature no longer carries reached nothing to
+    /// report, so `0 ever checked across 7 corpus epochs` is unwriteable.
+    #[test]
+    fn the_history_epoch_count_is_scoped_to_the_creature_it_counts() {
+        let records = vec![
+            screen("h0", 1),
+            Screened {
+                corpus_identity: Some("elsewhere".into()),
+                ..screen("another-creature", 2)
+            },
+            Screened {
+                corpus_identity: Some("elsewhere-too".into()),
+                ..screen("also-departed", 3)
+            },
+        ];
+        let history = ScreenHistory::new(&records).over(&hidden_creature(4));
+        assert_eq!(history.checked_ever, 1);
+        assert_eq!(
+            history.epochs, 1,
+            "only the epoch that reached a neuron still on the creature counts"
+        );
+
+        // Nothing on this creature was ever reached: the line is omitted rather
+        // than reporting epochs with no checks behind them.
+        let foreign = ScreenHistory::new(&records[1..]).over(&hidden_creature(4));
+        assert_eq!(foreign.checked_ever, 0);
+        assert_eq!(foreign.epochs, 0);
+        assert!(!foreign.has_any());
     }
 
     /// The history line is additive: omitted with no records, and never folded

@@ -217,7 +217,7 @@ pub enum ScreenOutcomeKind {
 /// One hidden neuron the fleet has already looked at.
 ///
 /// A coverage fact — "this uuid has been looked at" — used for
-/// `checked X of Y hidden` reporting and unchecked-first selection. It is
+/// `sweep X of Y hidden` reporting and unchecked-first selection. It is
 /// **never** a prune verdict: only [`Learning`] carries those.
 ///
 /// [`Self::kind`] says *what happened on the visit*: `identity` or `ablation`
@@ -1000,7 +1000,7 @@ pub fn latest_screen_by_uuid(screens: &[Screened]) -> HashMap<&str, &Screened> {
 
 /// UUIDs screened at least once and still present on `creature`.
 ///
-/// This is the coverage set: "checked X of Y hidden". It says nothing about
+/// This is the coverage set: "sweep X of Y hidden". It says nothing about
 /// whether a prune was any good.
 pub fn screened_uuids(screens: &[Screened], creature: &CreatureExport) -> HashSet<String> {
     let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
