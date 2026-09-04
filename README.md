@@ -75,6 +75,12 @@ The current Rust implementation includes:
 - every hidden neuron is a prune candidate: neuron tags are informational
   metadata that record where a neuron came from, and they confer no exemption
   from the razor (#63, #87);
+- blocked visits broken down by **reason code** and attacked rather than
+  counted (#103): the reason rides on the screen record, `coverage.txt`,
+  `coverage.json`, the journal and `report` all count by it — `report` per
+  screening epoch — and the dominant category, aggregate/typed structure the
+  bias fold cannot express, is now proposable through
+  [constant substitution](docs/blocked-reasons.md);
 - named, reproducible candidate orderings with random as the measured control,
   plus the report measures needed to compare their discovery economics;
 - normal Rust CI, security and quality gates.
@@ -112,6 +118,7 @@ seeded ordering of hidden neurons (random control by default)
 ~100 pruning candidates
         │
         ├── mean-activation bias compensation
+        ├── mean-valued constant substitution where the fold cannot reach
         ├── exact deterministic cleanup where possible
         ├── cascading dead-structure removal
         └── NEAT-AI-core creature.validate()
@@ -355,7 +362,7 @@ against:
 | Visit | Record `kind` | Version | Counted as |
 |---|---|---|---|
 | Candidate the scorer screened, winner or loser | `identity` / `ablation` | 2 | checked |
-| Nothing could be proposed — an aggregate squash downstream, a typed synapse | `skipped` | 3 | checked **and** blocked |
+| Nothing could be proposed — no finite activation statistic, a candidate that would not validate | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
 | A standing full-corpus verdict suppressed the try | `known-failure` | 3 | checked |
 
 A record for a visit that scored nothing is written at **version 3**, which a
@@ -374,15 +381,21 @@ is reconstructable from `experiments.jsonl` alone.
 
 Filing the unproposable visits is what fixed `checked` going *backwards*
 (#93). On a forest-heavy creature roughly four hidden neurons in five feed an
-aggregate squash and can never be ablated; while those visits filed nothing the
+aggregate squash and could not be ablated; while those visits filed nothing the
 numerator was pinned to the prunable minority, fell by one on every accepted cut
 and reported `1417/6969` one run, `1416/7005` the next. A visit is coverage even
 when there was nothing to try — and `blocked` says how much of `checked` was
 reached that way, so the percentage never claims a screen that never happened.
-Each batch also logs its skips by class (`aggregate target: 41, typed synapse:
-6`), because the two record kinds are coarser than the reasons behind them: an
-ablation can also fail on a non-finite measured mean, and that neuron may well
-propose a candidate on a later pass.
+
+Since #103 a blocked visit also records **why**, as a reason code on the record
+(`blockedReason`), and each batch logs its skips by the same codes
+(`aggregate-squash: 41, missing-activation: 6`). One number could not be
+attacked; a breakdown can be, and the dominant category — aggregate and typed
+structure the bias fold cannot express — is now proposed as a
+[constant substitution](docs/blocked-reasons.md) rather than blocked. `blocked`
+never meant *not pruneable forever*: it means the current proposal mechanism
+does not know how to test this neuron safely, and the code says which mechanism
+is missing.
 
 Coverage is still a statement about the creature in front of us, not a score
 that only ever rises: a cut removes a checked neuron, so the count still steps
@@ -396,7 +409,7 @@ rather than failing the run.
 ```mermaid
 flowchart LR
     V[sweep visit] --> Q{"candidate proposed?"}
-    Q -->|"no — aggregate or typed"| K["kind: skipped<br/>(checked, blocked)"]
+    Q -->|"no — with a reason code"| K["kind: skipped<br/>(checked, blocked)"]
     Q -->|"no — known failure"| F["kind: known-failure<br/>(checked)"]
     Q -->|yes| S{"--screen-sample-rate"}
     S -->|"rate > 0"| C[sampled screen]
@@ -633,7 +646,9 @@ The denominator is every hidden neuron of the **current** incumbent:
   as `blocked` beside the percentage (#93), never deducted from it — the neuron
   is on the creature and the sweep has been to it. `blocked` says no cut *was*
   proposed on the visits so far, not that none ever could be: one real screen
-  anywhere in fleet history clears it;
+  anywhere in fleet history clears it, and since #103 the reason on the record
+  says which mechanism was missing, split by code in `blockedByReason` and on
+  the `reasons:` line of the description;
 - only records measured against the **corpus in hand** are counted (#100): a
   changed corpus opens a new screening epoch at `0 / hidden`, and `100%` means
   100% of that epoch. See
@@ -658,7 +673,7 @@ flowchart LR
     S -->|yes| D["checked"]
     S -->|no| U["unchecked"]
     D --> B{"every record a<br/>skipped visit?"}
-    B -->|yes| K["also counted as blocked —<br/>reported beside the percentage"]
+    B -->|yes| K["also counted as blocked —<br/>reported beside the percentage,<br/>split by reason code"]
     B -->|no| Q["the scorer screened it"]
     D --> P["percent = checked / checkable"]
 ```
@@ -686,6 +701,7 @@ epoch:     corpus 6fc028da — coverage counts this corpus only
 cut:       7 this run
 unchecked: 3809 remaining this epoch (~39 runs at 100/run)
 blocked:   412 checked with no cut proposed
+reasons:   missing-activation 380 (92.2%) · validation-failed 32 (7.8%)
 tagged:    42 carry tags, screened like any other
 progress:  100 newly checked this run
 history:   4802 of 5013 ever checked across 3 corpus epochs
@@ -703,6 +719,11 @@ dropped:   12 entries over budget (est 18s/creature)
 - the `blocked:` line is omitted when nothing is blocked, and says how many of
   the `checked` were reached by a visit that proposed no cut (#93) — they stay
   inside the percentage, because the sweep has been to them;
+- the `reasons:` line follows it (#103) and splits that total by reason code,
+  commonest first with each category's share of the blocked total. The counts
+  are over UUIDs and sum to `blocked` exactly, so the line is a work list: the
+  head of it is the category a new proposal path would pay for. Omitted with
+  the `blocked:` line it qualifies;
 - the `tagged:` line is omitted when no neuron is tagged, and says only how many
   hidden neurons carry tags — a tagged neuron the run cut is counted by `cut:`
   like any other (#87);
@@ -1200,6 +1221,8 @@ NEAT-AI-Ockham/
 │       ├── stats.rs           # hidden-neuron activation statistics
 │       ├── ablation.rs        # mean-activation ablation + cleanup
 │       ├── collapse.rs        # exact IDENTITY neuron collapse
+│       ├── substitute.rs      # mean-valued constant substitution
+│       ├── blocked.rs         # blocked-reason codes + per-epoch breakdown
 │       ├── sweep.rs           # seeded random sweep + 5% screen
 │       ├── promote.rs         # full-score winners + bundles
 │       ├── journal.rs         # experiments.jsonl
@@ -1215,6 +1238,7 @@ NEAT-AI-Ockham/
 │       └── cancel.rs
 ├── docs/
 │   ├── grq-integration.md   # audit: how GRQ invokes Ockham and reads it back
+│   ├── blocked-reasons.md   # blocked codes, and the path built for the largest
 │   └── population-entry.md  # how cuts actually enter the live population
 ├── quality.sh
 ├── rust-toolchain.toml
