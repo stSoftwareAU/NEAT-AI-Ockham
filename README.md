@@ -58,11 +58,16 @@ The current Rust implementation includes:
   that genuinely changed starts a fresh screening epoch (#100) that inherits
   every previous epoch's learnings as evidence — old winners replayed and
   re-scored, old failures eligible again (#101);
-- a single coverage calculation over the **current** incumbent — `checked X of
-  Y hidden (Z%), N cut` — journalled at the end of each run and surfaced by
-  `report`, and carried into the `ockham` check-in tag (the GRQ-sampler commit
-  subject) in the compact `checked X/Y (Z%)` form whenever a learnings dir is
-  configured;
+- a single coverage calculation over the **current** incumbent — `sweep X/Y
+  checked (Z% of epoch), N cut` — journalled at the end of each run and
+  surfaced by `report`, and carried into the `ockham` check-in tag (the
+  GRQ-sampler commit subject) in the compact `sweep X/Y (Z% of epoch <id>)`
+  form whenever a learnings dir is configured;
+- epoch-aware reporting throughout (#102): every percentage says what it is a
+  percentage *of*, a finished sweep reads `sweep complete for this epoch`
+  rather than as Ockham finishing, the short corpus id travels with the figure,
+  and cumulative coverage across every epoch is reported on its own `history:`
+  line — never folded into the current percentage;
 - `coverage.txt` / `coverage.json` beside `best.json`: the multi-line screening
   coverage block GRQ pastes into the sampler commit description, plus the same
   figures machine-readably, extended with what the run screened, confirmed,
@@ -433,8 +438,11 @@ plateau, reinstated. A fault in the live `screens/` directory is still an error.
 #### A sweep can finish; Ockham never finishes
 
 What that recorded identity is *for* is the screening **epoch** (#100).
-`checked X/X (100%)` says the sweep is complete for the training data in hand —
-not that Ockham is done. The corpus is extended every few days, and a screen
+`sweep X/X checked (100.0% of epoch)` says the sweep is complete for the
+training data in hand — not that Ockham is done. Every artefact says so in
+those words (#102): the percentage is always `of epoch`, a finished sweep is
+reported as `sweep complete for this epoch`, and the epoch is named beside the
+figure. The corpus is extended every few days, and a screen
 taken against the old one says nothing about how the neuron behaves under the
 new data, so coverage is authoritative only for the corpus it was measured
 against.
@@ -451,6 +459,12 @@ under the corpus in front of it. When the corpus identity changes:
   history;
 - `coverage.json` and the journal `coverage` record carry `corpusIdentity`, so a
   reader comparing two runs can tell a fresh epoch from a collapse in coverage.
+  `report` surfaces it as `corpusIdentity` beside `sweepComplete` (#102), and
+  the human-readable surfaces carry the first eight characters of it — enough
+  to see a reset, short enough for a commit subject;
+- the records the new epoch does not count are still **reported**, on their own
+  `history:` line: `N of M ever checked across K corpus epochs` (#102). What a
+  new epoch invalidates is the authority of a screen, never the record of it.
 
 Selecting the epoch rather than clearing the store is what keeps the **record**
 half of #76 intact. The fleet sits on several live corpus identities at once —
@@ -496,9 +510,9 @@ flowchart LR
 #### Every run advances the checked count
 
 The guarantee, stated rather than left to emerge (#77): **every run advances the
-checked count by up to the batch size until 100% of the hidden neurons have been
-tried, and at 100% the sweep restarts** and begins re-screening the stalest
-neurons. Four rules hold it up.
+checked count by up to the batch size until 100% of the epoch's hidden neurons
+have been tried, and at 100% the sweep restarts** and begins re-screening the
+stalest neurons. Four rules hold it up.
 
 - **An exhausted sweep is rebuilt, never idled on.** A run that has visited
   every hidden neuron builds a fresh permutation, re-applies unchecked-first
@@ -600,7 +614,7 @@ flowchart TD
 one place so the tag, the commit description and `report` can never disagree:
 
 ```text
-checked 1204 of 5013 hidden (24.0%), 7 cut, 42 tagged
+sweep 1204/5013 checked (24.0% of epoch), 7 cut, 42 tagged
 ```
 
 The denominator is every hidden neuron of the **current** incumbent:
@@ -626,8 +640,9 @@ The denominator is every hidden neuron of the **current** incumbent:
   [A sweep can finish; Ockham never finishes](#a-sweep-can-finish-ockham-never-finishes).
 
 With `--learnings-dir` set, the run journals one `coverage` record at the end,
-so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`
-and `coveragePercent` across runs. `checkable` keeps its key so `coverage.json`
+so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`,
+`cut`, `coveragePercent` and — since #102 — the `corpusIdentity` those figures
+were measured against with `sweepComplete` beside it, across runs. `checkable` keeps its key so `coverage.json`
 stays readable by anything already parsing it; since #74 it means "hidden
 neurons Ockham may try", which is all of them. Without a learnings dir there is
 no coverage state, and nothing is journalled — absent rather than a misleading
@@ -666,13 +681,14 @@ into `--output-dir`, beside `best.json`:
 
 ```text
 🪒 Ockham neuron screening coverage
-checked:   1204 of 5013 hidden (24.0%)
+sweep:     1204 of 5013 hidden (24.0% of epoch)
+epoch:     corpus 6fc028da — coverage counts this corpus only
 cut:       7 this run
-unchecked: 3809 remaining (~39 runs at 100/run)
+unchecked: 3809 remaining this epoch (~39 runs at 100/run)
 blocked:   412 checked with no cut proposed
 tagged:    42 carry tags, screened like any other
 progress:  100 newly checked this run
-epoch:     corpus 6fc028da266d6c51 — coverage counts this corpus only
+history:   4802 of 5013 ever checked across 3 corpus epochs
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
 bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped
 dropped:   12 entries over budget (est 18s/creature)
@@ -681,7 +697,9 @@ dropped:   12 entries over budget (est 18s/creature)
 - the runs-remaining estimate divides `unchecked` by the configured
   `--candidates` batch size (`~1 run` when one batch would finish it), and the
   whole clause is **omitted** — never `inf` or `NaN` — when that batch size is
-  zero or coverage is already complete;
+  zero. A finished sweep reads `0 remaining — sweep complete for this epoch`
+  instead (#102), and a creature with no hidden neurons reads
+  `0 remaining — no hidden neurons to sweep`: there was nothing to finish;
 - the `blocked:` line is omitted when nothing is blocked, and says how many of
   the `checked` were reached by a visit that proposed no cut (#93) — they stay
   inside the percentage, because the sweep has been to them;
@@ -691,15 +709,24 @@ dropped:   12 entries over budget (est 18s/creature)
 - the `progress:` line is **never** omitted, zero included (#77): coverage is
   cumulative fleet state, so the per-run figure beside it is the only thing that
   makes a plateau visible by reading two consecutive commits;
-- the `epoch:` line names the corpus the figures were measured against (#100):
-  `100%` above it is 100% of *that* corpus, and extending the training data
-  starts a fresh epoch. Every run that writes these files names its corpus, so
-  the line is absent only from an artefact written before #100;
+- the `epoch:` line names the corpus the figures were measured against (#100),
+  directly under the percentage it qualifies (#102): `100.0% of epoch` above it
+  is 100% of *that* corpus, and extending the training data starts a fresh
+  epoch. The identity is the first eight characters of the corpus fingerprint —
+  `coverage.json` keeps it in full. Every run that writes these files names its
+  corpus, so the line is absent only from an artefact written before #100;
+- the `history:` line is the cumulative counterpart (#102): how many of the
+  current hidden neurons the fleet has ever checked, under how many corpus
+  epochs. It is reported beside the percentage and never inside it — mixing a
+  screen taken against last week's training data into today's figure is the
+  misleading `100%` this reporting exists to prevent. Omitted when the screen
+  store holds no records;
 - the `winners:` / `bundles:` / `dropped:` lines are each omitted when they have
   nothing to report, so a run that screened nothing renders the coverage lines
   alone, exactly as it did before they existed;
 - `coverage.json` carries the same per-run figure under `newlyScreened`, the
-  epoch under `corpusIdentity` and the winner figures under an additive
+  epoch under `corpusIdentity` (in full), the cumulative figures under an
+  additive `history` key and the winner figures under an additive
   `winners` key, and
   still deserialises straight into `Coverage` for a consumer that ignores them,
   so nothing downstream needs to parse the prose.

@@ -26,11 +26,19 @@
 //! creature in front of us, not a monotonic score.
 //!
 //! It is also a statement about **one corpus** (Issue #100). A sweep can finish;
-//! Ockham never does. `checked X/X (100%)` says the sweep is complete for the
-//! training data in hand, and the corpus is extended every few days — so the
-//! records the count is built from are the ones filed under the current corpus
-//! identity ([`crate::learnings::current_epoch_screens`]), and
+//! Ockham never does. `sweep X/X checked (100.0% of epoch)` says the sweep is
+//! complete for the training data in hand, and the corpus is extended every few
+//! days — so the records the count is built from are the ones filed under the
+//! current corpus identity ([`crate::learnings::current_epoch_screens`]), and
 //! [`CoverageReport::corpus_identity`] names the epoch the figures belong to.
+//!
+//! Issue #102 puts that scope in the **wording** rather than only in a trailing
+//! line: every percentage Ockham renders says `of epoch`, a finished sweep is
+//! reported as `sweep complete` rather than as Ockham finishing, and the epoch
+//! is named beside the figures — in [`short_epoch`] form for humans, in full in
+//! `coverage.json`. Cumulative coverage across every epoch the store has ever
+//! seen is kept as its own [`History`] line, never folded into the current
+//! percentage.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -44,6 +52,24 @@ use crate::learnings::Screened;
 pub const COVERAGE_TEXT_FILE: &str = "coverage.txt";
 /// Serialised [`Coverage`], written beside `best.json` (Issue #40).
 pub const COVERAGE_JSON_FILE: &str = "coverage.json";
+
+/// Characters of a corpus identity a human-readable epoch clause carries.
+pub const EPOCH_SHORT_LEN: usize = 8;
+
+/// Compact epoch id for a commit subject or a log line (Issue #102).
+///
+/// The first [`EPOCH_SHORT_LEN`] characters of the corpus identity — enough to
+/// see that the epoch changed, short enough for a commit subject. The full
+/// identity is never dropped: `coverage.json` and the journal `coverage` record
+/// both carry it, so a reset stays diagnosable exactly.
+///
+/// Truncation is on a character boundary, so a non-hex identity cannot panic.
+pub fn short_epoch(identity: &str) -> &str {
+    match identity.char_indices().nth(EPOCH_SHORT_LEN) {
+        Some((end, _)) => &identity[..end],
+        None => identity,
+    }
+}
 
 /// Screening coverage of one incumbent at one moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,15 +114,25 @@ impl Coverage {
         (self.checked as f64 / self.checkable as f64 * 100.0).min(100.0)
     }
 
-    /// One-line progress summary — it goes in a commit subject.
+    /// Whether the sweep has reached every hidden neuron **this epoch**.
     ///
-    /// `checked 1204 of 5013 hidden (24.0%), 7 cut, 42 tagged`. The `X of Y`
+    /// A creature with no hidden neurons is not a finished sweep: there was
+    /// nothing to sweep, and `0/0` must never render as an achievement.
+    pub fn sweep_complete(&self) -> bool {
+        self.checkable > 0 && self.checked >= self.checkable
+    }
+
+    /// One-line progress summary — a log line beside the run's other figures.
+    ///
+    /// `sweep 1204/5013 checked (24.0% of epoch), 7 cut, 42 tagged`. The `X/Y`
     /// denominator is [`Self::checkable`], so it always agrees with the
-    /// percentage. The tagged clause counts neurons *inside* that denominator
-    /// (#74) and is omitted when nothing is tagged.
+    /// percentage, and `of epoch` says what the percentage is a percentage
+    /// *of* (Issue #102) — the corpus in hand, not Ockham's whole task. The
+    /// tagged clause counts neurons *inside* that denominator (#74) and is
+    /// omitted when nothing is tagged.
     pub fn summary(&self) -> String {
         let mut out = format!(
-            "checked {} of {} hidden ({:.1}%), {} cut",
+            "sweep {}/{} checked ({:.1}% of epoch), {} cut",
             self.checked,
             self.checkable,
             self.percent(),
@@ -120,9 +156,10 @@ impl Coverage {
     ///
     /// ```text
     /// 🪒 Ockham neuron screening coverage
-    /// checked:   1204 of 5013 hidden (24.0%)
+    /// sweep:     1204 of 5013 hidden (24.0% of epoch)
+    /// epoch:     corpus 6fc028da — coverage counts this corpus only
     /// cut:       7 this run
-    /// unchecked: 3809 remaining (~39 runs at 100/run)
+    /// unchecked: 3809 remaining this epoch (~39 runs at 100/run)
     /// blocked:   412 checked with no cut proposed
     /// tagged:    42 carry tags, screened like any other
     /// ```
@@ -130,32 +167,52 @@ impl Coverage {
     /// Line-oriented and stable: GRQ pastes it into a `git commit` description.
     /// `candidates` is the configured `--candidates` batch size; the
     /// runs-remaining clause is **omitted** rather than rendering `inf` when
-    /// the batch size is zero, and there is nothing to estimate once coverage
-    /// is complete. The `tagged:` line is omitted when nothing is tagged, and
-    /// says only how many neurons carry tags — cutting one needs no declaration
-    /// (Issue #87). The `blocked:` line is likewise omitted when nothing is
-    /// blocked, and says how much of `checked` was reached by a visit the razor
-    /// could propose nothing for (Issue #93). No trailing newline —
-    /// [`write_files`] adds one.
-    pub fn description(&self, candidates: usize) -> String {
+    /// the batch size is zero, and a finished sweep reads
+    /// `0 remaining — sweep complete for this epoch` instead (Issue #102): the
+    /// sweep finishes, Ockham does not. `epoch` is the corpus identity the
+    /// figures were measured against, rendered in [`short_epoch`] form and
+    /// omitted when the caller has no screen store to name one.
+    ///
+    /// The `tagged:` line is omitted when nothing is tagged, and says only how
+    /// many neurons carry tags — cutting one needs no declaration (Issue #87).
+    /// The `blocked:` line is likewise omitted when nothing is blocked, and
+    /// says how much of `checked` was reached by a visit the razor could
+    /// propose nothing for (Issue #93). No trailing newline — [`write_files`]
+    /// adds one.
+    pub fn description(&self, candidates: usize, epoch: Option<&str>) -> String {
         let unchecked = self.unchecked();
-        let runs = if candidates > 0 && unchecked > 0 {
-            let n = unchecked.div_ceil(candidates);
-            let unit = if n == 1 { "run" } else { "runs" };
-            format!(" (~{n} {unit} at {candidates}/run)")
+        let remaining = if self.sweep_complete() {
+            String::from("0 remaining — sweep complete for this epoch")
+        } else if unchecked == 0 {
+            // No hidden neurons at all: nothing was swept, so nothing finished.
+            String::from("0 remaining — no hidden neurons to sweep")
         } else {
-            String::new()
+            let runs = if candidates > 0 {
+                let n = unchecked.div_ceil(candidates);
+                let unit = if n == 1 { "run" } else { "runs" };
+                format!(" (~{n} {unit} at {candidates}/run)")
+            } else {
+                String::new()
+            };
+            format!("{unchecked} remaining this epoch{runs}")
         };
         let mut out = String::from("🪒 Ockham neuron screening coverage\n");
         out.push_str(&format!(
-            "{:<11}{} of {} hidden ({:.1}%)\n",
-            "checked:",
+            "{:<11}{} of {} hidden ({:.1}% of epoch)\n",
+            "sweep:",
             self.checked,
             self.checkable,
             self.percent()
         ));
+        if let Some(identity) = epoch {
+            out.push_str(&format!(
+                "{:<11}corpus {} — coverage counts this corpus only\n",
+                "epoch:",
+                short_epoch(identity)
+            ));
+        }
         out.push_str(&format!("{:<11}{} this run\n", "cut:", self.cut));
-        out.push_str(&format!("{:<11}{unchecked} remaining{runs}", "unchecked:"));
+        out.push_str(&format!("{:<11}{remaining}", "unchecked:"));
         if self.blocked > 0 {
             out.push_str(&format!(
                 "\n{:<11}{} checked with no cut proposed",
@@ -320,6 +377,121 @@ impl Winners {
     }
 }
 
+/// Cumulative screening across **every** corpus epoch (Issue #102).
+///
+/// Current-epoch coverage answers "how far has this sweep got?"; this answers
+/// "how much of this creature has the fleet ever looked at?". The two are
+/// reported side by side and never merged: folding a screen taken under last
+/// week's training data into today's percentage is exactly the misleading
+/// `100%` this issue removes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct History {
+    /// Hidden neurons on the current incumbent checked in *any* epoch.
+    pub checked_ever: usize,
+    /// Distinct corpus epochs those checks were spread across.
+    ///
+    /// Scoped to the same creature as [`Self::checked_ever`], so the two halves
+    /// of the rendered line describe one thing: an epoch that reached nothing
+    /// still on the creature contributed no check, and is not counted.
+    pub epochs: usize,
+}
+
+impl History {
+    /// Whether there is any history to report.
+    pub fn has_any(&self) -> bool {
+        self.epochs > 0
+    }
+
+    /// The description line, or `None` when nothing was ever checked.
+    fn line(&self, checkable: usize) -> Option<String> {
+        self.has_any().then(|| {
+            let unit = if self.epochs == 1 { "epoch" } else { "epochs" };
+            format!(
+                "{:<11}{} of {checkable} ever checked across {} corpus {unit}",
+                "history:", self.checked_ever, self.epochs
+            )
+        })
+    }
+}
+
+/// Every screen record the store holds, indexed across all epochs (Issue #102).
+///
+/// Built from the **unfiltered** load, before
+/// [`crate::learnings::current_epoch_screens`] narrows it to the corpus in
+/// hand, so the cumulative figures survive an epoch change that resets the
+/// current-epoch percentage to zero.
+#[derive(Debug, Clone, Default)]
+pub struct ScreenHistory {
+    /// UUIDs reached, indexed by the epoch that reached them.
+    ///
+    /// Keyed by epoch rather than flattened, so [`Self::over`] can report a
+    /// count of epochs that is about the same creature as the count of checks
+    /// beside it.
+    by_epoch: HashMap<Option<String>, HashSet<String>>,
+}
+
+impl ScreenHistory {
+    /// Index every record: which UUIDs were reached, under which epoch.
+    ///
+    /// A record written before the corpus identity was recorded (#76) carries
+    /// `None`, and counts as one epoch of its own — "an epoch we cannot name"
+    /// is still an epoch, and dropping it would understate the history.
+    pub fn new(screens: &[crate::learnings::Screened]) -> Self {
+        let mut history = Self::default();
+        history.merge(screens);
+        history
+    }
+
+    /// Fold in more records — the ones this run filed after the index was built.
+    ///
+    /// Without this the cumulative figures would be frozen at the moment the
+    /// store was read, and a run's own epoch would be missing from its own
+    /// history line.
+    pub fn merge(&mut self, screens: &[crate::learnings::Screened]) {
+        for s in screens {
+            self.by_epoch
+                .entry(s.corpus_identity.clone())
+                .or_default()
+                .insert(s.uuid.clone());
+        }
+    }
+
+    /// Cumulative coverage of `creature` — hidden UUIDs reached in any epoch.
+    ///
+    /// Scoped to the creature in hand for the same reason current coverage is
+    /// (#37): a record for a uuid that has been pruned away describes a
+    /// creature that no longer exists. The epoch count is scoped the same way,
+    /// so the rendered line cannot say "0 ever checked across 7 epochs" — an
+    /// epoch that reached nothing still on the creature reached nothing to
+    /// report.
+    pub fn over(&self, creature: &CreatureExport) -> History {
+        let hidden: HashSet<&str> = creature
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .map(|n| n.uuid.as_str())
+            .collect();
+        let mut checked: HashSet<&str> = HashSet::new();
+        let mut epochs = 0;
+        for uuids in self.by_epoch.values() {
+            let reached = uuids
+                .iter()
+                .filter_map(|u| hidden.get(u.as_str()).copied())
+                .collect::<Vec<&str>>();
+            if reached.is_empty() {
+                continue;
+            }
+            epochs += 1;
+            checked.extend(reached);
+        }
+        History {
+            checked_ever: checked.len(),
+            epochs,
+        }
+    }
+}
+
 /// The commit-description artefact: coverage, plus the run's winner economics.
 ///
 /// [`Coverage`] is flattened, so a consumer that deserialises `coverage.json`
@@ -355,6 +527,14 @@ pub struct CoverageReport {
     /// still ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corpus_identity: Option<String>,
+    /// Cumulative coverage across every epoch (Issue #102); absent with no store.
+    ///
+    /// Kept beside the current-epoch figures rather than inside them: the
+    /// percentage above is this corpus only, and this says what the fleet has
+    /// ever reached. `#[serde(default)]` so an artefact written before this
+    /// field existed still deserialises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<History>,
 }
 
 impl CoverageReport {
@@ -365,27 +545,34 @@ impl CoverageReport {
             newly_screened: 0,
             winners: None,
             corpus_identity: None,
+            history: None,
         }
     }
 
-    /// The full commit-description block: coverage, progress, epoch, winners.
+    /// The full commit-description block: coverage, epoch, progress, winners.
     ///
-    /// The `progress:` line is always rendered, zero included — a plateau is
-    /// only visible by reading two consecutive commits if the figure is there
-    /// in both. The `epoch:` line names the corpus the figures were measured
-    /// against (#100) and is omitted when the report names no epoch, so a
-    /// report built by [`Self::new`] renders exactly as it did before.
+    /// The `epoch:` line is rendered inside the coverage block itself (#102),
+    /// directly under the percentage it qualifies, and is omitted when the
+    /// report names no epoch — so a report built by [`Self::new`] renders as it
+    /// did before #100. The `progress:` line is always rendered, zero included
+    /// — a plateau is only visible by reading two consecutive commits if the
+    /// figure is there in both. The `history:` line is omitted when the store
+    /// holds no records, and never contributes to the percentage above it.
     pub fn description(&self, candidates: usize) -> String {
-        let mut out = self.coverage.description(candidates);
+        let mut out = self
+            .coverage
+            .description(candidates, self.corpus_identity.as_deref());
         out.push_str(&format!(
             "\n{:<11}{} newly checked this run",
             "progress:", self.newly_screened
         ));
-        if let Some(identity) = &self.corpus_identity {
-            out.push_str(&format!(
-                "\n{:<11}corpus {identity} — coverage counts this corpus only",
-                "epoch:"
-            ));
+        if let Some(line) = self
+            .history
+            .as_ref()
+            .and_then(|h| h.line(self.coverage.checkable))
+        {
+            out.push('\n');
+            out.push_str(&line);
         }
         for line in self.winners.iter().flat_map(Winners::lines) {
             out.push('\n');
@@ -685,7 +872,7 @@ mod tests {
         assert_eq!(cov.percent(), 0.0);
         assert_eq!(
             cov.summary(),
-            "checked 0 of 2 hidden (0.0%), 0 cut, 2 tagged"
+            "sweep 0/2 checked (0.0% of epoch), 0 cut, 2 tagged"
         );
     }
 
@@ -695,7 +882,7 @@ mod tests {
         let cov = coverage(&hidden_creature(0), &HashSet::new(), &[], 0);
         assert_eq!(cov.checkable, 0);
         assert_eq!(cov.percent(), 0.0);
-        assert_eq!(cov.summary(), "checked 0 of 0 hidden (0.0%), 0 cut");
+        assert_eq!(cov.summary(), "sweep 0/0 checked (0.0% of epoch), 0 cut");
     }
 
     #[test]
@@ -716,7 +903,7 @@ mod tests {
         let creature = hidden_creature(4);
         let screens = [screen("h0", 1)];
         let cov = coverage(&creature, &HashSet::new(), &screens, 3);
-        assert_eq!(cov.summary(), "checked 1 of 4 hidden (25.0%), 3 cut");
+        assert_eq!(cov.summary(), "sweep 1/4 checked (25.0% of epoch), 3 cut");
         assert!(!cov.summary().contains("tagged"));
     }
 
@@ -727,7 +914,7 @@ mod tests {
         let cov = coverage(&creature, &tags(&["h0"]), &screens, 1);
         assert_eq!(
             cov.summary(),
-            "checked 2 of 6 hidden (33.3%), 1 cut, 1 tagged"
+            "sweep 2/6 checked (33.3% of epoch), 1 cut, 1 tagged"
         );
     }
 
@@ -746,12 +933,12 @@ mod tests {
     #[test]
     fn the_description_block_renders_exactly_as_grq_will_paste_it() {
         assert_eq!(
-            fleet_coverage().description(100),
+            fleet_coverage().description(100, None),
             concat!(
                 "🪒 Ockham neuron screening coverage\n",
-                "checked:   1204 of 5013 hidden (24.0%)\n",
+                "sweep:     1204 of 5013 hidden (24.0% of epoch)\n",
                 "cut:       7 this run\n",
-                "unchecked: 3809 remaining (~39 runs at 100/run)\n",
+                "unchecked: 3809 remaining this epoch (~39 runs at 100/run)\n",
                 "tagged:    42 carry tags, screened like any other"
             )
         );
@@ -764,7 +951,7 @@ mod tests {
     #[test]
     fn the_rendered_artefacts_never_call_tagged_neurons_skipped_or_declared() {
         let cov = fleet_coverage();
-        for text in [cov.description(100), cov.summary()] {
+        for text in [cov.description(100, None), cov.summary()] {
             assert!(!text.contains("skipped"), "{text}");
             assert!(!text.contains("never pruned"), "{text}");
             assert!(!text.contains("outside the denominator"), "{text}");
@@ -783,12 +970,12 @@ mod tests {
             ..fleet_coverage()
         };
         assert_eq!(
-            cov.description(100),
+            cov.description(100, None),
             concat!(
                 "🪒 Ockham neuron screening coverage\n",
-                "checked:   1204 of 5013 hidden (24.0%)\n",
+                "sweep:     1204 of 5013 hidden (24.0% of epoch)\n",
                 "cut:       7 this run\n",
-                "unchecked: 3809 remaining (~39 runs at 100/run)\n",
+                "unchecked: 3809 remaining this epoch (~39 runs at 100/run)\n",
                 "blocked:   412 checked with no cut proposed\n",
                 "tagged:    42 carry tags, screened like any other"
             )
@@ -802,7 +989,7 @@ mod tests {
 
     #[test]
     fn the_description_omits_the_blocked_line_when_nothing_is_blocked() {
-        let block = fleet_coverage().description(100);
+        let block = fleet_coverage().description(100, None);
         assert!(!block.contains("blocked:"), "{block}");
     }
 
@@ -812,10 +999,10 @@ mod tests {
             tagged: 0,
             ..fleet_coverage()
         };
-        let block = cov.description(100);
+        let block = cov.description(100, None);
         assert!(!block.contains("tagged"), "{block}");
         assert!(
-            block.ends_with("unchecked: 3809 remaining (~39 runs at 100/run)"),
+            block.ends_with("unchecked: 3809 remaining this epoch (~39 runs at 100/run)"),
             "{block}"
         );
     }
@@ -833,17 +1020,20 @@ mod tests {
             cut: 0,
         };
         assert!(
-            cov.description(100)
-                .ends_with("unchecked: 2 remaining (~1 run at 100/run)"),
+            cov.description(100, None)
+                .ends_with("unchecked: 2 remaining this epoch (~1 run at 100/run)"),
             "{}",
-            cov.description(100)
+            cov.description(100, None)
         );
     }
 
     #[test]
     fn a_zero_batch_size_drops_the_runs_clause_rather_than_rendering_inf() {
-        let block = fleet_coverage().description(0);
-        assert!(block.contains("unchecked: 3809 remaining\n"), "{block}");
+        let block = fleet_coverage().description(0, None);
+        assert!(
+            block.contains("unchecked: 3809 remaining this epoch\n"),
+            "{block}"
+        );
         assert!(!block.contains("runs at"), "{block}");
         assert!(!block.contains("inf") && !block.contains("NaN"), "{block}");
     }
@@ -859,12 +1049,12 @@ mod tests {
             cut: 1,
         };
         assert_eq!(
-            cov.description(100),
+            cov.description(100, None),
             concat!(
                 "🪒 Ockham neuron screening coverage\n",
-                "checked:   4 of 4 hidden (100.0%)\n",
+                "sweep:     4 of 4 hidden (100.0% of epoch)\n",
                 "cut:       1 this run\n",
-                "unchecked: 0 remaining"
+                "unchecked: 0 remaining — sweep complete for this epoch"
             )
         );
     }
@@ -880,7 +1070,10 @@ mod tests {
             cut: 0,
         };
         assert_eq!(cov.unchecked(), 0);
-        assert!(cov.description(10).contains("unchecked: 0 remaining"));
+        assert!(
+            cov.description(10, None)
+                .contains("unchecked: 0 remaining — sweep complete for this epoch")
+        );
     }
 
     #[test]
@@ -979,14 +1172,15 @@ mod tests {
             newly_screened: 100,
             winners: Some(fleet_winners()),
             corpus_identity: None,
+            history: None,
         };
         assert_eq!(
             report.description(100),
             concat!(
                 "🪒 Ockham neuron screening coverage\n",
-                "checked:   1204 of 5013 hidden (24.0%)\n",
+                "sweep:     1204 of 5013 hidden (24.0% of epoch)\n",
                 "cut:       7 this run\n",
-                "unchecked: 3809 remaining (~39 runs at 100/run)\n",
+                "unchecked: 3809 remaining this epoch (~39 runs at 100/run)\n",
                 "tagged:    42 carry tags, screened like any other\n",
                 "progress:  100 newly checked this run\n",
                 "winners:   38 screened · 22 confirmed · 1 applied · 21 carried\n",
@@ -1026,7 +1220,7 @@ mod tests {
             report.description(100),
             format!(
                 "{}\nprogress:  0 newly checked this run",
-                cov.description(100)
+                cov.description(100, None)
             )
         );
         assert!(!report.description(100).contains("winners:"));
@@ -1048,6 +1242,7 @@ mod tests {
                 ..Winners::default()
             }),
             corpus_identity: None,
+            history: None,
         };
         let block = report.description(100);
         assert!(block.ends_with("winners:   4 screened · 0 confirmed · 0 applied · 0 carried"));
@@ -1066,6 +1261,7 @@ mod tests {
                 ..fleet_winners()
             }),
             corpus_identity: None,
+            history: None,
         };
         let block = report.description(100);
         assert!(
@@ -1083,6 +1279,7 @@ mod tests {
             newly_screened: 100,
             winners: Some(fleet_winners()),
             corpus_identity: None,
+            history: None,
         };
         write_files(&dir, &report, 100).unwrap();
 
@@ -1105,7 +1302,9 @@ mod tests {
     }
 
     /// Issue #100: the artefact names the corpus its figures were measured
-    /// against, so `100%` is readable as "100% of this corpus epoch".
+    /// against, so `100%` is readable as "100% of this corpus epoch". Issue
+    /// #102 moved the line under the percentage it qualifies and compacted the
+    /// identity for humans — the full identity stays in the JSON.
     #[test]
     fn the_artefacts_name_the_corpus_epoch_the_figures_belong_to() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1118,8 +1317,10 @@ mod tests {
 
         let block = report.description(100);
         assert!(
-            block
-                .ends_with("epoch:     corpus 6fc028da266d6c51 — coverage counts this corpus only"),
+            block.contains(concat!(
+                "sweep:     1204 of 5013 hidden (24.0% of epoch)\n",
+                "epoch:     corpus 6fc028da — coverage counts this corpus only\n"
+            )),
             "{block}"
         );
         let json = std::fs::read_to_string(dir.join(COVERAGE_JSON_FILE)).unwrap();
@@ -1156,6 +1357,288 @@ mod tests {
         let older: CoverageReport = serde_json::from_str(pre_100).unwrap();
         assert_eq!(older.corpus_identity, None);
         assert_eq!(older, report);
+    }
+
+    /// Issue #102: a commit subject cannot carry a 16-character hash, so the
+    /// human-facing clause is truncated — on a character boundary, whatever the
+    /// identity is made of, and never lengthened.
+    #[test]
+    fn the_epoch_short_id_is_compact_and_never_splits_a_character() {
+        assert_eq!(short_epoch("6fc028da266d6c51"), "6fc028da");
+        assert_eq!(short_epoch("6fc028da"), "6fc028da", "already short enough");
+        assert_eq!(short_epoch("abc"), "abc", "shorter than the cap");
+        assert_eq!(short_epoch(""), "");
+        assert_eq!(
+            short_epoch("π🪒éαβγδεζη"),
+            "π🪒éαβγδε",
+            "eight characters, not eight bytes"
+        );
+    }
+
+    /// The principle in one assertion: the **sweep** finishes, Ockham does not.
+    #[test]
+    fn a_finished_sweep_is_reported_as_a_complete_sweep_never_a_finished_ockham() {
+        let creature = hidden_creature(4);
+        let screens = [
+            screen("h0", 1),
+            screen("h1", 2),
+            screen("h2", 3),
+            screen("h3", 4),
+        ];
+        let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+        assert!(cov.sweep_complete());
+        let report = CoverageReport {
+            corpus_identity: Some("6fc028da266d6c51".into()),
+            ..CoverageReport::new(cov)
+        };
+        let block = report.description(100);
+        assert!(
+            block.contains("unchecked: 0 remaining — sweep complete for this epoch"),
+            "{block}"
+        );
+        for text in [block, cov.summary()] {
+            assert!(text.contains("of epoch"), "{text}");
+            assert!(
+                !text.to_lowercase().contains("ockham complete")
+                    && !text.to_lowercase().contains("ockham finished"),
+                "the razor never finishes: {text}"
+            );
+        }
+    }
+
+    /// A creature with nothing to sweep has not completed a sweep.
+    #[test]
+    fn an_empty_denominator_never_claims_a_complete_sweep() {
+        let cov = coverage(&hidden_creature(0), &HashSet::new(), &[], 0);
+        assert!(!cov.sweep_complete());
+        let block = cov.description(100, Some("6fc028da266d6c51"));
+        assert!(
+            block.ends_with("unchecked: 0 remaining — no hidden neurons to sweep"),
+            "{block}"
+        );
+    }
+
+    /// The headline case of Issue #102, end to end through the artefacts: a
+    /// sweep that finished one epoch, a corpus change, and the fresh partial
+    /// coverage that must replace the `100%` rather than carry it forward.
+    #[test]
+    fn a_complete_epoch_then_a_corpus_change_reports_fresh_partial_coverage() {
+        let creature = hidden_creature(4);
+        let old_epoch: Vec<Screened> = ["h0", "h1", "h2", "h3"]
+            .iter()
+            .enumerate()
+            .map(|(i, uuid)| Screened {
+                corpus_identity: Some("corp-aaaa1111".into()),
+                ..screen(uuid, i as u64 + 1)
+            })
+            .collect();
+        let complete = CoverageReport {
+            corpus_identity: Some("corp-aaaa1111".into()),
+            history: Some(ScreenHistory::new(&old_epoch).over(&creature)),
+            ..CoverageReport::new(coverage(&creature, &HashSet::new(), &old_epoch, 0))
+        };
+        let block = complete.description(100);
+        assert!(
+            block.contains("sweep:     4 of 4 hidden (100.0% of epoch)"),
+            "{block}"
+        );
+        assert!(block.contains("epoch:     corpus corp-aaa"), "{block}");
+        assert!(
+            block.contains("unchecked: 0 remaining — sweep complete for this epoch"),
+            "{block}"
+        );
+
+        // GRQ pulls extended training data: same creature, new corpus, and two
+        // neurons screened against it so far. The store keeps every record.
+        let mut every_record = old_epoch.clone();
+        for (uuid, at) in [("h0", 5), ("h1", 6)] {
+            every_record.push(Screened {
+                corpus_identity: Some("corp-bbbb2222".into()),
+                ..screen(uuid, at)
+            });
+        }
+        let all = crate::learnings::current_epoch_screens(every_record.clone(), "corp-bbbb2222");
+        assert_eq!(
+            all.len(),
+            2,
+            "only the records filed under the new corpus are coverage"
+        );
+
+        let fresh = CoverageReport {
+            corpus_identity: Some("corp-bbbb2222".into()),
+            history: Some(ScreenHistory::new(&every_record).over(&creature)),
+            newly_screened: 2,
+            ..CoverageReport::new(coverage(&creature, &HashSet::new(), &all, 0))
+        };
+        let block = fresh.description(100);
+        assert!(
+            block.contains("sweep:     2 of 4 hidden (50.0% of epoch)"),
+            "{block}"
+        );
+        assert!(block.contains("epoch:     corpus corp-bbb"), "{block}");
+        assert!(
+            block.contains("unchecked: 2 remaining this epoch"),
+            "{block}"
+        );
+        assert!(
+            !block.contains("100.0%") && !block.contains("sweep complete"),
+            "a corpus change must never leave a 100% standing: {block}"
+        );
+        // The previous epoch's work is preserved — beside the percentage, never
+        // inside it.
+        assert!(
+            block.contains("history:   4 of 4 ever checked across 2 corpus epochs"),
+            "{block}"
+        );
+        assert_eq!(fresh.coverage.percent(), 50.0);
+    }
+
+    /// The cumulative figures are the creature's own: a record for a uuid that
+    /// has been pruned away describes a creature that no longer exists.
+    #[test]
+    fn history_counts_current_hidden_uuids_across_every_epoch() {
+        let records = vec![
+            screen("h0", 1),
+            Screened {
+                corpus_identity: Some("other".into()),
+                ..screen("h1", 2)
+            },
+            Screened {
+                corpus_identity: None,
+                ..screen("h2", 3)
+            },
+            screen("gone", 4),
+        ];
+        let history = ScreenHistory::new(&records).over(&hidden_creature(4));
+        assert_eq!(
+            history.checked_ever, 3,
+            "the departed uuid counts for nothing"
+        );
+        assert_eq!(
+            history.epochs, 3,
+            "an unnamed pre-#76 epoch is still an epoch"
+        );
+        assert!(history.has_any());
+        assert!(!ScreenHistory::default().over(&hidden_creature(4)).has_any());
+
+        // Records filed after the index was built are history too.
+        let mut index = ScreenHistory::new(&records);
+        index.merge(&[Screened {
+            corpus_identity: Some("later".into()),
+            ..screen("h3", 5)
+        }]);
+        let after = index.over(&hidden_creature(4));
+        assert_eq!(after.checked_ever, 4);
+        assert_eq!(after.epochs, 4);
+    }
+
+    /// Both halves of the line are about the same creature: an epoch whose only
+    /// records are for uuids this creature no longer carries reached nothing to
+    /// report, so `0 ever checked across 7 corpus epochs` is unwriteable.
+    #[test]
+    fn the_history_epoch_count_is_scoped_to_the_creature_it_counts() {
+        let records = vec![
+            screen("h0", 1),
+            Screened {
+                corpus_identity: Some("elsewhere".into()),
+                ..screen("another-creature", 2)
+            },
+            Screened {
+                corpus_identity: Some("elsewhere-too".into()),
+                ..screen("also-departed", 3)
+            },
+        ];
+        let history = ScreenHistory::new(&records).over(&hidden_creature(4));
+        assert_eq!(history.checked_ever, 1);
+        assert_eq!(
+            history.epochs, 1,
+            "only the epoch that reached a neuron still on the creature counts"
+        );
+
+        // Nothing on this creature was ever reached: the line is omitted rather
+        // than reporting epochs with no checks behind them.
+        let foreign = ScreenHistory::new(&records[1..]).over(&hidden_creature(4));
+        assert_eq!(foreign.checked_ever, 0);
+        assert_eq!(foreign.epochs, 0);
+        assert!(!foreign.has_any());
+    }
+
+    /// The history line is additive: omitted with no records, and never folded
+    /// into the current-epoch percentage above it.
+    #[test]
+    fn the_history_line_is_omitted_when_the_store_holds_no_records() {
+        let report = CoverageReport {
+            history: Some(History::default()),
+            ..CoverageReport::new(fleet_coverage())
+        };
+        let block = report.description(100);
+        assert!(!block.contains("history:"), "{block}");
+        assert!(
+            !CoverageReport::new(fleet_coverage())
+                .description(100)
+                .contains("history:")
+        );
+    }
+
+    /// `coverage.json` carries the cumulative figures machine-readably, and a
+    /// consumer written before #102 still reads the file.
+    #[test]
+    fn the_history_round_trips_through_the_json_artefact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("out");
+        let report = CoverageReport {
+            corpus_identity: Some("6fc028da266d6c51".into()),
+            history: Some(History {
+                checked_ever: 4802,
+                epochs: 3,
+            }),
+            ..CoverageReport::new(fleet_coverage())
+        };
+        write_files(&dir, &report, 100).unwrap();
+
+        let json = std::fs::read_to_string(dir.join(COVERAGE_JSON_FILE)).unwrap();
+        assert!(json.contains("\"checkedEver\": 4802"), "{json}");
+        assert!(json.contains("\"epochs\": 3"), "{json}");
+        let back: CoverageReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, report, "the cumulative figures must round-trip");
+        let old: Coverage = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            old,
+            fleet_coverage(),
+            "a consumer that only knows Coverage still reads it"
+        );
+        assert!(
+            report
+                .description(100)
+                .contains("history:   4802 of 5013 ever checked across 3 corpus epochs"),
+            "{}",
+            report.description(100)
+        );
+
+        // A pre-#102 artefact carries no history, rather than failing to read.
+        let pre_102 = r#"{"hidden":5013,"tagged":42,"checkable":5013,"checked":1204,"cut":7,
+            "newlyScreened":0}"#;
+        let older: CoverageReport = serde_json::from_str(pre_102).unwrap();
+        assert_eq!(older.history, None);
+    }
+
+    /// One epoch reads `epoch`, not `epochs` — the block is read by humans.
+    #[test]
+    fn a_single_epoch_history_line_is_singular() {
+        let report = CoverageReport {
+            history: Some(History {
+                checked_ever: 12,
+                epochs: 1,
+            }),
+            ..CoverageReport::new(fleet_coverage())
+        };
+        assert!(
+            report
+                .description(100)
+                .contains("history:   12 of 5013 ever checked across 1 corpus epoch"),
+            "{}",
+            report.description(100)
+        );
     }
 
     /// The plateau signature itself: nothing newly screened while unchecked
