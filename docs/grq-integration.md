@@ -278,18 +278,30 @@ notion of a visit with nothing to score and would otherwise publish a coverage
 percentage far above what it had screened. Mixed-version fleets therefore
 degrade to the old figures on old hosts rather than to inflated ones.
 
-**Screen coverage is not keyed by the corpus; verdicts are** (#76). GRQ
-regenerates the training corpus before every run
+**Screen records are not keyed by the corpus path; screen *coverage* is scoped
+to the corpus** (#76, #100). GRQ regenerates the training corpus
 (`worker/trainDataStocks.sh --mode=ockham --current`), so a new identity —
-therefore a new `corpus-<identity>/` — is the normal case, not an exception.
-That is correct for a verdict, which is a claim about one corpus, and wrong for
-a screen record, which only says a uuid has been looked at: under the old
-`screens-<identity>/` layout each identity saw its own slice of coverage and
-re-screened neurons another identity had already checked. Screens now live in
-one stable `screens/` directory with the identity carried on the record
-(`corpusIdentity`, screen format version 2). The old directories are still read
-so no fleet history is lost, and nothing else in the GRQ path changes: publish
-still stages the whole learnings directory.
+therefore a new `corpus-<identity>/` — is routine. Keying the screen *path* on
+it was wrong: each identity saw its own slice and re-screened neurons another
+identity had already checked, and a record written under an identity nothing
+came back to was stranded. Screens therefore live in one stable `screens/`
+directory with the identity carried on the record (`corpusIdentity`, screen
+format version 2), and the old `screens-<identity>/` directories are still read
+— their records stamped with the identity the directory name carries — so no
+fleet history is lost.
+
+What the identity on the record then decides is the **screening epoch** (#100).
+A run counts only the records measured against the corpus in front of it, so
+`checked X/X (100%)` means the sweep finished *that* corpus, not that Ockham is
+done. A corpus that is repacked with identical content hashes the same and keeps
+its coverage; a corpus that is extended starts a fresh epoch at `0 / hidden`,
+with every hidden neuron — `blocked` and `known-failure` included — eligible
+again. Nothing is deleted, so a host that returns to an earlier identity finds
+that epoch intact. `coverage.json` and the journal `coverage` record carry
+`corpusIdentity`, and the commit-description block gains an `epoch:` line.
+**Read `checked` across an identity change as a new epoch, not as lost
+coverage.** Nothing else in the GRQ path changes: publish still stages the
+whole learnings directory.
 
 Islands are `CLOSED_BIOSPHERE=1` by design and therefore get their own
 directory: an island stops paying twice for its own refusals without ever seeing
@@ -478,8 +490,8 @@ What GRQ reads out of Ockham. Changing any row breaks a live fleet worker.
 | Per-neuron `tags` | `grq_creature_guard_checkin_lineage` | Must survive on every neuron that **survives**, byte-for-byte. A neuron that is cut takes its tags with it. GRQ `Develop` still refuses an undeclared cut of a tagged neuron (its Issue #78); since Ockham's Issue #87 that refusal has nothing left to read, and the retirement is committed but unmerged on the GRQ branch `retire-pruned-provenance-declaration-ockham-89` (#89, section 5a). |
 | `<output-dir>/pruned-provenance.json` | `grq_creature_guard_checkin_lineage`, sixth argument | **No longer written** since Issue #87 — neuron tags are informational, so a tagged cut is declared to nobody. GRQ `Develop` still passes the path and fails closed on the absent file; the branch that stops requiring it must merge before GRQ adopts an Ockham release ≥ the one carrying #87 (#89). |
 | `uuid` / `memetic` keys | `grq_creature_guard_checkin_lineage` | Must be **absent** from the written creature. |
-| `<output-dir>/coverage.txt` | `grq_ockham_read_coverage` | Line-oriented block relayed verbatim as the commit description. Since Issue #59 it may carry `winners:` / `bundles:` / `dropped:` lines after the coverage lines; each is omitted when it has nothing to report, and a run that screened nothing renders the coverage lines alone. Since Issue #74 the tagged line reads `tagged:    N carry tags, screened like any other` — it replaced the `skipped:` line, and is still omitted when no neuron is tagged. Issue #87 removed the `declared:` line that followed it. Issue #93 added a `blocked:   N checked with no cut proposed` line before the tagged line — omitted when nothing is blocked — and the `progress:` line now reads `newly checked` rather than `newly screened`. Absent or blank is a supported no-op. |
-| `<output-dir>/coverage.json` | *nothing in GRQ today* | Written by Ockham; GRQ reads only `coverage.txt`. Since Issue #59 it carries an additive `winners` object beside the existing coverage fields. Issue #74 changed no key: `checkable` now counts **every** hidden neuron, tagged ones included, so the percentage no longer overstates progress. Issue #93 added an additive `blocked` key — the checked UUIDs no cut was proposed for — and a pre-#93 file still deserialises. |
+| `<output-dir>/coverage.txt` | `grq_ockham_read_coverage` | Line-oriented block relayed verbatim as the commit description. Since Issue #59 it may carry `winners:` / `bundles:` / `dropped:` lines after the coverage lines; each is omitted when it has nothing to report, and a run that screened nothing renders the coverage lines alone. Since Issue #74 the tagged line reads `tagged:    N carry tags, screened like any other` — it replaced the `skipped:` line, and is still omitted when no neuron is tagged. Issue #87 removed the `declared:` line that followed it. Issue #93 added a `blocked:   N checked with no cut proposed` line before the tagged line — omitted when nothing is blocked — and the `progress:` line now reads `newly checked` rather than `newly screened`. Issue #100 added an `epoch:     corpus <identity> — coverage counts this corpus only` line after `progress:`, naming the corpus the figures were measured against. Absent or blank is a supported no-op. |
+| `<output-dir>/coverage.json` | *nothing in GRQ today* | Written by Ockham; GRQ reads only `coverage.txt`. Since Issue #59 it carries an additive `winners` object beside the existing coverage fields. Issue #74 changed no key: `checkable` now counts **every** hidden neuron, tagged ones included, so the percentage no longer overstates progress. Issue #93 added an additive `blocked` key — the checked UUIDs no cut was proposed for — and a pre-#93 file still deserialises. Issue #100 added an additive `corpusIdentity` key naming the screening epoch, and a pre-#100 file still deserialises. |
 | Process stdout | *nothing* | Redirected to stderr by `grq_ockham_run`. `grq_ockham_run`'s **own** stdout must carry the `best.json` path and nothing else. |
 | Exit code 0 | `grq_ockham_run` | Success; `best.json` must be present. |
 | Exit code 124/143/137 | `grq_ockham_run` | The wrapper judged the process **stuck** and killed it — an incident to investigate, not routine budget enforcement (section 2): whatever cohort was in flight is lost. Warned, and `best.json` is used if present. |

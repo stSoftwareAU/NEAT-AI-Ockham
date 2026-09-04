@@ -24,6 +24,13 @@
 //! Evolution keeps adding hidden neurons, and each new one starts unchecked and
 //! *lowers* the percentage. That is intended: coverage is a statement about the
 //! creature in front of us, not a monotonic score.
+//!
+//! It is also a statement about **one corpus** (Issue #100). A sweep can finish;
+//! Ockham never does. `checked X/X (100%)` says the sweep is complete for the
+//! training data in hand, and the corpus is extended every few days — so the
+//! records the count is built from are the ones filed under the current corpus
+//! identity ([`crate::learnings::current_epoch_screens`]), and
+//! [`CoverageReport::corpus_identity`] names the epoch the figures belong to.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -317,7 +324,7 @@ impl Winners {
 ///
 /// [`Coverage`] is flattened, so a consumer that deserialises `coverage.json`
 /// straight into [`Coverage`] keeps working — serde ignores the extra keys.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageReport {
     /// Screening coverage of the final incumbent.
@@ -336,29 +343,50 @@ pub struct CoverageReport {
     /// What the run tried and kept; absent when nothing was screened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub winners: Option<Winners>,
+    /// Corpus identity these figures were measured against (Issue #100).
+    ///
+    /// The screening epoch the percentage belongs to: `100%` means the sweep is
+    /// complete for *this* corpus, and the next extension of the training data
+    /// opens a new epoch at zero. Every run that writes `coverage.json` names
+    /// its corpus, because those files are written only where there is a screen
+    /// store to have measured coverage against. `None` on a report built by
+    /// [`Self::new`] and on any `coverage.json` written before this field
+    /// existed — so an older artefact still deserialises and an older consumer
+    /// still ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpus_identity: Option<String>,
 }
 
 impl CoverageReport {
-    /// Coverage with no per-run progress and no winner figures.
+    /// Coverage with no per-run progress, no winner figures and no epoch.
     pub fn new(coverage: Coverage) -> Self {
         Self {
             coverage,
             newly_screened: 0,
             winners: None,
+            corpus_identity: None,
         }
     }
 
-    /// The full commit-description block: coverage, progress, then winners.
+    /// The full commit-description block: coverage, progress, epoch, winners.
     ///
     /// The `progress:` line is always rendered, zero included — a plateau is
     /// only visible by reading two consecutive commits if the figure is there
-    /// in both.
+    /// in both. The `epoch:` line names the corpus the figures were measured
+    /// against (#100) and is omitted when the report names no epoch, so a
+    /// report built by [`Self::new`] renders exactly as it did before.
     pub fn description(&self, candidates: usize) -> String {
         let mut out = self.coverage.description(candidates);
         out.push_str(&format!(
             "\n{:<11}{} newly checked this run",
             "progress:", self.newly_screened
         ));
+        if let Some(identity) = &self.corpus_identity {
+            out.push_str(&format!(
+                "\n{:<11}corpus {identity} — coverage counts this corpus only",
+                "epoch:"
+            ));
+        }
         for line in self.winners.iter().flat_map(Winners::lines) {
             out.push('\n');
             out.push_str(&line);
@@ -595,6 +623,42 @@ mod tests {
             cov.blocked, 1,
             "h0 is blocked; the departed uuid counts for neither figure"
         );
+    }
+
+    /// Issue #100: coverage counts the epoch of the corpus in hand. A creature
+    /// screened to 100% under the previous corpus opens the new epoch at
+    /// `0 / hidden`, blocked and known-failure visits included — every neuron is
+    /// eligible to be visited again — while the records themselves survive.
+    #[test]
+    fn a_corpus_change_opens_a_new_epoch_at_zero_coverage() {
+        let creature = hidden_creature(4);
+        let old_epoch = vec![
+            screen("h0", 1),
+            screen("h1", 2),
+            visit("h2", 3),
+            Screened {
+                kind: crate::learnings::SCREEN_KIND_KNOWN_FAILURE.into(),
+                ..screen("h3", 4)
+            },
+        ];
+        let before = coverage(&creature, &HashSet::new(), &old_epoch, 0);
+        assert_eq!(before.percent(), 100.0, "the sweep finished that corpus");
+
+        let new_epoch = crate::learnings::current_epoch_screens(old_epoch.clone(), "corp-next");
+        let after = coverage(&creature, &HashSet::new(), &new_epoch, 0);
+        assert_eq!(after.checkable, 4, "every hidden neuron is checkable again");
+        assert_eq!(after.checked, 0);
+        assert_eq!(
+            after.blocked, 0,
+            "a blocked visit was blocked under that corpus"
+        );
+        assert_eq!(after.percent(), 0.0);
+        assert_eq!(after.unchecked(), 4);
+
+        // Same corpus, same epoch: a restart against unchanged training data
+        // keeps everything it had.
+        let same = crate::learnings::current_epoch_screens(old_epoch, "corp");
+        assert_eq!(coverage(&creature, &HashSet::new(), &same, 0), before);
     }
 
     /// Intended behaviour, not a bug: evolution adds hidden neurons, they start
@@ -914,6 +978,7 @@ mod tests {
             coverage: fleet_coverage(),
             newly_screened: 100,
             winners: Some(fleet_winners()),
+            corpus_identity: None,
         };
         assert_eq!(
             report.description(100),
@@ -982,6 +1047,7 @@ mod tests {
                 carried: 0,
                 ..Winners::default()
             }),
+            corpus_identity: None,
         };
         let block = report.description(100);
         assert!(block.ends_with("winners:   4 screened · 0 confirmed · 0 applied · 0 carried"));
@@ -999,6 +1065,7 @@ mod tests {
                 dropped: 0,
                 ..fleet_winners()
             }),
+            corpus_identity: None,
         };
         let block = report.description(100);
         assert!(
@@ -1015,6 +1082,7 @@ mod tests {
             coverage: fleet_coverage(),
             newly_screened: 100,
             winners: Some(fleet_winners()),
+            corpus_identity: None,
         };
         write_files(&dir, &report, 100).unwrap();
 
@@ -1034,6 +1102,60 @@ mod tests {
 
         let text = std::fs::read_to_string(dir.join(COVERAGE_TEXT_FILE)).unwrap();
         assert_eq!(text, format!("{}\n", report.description(100)));
+    }
+
+    /// Issue #100: the artefact names the corpus its figures were measured
+    /// against, so `100%` is readable as "100% of this corpus epoch".
+    #[test]
+    fn the_artefacts_name_the_corpus_epoch_the_figures_belong_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("out");
+        let report = CoverageReport {
+            corpus_identity: Some("6fc028da266d6c51".into()),
+            ..CoverageReport::new(fleet_coverage())
+        };
+        write_files(&dir, &report, 100).unwrap();
+
+        let block = report.description(100);
+        assert!(
+            block
+                .ends_with("epoch:     corpus 6fc028da266d6c51 — coverage counts this corpus only"),
+            "{block}"
+        );
+        let json = std::fs::read_to_string(dir.join(COVERAGE_JSON_FILE)).unwrap();
+        assert!(
+            json.contains("\"corpusIdentity\": \"6fc028da266d6c51\""),
+            "{json}"
+        );
+        let back: CoverageReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, report, "the epoch must round-trip");
+        let old: Coverage = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            old,
+            fleet_coverage(),
+            "a consumer that only knows Coverage still reads it"
+        );
+    }
+
+    /// A run with no screen store has no epoch to name, and must render and
+    /// serialise exactly as it did before #100.
+    #[test]
+    fn a_report_with_no_epoch_renders_and_writes_exactly_as_before() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("out");
+        let report = CoverageReport::new(fleet_coverage());
+        write_files(&dir, &report, 100).unwrap();
+        let block = report.description(100);
+        assert!(!block.contains("epoch:"), "{block}");
+        let json = std::fs::read_to_string(dir.join(COVERAGE_JSON_FILE)).unwrap();
+        assert!(!json.contains("corpusIdentity"), "{json}");
+
+        // A pre-#100 artefact names no epoch, rather than failing to read.
+        let pre_100 = r#"{"hidden":5013,"tagged":42,"checkable":5013,"checked":1204,"cut":7,
+            "newlyScreened":0}"#;
+        let older: CoverageReport = serde_json::from_str(pre_100).unwrap();
+        assert_eq!(older.corpus_identity, None);
+        assert_eq!(older, report);
     }
 
     /// The plateau signature itself: nothing newly screened while unchecked

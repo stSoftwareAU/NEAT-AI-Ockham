@@ -132,6 +132,16 @@ pub enum Event {
         /// Hidden neurons removed this run.
         #[serde(default)]
         cut: usize,
+        /// Corpus identity these figures were measured against (Issue #100).
+        ///
+        /// The screening epoch: coverage is only authoritative for the corpus
+        /// it was measured against, so a reader of two runs' journals can tell
+        /// a fresh epoch from a collapse in coverage. `report` needs no change
+        /// to carry it — it reports the latest coverage snapshot, which is the
+        /// current epoch's by construction. `None` on records written before
+        /// this field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corpus_identity: Option<String>,
     },
     /// Full-corpus cohort result.
     Full {
