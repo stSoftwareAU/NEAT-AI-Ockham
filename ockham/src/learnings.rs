@@ -1730,14 +1730,13 @@ mod tests {
     /// whole load: the fleet runs mixed versions against one shared store.
     #[test]
     fn an_unknown_reason_code_from_a_newer_host_still_loads() {
-        let mut record =
-            serde_json::to_value(Screened {
-                kind: SCREEN_KIND_SKIPPED.into(),
-                version: SCREENS_VISIT_FORMAT_VERSION,
-                blocked_reason: Some(BlockedReason::AggregateSquash),
-                ..screen("h_future", ScreenOutcomeKind::Loser, 1)
-            })
-            .unwrap();
+        let mut record = serde_json::to_value(Screened {
+            kind: SCREEN_KIND_SKIPPED.into(),
+            version: SCREENS_VISIT_FORMAT_VERSION,
+            blocked_reason: Some(BlockedReason::AggregateSquash),
+            ..screen("h_future", ScreenOutcomeKind::Loser, 1)
+        })
+        .unwrap();
         record["blockedReason"] = serde_json::json!("some-reason-invented-later");
         let back: Screened = serde_json::from_value(record).unwrap();
         assert_eq!(back.blocked_category(), Some(BlockedReason::Other));

@@ -692,7 +692,11 @@ impl Default for CheckedUuid<'_> {
 impl<'a> CheckedUuid<'a> {
     fn observe(&mut self, record: &'a Screened) {
         self.only_skips &= record.is_skipped();
-        if record.is_skipped() && self.latest.is_none_or(|held| Self::supersedes(record, held)) {
+        if record.is_skipped()
+            && self
+                .latest
+                .is_none_or(|held| Self::supersedes(record, held))
+        {
             self.latest = Some(record);
         }
     }
@@ -1306,10 +1310,14 @@ mod tests {
     /// older artefact must never fail the parse of a newer reader.
     #[test]
     fn a_pre_103_coverage_json_reads_as_no_blocked_reasons() {
-        let pre_103 = r#"{"hidden":5013,"tagged":42,"checkable":5013,"checked":1204,"blocked":412,"cut":7}"#;
+        let pre_103 =
+            r#"{"hidden":5013,"tagged":42,"checkable":5013,"checked":1204,"blocked":412,"cut":7}"#;
         let old: Coverage = serde_json::from_str(pre_103).unwrap();
         assert_eq!(old.blocked, 412);
-        assert_eq!(old.blocked_by_reason, crate::blocked::BlockedBreakdown::default());
+        assert_eq!(
+            old.blocked_by_reason,
+            crate::blocked::BlockedBreakdown::default()
+        );
         assert_eq!(
             old.blocked_by_reason.total(),
             0,

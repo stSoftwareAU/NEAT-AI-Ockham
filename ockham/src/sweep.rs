@@ -365,7 +365,10 @@ pub(crate) fn propose(
     // constant-folding the source can (Issue #103) — and when it cannot either,
     // the reason reported is the one that actually stopped the razor.
     if !ablation.substitution_may_help() {
-        return Err(Blocked::new(ablation.blocked_reason(), ablation.to_string()));
+        return Err(Blocked::new(
+            ablation.blocked_reason(),
+            ablation.to_string(),
+        ));
     }
     match substitute_constant(incumbent, uuid, mean) {
         Ok(s) => Ok((CandidateKind::Constant, s.creature)),

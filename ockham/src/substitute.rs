@@ -84,7 +84,9 @@ impl fmt::Display for SubstitutionSkip {
                 write!(f, "`{uuid}` is {neuron_type}, not hidden")
             }
             Self::NonFiniteMean(m) => write!(f, "non-finite mean {m}"),
-            Self::NoOutgoing(u) => write!(f, "`{u}` feeds nothing; a constant there is dead weight"),
+            Self::NoOutgoing(u) => {
+                write!(f, "`{u}` feeds nothing; a constant there is dead weight")
+            }
             Self::Invalid(m) => write!(f, "candidate failed creature.validate(): {m}"),
         }
     }
@@ -151,7 +153,9 @@ pub fn substitute_constant(
     // Rule 11: inside the computational slice every constant precedes every
     // hidden neuron. Moving it to the head of that slice preserves the relative
     // order of everything else, so every surviving synapse still runs forwards.
-    working.neurons.insert(constant_slot(&working.neurons), constant);
+    working
+        .neurons
+        .insert(constant_slot(&working.neurons), constant);
 
     let removed_neurons = cascade_dead_sources(&mut working);
     sort_synapses_canonically(&mut working);
@@ -287,7 +291,10 @@ mod tests {
             .find(|n| n.uuid == "h_cond")
             .expect("the neuron stays, as a constant");
         assert_eq!(substituted.neuron_type, "constant");
-        assert_eq!(substituted.squash, None, "rule 15: a constant has no squash");
+        assert_eq!(
+            substituted.squash, None,
+            "rule 15: a constant has no squash"
+        );
         assert!((substituted.bias - 0.5).abs() < f64::EPSILON);
         assert!(
             result
@@ -301,7 +308,11 @@ mod tests {
             result.creature.synapses
         );
         assert!(
-            result.creature.synapses.iter().all(|s| s.to_uuid != "h_cond"),
+            result
+                .creature
+                .synapses
+                .iter()
+                .all(|s| s.to_uuid != "h_cond"),
             "the incoming half is what the substitution removes"
         );
         assert!(result.after.hidden_neurons < result.before.hidden_neurons);

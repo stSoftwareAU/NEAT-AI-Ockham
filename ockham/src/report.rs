@@ -828,41 +828,62 @@ mod tests {
             }
             out
         };
-        let coverage = |identity: &str, blocked: usize, reasons: BlockedBreakdown| Event::Coverage {
-            blocked_by_reason: reasons,
-            hidden: 100,
-            tagged: 0,
-            checkable: 100,
-            checked: 90,
-            blocked,
-            cut: 0,
-            corpus_identity: Some(identity.into()),
-        };
+        let coverage =
+            |identity: &str, blocked: usize, reasons: BlockedBreakdown| Event::Coverage {
+                blocked_by_reason: reasons,
+                hidden: 100,
+                tagged: 0,
+                checkable: 100,
+                checked: 90,
+                blocked,
+                cut: 0,
+                corpus_identity: Some(identity.into()),
+            };
         // Two runs under the old corpus, then one under the new: the first
         // epoch keeps its freshest figures rather than a second row.
         journal::append(
             &path,
-            &coverage("corp-old", 40, breakdown(BlockedReason::AggregateSquash, 40)),
+            &coverage(
+                "corp-old",
+                40,
+                breakdown(BlockedReason::AggregateSquash, 40),
+            ),
         )
         .unwrap();
         journal::append(
             &path,
-            &coverage("corp-old", 30, breakdown(BlockedReason::AggregateSquash, 30)),
+            &coverage(
+                "corp-old",
+                30,
+                breakdown(BlockedReason::AggregateSquash, 30),
+            ),
         )
         .unwrap();
         journal::append(
             &path,
-            &coverage("corp-new", 5, breakdown(BlockedReason::MissingActivation, 5)),
+            &coverage(
+                "corp-new",
+                5,
+                breakdown(BlockedReason::MissingActivation, 5),
+            ),
         )
         .unwrap();
 
         let report = summarise(&[&path]).unwrap();
-        assert_eq!(report.blocked_epochs.len(), 2, "{:?}", report.blocked_epochs);
+        assert_eq!(
+            report.blocked_epochs.len(),
+            2,
+            "{:?}",
+            report.blocked_epochs
+        );
         assert_eq!(
             report.blocked_epochs[0].corpus_identity.as_deref(),
             Some("corp-old")
         );
-        assert_eq!(report.blocked_epochs[0].blocked, 30, "the freshest snapshot");
+        assert_eq!(
+            report.blocked_epochs[0].blocked, 30,
+            "the freshest snapshot"
+        );
         assert_eq!(
             report.blocked_epochs[0].blocked_by_reason.aggregate_squash,
             30
@@ -872,7 +893,9 @@ mod tests {
             Some("corp-new")
         );
         assert_eq!(
-            report.blocked_epochs[1].blocked_by_reason.missing_activation,
+            report.blocked_epochs[1]
+                .blocked_by_reason
+                .missing_activation,
             5,
             "the new epoch is its own row, never folded into the old one"
         );
