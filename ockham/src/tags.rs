@@ -415,6 +415,7 @@ mod tests {
 
     fn some_coverage() -> Option<Coverage> {
         Some(Coverage {
+            blocked_by_reason: Default::default(),
             hidden: 5013,
             tagged: 42,
             checkable: 5013,
@@ -482,6 +483,7 @@ mod tests {
         let msg = ockham_progress_message(&progress(
             "search",
             Some(Coverage {
+                blocked_by_reason: Default::default(),
                 hidden: 2,
                 tagged: 2,
                 checkable: 2,
@@ -499,6 +501,7 @@ mod tests {
         let msg = ockham_progress_message(&progress(
             "search",
             Some(Coverage {
+                blocked_by_reason: Default::default(),
                 hidden: 0,
                 tagged: 0,
                 checkable: 0,

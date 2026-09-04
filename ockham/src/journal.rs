@@ -129,6 +129,14 @@ pub enum Event {
         /// Checked UUIDs the razor could never propose a cut for (#93).
         #[serde(default)]
         blocked: usize,
+        /// That total split by reason code (Issue #103).
+        ///
+        /// Journalled per run and per epoch, so the blocked population can be
+        /// inspected across epochs from the append-only journal alone rather
+        /// than only in the run that happened to be watched. `#[serde(default)]`
+        /// so a journal written before #103 still reads, as no reasons.
+        #[serde(default)]
+        blocked_by_reason: crate::blocked::BlockedBreakdown,
         /// Hidden neurons removed this run.
         #[serde(default)]
         cut: usize,

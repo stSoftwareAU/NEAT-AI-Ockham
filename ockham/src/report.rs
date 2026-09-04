@@ -15,6 +15,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::ablation::growth_units;
+use crate::blocked::BlockedBreakdown;
 use crate::coverage::{Coverage, Winners};
 use crate::journal::Event;
 use crate::ordering::Ordering;
@@ -81,6 +82,24 @@ pub struct Report {
     /// A subset of `checked`: the sweep visited them and the structure — an
     /// aggregate squash downstream, a typed synapse — left nothing to score.
     pub blocked: Option<usize>,
+    /// `blocked` split by reason code, at that same record (Issue #103).
+    ///
+    /// The work list: the counts sum to `blocked`, and the largest of them is
+    /// the category a new proposal path would pay for. `None` on a journal with
+    /// no coverage record.
+    pub blocked_by_reason: Option<BlockedBreakdown>,
+    /// The largest blocked category's code, at that same record (Issue #103).
+    ///
+    /// Derived from `blocked_by_reason` so the report can never disagree with
+    /// it; `None` when nothing is blocked.
+    pub dominant_blocked_reason: Option<String>,
+    /// Blocked reasons per screening epoch, oldest epoch first (Issue #103).
+    ///
+    /// The coverage figures above are the **latest** snapshot, so on their own
+    /// they cannot answer "was this category always this large?". Every epoch
+    /// the journals carry keeps its freshest breakdown here, which is what makes
+    /// historical blocked reasons inspectable across epochs.
+    pub blocked_epochs: Vec<EpochBlocked>,
     /// Hidden UUIDs still never screened, at that same record (Issue #40).
     pub unchecked: Option<usize>,
     /// Hidden neurons cut by the run that wrote that record (Issue #40).
@@ -133,6 +152,22 @@ pub struct Report {
     pub seed: Option<u64>,
 }
 
+/// One screening epoch's blocked population (Issue #103).
+///
+/// The freshest coverage snapshot the journals carry for that corpus identity:
+/// a run reports the epoch in hand, and the series of these reports how the
+/// blocked categories moved as the corpus was extended.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpochBlocked {
+    /// Corpus identity the figures were measured against; `None` pre-#100.
+    pub corpus_identity: Option<String>,
+    /// Blocked UUIDs in that epoch.
+    pub blocked: usize,
+    /// That total split by reason code.
+    pub blocked_by_reason: BlockedBreakdown,
+}
+
 /// Read JSONL journals and fold them into a [`Report`].
 pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
     let mut report = Report {
@@ -156,6 +191,9 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         checkable: None,
         checked: None,
         blocked: None,
+        blocked_by_reason: None,
+        dominant_blocked_reason: None,
+        blocked_epochs: Vec::new(),
         unchecked: None,
         cut: None,
         coverage_percent: None,
@@ -224,6 +262,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     tagged,
                     checked,
                     blocked,
+                    blocked_by_reason,
                     cut,
                     corpus_identity,
                     ..
@@ -244,6 +283,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                         checkable: hidden,
                         checked,
                         blocked,
+                        blocked_by_reason,
                         cut,
                     };
                     report.hidden = Some(cov.hidden);
@@ -251,6 +291,15 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     report.checkable = Some(cov.checkable);
                     report.checked = Some(cov.checked);
                     report.blocked = Some(cov.blocked);
+                    report.blocked_by_reason = Some(cov.blocked_by_reason);
+                    report.dominant_blocked_reason = cov
+                        .blocked_by_reason
+                        .dominant()
+                        .map(|(reason, _)| reason.code().to_string());
+                    // One entry per epoch, holding its freshest snapshot: a
+                    // later run under the same corpus replaces the figures
+                    // rather than appending a second row for the same epoch.
+                    record_epoch_blocked(&mut report.blocked_epochs, &corpus_identity, &cov);
                     report.unchecked = Some(cov.unchecked());
                     report.cut = Some(cov.cut);
                     report.coverage_percent = Some(cov.percent());
@@ -362,6 +411,29 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         report.accepts_per_hour = Some(report.accepts as f64 * 3_600_000.0 / ms as f64);
     }
     Ok(report)
+}
+
+/// Fold one coverage snapshot into the per-epoch blocked history.
+///
+/// Keyed on the corpus identity and ordered by first appearance, so the series
+/// reads oldest epoch first however many journals were folded together.
+fn record_epoch_blocked(
+    epochs: &mut Vec<EpochBlocked>,
+    corpus_identity: &Option<String>,
+    cov: &Coverage,
+) {
+    let entry = EpochBlocked {
+        corpus_identity: corpus_identity.clone(),
+        blocked: cov.blocked,
+        blocked_by_reason: cov.blocked_by_reason,
+    };
+    match epochs
+        .iter_mut()
+        .find(|e| e.corpus_identity == *corpus_identity)
+    {
+        Some(held) => *held = entry,
+        None => epochs.push(entry),
+    }
 }
 
 #[cfg(test)]
@@ -587,6 +659,7 @@ mod tests {
         journal::append(
             &path,
             &Event::Coverage {
+                blocked_by_reason: Default::default(),
                 hidden: 12,
                 tagged: 2,
                 checkable: 12,
@@ -601,6 +674,7 @@ mod tests {
         journal::append(
             &path,
             &Event::Coverage {
+                blocked_by_reason: Default::default(),
                 hidden: 10,
                 tagged: 2,
                 checkable: 10,
@@ -628,6 +702,7 @@ mod tests {
         journal::append(
             &path,
             &Event::Coverage {
+                blocked_by_reason: Default::default(),
                 hidden: 5013,
                 tagged: 42,
                 checkable: 5013,
@@ -662,6 +737,7 @@ mod tests {
         journal::append(
             &path,
             &Event::Coverage {
+                blocked_by_reason: Default::default(),
                 hidden: 5013,
                 tagged: 42,
                 checkable: 5013,
@@ -702,6 +778,7 @@ mod tests {
         journal::append(
             &path,
             &Event::Coverage {
+                blocked_by_reason: Default::default(),
                 hidden: 4,
                 tagged: 0,
                 checkable: 4,
@@ -722,6 +799,7 @@ mod tests {
         journal::append(
             &path,
             &Event::Coverage {
+                blocked_by_reason: Default::default(),
                 hidden: 4,
                 tagged: 0,
                 checkable: 4,

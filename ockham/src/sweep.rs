@@ -2,9 +2,11 @@
 //!
 //! Hidden-neuron UUIDs are ordered once from a recorded seed and named
 //! [`crate::ordering::Ordering`] and visited **without replacement**. Each visit
-//! tries an exact IDENTITY collapse, then a mean-activation ablation.
-//! Unsupported or invalid attempts are skipped and the batch is refilled while
-//! unvisited neurons remain.
+//! tries an exact IDENTITY collapse, then a mean-activation ablation, then a
+//! constant substitution ([`crate::substitute`], Issue #103) for the structure
+//! the ablation fails closed on. Attempts that produce nothing are skipped with
+//! a [`crate::blocked::BlockedReason`] and the batch is refilled while unvisited
+//! neurons remain.
 //!
 //! An ordering only changes *when* a neuron is tested (Issue #11). Every
 //! candidate still passes `creature.validate()`, the sampled screen and full
@@ -22,11 +24,13 @@ use neat_core::{CreatureExport, SquashType, creature_to_json, parse_squash_name}
 use serde::Serialize;
 
 use crate::ablation::ablate_mean;
-use crate::collapse::{CollapseOptions, collapse_identity};
+use crate::blocked::BlockedReason;
+use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
 use crate::incumbent::sha256_hex;
 use crate::ordering::{Ordering, OrderingConfig, hidden_order};
 use crate::scorer::{DirectoryScorer, ScorerMode};
 use crate::stats::ActivationStats;
+use crate::substitute::substitute_constant;
 
 /// Draw a seed from the clock and process id when the user omitted `--seed`.
 pub fn draw_seed() -> u64 {
@@ -45,6 +49,11 @@ pub enum CandidateKind {
     Identity,
     /// Mean-activation ablation (#4).
     Ablation,
+    /// Mean-valued constant substitution (#103).
+    ///
+    /// The path for structure the ablation fails closed on: the neuron becomes
+    /// a `constant` and its outgoing edge — role and weight — is preserved.
+    Constant,
 }
 
 /// One valid pruning candidate produced by the sweep.
@@ -64,6 +73,36 @@ pub struct SweepCandidate {
     pub creature: CreatureExport,
 }
 
+/// Why one visit produced no candidate, in words and as a code (Issue #103).
+///
+/// The message names the neuron and the structure, which is what an audit trail
+/// needs; the code is what the tally, the screen record and every report count
+/// by, which is what a work list needs. Deriving the second from the first by
+/// parsing was how a non-finite mean used to hide among the aggregates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blocked {
+    /// Stable reason code.
+    pub reason: BlockedReason,
+    /// Full message, naming the neuron and the structure that blocked it.
+    pub detail: String,
+}
+
+impl Blocked {
+    /// A blocked visit with `reason` and the message `detail`.
+    pub fn new(reason: BlockedReason, detail: impl Into<String>) -> Self {
+        Self {
+            reason,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for Blocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.detail)
+    }
+}
+
 /// [`SweepSkip::reason`] of a visit a standing full-corpus verdict suppressed.
 ///
 /// Named rather than spelled twice: the run classifies a skip by this exact
@@ -80,6 +119,11 @@ pub struct SweepSkip {
     pub permutation_index: usize,
     /// Why it was skipped.
     pub reason: String,
+    /// Reason code, or `None` for a standing full-corpus verdict (Issue #103).
+    ///
+    /// A known failure is not blocked: the cut was proposed, scored and judged,
+    /// so it carries no blocked reason and is not counted in the breakdown.
+    pub blocked: Option<BlockedReason>,
 }
 
 /// Seeded without-replacement walk over hidden neurons.
@@ -248,6 +292,7 @@ impl Sweep {
                     uuid,
                     permutation_index,
                     reason: KNOWN_FAILURE_REASON.into(),
+                    blocked: None,
                 });
                 continue;
             }
@@ -262,10 +307,11 @@ impl Sweep {
                         creature,
                     });
                 }
-                Err(reason) => skips.push(SweepSkip {
+                Err(blocked) => skips.push(SweepSkip {
                     uuid,
                     permutation_index,
-                    reason,
+                    reason: blocked.detail,
+                    blocked: Some(blocked.reason),
                 }),
             }
         }
@@ -285,25 +331,48 @@ pub(crate) fn propose(
     incumbent: &CreatureExport,
     stats: &ActivationStats,
     uuid: &str,
-) -> Result<(CandidateKind, CreatureExport), String> {
+) -> Result<(CandidateKind, CreatureExport), Blocked> {
     if is_identity(incumbent, uuid) {
         match collapse_identity(incumbent, uuid, CollapseOptions::default()) {
             Ok(c) => return Ok((CandidateKind::Identity, c.creature)),
             Err(e) => {
                 // Cost-increasing IDENTITY still has an approximate ablation path.
                 if stats.by_uuid(uuid).is_none() {
-                    return Err(e.to_string());
+                    // Without a measured mean there is no fallback to take, so
+                    // a collapse the razor could otherwise have retried is
+                    // blocked on the missing statistic rather than on itself.
+                    let reason = match e {
+                        CollapseSkip::CostIncrease { .. } => BlockedReason::MissingActivation,
+                        ref skip => skip.blocked_reason(),
+                    };
+                    return Err(Blocked::new(reason, e.to_string()));
                 }
             }
         }
     }
-    let mean = stats
-        .by_uuid(uuid)
-        .map(|s| s.mean)
-        .ok_or_else(|| format!("no activation stats for `{uuid}`"))?;
-    match ablate_mean(incumbent, uuid, mean, stats.by_uuid(uuid)) {
-        Ok(a) => Ok((CandidateKind::Ablation, a.creature)),
-        Err(e) => Err(e.to_string()),
+    let mean = stats.by_uuid(uuid).map(|s| s.mean).ok_or_else(|| {
+        Blocked::new(
+            BlockedReason::MissingActivation,
+            format!("no activation stats for `{uuid}`"),
+        )
+    })?;
+    let ablation = match ablate_mean(incumbent, uuid, mean, stats.by_uuid(uuid)) {
+        Ok(a) => return Ok((CandidateKind::Ablation, a.creature)),
+        Err(e) => e,
+    };
+    // The bias fold cannot express an aggregate target or a role-carrying edge,
+    // and that is most of a forest-heavy creature. Keeping the edge and
+    // constant-folding the source can (Issue #103) — and when it cannot either,
+    // the reason reported is the one that actually stopped the razor.
+    if !ablation.substitution_may_help() {
+        return Err(Blocked::new(ablation.blocked_reason(), ablation.to_string()));
+    }
+    match substitute_constant(incumbent, uuid, mean) {
+        Ok(s) => Ok((CandidateKind::Constant, s.creature)),
+        Err(substitution) => Err(Blocked::new(
+            substitution.blocked_reason(),
+            format!("{ablation}; constant substitution: {substitution}"),
+        )),
     }
 }
 

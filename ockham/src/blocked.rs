@@ -19,9 +19,13 @@
 //! older binary must degrade to [`BlockedReason::Other`] rather than fail the
 //! load of every record beside it.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Why one visited neuron produced no candidate to score.
+///
+/// Serialised as its [`BlockedReason::code`] string, never as an enum variant:
+/// serde rejects an unknown variant and would fail the load of every record
+/// beside it, and the fleet runs mixed versions against one shared store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlockedReason {
     /// The neuron, or something the fold would touch, uses an aggregate squash.
@@ -37,12 +41,13 @@ pub enum BlockedReason {
     UnsafeTopology,
     /// A candidate was built and `creature.validate()` rejected it.
     ValidationFailed,
-    /// The neuron reaches no output, and the exact removal still could not be
-    /// turned into a valid candidate (Issue #103).
+    /// The neuron feeds nothing, so no candidate could be built around it.
     ///
-    /// The ordinary case — a neuron with no contribution path — is *proposed*
-    /// now rather than blocked, by [`crate::deadwood::prune_dead_path`]. This
-    /// code is what remains when that exact path itself could not be built.
+    /// NEAT-AI-core rejects a hidden neuron with no outgoing edge (rule 18), so
+    /// a validated incumbent holds none: this is what
+    /// [`crate::substitute::substitute_constant`] reports when a transform in
+    /// progress leaves one, rather than emitting a candidate that cannot
+    /// validate.
     NoOutputPath,
     /// An explicit reason outside the codes above, including a code written by
     /// a newer binary than the one reading it.
@@ -104,6 +109,19 @@ impl BlockedReason {
             .into_iter()
             .find(|r| r.code() == code)
             .unwrap_or(Self::Other)
+    }
+}
+
+impl Serialize for BlockedReason {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code())
+    }
+}
+
+impl<'de> Deserialize<'de> for BlockedReason {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = String::deserialize(deserializer)?;
+        Ok(Self::from_code(&code))
     }
 }
 
@@ -340,6 +358,18 @@ mod tests {
         assert!(json.contains("\"noOutputPath\":2"), "{json}");
         let back: BlockedBreakdown = serde_json::from_str(&json).unwrap();
         assert_eq!(back.no_output_path, 2);
+    }
+
+    /// A reason travels as its code, and a code from a newer binary is read
+    /// rather than failing the record it arrived on.
+    #[test]
+    fn a_reason_serialises_as_its_code_string() {
+        let json = serde_json::to_string(&BlockedReason::AggregateSquash).unwrap();
+        assert_eq!(json, "\"aggregate-squash\"");
+        let back: BlockedReason = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, BlockedReason::AggregateSquash);
+        let unknown: BlockedReason = serde_json::from_str("\"from-the-future\"").unwrap();
+        assert_eq!(unknown, BlockedReason::Other);
     }
 
     /// An artefact written before #103 still deserialises, as nothing blocked.

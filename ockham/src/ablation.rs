@@ -22,6 +22,7 @@ use neat_core::{
 };
 use serde::Serialize;
 
+use crate::blocked::BlockedReason;
 use crate::fixtures::sort_synapses_canonically;
 use crate::incumbent::validate_creature;
 use crate::stats::NeuronStats;
@@ -156,6 +157,42 @@ pub enum AblationSkip {
     },
     /// Final candidate failed `creature.validate()`.
     Invalid(String),
+}
+
+impl AblationSkip {
+    /// The reason code this skip is counted under (Issue #103).
+    ///
+    /// Structured, never parsed back out of the message: the tally has to be
+    /// deterministic, and a reason names the neuron it is about.
+    pub fn blocked_reason(&self) -> BlockedReason {
+        match self {
+            Self::AggregateNeuron { .. }
+            | Self::AggregateTarget { .. }
+            | Self::UnknownSquash { .. } => BlockedReason::AggregateSquash,
+            Self::NonFiniteMean(_) => BlockedReason::MissingActivation,
+            Self::UnknownNeuron(_) | Self::NotHidden { .. } | Self::TypedSynapse { .. } => {
+                BlockedReason::UnsafeTopology
+            }
+            Self::Invalid(_) => BlockedReason::ValidationFailed,
+        }
+    }
+
+    /// Whether a constant substitution is worth trying instead (Issue #103).
+    ///
+    /// True for the structural blocks — an aggregate target, an aggregate
+    /// source, a typed edge — where the fold is impossible but the *edge* can
+    /// be preserved. False where there was nothing to substitute in the first
+    /// place (no neuron, no finite mean) or where a candidate was built and
+    /// rejected.
+    pub fn substitution_may_help(&self) -> bool {
+        matches!(
+            self,
+            Self::AggregateNeuron { .. }
+                | Self::AggregateTarget { .. }
+                | Self::UnknownSquash { .. }
+                | Self::TypedSynapse { .. }
+        )
+    }
 }
 
 impl fmt::Display for AblationSkip {
