@@ -51,17 +51,28 @@
 //! ever cleared. Selecting rather than clearing is what keeps #76's fix intact
 //! while the fleet sits on several live identities at once.
 //!
-//! Verdicts filed against **older** corpora are read too, but only as a
-//! **priority hint** (Issue #88). [`LearningsStore::load_prior_corpora`] reads
-//! every sibling `corpus-*` directory, and [`prior_corpus_priority`] turns them
-//! into the still-present, still-unchecked uuids the fleet once removed under
-//! earlier training data. Those are checked first because they are the likeliest
-//! to be removable again — and nothing more: they never join
-//! [`LearningsStore::load`], so a foreign-corpus verdict still cannot suppress a
-//! candidate, replay a cut or accept a prune. Every prioritised uuid faces the
-//! sample screen and full-corpus scoring exactly as it would have done last.
+//! Verdicts filed against **older** corpora are read too, as **evidence rather
+//! than truth** (Issues #88, #101). [`LearningsStore::load_prior_corpora`] reads
+//! every sibling `corpus-*` directory and returns each record stamped with the
+//! epoch that established it ([`HistoricalLearning`]), so nothing is lost when a
+//! corpus changes and every learning still names the corpus it came from.
+//!
+//! Two things read that history, and neither of them is a verdict:
+//!
+//! - [`prior_corpus_priority`] turns it into the still-present, still-unchecked
+//!   uuids the fleet once removed under earlier training data. Those are checked
+//!   first because they are the likeliest to be removable again;
+//! - [`historical_replay`] turns it into the previous winners worth **replaying**
+//!   against the corpus in hand (Issue #101) — a high-value hypothesis, scored
+//!   from scratch by the current scorer before anything is accepted.
+//!
+//! What history may never do is decide. It never joins [`LearningsStore::load`],
+//! so an old `Rejected` cannot suppress a candidate and an old `Accepted` cannot
+//! accept a prune: every uuid it raises faces the sample screen and full-corpus
+//! scoring exactly as it would have done last. Historical results are evidence;
+//! the current scorer is truth.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -184,7 +195,10 @@ const SCREENS_DIR: &str = "screens";
 const LEGACY_SCREENS_PREFIX: &str = "screens-";
 
 /// Prefix of the per-corpus verdict directories.
-const CORPUS_DIR_PREFIX: &[u8] = b"corpus-";
+///
+/// The remainder of the name is the corpus identity the verdicts inside were
+/// measured against — the epoch a historical learning was established in (#101).
+const CORPUS_DIR_PREFIX: &str = "corpus-";
 
 /// Which side of a sampled screen a uuid landed on.
 ///
@@ -391,7 +405,7 @@ impl LearningsStore {
 
     /// Sibling `corpus-*` directories other than this run's, sorted (Issue #88).
     fn other_corpus_dirs(&self) -> Result<Vec<PathBuf>, String> {
-        self.dirs_named(CORPUS_DIR_PREFIX, Some(&self.corpus_dir()))
+        self.dirs_named(CORPUS_DIR_PREFIX.as_bytes(), Some(&self.corpus_dir()))
     }
 
     /// This host's append-only screen-coverage file.
@@ -413,26 +427,31 @@ impl LearningsStore {
         append_jsonl(&self.corpus_dir(), &self.host_path(), learning)
     }
 
-    /// Verdicts filed against **other** corpora — a priority hint only (#88).
+    /// Verdicts filed against **other** corpora — evidence, never truth (#88).
     ///
     /// GRQ regenerates the training corpus before every run, so a prune the
     /// fleet accepted under earlier training data is never consulted again by
     /// [`Self::load`], which reads this corpus alone. These records say only
     /// *this uuid was worth removing once*, which is why they may reorder the
-    /// sweep ([`prior_corpus_priority`]) and may never be mixed into `load`:
-    /// a foreign-corpus verdict must still not suppress, replay or accept
-    /// anything.
+    /// sweep ([`prior_corpus_priority`]) and be replayed as hypotheses
+    /// ([`historical_replay`]), and may never be mixed into `load`: a
+    /// foreign-corpus verdict must still not suppress or accept anything.
+    ///
+    /// Each record is returned stamped with the epoch it was established in —
+    /// the identity in its directory name (Issue #101) — so nothing that reads
+    /// this history has to guess which corpus produced it, and a corpus change
+    /// never costs the fleet a learning.
     ///
     /// A fault in one foreign directory is **warned and skipped** rather than
     /// failing the load, matching [`Self::load_screens`]: nothing rewrites those
-    /// directories, and one truncated line must not cost the hint from every
+    /// directories, and one truncated line must not cost the evidence from every
     /// other corpus. An unreadable root is still an error.
-    pub fn load_prior_corpora(&self) -> Result<Vec<Learning>, String> {
+    pub fn load_prior_corpora(&self) -> Result<Vec<HistoricalLearning>, String> {
         let keep = |l: &Learning| l.version == LEARNINGS_FORMAT_VERSION;
         let mut out = Vec::new();
         for dir in self.other_corpus_dirs()? {
             match load_jsonl(&dir, keep) {
-                Ok(records) => out.extend(records),
+                Ok(records) => out.extend(stamp_epoch(records, &dir)),
                 Err(e) => crate::log::warn(&format!(
                     "prior-corpus verdicts unreadable ({e}); skipping {}",
                     dir.display()
@@ -490,6 +509,48 @@ impl LearningsStore {
     pub fn append_screen(&self, screened: &Screened) -> Result<(), String> {
         append_jsonl(&self.screens_dir(), &self.screens_host_path(), screened)
     }
+}
+
+/// One verdict an **older** corpus epoch established (Issue #101).
+///
+/// A [`Learning`] never carries a corpus identity of its own — the
+/// `corpus-<identity>/` directory it sits in is what names the epoch — so
+/// reading one out of that directory would otherwise strip the very fact that
+/// makes it history rather than a current verdict. Stamping it on the way out
+/// keeps every historical learning attributable to the corpus it was measured
+/// against, which is what longitudinal reporting and future heuristics need and
+/// what stops a foreign record being mistaken for a current one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoricalLearning {
+    /// Corpus identity of the epoch that established this evidence.
+    pub corpus_identity: String,
+    /// The verdict exactly as it was filed.
+    pub learning: Learning,
+}
+
+/// Stamp records read from `corpus-<identity>/` with that epoch (Issue #101).
+///
+/// A directory name that is not valid UTF-8 is carried across lossily: it can
+/// never equal a live identity, so it labels the epoch for reporting without
+/// ever being mistaken for the corpus in hand — and dropping the records
+/// instead would lose fleet history, which is the one thing this must not do.
+/// A path with no final component at all — which [`LearningsStore::other_corpus_dirs`]
+/// cannot produce, since every entry it returns is a named directory — labels
+/// its records with the empty identity for the same reason: an unnameable epoch
+/// is still evidence, and it can match no corpus in hand.
+fn stamp_epoch(records: Vec<Learning>, dir: &Path) -> Vec<HistoricalLearning> {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let corpus_identity = name.strip_prefix(CORPUS_DIR_PREFIX).unwrap_or(&name);
+    records
+        .into_iter()
+        .map(|learning| HistoricalLearning {
+            corpus_identity: corpus_identity.to_string(),
+            learning,
+        })
+        .collect()
 }
 
 /// Give pre-#76 records the corpus identity their directory name carries (#100).
@@ -789,7 +850,7 @@ pub fn ranked_confirmed(
 /// under an older corpus — or by a pre-#76 record, which names no corpus — has
 /// still not been tried against the data in hand.
 pub fn prior_corpus_priority(
-    prior: &[Learning],
+    prior: &[HistoricalLearning],
     screens: &[Screened],
     creature: &CreatureExport,
     corpus_identity: &str,
@@ -800,15 +861,79 @@ pub fn prior_corpus_priority(
         .filter(|s| s.corpus_identity.as_deref() == Some(corpus_identity))
         .map(|s| s.uuid.as_str())
         .collect();
-    let qualifying: Vec<Learning> = prior
-        .iter()
-        .filter(|l| l.outcome == Outcome::Accepted || confirmed_positive(l, min_improvement))
-        .cloned()
-        .collect();
+    let qualifying = historical_wins(prior, min_improvement, |uuid| !checked.contains(uuid));
     ranked_confirmed(&qualifying, creature, min_improvement)
         .into_iter()
-        .filter(|win| !checked.contains(win.uuid.as_str()))
         .map(|win| win.uuid)
+        .collect()
+}
+
+/// Historical records that spoke well of a cut, for uuids `keep_uuid` accepts.
+///
+/// Selected *before* the latest-per-uuid collapse [`ranked_confirmed`] applies,
+/// so a corpus that later rejected what another corpus accepted cannot cancel
+/// the evidence — per-corpus suppression must never cross corpora (#88).
+fn historical_wins(
+    prior: &[HistoricalLearning],
+    min_improvement: f64,
+    keep_uuid: impl Fn(&str) -> bool,
+) -> Vec<Learning> {
+    prior
+        .iter()
+        .map(|h| &h.learning)
+        .filter(|l| l.outcome == Outcome::Accepted || confirmed_positive(l, min_improvement))
+        .filter(|l| keep_uuid(l.uuid.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Previous winners worth replaying against the corpus in hand (Issue #101).
+///
+/// A cut an older epoch confirmed is the fleet's best hypothesis about the new
+/// corpus — it was worth full-corpus scoring once — so it is replayed early
+/// rather than waiting for the sweep to reach it. It is only ever a hypothesis:
+/// the replay stage re-scores every uuid returned here against the **current**
+/// corpus, and nothing is accepted without that current result.
+///
+/// A uuid this corpus has already judged is left out whatever it said: an
+/// [`Outcome::Accepted`] or confirmed record is replayed by
+/// [`ranked_confirmed`] over `known`, and a [`Outcome::Rejected`] one is this
+/// corpus's own current verdict, which history does not get to overrule. That
+/// is not suppression by history — a historical failure suppresses nothing, and
+/// a uuid with no current-corpus verdict is screened on its merits regardless of
+/// what an older epoch made of it.
+///
+/// Ranked by [`ranked_confirmed`], so every host builds the same replay queue:
+/// applied cuts first, then the best measured delta, recency and uuid breaking
+/// ties.
+pub fn historical_replay(
+    prior: &[HistoricalLearning],
+    known: &[Learning],
+    creature: &CreatureExport,
+    min_improvement: f64,
+) -> Vec<ConfirmedWin> {
+    let judged: HashSet<&str> = known.iter().map(|l| l.uuid.as_str()).collect();
+    let qualifying = historical_wins(prior, min_improvement, |uuid| !judged.contains(uuid));
+    ranked_confirmed(&qualifying, creature, min_improvement)
+}
+
+/// How many verdicts each historical epoch established (Issue #101).
+///
+/// The longitudinal view of the cache: what the fleet has learnt, attributed to
+/// the corpus it learnt it under, so a corpus change is visible as evidence
+/// gained rather than evidence lost.
+///
+/// Ordered by corpus identity, not by age: an identity is a content hash
+/// (`crate::corpus`), so it says nothing about when the epoch ran, and sorting
+/// on it is only there to give every host the same stable list.
+pub fn history_epochs(prior: &[HistoricalLearning]) -> Vec<(String, usize)> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for h in prior {
+        *counts.entry(h.corpus_identity.as_str()).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(identity, n)| (identity.to_string(), n))
         .collect()
 }
 
@@ -1693,12 +1818,12 @@ mod tests {
             now.load().unwrap().is_empty(),
             "a foreign-corpus verdict must never join this corpus's verdicts"
         );
-        let mut prior: Vec<String> = now
-            .load_prior_corpora()
-            .unwrap()
-            .into_iter()
-            .map(|l| l.uuid)
-            .collect();
+        let loaded = now.load_prior_corpora().unwrap();
+        assert!(
+            loaded.iter().all(|h| h.corpus_identity == "corpus-a"),
+            "every historical record names the epoch that established it: {loaded:?}"
+        );
+        let mut prior: Vec<String> = loaded.into_iter().map(|h| h.learning.uuid).collect();
         prior.sort();
         assert_eq!(prior, vec!["h_a".to_string(), "h_b".to_string()]);
 
@@ -1757,7 +1882,8 @@ mod tests {
         let now = LearningsStore::new(dir.path(), "corpus-now".into(), "host-a".into());
         let prior = now.load_prior_corpora().unwrap();
         assert_eq!(prior.len(), 1, "{prior:?}");
-        assert_eq!(prior[0].uuid, "h_a");
+        assert_eq!(prior[0].learning.uuid, "h_a");
+        assert_eq!(prior[0].corpus_identity, "corpus-good");
     }
 
     #[test]
@@ -1767,15 +1893,30 @@ mod tests {
         assert!(store.load_prior_corpora().unwrap().is_empty());
     }
 
+    /// Verdicts as one older epoch's history — the shape `load_prior_corpora`
+    /// returns, with the corpus that established them stamped on (#101).
+    fn history(identity: &str, records: Vec<Learning>) -> Vec<HistoricalLearning> {
+        records
+            .into_iter()
+            .map(|learning| HistoricalLearning {
+                corpus_identity: identity.into(),
+                learning,
+            })
+            .collect()
+    }
+
     #[test]
     fn the_prior_priority_is_still_present_unchecked_and_best_delta_first() {
         let c = two_hidden();
-        let prior = vec![
-            confirmed("h_a", 2e-6, 10),
-            confirmed("h_b", 9e-6, 11),
-            confirmed("gone", 9e-3, 12),
-            confirmed("h_a", 1e-9, 5), // older and weak: the latest record wins
-        ];
+        let prior = history(
+            "corpus-old",
+            vec![
+                confirmed("h_a", 2e-6, 10),
+                confirmed("h_b", 9e-6, 11),
+                confirmed("gone", 9e-3, 12),
+                confirmed("h_a", 1e-9, 5), // older and weak: the latest record wins
+            ],
+        );
         assert_eq!(
             prior_corpus_priority(&prior, &[], &c, "corp", 1e-6),
             vec!["h_b".to_string(), "h_a".to_string()],
@@ -1789,10 +1930,13 @@ mod tests {
     #[test]
     fn a_uuid_already_screened_under_this_corpus_is_not_prioritised() {
         let c = two_hidden();
-        let prior = vec![
-            rec("h_a", Outcome::Accepted, 10),
-            rec("h_b", Outcome::Accepted, 11),
-        ];
+        let prior = history(
+            "corpus-old",
+            vec![
+                rec("h_a", Outcome::Accepted, 10),
+                rec("h_b", Outcome::Accepted, 11),
+            ],
+        );
         let this_corpus = screen("h_a", ScreenOutcomeKind::Loser, 12);
         assert_eq!(this_corpus.corpus_identity.as_deref(), Some("corp"));
         let older = Screened {
@@ -1820,10 +1964,13 @@ mod tests {
     #[test]
     fn an_old_rejection_is_neither_a_hint_nor_a_penalty() {
         let c = two_hidden();
-        let prior = vec![
-            rec("h_a", Outcome::Rejected, 10),
-            confirmed("h_b", -1e-4, 11),
-        ];
+        let prior = history(
+            "corpus-old",
+            vec![
+                rec("h_a", Outcome::Rejected, 10),
+                confirmed("h_b", -1e-4, 11),
+            ],
+        );
         assert!(prior_corpus_priority(&prior, &[], &c, "corp", 1e-6).is_empty());
     }
 
@@ -1834,20 +1981,21 @@ mod tests {
     #[test]
     fn a_later_corpus_rejecting_does_not_cancel_an_earlier_corpus_win() {
         let c = two_hidden();
-        let prior = vec![
+        let records = vec![
             rec("h_a", Outcome::Accepted, 10),
             rec("h_a", Outcome::Rejected, 20),
             confirmed("h_b", 9e-6, 10),
             rec("h_b", Outcome::Rejected, 20),
         ];
+        let prior = history("corpus-old", records.clone());
         assert_eq!(
             prior_corpus_priority(&prior, &[], &c, "corp", 1e-6),
             vec!["h_a".to_string(), "h_b".to_string()],
             "a uuid one corpus removed is still the likeliest to be removable"
         );
         assert!(
-            known_wins(&prior, &c, ReplayConfig::default()).is_empty(),
-            "replay still reads the latest verdict only — this widening is the hint's alone"
+            known_wins(&records, &c, ReplayConfig::default()).is_empty(),
+            "replay of *this* corpus still reads the latest verdict only"
         );
     }
 
@@ -1946,5 +2094,180 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert!(loaded[0].in_epoch("corp-9"), "{:?}", loaded[0]);
         assert_eq!(current_epoch_screens(loaded, "corp-9").len(), 1);
+    }
+
+    /// Issue #101: a new corpus epoch keeps every learning the fleet has, each
+    /// still attributable to the epoch that established it. Nothing is deleted
+    /// merely because the training data moved on.
+    #[test]
+    fn a_new_corpus_epoch_keeps_the_learnings_it_inherited() {
+        let dir = tempfile::tempdir().unwrap();
+        for (identity, uuid) in [("corpus-a", "h_a"), ("corpus-b", "h_b")] {
+            LearningsStore::new(dir.path(), identity.into(), "GRQ-23".into())
+                .append(&rec(uuid, Outcome::Accepted, 10))
+                .unwrap();
+        }
+
+        let fresh = LearningsStore::new(dir.path(), "corpus-c".into(), "host-a".into());
+        assert!(
+            fresh.load().unwrap().is_empty(),
+            "the new epoch opens with no verdicts of its own"
+        );
+        let prior = fresh.load_prior_corpora().unwrap();
+        assert_eq!(prior.len(), 2, "{prior:?}");
+        assert_eq!(
+            history_epochs(&prior),
+            vec![("corpus-a".to_string(), 1), ("corpus-b".to_string(), 1)],
+            "each learning is still attributed to the corpus that established it"
+        );
+    }
+
+    /// Issue #101: a historical failure is evidence, not a verdict, so it can
+    /// neither suppress the uuid nor keep it out of the current epoch's work.
+    #[test]
+    fn a_historical_failure_leaves_the_uuid_eligible_again() {
+        let c = two_hidden();
+        let now = 1_000_000;
+        let prior = history(
+            "corpus-old",
+            vec![
+                rec("h_a", Outcome::Rejected, now - 60),
+                confirmed("h_b", -1e-4, now - 60),
+            ],
+        );
+        let this_corpus: Vec<Learning> = Vec::new();
+
+        assert!(
+            known_failures(&this_corpus, &c, ReplayConfig::default(), now, 1e-6).is_empty(),
+            "an old failure must not suppress a current-epoch visit"
+        );
+        assert!(
+            prior_corpus_priority(&prior, &[], &c, "corp", 1e-6).is_empty(),
+            "nor does it earn a priority it never measured"
+        );
+        assert!(
+            historical_replay(&prior, &this_corpus, &c, 1e-6).is_empty(),
+            "and a failure is not a hypothesis worth replaying"
+        );
+    }
+
+    /// Issue #101: a winner an older epoch confirmed is replayed against the
+    /// corpus in hand — accepted cuts first, best measured delta next, and a
+    /// uuid that has departed the creature is no hypothesis at all.
+    #[test]
+    fn historical_winners_are_replayed_best_evidence_first() {
+        let c = two_hidden();
+        let prior = [
+            history("corpus-old", vec![confirmed("h_a", 9e-6, 10)]),
+            history(
+                "corpus-older",
+                vec![
+                    rec("h_b", Outcome::Accepted, 5),
+                    rec("gone", Outcome::Accepted, 6),
+                ],
+            ),
+        ]
+        .concat();
+
+        let replay = historical_replay(&prior, &[], &c, 1e-6);
+        assert_eq!(
+            replay.iter().map(|c| c.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["h_b", "h_a"],
+            "an applied cut outranks a confirmed-only one, and a departed uuid is dropped"
+        );
+        assert!(replay[0].accepted);
+        assert_eq!(replay[1].full_delta, Some(9e-6));
+    }
+
+    /// The current scorer is truth: once this corpus has judged a uuid, its own
+    /// verdict stands and history stops proposing it — an accepted or confirmed
+    /// one is replayed from `known`, a rejected one is this corpus's answer.
+    #[test]
+    fn a_verdict_from_this_corpus_settles_what_history_only_suggests() {
+        let c = two_hidden();
+        let prior = history(
+            "corpus-old",
+            vec![
+                rec("h_a", Outcome::Accepted, 10),
+                rec("h_b", Outcome::Accepted, 10),
+            ],
+        );
+        let this_corpus = vec![rec("h_a", Outcome::Rejected, 20)];
+
+        assert_eq!(
+            historical_replay(&prior, &this_corpus, &c, 1e-6)
+                .iter()
+                .map(|c| c.uuid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["h_b"],
+            "the uuid this corpus scored is settled here; the untried one is not"
+        );
+        assert_eq!(
+            prior_corpus_priority(&prior, &[], &c, "corp", 1e-6),
+            vec!["h_a".to_string(), "h_b".to_string()],
+            "ordering evidence is unaffected — it never decides anything"
+        );
+    }
+
+    /// Two epochs disagree about the same uuid: the win still replays, because
+    /// per-corpus suppression must not cross corpora (#88) and a historical
+    /// failure suppresses nothing (#101).
+    #[test]
+    fn one_epoch_rejecting_does_not_withdraw_another_epoch_s_hypothesis() {
+        let c = two_hidden();
+        let prior = [
+            history("corpus-old", vec![rec("h_a", Outcome::Accepted, 10)]),
+            history("corpus-newer", vec![rec("h_a", Outcome::Rejected, 20)]),
+        ]
+        .concat();
+        assert_eq!(
+            historical_replay(&prior, &[], &c, 1e-6)
+                .iter()
+                .map(|c| c.uuid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["h_a"],
+        );
+    }
+
+    /// The epoch summary counts what each corpus taught, so a corpus change
+    /// reads as evidence gained rather than evidence lost.
+    #[test]
+    fn the_epoch_summary_counts_the_verdicts_each_corpus_established() {
+        let prior = [
+            history(
+                "corpus-b",
+                vec![
+                    rec("h_a", Outcome::Accepted, 1),
+                    rec("h_b", Outcome::Rejected, 2),
+                ],
+            ),
+            history("corpus-a", vec![rec("h_c", Outcome::Accepted, 3)]),
+        ]
+        .concat();
+        assert_eq!(
+            history_epochs(&prior),
+            vec![("corpus-a".to_string(), 1), ("corpus-b".to_string(), 2)],
+        );
+        assert!(history_epochs(&[]).is_empty());
+    }
+
+    /// The identity lives in the directory name, so it must survive the read —
+    /// including a name that carries no `corpus-` prefix at all.
+    #[test]
+    fn stamping_an_epoch_takes_the_identity_from_the_directory_name() {
+        let l = rec("h_a", Outcome::Accepted, 10);
+        assert_eq!(
+            stamp_epoch(vec![l.clone()], Path::new("/tmp/learnings/corpus-6fc028da")),
+            vec![HistoricalLearning {
+                corpus_identity: "6fc028da".into(),
+                learning: l.clone(),
+            }],
+        );
+        assert_eq!(
+            stamp_epoch(vec![l.clone()], Path::new("/tmp/learnings/odd-name"))[0].corpus_identity,
+            "odd-name",
+            "an unexpected name still labels its records rather than losing them"
+        );
+        assert!(stamp_epoch(Vec::new(), Path::new("/tmp/corpus-x")).is_empty());
     }
 }

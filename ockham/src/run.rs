@@ -18,9 +18,10 @@ use crate::corpus::corpus_info;
 use crate::incumbent::{Incumbent, IncumbentMeta, load_incumbent};
 use crate::journal::{self, Event};
 use crate::learnings::{
-    Learning, LearningsStore, Outcome, ReplayConfig, ScreenOutcomeKind, ScreenTry, Screened,
-    Verdict, default_host, file_screens, file_verdicts, known_failures, oldest_screened_first,
-    prior_corpus_priority, ranked_confirmed, replay_cap, screened_uuids,
+    HistoricalLearning, LearningsStore, Outcome, ReplayConfig, ScreenOutcomeKind, ScreenTry,
+    Screened, Verdict, default_host, file_screens, file_verdicts, historical_replay,
+    history_epochs, known_failures, oldest_screened_first, prior_corpus_priority, ranked_confirmed,
+    replay_cap, screened_uuids,
 };
 use crate::promote::{
     BundleMember, FullConfig, FullOutcome, LocalWinner, REPLAY_PROBE_LIMIT, apply_available,
@@ -612,9 +613,10 @@ fn ockham_loop(
     let mut store = None;
     let mut known = Vec::new();
     let mut screens: Vec<Screened> = Vec::new();
-    // Deliberately its own set, never merged into `known` (Issue #88): a verdict
-    // from another corpus may reorder the sweep and nothing else.
-    let mut prior_records: Vec<Learning> = Vec::new();
+    // Deliberately its own set, never merged into `known` (Issues #88, #101): a
+    // verdict from another corpus may reorder the sweep and be replayed as a
+    // hypothesis, and nothing else — it can neither suppress nor accept a cut.
+    let mut prior_records: Vec<HistoricalLearning> = Vec::new();
     if let Some(dir) = &config.learnings_dir {
         let host = config.learnings_host.clone().unwrap_or_else(default_host);
         let s = LearningsStore::new(dir, corpus.identity.clone(), host.clone());
@@ -657,21 +659,32 @@ fn ockham_loop(
                 )),
             }
         }
-        // A hint, so a fault here costs the priority and nothing else (#88).
+        // Evidence, so a fault here costs the priority and the replay
+        // hypotheses, and nothing else (#88, #101).
         if let Some(s) = store.as_ref()
             && config.old_corpus_first_enabled()
         {
             match s.load_prior_corpora() {
                 Ok(records) => {
+                    // Each epoch is named, not just counted: a corpus change
+                    // adds evidence rather than losing it, and that is only
+                    // visible if the log says which corpus taught what (#101).
+                    let epochs = history_epochs(&records);
                     log::info(&format!(
-                        "prior corpora: {} verdict(s) from {} read as a priority hint",
+                        "prior corpora: {} verdict(s) from {} across {} historical epoch(s), \
+                         read as priority and replay hypotheses",
                         records.len(),
-                        dir.display()
+                        dir.display(),
+                        epochs.len()
                     ));
+                    for (identity, n) in &epochs {
+                        log::detail(&format!("history: corpus {identity} — {n} verdict(s)"));
+                    }
                     prior_records = records;
                 }
                 Err(e) => log::warn(&format!(
-                    "prior-corpus verdicts unreadable ({e}); continuing without the priority"
+                    "prior-corpus verdicts unreadable ({e}); continuing without the priority \
+                     or the historical replay hypotheses it carries"
                 )),
             }
         }
@@ -821,14 +834,37 @@ fn ockham_loop(
             // Accepted cuts and confirmed-but-unapplied ones, best measured
             // delta first (Issue #57): the largest-first plans below then drop
             // the weakest members rather than the most recently filed.
-            let replayable: Vec<crate::learnings::ConfirmedWin> =
-                ranked_confirmed(&known, &incumbent.creature, config.min_improvement)
-                    .into_iter()
-                    .filter(|c| !replay_skipped.contains(&c.uuid))
-                    .take(replay_cap(replay_cfg.max))
-                    .collect();
-            let accepted_only = replayable.iter().filter(|c| c.accepted).count();
-            let confirmed_only = replayable.len() - accepted_only;
+            let mut ranked = ranked_confirmed(&known, &incumbent.creature, config.min_improvement);
+            // Then the previous epochs' winners, as hypotheses (Issue #101): a
+            // cut an older corpus confirmed is the best guess the fleet has
+            // about the new one. They rank behind this corpus's own evidence
+            // because that evidence was measured against the data in hand, and
+            // every one of them is re-scored below before anything is accepted.
+            let historical: HashSet<String> = if prior.enabled {
+                let hypotheses = historical_replay(
+                    prior.records,
+                    &known,
+                    &incumbent.creature,
+                    config.min_improvement,
+                );
+                let uuids = hypotheses.iter().map(|c| c.uuid.clone()).collect();
+                ranked.extend(hypotheses);
+                uuids
+            } else {
+                HashSet::new()
+            };
+            let replayable: Vec<crate::learnings::ConfirmedWin> = ranked
+                .into_iter()
+                .filter(|c| !replay_skipped.contains(&c.uuid))
+                .take(replay_cap(replay_cfg.max))
+                .collect();
+            let this_corpus: Vec<&crate::learnings::ConfirmedWin> = replayable
+                .iter()
+                .filter(|c| !historical.contains(&c.uuid))
+                .collect();
+            let accepted_only = this_corpus.iter().filter(|c| c.accepted).count();
+            let confirmed_only = this_corpus.len() - accepted_only;
+            let from_history = replayable.len() - this_corpus.len();
             let wins: Vec<String> = replayable.into_iter().map(|c| c.uuid).collect();
             if wins.is_empty() {
                 replay_done = true;
@@ -845,7 +881,7 @@ fn ockham_loop(
                 continue;
             }
             log::info(&format!(
-                "replay: combining {} of {} known win(s) still on incumbent ({accepted_only} applied elsewhere, {confirmed_only} confirmed only)",
+                "replay: combining {} of {} known win(s) still on incumbent ({accepted_only} applied elsewhere, {confirmed_only} confirmed only, {from_history} from older corpus epochs — re-scored here)",
                 applied.len(),
                 wins.len()
             ));
@@ -1755,8 +1791,9 @@ struct PriorHint<'a> {
     /// Separate from an empty `records`, so a run with the priority **on** and
     /// nothing to prioritise still says `0` rather than saying nothing at all.
     enabled: bool,
-    /// Verdicts loaded from sibling `corpus-*` directories, never from this one.
-    records: &'a [Learning],
+    /// Verdicts loaded from sibling `corpus-*` directories, never from this one,
+    /// each stamped with the epoch that established it (#101).
+    records: &'a [HistoricalLearning],
     /// This run's corpus: a uuid already screened under it needs no priority.
     corpus_identity: &'a str,
     /// Measured delta above which an unapplied old win still counts as one.
@@ -2720,7 +2757,7 @@ mod tests {
     ) {
         let store = LearningsStore::new(learnings_dir, "an-older-corpus".into(), "GRQ-23".into());
         store
-            .append(&Learning {
+            .append(&crate::learnings::Learning {
                 version: crate::learnings::LEARNINGS_FORMAT_VERSION,
                 uuid: uuid.into(),
                 kind: "identity".into(),
@@ -2744,9 +2781,29 @@ mod tests {
         screened.into_iter().next().unwrap()
     }
 
+    /// Every uuid this run visited, in the order the records were filed.
+    fn visits_in_order(store: &LearningsStore) -> Vec<String> {
+        store
+            .load_screens()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.uuid)
+            .collect()
+    }
+
     /// Issue #88: a neuron an older corpus removed is still on the incumbent and
     /// unchecked here, so it is the first thing this run looks at — ahead of the
     /// neurons the seeded permutation would otherwise have reached first.
+    ///
+    /// Since Issue #101 the run acts on that evidence twice, so the budget is
+    /// two experiments rather than one: the replay stage re-scores the old
+    /// winner against the corpus in hand first, and the sweep then visits it
+    /// ahead of the neurons with no history. The flat scorer rejects the replay,
+    /// so that first visit is filed as a `known-failure` skip rather than a
+    /// screen — this corpus has just judged the uuid, and a visit is a visit.
+    /// The assertion moved from "the one uuid screened" to "the first uuid
+    /// visited" for that reason, and still discriminates: without the priority
+    /// the sweep would have reached `reached` first, as the sibling test shows.
     #[test]
     fn an_old_corpus_win_is_screened_before_neurons_with_no_history() {
         let uuids = ["h_a", "h_b", "h_c", "h_d"];
@@ -2762,7 +2819,10 @@ mod tests {
         let learnings_dir = tmp.path().join("learnings");
         seed_prior_corpus(&learnings_dir, target, Outcome::Accepted, 10);
         let store = screens_store(&learnings_dir, &train);
-        let cfg = old_corpus_cfg(creature, train, tmp.path().join("out"), learnings_dir, None);
+        let cfg = OckhamConfig {
+            max_experiments: Some(2),
+            ..old_corpus_cfg(creature, train, tmp.path().join("out"), learnings_dir, None)
+        };
         assert!(
             cfg.old_corpus_first_enabled(),
             "--learnings-dir turns it on"
@@ -2770,8 +2830,8 @@ mod tests {
         establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
 
         assert_eq!(
-            screened_this_run(&store, 0),
-            vec![target.to_string()],
+            visits_in_order(&store).first().map(String::as_str),
+            Some(*target),
             "the old-corpus win must be checked before neurons with no history"
         );
         // The reorder happens after `permutation_identity` is hashed, so the
@@ -4301,6 +4361,153 @@ mod tests {
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
         assert!(best.contains("replay-bundle"), "{best}");
         assert!(!best.contains("h_a") && !best.contains("h_b"), "{best}");
+    }
+
+    /// Issue #101: a cut an older corpus epoch confirmed is replayed against the
+    /// corpus in hand as a hypothesis, and the current scorer accepts it. The
+    /// verdict filed is this corpus's own — the acceptance is a current-corpus
+    /// result, never the old epoch's verdict carried forward.
+    #[test]
+    fn a_historical_winner_is_replayed_and_the_current_corpus_accepts_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        seed_prior_corpus(&learnings_dir, "h_a", Outcome::Accepted, 10);
+        let store = screens_store(&learnings_dir, &train);
+        assert!(
+            store.load().unwrap().is_empty(),
+            "the new epoch opens with no verdict of its own about h_a"
+        );
+
+        let cfg = replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None);
+        let run = establish_run(&cfg, &improving_scorer()).unwrap();
+
+        assert_eq!(run.stop_reason, "replay-accepts");
+        assert!(
+            run.workspace.join("replay-1").is_dir(),
+            "the historical winner must be re-scored against this corpus"
+        );
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(!best.contains("h_a"), "{best}");
+        let filed = store.load().unwrap();
+        assert!(
+            filed
+                .iter()
+                .any(|l| l.uuid == "h_a" && l.outcome == Outcome::Accepted),
+            "the accept is filed under the corpus that measured it: {filed:?}"
+        );
+    }
+
+    /// The other half of Issue #101: the same historical winner is replayed, the
+    /// current corpus scores it and says no. Nothing is cut, and this corpus's
+    /// own rejection is what stands — history proposed, it did not decide.
+    /// A historical hypothesis bundled with this corpus's own win is judged on
+    /// current-corpus measurements, never on the old epoch's word: when the
+    /// combined plan misses, the probe path measures every member individually
+    /// against the corpus in hand and files it on that measurement (#57, #101).
+    #[test]
+    fn a_bundled_historical_hypothesis_is_measured_against_this_corpus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        seed_verdicts(&store, &[("h_a", Outcome::Accepted, None, 10)]);
+        seed_prior_corpus(&learnings_dir, "h_b", Outcome::Accepted, 10);
+
+        let cfg = replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None);
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        assert_eq!(run.accepts, 0, "a flat scorer accepts neither member");
+        let filed = store.load().unwrap();
+        let historical = filed
+            .iter()
+            .rfind(|l| l.uuid == "h_b")
+            .expect("the historical member is judged here");
+        assert_eq!(historical.outcome, Outcome::Rejected);
+        assert!(
+            historical.full_delta.is_some(),
+            "its own delta was measured against this corpus: {historical:?}"
+        );
+    }
+
+    #[test]
+    fn a_historical_winner_the_current_corpus_rejects_is_not_cut() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        seed_prior_corpus(&learnings_dir, "h_a", Outcome::Accepted, 10);
+        let store = screens_store(&learnings_dir, &train);
+
+        let cfg = OckhamConfig {
+            max_experiments: Some(1),
+            ..replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None)
+        };
+        // A candidate that scores exactly the incumbent wins nothing.
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        assert_eq!(
+            run.accepts, 0,
+            "an old epoch's win cannot accept a cut here"
+        );
+        assert_ne!(run.stop_reason, "replay-accepts");
+        assert!(
+            run.workspace.join("replay-1").is_dir(),
+            "it was still tried"
+        );
+        let filed = store.load().unwrap();
+        assert!(
+            filed
+                .iter()
+                .any(|l| l.uuid == "h_a" && l.outcome == Outcome::Rejected),
+            "this corpus's own verdict is what the fleet keeps: {filed:?}"
+        );
+    }
+
+    /// A historical **failure** is not a hypothesis, and it suppresses nothing:
+    /// the run replays nothing and screens the neuron on its merits (#101).
+    #[test]
+    fn a_historical_failure_is_replayed_by_nothing_and_suppresses_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        seed_prior_corpus(&learnings_dir, "h_a", Outcome::Rejected, 10);
+        let store = screens_store(&learnings_dir, &train);
+
+        let cfg = OckhamConfig {
+            max_experiments: Some(1),
+            ..replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None)
+        };
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        assert!(
+            !run.workspace.join("replay-1").exists(),
+            "an old failure is no hypothesis to replay"
+        );
+        assert!(
+            screened_uuids(&store).contains(&"h_a".to_string()),
+            "and it is still screened this epoch rather than skipped"
+        );
+    }
+
+    /// `--old-corpus-first=false` turns the whole historical channel off, replay
+    /// included: the run sees only what this corpus has measured.
+    #[test]
+    fn old_corpus_first_off_replays_no_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        seed_prior_corpus(&learnings_dir, "h_a", Outcome::Accepted, 10);
+
+        let cfg = OckhamConfig {
+            old_corpus_first: Some(false),
+            ..replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None)
+        };
+        let run = establish_run(&cfg, &improving_scorer()).unwrap();
+
+        assert!(
+            !run.workspace.join("replay-1").exists(),
+            "with the priority off nothing historical is replayed"
+        );
     }
 
     #[test]

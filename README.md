@@ -55,7 +55,9 @@ The current Rust implementation includes:
   `screens/<host>.jsonl` — the candidates it scored, winners and losers alike,
   and the visits it could propose nothing for (#93) — so "which neurons have
   been checked" survives the run *and* a repacked corpus (#76), while a corpus
-  that genuinely changed starts a fresh screening epoch (#100);
+  that genuinely changed starts a fresh screening epoch (#100) that inherits
+  every previous epoch's learnings as evidence — old winners replayed and
+  re-scored, old failures eligible again (#101);
 - a single coverage calculation over the **current** incumbent — `checked X of
   Y hidden (Z%), N cut` — journalled at the end of each run and surfaced by
   `report`, and carried into the `ockham` check-in tag (the GRQ-sampler commit
@@ -416,8 +418,8 @@ Verdicts are the opposite and are untouched: a full-corpus `Accepted` /
 `Rejected` genuinely is a claim about one corpus, so those stay in
 `corpus-<identity>/`. A verdict from another corpus is still never loaded **as a
 verdict** — a wrong `Rejected` suppresses that uuid fleet-wide for seven days —
-and it never joins the set that suppresses, replays or accepts. It is read for
-one purpose only, as a hint about *what to look at first*: see
+and it never joins the set that suppresses or accepts. It is read as *evidence*
+instead: what to look at first, and what to re-score first. See
 [Old-corpus priority](#old-corpus-priority).
 
 Pre-#76 `screens-<identity>/` directories are still **read**, so the first run
@@ -486,7 +488,9 @@ flowchart LR
     E -->|yes| A["current epoch → coverage +<br/>unchecked-first selection"]
     E -->|no| H["history — readable,<br/>never current coverage"]
     V["full-corpus verdict"] --> C["corpus-identity/host.jsonl<br/>(still corpus-keyed)"]
-    C --> P["replay / suppression"]
+    C --> Y{"this corpus?"}
+    Y -->|yes| P["replay / suppression"]
+    Y -->|no| G["history — priority and<br/>replay hypotheses only"]
 ```
 
 #### Every run advances the checked count
@@ -776,7 +780,7 @@ moves that set to the **front** of the screening queue, ahead of block A:
 
 Old data is a hint, never proof. A prioritised neuron passes the sampled screen
 and full-corpus scoring exactly as any other candidate does, and nothing read
-from another corpus can suppress, replay or accept a cut — a foreign `Rejected`
+from another corpus can suppress or accept a cut — a foreign `Rejected`
 does not deprioritise anything either, because failure suppression stays
 per-corpus. A fault in one foreign directory is warned and skipped, so a single
 truncated line costs that corpus's hint and nothing else.
@@ -795,6 +799,58 @@ The flag defaults to on with `--learnings-dir` and off without it, and
 `--old-corpus-first=false` disables it. The count moved to the front is logged
 beside the coverage line — `coverage: 7 neuron(s) prioritised from older corpus
 caches (#88)` — so the reordering is observable in every run's log.
+
+#### Historical results are evidence; the current scorer is truth
+
+A corpus epoch change resets *coverage*, and it must not throw away what the
+fleet has already paid to learn (#101). Every learning is kept and read across
+epochs, stamped with the corpus that established it — `load_prior_corpora`
+returns the record and its epoch together, so the cache is longitudinal history
+rather than a single generation of verdicts. The epochs are logged on every run
+that has them:
+
+```text
+prior corpora: 46 verdict(s) from /fleet/learnings across 3 historical epoch(s),
+  read as priority and replay hypotheses
+  history: corpus 6fc028da266d6c51 — 31 verdict(s)
+```
+
+That evidence is put to work as a **replay hypothesis** as well as an ordering
+hint. A cut an older epoch confirmed is the best guess the fleet has about the
+new corpus, so the replay stage takes it up before the sweep starts — and
+re-scores it against the corpus in hand, which is the only thing that may accept
+it. Three rules keep evidence from becoming truth.
+
+- **An old winner is replayed, never applied.** It enters the replay stage
+  behind this corpus's own confirmed wins, is full-corpus scored here, and is
+  filed as this corpus's `Accepted` or `Rejected` on the result. A run whose
+  scorer says no cuts nothing.
+- **An old failure suppresses nothing.** It is not a replay hypothesis and it is
+  not a priority, and it never skips a current-epoch visit: the neuron is
+  screened on its merits as though the fleet had never seen it. Only *this*
+  corpus's fresh `Rejected` suppresses, and only for `DEFAULT_RETRY_AFTER_SECS`.
+- **A current-corpus verdict settles it.** Once this corpus has scored the uuid,
+  history stops proposing it: an `Accepted` or confirmed record is replayed from
+  this corpus's own cache, and a `Rejected` one is the current answer, which
+  older evidence does not overrule.
+
+```mermaid
+flowchart LR
+    H["historical epoch verdict"] --> K{"scored by<br/>this corpus?"}
+    K -->|yes| N["this corpus decides —<br/>history stays silent"]
+    K -->|no| W{"accepted, or<br/>confirmed Δ &gt; min?"}
+    W -->|no| E["eligible again —<br/>screened on its merits"]
+    W -->|yes| R["replayed early<br/>as a hypothesis"]
+    R --> S["full-corpus score<br/>against this corpus"]
+    S -->|beats min| A["accepted here"]
+    S -->|does not| J["rejected here"]
+```
+
+Both channels ride on `--old-corpus-first`: with it off the run reads nothing
+historical, replaying and prioritising only what this corpus has measured. The
+replay log line counts what came from where — `replay: combining 3 of 3 known
+win(s) still on incumbent (1 applied elsewhere, 0 confirmed only, 2 from older
+corpus epochs — re-scored here)`.
 
 ## Where this sits in the literature
 
@@ -931,7 +987,7 @@ Common options:
 | `--min-improvement` | `1e-6` | Strict authoritative improvement required locally. |
 | `--seed` | drawn | Reproducible random sweep seed. |
 | `--unchecked-first` | on with `--learnings-dir`, off without | Screen never-checked neurons first, then recycle the stalest; see [Unchecked-first selection](#unchecked-first-selection). Set `--unchecked-first=false` to keep the raw seeded permutation. |
-| `--old-corpus-first` | on with `--learnings-dir`, off without | Check hidden neurons an older corpus once removed before the rest; see [Old-corpus priority](#old-corpus-priority). A hint only — every one still faces the screen and the full corpus. Set `--old-corpus-first=false` to disable. |
+| `--old-corpus-first` | on with `--learnings-dir`, off without | Read what older corpus epochs learnt: check the hidden neurons they once removed before the rest, and replay their confirmed winners early as hypotheses; see [Old-corpus priority](#old-corpus-priority). Evidence only — every one is re-scored against the current corpus, and no historical record can suppress or accept a cut. Set `--old-corpus-first=false` to disable. |
 | `--ordering` | `random` | Named candidate ordering; see [Candidate ordering](#candidate-ordering). |
 | `--ordering-random-quota` | `0` | Fraction of sweep slots reserved for the random control, in `[0, 1)`. |
 | `--max-experiments` | none | Optional experiment cap in addition to timeout. |
