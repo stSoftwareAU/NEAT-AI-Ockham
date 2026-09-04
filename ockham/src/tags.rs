@@ -183,22 +183,35 @@ pub struct OckhamProgress<'a> {
     /// `None` without `--learnings-dir`: there is no coverage state, and
     /// `0/0 (0.0%)` would be a lie rather than a measurement.
     pub coverage: Option<Coverage>,
+    /// Corpus identity the coverage was measured against (Issue #102).
+    ///
+    /// Rendered in [`crate::coverage::short_epoch`] form, so the subject says
+    /// which epoch a `100%` belongs to without carrying a 16-character hash.
+    /// `None` leaves the clause reading `of epoch` with no id — still scoped,
+    /// just unnamed.
+    pub epoch: Option<&'a str>,
 }
 
 /// GRQ-sampler skim line. Becomes the sampler commit subject.
 ///
-/// The coverage clause uses the compact `checked X/Y (Z%)` form — this is a
-/// commit subject, so [`Coverage::summary`]'s fuller wording belongs in the
-/// commit description instead.
+/// The coverage clause uses the compact `sweep X/Y (Z% of epoch <id>)` form —
+/// this is a commit subject, so [`Coverage::summary`]'s fuller wording belongs
+/// in the commit description instead. `of epoch` is not decoration (Issue
+/// #102): `sweep 7284/7284 (100.0%)` reads as "Ockham has finished", and the
+/// next corpus makes that reading false, so the scope travels with the figure.
 pub fn ockham_progress_message(progress: &OckhamProgress<'_>) -> String {
     let delta = if progress.score > progress.opening {
         format!(" (+{:.2e})", progress.score - progress.opening)
     } else {
         String::new()
     };
+    let epoch = progress
+        .epoch
+        .map(|id| format!(" {}", crate::coverage::short_epoch(id)))
+        .unwrap_or_default();
     let coverage = progress.coverage.map_or_else(String::new, |c| {
         format!(
-            " · checked {}/{} ({:.1}%)",
+            " · sweep {}/{} ({:.1}% of epoch{epoch})",
             c.checked,
             c.checkable,
             c.percent()
@@ -255,6 +268,7 @@ mod tests {
             origin: "search",
             cuts: 1,
             coverage: None,
+            epoch: None,
         });
         let out = meta.serialize_with(&pruned, true).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
@@ -366,6 +380,7 @@ mod tests {
             origin: "replay-bundle",
             cuts: 12,
             coverage: None,
+            epoch: None,
         });
         assert!(msg.contains("replay-bundle"));
         assert!(msg.contains("12 cuts"));
@@ -383,6 +398,18 @@ mod tests {
             origin,
             cuts: 8,
             coverage,
+            epoch: None,
+        }
+    }
+
+    /// The production shape since Issue #102: coverage and the epoch it counts.
+    fn progress_in_epoch(
+        origin: &'static str,
+        coverage: Option<Coverage>,
+    ) -> OckhamProgress<'static> {
+        OckhamProgress {
+            epoch: Some("6fc028da266d6c51"),
+            ..progress(origin, coverage)
         }
     }
 
@@ -413,20 +440,22 @@ mod tests {
         );
     }
 
+    /// Issue #102: the clause names the epoch the percentage belongs to, in the
+    /// compact short-id form — a commit subject cannot carry a 16-char hash.
     #[test]
-    fn search_carries_the_compact_coverage_clause() {
+    fn search_carries_the_compact_epoch_scoped_coverage_clause() {
         assert_eq!(
-            ockham_progress_message(&progress("search", some_coverage())),
-            "🪒 Ockham · search bundle · 3 accepts / 41 batches · score: 0.512345 (+1.20e-4) · checked 1204/5013 (24.0%)"
+            ockham_progress_message(&progress_in_epoch("search", some_coverage())),
+            "🪒 Ockham · search bundle · 3 accepts / 41 batches · score: 0.512345 (+1.20e-4) · sweep 1204/5013 (24.0% of epoch 6fc028da)"
         );
     }
 
     #[test]
     fn replay_carries_the_same_compact_coverage_clause() {
-        let msg = ockham_progress_message(&progress("replay", some_coverage()));
+        let msg = ockham_progress_message(&progress_in_epoch("replay", some_coverage()));
         assert_eq!(
             msg,
-            "🪒 Ockham · replay · 8 cuts · score: 0.512345 (+1.20e-4) · checked 1204/5013 (24.0%)"
+            "🪒 Ockham · replay · 8 cuts · score: 0.512345 (+1.20e-4) · sweep 1204/5013 (24.0% of epoch 6fc028da)"
         );
         assert!(
             msg.starts_with("🪒 Ockham"),
@@ -440,9 +469,10 @@ mod tests {
     /// the commit description, not this subject line.
     #[test]
     fn the_clause_is_compact_rather_than_the_full_summary() {
-        let msg = ockham_progress_message(&progress("search", some_coverage()));
+        let msg = ockham_progress_message(&progress_in_epoch("search", some_coverage()));
         assert!(!msg.contains("hidden"), "{msg}");
         assert!(!msg.contains("tagged"), "{msg}");
+        assert!(msg.len() < 160, "the subject stays skimmable: {msg}");
     }
 
     /// An all-tagged creature has a real denominator since Issue #74, so the
@@ -460,7 +490,7 @@ mod tests {
                 cut: 0,
             }),
         ));
-        assert!(msg.contains("checked 1/2 (50.0%)"), "{msg}");
+        assert!(msg.contains("sweep 1/2 (50.0% of epoch)"), "{msg}");
     }
 
     /// The only zero denominator left: a creature with no hidden neurons.
@@ -477,18 +507,24 @@ mod tests {
                 cut: 0,
             }),
         ));
-        assert!(msg.contains("checked 0/0 (0.0%)"), "{msg}");
+        assert!(msg.contains("sweep 0/0 (0.0% of epoch)"), "{msg}");
     }
 
     #[test]
     fn stamped_acceptance_puts_coverage_in_the_ockham_tag() {
         let mut meta = CreatureMeta::default();
-        meta.stamp_acceptance(&progress("search", some_coverage()));
+        meta.stamp_acceptance(&progress_in_epoch("search", some_coverage()));
         let ockham = meta
             .tags
             .iter()
             .find(|t| t.name == "ockham")
             .expect("ockham tag");
-        assert!(ockham.value.contains("checked 1204/5013 (24.0%)"));
+        assert!(
+            ockham
+                .value
+                .contains("sweep 1204/5013 (24.0% of epoch 6fc028da)"),
+            "{}",
+            ockham.value
+        );
     }
 }

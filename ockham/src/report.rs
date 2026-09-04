@@ -85,8 +85,21 @@ pub struct Report {
     pub unchecked: Option<usize>,
     /// Hidden neurons cut by the run that wrote that record (Issue #40).
     pub cut: Option<usize>,
-    /// `checked / checkable * 100` at that same record.
+    /// `checked / checkable * 100` at that same record, for that epoch alone.
     pub coverage_percent: Option<f64>,
+    /// Corpus identity the coverage figures were measured against (Issue #102).
+    ///
+    /// Every coverage figure above is a statement about this corpus and no
+    /// other: `coverage_percent: 100.0` means the sweep finished this epoch,
+    /// not that Ockham is done. `None` on a journal written before #100, whose
+    /// coverage records name no epoch.
+    pub corpus_identity: Option<String>,
+    /// Whether the sweep had reached every hidden neuron of that epoch.
+    ///
+    /// Derived from the same record as the percentage, so `report` can never
+    /// disagree with `coverage.txt` about what a finished sweep is. `None` when
+    /// the journal carries no coverage record.
+    pub sweep_complete: Option<bool>,
     /// What the run tried, kept and rejected (Issue #59); `None` on older
     /// journals, which carry no winners record.
     pub winners: Option<Winners>,
@@ -146,6 +159,8 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         unchecked: None,
         cut: None,
         coverage_percent: None,
+        corpus_identity: None,
+        sweep_complete: None,
         winners: None,
         est_ms_per_creature: None,
         budget_dropped: 0,
@@ -210,6 +225,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     checked,
                     blocked,
                     cut,
+                    corpus_identity,
                     ..
                 } => {
                     // Coverage is a snapshot of one incumbent, not a total:
@@ -238,6 +254,11 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     report.unchecked = Some(cov.unchecked());
                     report.cut = Some(cov.cut);
                     report.coverage_percent = Some(cov.percent());
+                    // The epoch belongs to the snapshot, so it moves with it
+                    // (#102): a later record from a fresh corpus replaces both
+                    // the figures and the identity they were measured against.
+                    report.corpus_identity = corpus_identity;
+                    report.sweep_complete = Some(cov.sweep_complete());
                 }
                 Event::Budget {
                     est_ms_per_creature,
@@ -668,6 +689,88 @@ mod tests {
         let old = summarise(&[&older]).unwrap();
         assert_eq!(old.checked, Some(4));
         assert_eq!(old.blocked, Some(0), "absent means none, not a failed read");
+    }
+
+    /// Issue #102: `report` names the epoch its coverage figures belong to, and
+    /// says whether that sweep finished — so a `100%` read out of a journal is
+    /// readable as "100% of that corpus", and a later epoch replaces both.
+    #[test]
+    fn the_report_names_the_epoch_and_whether_that_sweep_finished() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Coverage {
+                hidden: 4,
+                tagged: 0,
+                checkable: 4,
+                checked: 4,
+                blocked: 0,
+                cut: 1,
+                corpus_identity: Some("corp-aaaa1111".into()),
+            },
+        )
+        .unwrap();
+        let finished = summarise(&[&path]).unwrap();
+        assert_eq!(finished.coverage_percent, Some(100.0));
+        assert_eq!(finished.corpus_identity.as_deref(), Some("corp-aaaa1111"));
+        assert_eq!(finished.sweep_complete, Some(true));
+
+        // The corpus is extended: the fresh epoch replaces the figures and the
+        // identity together, so no `100%` survives the change.
+        journal::append(
+            &path,
+            &Event::Coverage {
+                hidden: 4,
+                tagged: 0,
+                checkable: 4,
+                checked: 1,
+                blocked: 0,
+                cut: 0,
+                corpus_identity: Some("corp-bbbb2222".into()),
+            },
+        )
+        .unwrap();
+        let fresh = summarise(&[&path]).unwrap();
+        assert_eq!(fresh.coverage_percent, Some(25.0));
+        assert_eq!(fresh.corpus_identity.as_deref(), Some("corp-bbbb2222"));
+        assert_eq!(fresh.sweep_complete, Some(false));
+
+        let json = serde_json::to_string(&fresh).unwrap();
+        assert!(
+            json.contains("\"corpusIdentity\":\"corp-bbbb2222\""),
+            "{json}"
+        );
+        assert!(json.contains("\"sweepComplete\":false"), "{json}");
+
+        // A journal written before the epoch was recorded names none, rather
+        // than claiming one.
+        let older = tmp.path().join("pre-100.jsonl");
+        std::fs::write(
+            &older,
+            format!(
+                "{}\n",
+                r#"{"record":"coverage","hidden":10,"tagged":0,"checkable":10,"checked":10,"cut":0}"#
+            ),
+        )
+        .unwrap();
+        let old = summarise(&[&older]).unwrap();
+        assert_eq!(old.corpus_identity, None);
+        assert_eq!(old.sweep_complete, Some(true));
+    }
+
+    #[test]
+    fn a_journal_with_no_coverage_record_names_no_epoch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.corpus_identity, None);
+        assert_eq!(
+            report.sweep_complete, None,
+            "no coverage state is not an unfinished sweep"
+        );
     }
 
     /// A journal written before Issue #74 carries the old `hidden - tagged`

@@ -613,6 +613,9 @@ fn ockham_loop(
     let mut store = None;
     let mut known = Vec::new();
     let mut screens: Vec<Screened> = Vec::new();
+    // Indexed before the epoch filter below, so the cumulative figures survive
+    // a corpus change that resets current-epoch coverage to zero (Issue #102).
+    let mut screen_history = crate::coverage::ScreenHistory::default();
     // Deliberately its own set, never merged into `known` (Issues #88, #101): a
     // verdict from another corpus may reorder the sweep and be replayed as a
     // hypothesis, and nothing else — it can neither suppress nor accept a cut.
@@ -644,6 +647,7 @@ fn ockham_loop(
                     // coverage. Extending the training data therefore opens a
                     // fresh epoch at 0/hidden without losing a single record.
                     let history = records.len();
+                    screen_history = crate::coverage::ScreenHistory::new(&records);
                     let epoch = crate::learnings::current_epoch_screens(records, &corpus.identity);
                     log::info(&format!(
                         "screens: {} of {history} record(s) from {} are current-epoch \
@@ -1584,6 +1588,7 @@ fn ockham_loop(
             origin: stamp.origin,
             cuts: stamp.cuts,
             coverage: store.map(|_| cov),
+            epoch: store.map(|_| corpus.identity.as_str()),
         });
         publish_best(config, &meta, &incumbent.creature, &stamp.checksum)?;
         log::detail("coverage: re-stamped the check-in tag with the run's final coverage");
@@ -1592,7 +1597,13 @@ fn ockham_loop(
     // Coverage is only meaningful with the screen store behind it; without one
     // there is no coverage state to report, so nothing is journalled.
     if store.is_some() {
-        log::info(&cov.summary());
+        // The epoch travels with the figure, so a log read months later can
+        // tell a fresh epoch from a collapse in coverage (Issue #102).
+        log::info(&format!(
+            "{} · epoch corpus {}",
+            cov.summary(),
+            crate::coverage::short_epoch(&corpus.identity)
+        ));
         journal::append(
             &journal_path,
             &Event::Coverage {
@@ -1613,6 +1624,13 @@ fn ockham_loop(
             newly_screened,
             winners: winners.has_any().then_some(winners),
             corpus_identity: Some(corpus.identity.clone()),
+            history: Some({
+                // The records this run filed are history too, and its own
+                // epoch must appear in its own history line (Issue #102).
+                screen_history.merge(&screens);
+                screen_history.over(&incumbent.creature)
+            })
+            .filter(crate::coverage::History::has_any),
         };
         match crate::coverage::write_files(&config.output_dir, &report, config.candidates) {
             Ok(()) => log::detail(&format!(
@@ -2143,6 +2161,9 @@ fn apply_local_win(
         origin,
         cuts,
         coverage,
+        // Named only where there is coverage to scope: the clause qualifies the
+        // percentage, so without one there is nothing to qualify (Issue #102).
+        epoch: coverage.map(|_| corpus.identity.as_str()),
     });
     publish_best(config, meta, &win.creature, &win.checksum)?;
     let stamped = StampedAccept {
@@ -2966,7 +2987,7 @@ mod tests {
         assert_eq!(run.newly_screened, 4);
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
         assert!(
-            best.contains("checked 4/4"),
+            best.contains("sweep 4/4"),
             "the check-in tag must report the coverage the run finished on, not the \
              coverage at the cut: {best}"
         );
@@ -3372,6 +3393,79 @@ mod tests {
         );
     }
 
+    /// Issue #102 end to end: a sweep that finished one epoch, then a corpus
+    /// change, must publish fresh partial coverage — never a carried-forward
+    /// `100%` — while the previous epoch's work stays visible as history.
+    #[test]
+    fn a_finished_sweep_then_a_corpus_change_publishes_fresh_epoch_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let learnings_dir = tmp.path().join("learnings");
+
+        // Two batches of two candidates: the whole creature, one epoch.
+        let first = OckhamConfig {
+            max_experiments: Some(2),
+            ..coverage_files_cfg(
+                creature.clone(),
+                train.clone(),
+                tmp.path().join("out-1"),
+                Some(learnings_dir.clone()),
+            )
+        };
+        establish_run(&first, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let complete =
+            std::fs::read_to_string(first.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(
+            complete.contains("sweep:     4 of 4 hidden (100.0% of epoch)"),
+            "{complete}"
+        );
+        assert!(
+            complete.contains("unchecked: 0 remaining — sweep complete for this epoch"),
+            "{complete}"
+        );
+
+        let extended = extended_corpus(tmp.path());
+        let second = coverage_files_cfg(
+            creature,
+            extended.clone(),
+            tmp.path().join("out-2"),
+            Some(learnings_dir),
+        );
+        establish_run(&second, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let fresh =
+            std::fs::read_to_string(second.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(
+            fresh.contains("sweep:     2 of 4 hidden (50.0% of epoch)"),
+            "the new epoch reports its own coverage: {fresh}"
+        );
+        assert!(
+            !fresh.contains("100.0%") && !fresh.contains("sweep complete"),
+            "a corpus change cannot leave a misleading 100%: {fresh}"
+        );
+        assert!(
+            fresh.contains(&format!(
+                "epoch:     corpus {}",
+                crate::coverage::short_epoch(&corpus_identity(&extended))
+            )),
+            "{fresh}"
+        );
+        assert!(
+            fresh.contains("history:   4 of 4 ever checked across 2 corpus epochs"),
+            "the previous epoch's work stays available, beside the percentage \
+             rather than inside it: {fresh}"
+        );
+
+        let report = coverage_report_json(&second.output_dir);
+        assert_eq!(report.coverage.percent(), 50.0);
+        assert_eq!(
+            report.history.expect("cumulative figures").checked_ever,
+            4,
+            "history is cumulative across epochs"
+        );
+    }
+
     /// The neurons a previous epoch could propose nothing for — `blocked`, and
     /// a standing full-corpus failure — are unchecked again under a new corpus,
     /// so a new epoch never opens already claiming coverage it has not measured.
@@ -3435,6 +3529,13 @@ mod tests {
         serde_json::from_str(&json).unwrap()
     }
 
+    /// The whole artefact, epoch and cumulative figures included (Issue #102).
+    fn coverage_report_json(output_dir: &std::path::Path) -> crate::coverage::CoverageReport {
+        let json =
+            std::fs::read_to_string(output_dir.join(crate::coverage::COVERAGE_JSON_FILE)).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
+
     /// Config for the coverage-artefact tests: one batch over four neurons.
     fn coverage_files_cfg(
         creature: std::path::PathBuf,
@@ -3491,9 +3592,21 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("unchecked: 2 remaining (~1 run at 2/run)"),
+            text.contains("unchecked: 2 remaining this epoch (~1 run at 2/run)"),
             "{text}"
         );
+        // Issue #102: the run names the epoch its percentage belongs to, in
+        // both artefacts — compactly in the prose, in full in the JSON.
+        let identity = report.corpus_identity.expect("the run names its epoch");
+        assert_eq!(identity.len(), 16, "the JSON keeps the full identity");
+        assert!(
+            text.contains(&format!(
+                "\nepoch:     corpus {} — coverage counts this corpus only\n",
+                crate::coverage::short_epoch(&identity)
+            )),
+            "{text}"
+        );
+        assert!(text.contains("(50.0% of epoch)"), "{text}");
     }
 
     /// End-to-end detector for Issue #74: a fully tagged creature must report
@@ -3863,7 +3976,11 @@ mod tests {
         let best = cfg.output_dir.join("best.json");
         let tag = ockham_tag(&best);
         assert!(tag.starts_with("🪒 Ockham"), "{tag}");
-        assert!(tag.contains(" · checked "), "{tag}");
+        assert!(tag.contains(" · sweep "), "{tag}");
+        assert!(
+            tag.contains("of epoch "),
+            "the subject must scope its percentage to the epoch (#102): {tag}"
+        );
         assert!(
             tag.contains(&format!("/{} (", hidden_neurons(&best))),
             "denominator must be every hidden neuron, tagged included (#74): {tag}"
@@ -3895,7 +4012,7 @@ mod tests {
         let tag = ockham_tag(&cfg.output_dir.join("best.json"));
         assert!(tag.starts_with("🪒 Ockham"), "{tag}");
         assert!(
-            !tag.contains("checked"),
+            !tag.contains("sweep ") && !tag.contains("epoch"),
             "no screen store means no coverage clause, not 0/0: {tag}"
         );
     }
