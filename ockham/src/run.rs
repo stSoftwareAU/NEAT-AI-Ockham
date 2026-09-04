@@ -683,7 +683,8 @@ fn ockham_loop(
                     prior_records = records;
                 }
                 Err(e) => log::warn(&format!(
-                    "prior-corpus verdicts unreadable ({e}); continuing without the priority"
+                    "prior-corpus verdicts unreadable ({e}); continuing without the priority \
+                     or the historical replay hypotheses it carries"
                 )),
             }
         }
@@ -2797,10 +2798,12 @@ mod tests {
     /// Since Issue #101 the run acts on that evidence twice, so the budget is
     /// two experiments rather than one: the replay stage re-scores the old
     /// winner against the corpus in hand first, and the sweep then visits it
-    /// ahead of the neurons with no history. The assertion moved from "the one
-    /// uuid screened" to "the first uuid visited" for that reason — the
-    /// ordering claim is unchanged, the run simply has a replay stage in front
-    /// of it now.
+    /// ahead of the neurons with no history. The flat scorer rejects the replay,
+    /// so that first visit is filed as a `known-failure` skip rather than a
+    /// screen — this corpus has just judged the uuid, and a visit is a visit.
+    /// The assertion moved from "the one uuid screened" to "the first uuid
+    /// visited" for that reason, and still discriminates: without the priority
+    /// the sweep would have reached `reached` first, as the sibling test shows.
     #[test]
     fn an_old_corpus_win_is_screened_before_neurons_with_no_history() {
         let uuids = ["h_a", "h_b", "h_c", "h_d"];
@@ -4398,6 +4401,35 @@ mod tests {
     /// The other half of Issue #101: the same historical winner is replayed, the
     /// current corpus scores it and says no. Nothing is cut, and this corpus's
     /// own rejection is what stands — history proposed, it did not decide.
+    /// A historical hypothesis bundled with this corpus's own win is judged on
+    /// current-corpus measurements, never on the old epoch's word: when the
+    /// combined plan misses, the probe path measures every member individually
+    /// against the corpus in hand and files it on that measurement (#57, #101).
+    #[test]
+    fn a_bundled_historical_hypothesis_is_measured_against_this_corpus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        seed_verdicts(&store, &[("h_a", Outcome::Accepted, None, 10)]);
+        seed_prior_corpus(&learnings_dir, "h_b", Outcome::Accepted, 10);
+
+        let cfg = replay_cfg(creature, train, tmp.path().join("out"), learnings_dir, None);
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        assert_eq!(run.accepts, 0, "a flat scorer accepts neither member");
+        let filed = store.load().unwrap();
+        let historical = filed
+            .iter()
+            .rfind(|l| l.uuid == "h_b")
+            .expect("the historical member is judged here");
+        assert_eq!(historical.outcome, Outcome::Rejected);
+        assert!(
+            historical.full_delta.is_some(),
+            "its own delta was measured against this corpus: {historical:?}"
+        );
+    }
+
     #[test]
     fn a_historical_winner_the_current_corpus_rejects_is_not_cut() {
         let tmp = tempfile::tempdir().unwrap();

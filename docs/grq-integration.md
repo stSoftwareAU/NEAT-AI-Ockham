@@ -129,10 +129,12 @@ Notes that matter to anyone changing Ockham's CLI:
   the shared cache is reachable, and off when it is not.
   `old_corpus_first_enabled` follows exactly the same rule, so a production run
   with the cache reachable also reads the sibling `corpus-*` directories of
-  earlier corpora and checks their still-present wins first (#88). No GRQ-side
-  change is needed: those directories are already under the learnings root GRQ
-  passes, and the verdicts are read as a **priority hint** only — never as
-  verdicts, so nothing from another corpus can suppress, replay or accept a cut.
+  earlier corpora and checks their still-present wins first (#88), and replays
+  those confirmed winners early as hypotheses (#101). No GRQ-side change is
+  needed: those directories are already under the learnings root GRQ passes, and
+  the verdicts are read as **evidence** only — never as verdicts, so a replayed
+  winner is re-scored against the corpus in hand and nothing from another corpus
+  can suppress or accept a cut.
 - **`--max-accepts` no longer exists (#96).** The cap is gone from the CLI: a
   **search** accept restarts the sweep instead of ending the search, so a run
   that is not replaying keeps searching until its budget ends. (A **replay**

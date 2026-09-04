@@ -44,7 +44,9 @@ Forests champion *after* the run — by then it is too late. Instead:
 1. Always start from the **current** fittest `samples/*.json` (usually
    `GRQ-23-forests.json`).
 2. Combined replay of every still-present known win (prefixes 16/8/4 in the
-   same full-corpus cohort). If it accepts, the search stops (`replay-accepts`)
+   same full-corpus cohort), plus the winners older corpus epochs confirmed,
+   re-scored here as hypotheses (#101). If it accepts, the search stops
+   (`replay-accepts`)
    and the cut is written; since #91 the rest of the budget screens for
    coverage before the run checks in. That creature is a prune of *today’s*
    champion, so its score can sit within ~1e-6–1e-5 of the frontier.

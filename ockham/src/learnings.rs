@@ -72,7 +72,7 @@
 //! scoring exactly as it would have done last. Historical results are evidence;
 //! the current scorer is truth.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -534,6 +534,10 @@ pub struct HistoricalLearning {
 /// never equal a live identity, so it labels the epoch for reporting without
 /// ever being mistaken for the corpus in hand — and dropping the records
 /// instead would lose fleet history, which is the one thing this must not do.
+/// A path with no final component at all — which [`LearningsStore::other_corpus_dirs`]
+/// cannot produce, since every entry it returns is a named directory — labels
+/// its records with the empty identity for the same reason: an unnameable epoch
+/// is still evidence, and it can match no corpus in hand.
 fn stamp_epoch(records: Vec<Learning>, dir: &Path) -> Vec<HistoricalLearning> {
     let name = dir
         .file_name()
@@ -913,13 +917,17 @@ pub fn historical_replay(
     ranked_confirmed(&qualifying, creature, min_improvement)
 }
 
-/// How many verdicts each historical epoch established, oldest name first (#101).
+/// How many verdicts each historical epoch established (Issue #101).
 ///
 /// The longitudinal view of the cache: what the fleet has learnt, attributed to
 /// the corpus it learnt it under, so a corpus change is visible as evidence
 /// gained rather than evidence lost.
+///
+/// Ordered by corpus identity, not by age: an identity is a content hash
+/// (`crate::corpus`), so it says nothing about when the epoch ran, and sorting
+/// on it is only there to give every host the same stable list.
 pub fn history_epochs(prior: &[HistoricalLearning]) -> Vec<(String, usize)> {
-    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for h in prior {
         *counts.entry(h.corpus_identity.as_str()).or_default() += 1;
     }
