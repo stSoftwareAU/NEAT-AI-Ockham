@@ -347,9 +347,12 @@ pub struct CoverageReport {
     ///
     /// The screening epoch the percentage belongs to: `100%` means the sweep is
     /// complete for *this* corpus, and the next extension of the training data
-    /// opens a new epoch at zero. `None` on a run with no screen store, and on
-    /// any `coverage.json` written before this field existed — so an older
-    /// artefact still deserialises and an older consumer still ignores it.
+    /// opens a new epoch at zero. Every run that writes `coverage.json` names
+    /// its corpus, because those files are written only where there is a screen
+    /// store to have measured coverage against. `None` on a report built by
+    /// [`Self::new`] and on any `coverage.json` written before this field
+    /// existed — so an older artefact still deserialises and an older consumer
+    /// still ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corpus_identity: Option<String>,
 }
@@ -370,8 +373,8 @@ impl CoverageReport {
     /// The `progress:` line is always rendered, zero included — a plateau is
     /// only visible by reading two consecutive commits if the figure is there
     /// in both. The `epoch:` line names the corpus the figures were measured
-    /// against (#100) and is omitted when the run had no screen store, so a run
-    /// without coverage state renders exactly as it did before.
+    /// against (#100) and is omitted when the report names no epoch, so a
+    /// report built by [`Self::new`] renders exactly as it did before.
     pub fn description(&self, candidates: usize) -> String {
         let mut out = self.coverage.description(candidates);
         out.push_str(&format!(

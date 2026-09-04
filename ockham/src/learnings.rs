@@ -181,7 +181,7 @@ const SCREENS_DIR: &str = "screens";
 ///
 /// Read for their fleet history, never written: dropping them would re-create,
 /// once, exactly the coverage reset this change removes.
-const LEGACY_SCREENS_PREFIX: &[u8] = b"screens-";
+const LEGACY_SCREENS_PREFIX: &str = "screens-";
 
 /// Prefix of the per-corpus verdict directories.
 const CORPUS_DIR_PREFIX: &[u8] = b"corpus-";
@@ -232,10 +232,13 @@ pub struct Screened {
     pub host: String,
     /// Corpus identity this screen was measured against (Issue #76).
     ///
-    /// Carried on the record rather than in the path, so a regenerated corpus
+    /// Carried on the record rather than in the path, so a repacked corpus
     /// cannot reset coverage while anything wanting corpus-exact screening can
-    /// still filter on it. `None` on version-1 records, where the identity
-    /// lived in the directory name.
+    /// still filter on it — which is what the screening epoch of Issue #100
+    /// does. `None` on version-1 records, where the identity lived in the
+    /// directory name; [`LearningsStore::load_screens`] restores it from that
+    /// name as it reads, so pre-#76 history sits in the epoch it was measured
+    /// against rather than in none at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corpus_identity: Option<String>,
 }
@@ -251,8 +254,10 @@ impl Screened {
 
     /// True when this record was measured against `corpus_identity` (#100).
     ///
-    /// A pre-#76 record names no corpus, so it belongs to no epoch: it is
-    /// history the fleet can still read, never current-epoch coverage.
+    /// A record naming no corpus at all belongs to no epoch: it is history the
+    /// fleet can still read, never current-epoch coverage. Pre-#76 records are
+    /// not in that position — [`LearningsStore::load_screens`] stamps them with
+    /// the identity their directory name carries.
     pub fn in_epoch(&self, corpus_identity: &str) -> bool {
         self.corpus_identity.as_deref() == Some(corpus_identity)
     }
@@ -381,7 +386,7 @@ impl LearningsStore {
 
     /// Pre-#76 corpus-keyed screen directories, sorted, read-only.
     fn legacy_screens_dirs(&self) -> Result<Vec<PathBuf>, String> {
-        self.dirs_named(LEGACY_SCREENS_PREFIX, None)
+        self.dirs_named(LEGACY_SCREENS_PREFIX.as_bytes(), None)
     }
 
     /// Sibling `corpus-*` directories other than this run's, sorted (Issue #88).
@@ -450,6 +455,13 @@ impl LearningsStore {
     /// empty the whole union on every host of every run — reinstating exactly
     /// the coverage reset this change removes (Issue #76). Loud, but contained
     /// to the directory that is broken.
+    ///
+    /// A legacy record names no corpus of its own — the identity was the
+    /// directory name — so it is stamped with the identity from that name as it
+    /// is read (Issue #100). Without that, screening epochs would read the
+    /// fleet's pre-#76 coverage as belonging to no corpus at all, and a host
+    /// that had not run since would re-screen a creature it had already
+    /// finished under the very corpus in hand.
     pub fn load_screens(&self) -> Result<Vec<Screened>, String> {
         let keep = |s: &Screened| {
             matches!(
@@ -462,7 +474,7 @@ impl LearningsStore {
         let mut out = load_jsonl(&self.screens_dir(), keep)?;
         for legacy in self.legacy_screens_dirs()? {
             match load_jsonl(&legacy, keep) {
-                Ok(records) => out.extend(records),
+                Ok(records) => out.extend(stamp_legacy_identity(records, &legacy)),
                 Err(e) => crate::log::warn(&format!(
                     "legacy screen coverage unreadable ({e}); skipping {}",
                     legacy.display()
@@ -478,6 +490,33 @@ impl LearningsStore {
     pub fn append_screen(&self, screened: &Screened) -> Result<(), String> {
         append_jsonl(&self.screens_dir(), &self.screens_host_path(), screened)
     }
+}
+
+/// Give pre-#76 records the corpus identity their directory name carries (#100).
+///
+/// `screens-<identity>/` **is** the record's corpus identity; it simply lived in
+/// the path rather than on the record. Recovering it here is what keeps the
+/// fleet's pre-#76 coverage inside the epoch it was measured against. A record
+/// that already names a corpus is left alone, and a directory name that is not
+/// valid UTF-8 names no identity we could match against, so those records stay
+/// as they are — history, never current-epoch coverage.
+fn stamp_legacy_identity(records: Vec<Screened>, dir: &Path) -> Vec<Screened> {
+    let Some(identity) = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix(LEGACY_SCREENS_PREFIX))
+        .filter(|id| !id.is_empty())
+    else {
+        return records;
+    };
+    records
+        .into_iter()
+        .map(|mut s| {
+            s.corpus_identity
+                .get_or_insert_with(|| identity.to_string());
+            s
+        })
+        .collect()
 }
 
 /// Read every `*.jsonl` record under `dir` that `keep` accepts.
@@ -1251,7 +1290,74 @@ mod tests {
         );
         let legacy = loaded.iter().find(|s| s.uuid == "h_a").unwrap();
         assert_eq!(legacy.version, 1);
-        assert_eq!(legacy.corpus_identity, None, "the identity was in the path");
+        assert_eq!(
+            legacy.corpus_identity.as_deref(),
+            Some("old-corpus"),
+            "the identity was in the path, and is restored from it (#100)"
+        );
+    }
+
+    /// Issue #100: the pre-#76 layout put the identity in the directory name,
+    /// so a legacy record must land in *that* corpus's epoch. Reading it as
+    /// belonging to no corpus would make a host that has not run since re-screen
+    /// a creature it had already finished under the corpus in hand.
+    #[test]
+    fn a_legacy_record_lands_in_the_epoch_its_directory_named() {
+        let dir = tempfile::tempdir().unwrap();
+        write_legacy_screen(
+            dir.path(),
+            "corpus-a",
+            "GRQ-23",
+            &legacy_screen_line("h_a", 5),
+        );
+        write_legacy_screen(
+            dir.path(),
+            "corpus-b",
+            "GRQ-23",
+            &legacy_screen_line("h_b", 6),
+        );
+        let store = LearningsStore::new(dir.path(), "corpus-a".into(), "host-a".into());
+        let loaded = store.load_screens().unwrap();
+
+        let epoch = current_epoch_screens(loaded.clone(), "corpus-a");
+        assert_eq!(
+            epoch.iter().map(|s| s.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["h_a"],
+            "only the directory that named this corpus is current-epoch coverage"
+        );
+        assert_eq!(
+            current_epoch_screens(loaded, "corpus-b")
+                .iter()
+                .map(|s| s.uuid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["h_b"],
+        );
+    }
+
+    /// A record that already names a corpus keeps it, and a directory whose
+    /// name carries no identity leaves the records exactly as they were.
+    #[test]
+    fn stamping_never_overwrites_an_identity_or_invents_one() {
+        let named = screen("h_a", ScreenOutcomeKind::Loser, 5);
+        let stamped =
+            stamp_legacy_identity(vec![named.clone()], Path::new("/tmp/screens-other-corpus"));
+        assert_eq!(
+            stamped,
+            vec![named.clone()],
+            "an identity is never rewritten"
+        );
+
+        let anonymous = Screened {
+            corpus_identity: None,
+            ..named
+        };
+        for dir in ["/tmp/screens-", "/tmp/screens", "/tmp/corpus-x"] {
+            assert_eq!(
+                stamp_legacy_identity(vec![anonymous.clone()], Path::new(dir)),
+                vec![anonymous.clone()],
+                "{dir} names no legacy corpus identity"
+            );
+        }
     }
 
     /// The near miss this fix must not make: a verdict is a claim about one

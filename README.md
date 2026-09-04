@@ -450,16 +450,31 @@ under the corpus in front of it. When the corpus identity changes:
 - `coverage.json` and the journal `coverage` record carry `corpusIdentity`, so a
   reader comparing two runs can tell a fresh epoch from a collapse in coverage.
 
-Selecting the epoch rather than clearing the store is what keeps #76's fix
-intact. The fleet sits on several live corpus identities at once — hosts pull
-training data independently — so a host that moves back to an identity it has
-screened before finds that epoch's coverage exactly where it left it, and an
-identity it has never screened simply opens empty rather than wiping anything.
+Selecting the epoch rather than clearing the store is what keeps the **record**
+half of #76 intact. The fleet sits on several live corpus identities at once —
+hosts pull training data independently — so a host that moves back to an
+identity it has screened before finds that epoch's coverage exactly where it
+left it, and an identity it has never screened simply opens empty rather than
+wiping anything. Nothing is ever cleared, so no coverage is lost, only scoped.
+
+Say plainly what the **authority** half costs, because it is a deliberate
+reversal of #76 and not a free win: on a host whose corpus genuinely changes
+between runs, every run now opens at `0 / hidden` and re-screens the creature.
+That is the intended reading of `100%` — the sweep finished *that* corpus — but
+it is only affordable because the corpus turns over in days rather than runs.
+The evidence in #100 is four corpus identities across six days, one of them
+taking verdicts for the whole window; the older claim that GRQ regenerates the
+corpus before *every* run does not match it. Should the corpus ever go back to
+turning over per run, the epoch is the wrong scope and this is the paragraph to
+revisit — the symptom is a `screens: 0 of N record(s) … are current-epoch
+coverage` line on every run, and a `progress:` figure that never compounds.
 
 A corpus is identified by its authoritative content: widths, file names, sizes
 and each file's head and tail bytes. A **repacked** corpus with identical
 content hashes to the same identity and keeps its coverage; an **extended** one
-does not, and starts a new epoch.
+does not, and starts a new epoch. Pre-#76 `screens-<identity>/` records are
+stamped with the identity their directory name carries as they are read, so
+that history lands in the epoch it was measured against rather than in none.
 
 ```mermaid
 flowchart LR
@@ -672,9 +687,10 @@ dropped:   12 entries over budget (est 18s/creature)
 - the `progress:` line is **never** omitted, zero included (#77): coverage is
   cumulative fleet state, so the per-run figure beside it is the only thing that
   makes a plateau visible by reading two consecutive commits;
-- the `epoch:` line names the corpus the figures were measured against (#100),
-  and is omitted only when the run had no screen store — `100%` on that line is
-  100% of *that* corpus, and extending the training data starts a fresh epoch;
+- the `epoch:` line names the corpus the figures were measured against (#100):
+  `100%` above it is 100% of *that* corpus, and extending the training data
+  starts a fresh epoch. Every run that writes these files names its corpus, so
+  the line is absent only from an artefact written before #100;
 - the `winners:` / `bundles:` / `dropped:` lines are each omitted when they have
   nothing to report, so a run that screened nothing renders the coverage lines
   alone, exactly as it did before they existed;
