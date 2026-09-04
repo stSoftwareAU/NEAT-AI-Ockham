@@ -126,17 +126,18 @@ control**, as the issue requires.
   — reviewer: met
 - **unrequested** — `--screen-stages` with `--screen-sample-rate 0`, and
   `--screen-reject-margin` without `--screen-stages`, are refused with exit 2 —
-  reason: the alternative is a silently ignored flag, which the fail-loud
-  standard forbids; tested in `ockham/tests/cli.rs`
+  reviewer: unrequested — reason: the alternative is a silently ignored flag,
+  which the fail-loud standard forbids; tested in `ockham/tests/cli.rs`
 - **unrequested** — `screenStageCalls` / `screenStageRecords` /
-  `screenStageRejected` on `report` — reason: `summarise` matches the event enum
-  exhaustively, so the new record had to be folded somewhere; these are the
-  recording requirement surfaced where the fleet reads economics
+  `screenStageRejected` on `report` — reviewer: unrequested — reason:
+  `summarise` matches the event enum exhaustively, so the new record had to be
+  folded somewhere; these are the recording requirement surfaced where the fleet
+  reads economics
 - **unrequested** — per-rung workspace directories `screen-<batch>/s<n>` —
-  reason: correctness, not scope — a candidate file left by an earlier rung
-  would be scored again by the next
-- **unrequested** — crate version bump to 0.1.40 — reason: CONTRIBUTING
-  requires it for binary-affecting changes
+  reviewer: unrequested — reason: correctness, not scope — a candidate file left
+  by an earlier rung would be scored again by the next
+- **unrequested** — crate version bump to 0.1.40 — reviewer: unrequested —
+  reason: CONTRIBUTING requires it for binary-affecting changes
 
 ## Standards Review
 
@@ -195,22 +196,27 @@ unchanged.
 
 ## Quality Gate
 
-`./quality.sh` passes every stage **except codespell**, which is not installed
-in the run container and cannot be installed (no `pip`, `pipx` or `brew`
-available):
+`./quality.sh` was run in the foreground and **every stage passes**, ending on
+`All quality checks passed!`.
+
+An earlier attempt had to record the spell check as unrun — codespell was not
+installed and the container has no `pip`, `pipx` or `brew`. It is now installed
+from the PyPI wheel into `~/.local/lib`, with a shim on `~/.local/bin` (the path
+`scripts/spell-check.sh` already adds), so the stage runs for real rather than
+being reasoned about:
 
 ```text
-spell-check: codespell is not installed.
+📝 Running codespell on: /…/NEAT-AI-Ockham
+codespell: no typos found
 ```
 
-Every other stage was run in the foreground and passes: bash syntax, shellcheck,
-neat-core version gate, markdownlint-cli2 (0 issues), actionlint, `cargo deny
-check` (advisories/bans/licenses/sources ok), `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets --all-features -D warnings`, `cargo test
---workspace --all-features` (324 + 36 tests, all green) and `cargo doc` with
-`-D warnings`. As a substitute for the missing spell check, every word this
-change introduces to the tree was extracted and reviewed by hand. CI runs
-codespell for real.
+That install is container state only — no repository file changes with it.
+
+Stages, all green: bash syntax, shellcheck, neat-core version gate, codespell,
+markdownlint-cli2, actionlint, `cargo deny check`
+(advisories/bans/licenses/sources ok), `cargo fmt --all -- --check`, `cargo
+clippy --workspace --all-targets --all-features -D warnings`, `cargo test
+--workspace --all-features` and `cargo doc` with `-D warnings`.
 
 ## Test Plan
 
