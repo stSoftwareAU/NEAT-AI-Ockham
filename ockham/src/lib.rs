@@ -27,6 +27,7 @@
 //! | GRQ check-in tags | [`tags`] | #25 |
 //! | fleet learnings store + replay | [`learnings`] | #27 |
 //! | named candidate orderings | [`ordering`] | #11 |
+//! | progressive adaptive screening ladder | [`screening`] | #104 |
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
 //! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
 
@@ -50,6 +51,7 @@ pub mod reentry;
 pub mod report;
 pub mod run;
 pub mod scorer;
+pub mod screening;
 pub mod stats;
 pub mod sweep;
 pub mod tags;
@@ -72,9 +74,14 @@ pub use promote::{FullOutcome, evaluate_full};
 pub use report::{Report, summarise};
 pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
+pub use screening::{
+    DEFAULT_SCREEN_REJECT_MARGIN, ProgressiveConfig, ProgressiveScreen, ScreenLadder, ScreenStage,
+    StageRecord, screen_progressive,
+};
 pub use stats::{ActivationStats, NeuronStats, SampleSpec, ensure_activation_stats};
 pub use sweep::{
-    ScreenConfig, ScreenOutcome, ScreenedLoser, Sweep, SweepCandidate, draw_seed, screen_batch,
+    ScreenConfig, ScreenOutcome, ScreenRejection, ScreenedLoser, Sweep, SweepCandidate, draw_seed,
+    screen_batch,
 };
 pub use tags::{CreatureMeta, OckhamProgress, ockham_progress_message};
 

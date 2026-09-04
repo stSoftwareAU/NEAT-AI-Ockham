@@ -47,6 +47,18 @@ pub struct Report {
     pub screen_calls: u64,
     /// Full-corpus scorer cohort calls consumed.
     pub full_calls: u64,
+    /// Progressive screening stage calls consumed (Issue #104).
+    ///
+    /// `0` on a fixed-rate control run, which journals no stage records: the
+    /// figure says how much laddering happened, not how much screening did.
+    pub screen_stage_calls: u64,
+    /// Records the screening ladder read across those stages (Issue #104).
+    ///
+    /// The economics the ladder is judged on — scorer records per candidate —
+    /// are this divided by the candidates screened.
+    pub screen_stage_records: u64,
+    /// Candidates a ladder stage rejected before the promotion stage (#104).
+    pub screen_stage_rejected: u64,
     /// Screen-coverage records filed across the run (Issue #36).
     ///
     /// Since #93 this counts every neuron the sweep **visited** and filed a
@@ -148,6 +160,9 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         full_rejects: 0,
         screen_calls: 0,
         full_calls: 0,
+        screen_stage_calls: 0,
+        screen_stage_records: 0,
+        screen_stage_rejected: 0,
         screened: 0,
         sweep_restarts: 0,
         coverage_tail_batches: 0,
@@ -218,6 +233,15 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                 Event::SweepRestart { .. } => report.sweep_restarts += 1,
                 Event::CoverageTail { batches, .. } => report.coverage_tail_batches += batches,
                 Event::Screen { .. } => report.screen_calls += 1,
+                Event::ScreenStage {
+                    records_scored,
+                    rejected,
+                    ..
+                } => {
+                    report.screen_stage_calls += 1;
+                    report.screen_stage_records += records_scored;
+                    report.screen_stage_rejected += rejected as u64;
+                }
                 Event::Screened { screened, .. } => report.screened += screened as u64,
                 Event::Coverage {
                     hidden,

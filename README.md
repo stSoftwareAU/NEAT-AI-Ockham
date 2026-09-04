@@ -302,6 +302,73 @@ individual pruning effects are not assumed additive.
 The highest strict full-corpus improvement becomes the next Ockham incumbent,
 even if that improvement is tiny.
 
+### Progressive screening
+
+A fixed 5% screen pays the same scorer time for a candidate that is
+catastrophically worse as for one that is a hair better. `--screen-stages` turns
+the screen into a ladder of ascending sample rates, so the obvious losers are
+paid for at the smallest sample and never reach the larger ones:
+
+```bash
+neat_ai_ockham creature.json training/ --screen-stages 0.0025:0.01,0.01:0.005,0.05
+```
+
+```mermaid
+flowchart LR
+    C["batch of candidates"] --> S0["0.25% sample"]
+    S0 -->|"Δ ≤ -0.01 — clearly worse"| R0["rejected"]
+    S0 -->|"anything else"| S1["1% sample"]
+    S1 -->|"Δ ≤ -0.005"| R1["rejected"]
+    S1 -->|"anything else"| S2["5% sample"]
+    S2 -->|"Δ ≤ --screen-threshold"| R2["rejected"]
+    S2 -->|"promoted"| F["100% corpus — the only authority"]
+    F --> A["accept / reject"]
+```
+
+Two rules hold at every rung:
+
+- **Sampling may reject or propose; only the full-corpus scorer accepts.** The
+  ladder ends at the promotion stage; the cohort and `--min-improvement` decide
+  the rest, exactly as they always have.
+- **A borderline candidate collects more evidence.** A non-final stage rejects
+  only when the sampled Δ is at or below `-margin`; anything uncertain — a tiny
+  loss, a tiny gain — is carried to the next, larger sample. A non-final margin
+  of `0` is refused for that reason: it would kill a candidate at the smallest
+  sample merely for being a hair worse.
+
+Each stage scores the incumbent alongside its candidates in one call, so the
+comparison stays apples-to-apples even though the stages read different records.
+Stage sample phases are a pure function of the batch index and the stage
+position (`batch × stages + stage`), so a seed and corpus replay the same
+records exactly. Each rung journals a `screenStage` record — records scored,
+mean sampled Δ, elapsed ms, how many entered, were rejected and were carried —
+so the claim that a loser stopped early is checkable rather than asserted.
+
+**The default is unchanged.** Omit `--screen-stages` and the screen is one stage
+at `--screen-sample-rate`, which is the fixed 5% control this was measured
+against and remains the default until fleet evidence on real creatures earns a
+change:
+
+```bash
+cargo run --release --example progressive_screen_bench
+```
+
+| Measure (300 batches × 100 candidates, modelled scorer) | Fixed 5% control | `0.25% → 1% → 5%` |
+|---|---:|---:|
+| candidates/hour | 306,383 | **434,972** |
+| scorer-records/candidate | 99,600 | **32,395** |
+| full-scores/hour | 20,742 | **28,955** |
+| confirmed cuts/hour | 12,245 | **17,283** |
+| missed-winner rate | 28.84% | 29.26% |
+
+The ladder confirms **1.41×** the cuts per wall-clock hour on **33%** of the
+screen records, and misses 0.4 percentage points more of the true winners. The
+benchmark models the scorer — cost linear in records read, a sampled score
+carrying `0.15/√n` standard error, an exact full corpus — because the honest
+comparison needs a corpus larger than a fixture and a ground truth to grade the
+missed-winner rate against. Both arms run the real ladder over the real cohort
+machinery on the same candidate population.
+
 ### Exploiting every screened winner
 
 A screen that finds 38 winners has already paid for 38 pieces of evidence, and
@@ -1004,6 +1071,8 @@ Common options:
 | `--timeout-seconds` | `2700` | Wall-clock optimisation budget. |
 | `--candidates` | `100` | Candidates per sampled sweep batch. |
 | `--screen-sample-rate` | `0.05` | Sample rate used only for screening; `0` disables it. |
+| `--screen-stages` | none | Progressive screening ladder: ascending `rate[:margin]` stages, e.g. `0.0025:0.02,0.01,0.05`. Omitted, the screen is one stage at `--screen-sample-rate` — the control. See [Progressive screening](#progressive-screening). |
+| `--screen-reject-margin` | `0.01` | Early-rejection margin for a ladder stage that names none: a sampled Δ at or below its negation is rejected there instead of re-tested. |
 | `--screen-threshold` | `0` | Sampled Δscore required for promotion. |
 | `--stats-sample-records` | `100000` | Records sampled for hidden-neuron activation statistics; `0` scans the whole corpus. See [Activation statistics](#activation-statistics). |
 | `--max-full` | none | Cap sampled winners sent to full scoring (highest sample Δ first). |
@@ -1111,6 +1180,9 @@ Useful measures include:
 - candidates screened before that first win (`candidatesBeforeFirstWin`);
 - authoritative local accepts per hour (`acceptsPerHour`);
 - sample and full scorer calls consumed (`screenCalls`, `fullCalls`);
+- progressive screening economics (`screenStageCalls`, `screenStageRecords`,
+  `screenStageRejected`) — all `0` on a fixed-rate control run, which journals
+  no stage records; see [Progressive screening](#progressive-screening);
 - screen-coverage records filed (`screened`);
 - sweeps rebuilt after reaching 100% of the hidden neurons (`sweepRestarts`);
 - screening coverage of the incumbent — every figure of the commit-description
@@ -1201,6 +1273,7 @@ NEAT-AI-Ockham/
 │       ├── ablation.rs        # mean-activation ablation + cleanup
 │       ├── collapse.rs        # exact IDENTITY neuron collapse
 │       ├── sweep.rs           # seeded random sweep + 5% screen
+│       ├── screening.rs       # progressive adaptive screening ladder
 │       ├── promote.rs         # full-score winners + bundles
 │       ├── journal.rs         # experiments.jsonl
 │       ├── reentry.rs         # population re-entry vs global champion
