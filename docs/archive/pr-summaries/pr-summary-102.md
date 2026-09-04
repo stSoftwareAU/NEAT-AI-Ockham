@@ -50,9 +50,10 @@ flowchart LR
 Backend/CLI only — there is no web interface to screenshot. The evidence is the
 rendered artefacts, asserted verbatim by the tests below, plus the full gate:
 the gate passes (shellcheck, markdownlint, actionlint, cargo-deny, fmt, clippy
-`-D warnings`, 306 lib tests + integration tests, rustdoc `-D warnings`). The
-`codespell` binary is absent from this container, so that one stage was not run
-locally; CI runs it on every push and its Spell Check job is green.
+`-D warnings`, 307 lib tests + 35 integration tests, rustdoc `-D warnings`).
+`codespell` cannot be installed in this container — it has no `pip`, `pipx` or
+`brew` — so that one stage was not run locally; CI runs it on every push and its
+Spell Check job is green on this branch.
 
 Rebased onto `Develop` after #113 (Issue #101) landed. Two conflicts, both
 textual: the README bullet — kept #101's "inherits every previous epoch's
