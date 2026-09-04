@@ -430,7 +430,12 @@ fn synapse_targets(working: &CreatureExport) -> HashSet<&str> {
         .collect()
 }
 
-fn first_dead_non_output(working: &CreatureExport) -> Option<String> {
+/// The first non-output neuron feeding nothing, or `None`.
+///
+/// Shared with [`crate::substitute`]: a neuron with no outgoing synapse reaches
+/// no output, so removing it changes no output value — and NEAT-AI-core rejects
+/// one that stays (rules 16 and 18).
+pub(crate) fn first_dead_non_output(working: &CreatureExport) -> Option<String> {
     let sources = synapse_sources(working);
     working
         .neurons
@@ -473,7 +478,8 @@ fn apply_bias_fold(
     Ok(())
 }
 
-fn remove_neuron(working: &mut CreatureExport, uuid: &str) {
+/// Remove `uuid` and every synapse incident to it.
+pub(crate) fn remove_neuron(working: &mut CreatureExport, uuid: &str) {
     working.neurons.retain(|n| n.uuid != uuid);
     working
         .synapses

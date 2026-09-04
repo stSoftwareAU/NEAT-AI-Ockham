@@ -361,7 +361,7 @@ against:
 
 | Visit | Record `kind` | Version | Counted as |
 |---|---|---|---|
-| Candidate the scorer screened, winner or loser | `identity` / `ablation` | 2 | checked |
+| Candidate the scorer screened, winner or loser | `identity` / `ablation` / `constant` | 2 | checked |
 | Nothing could be proposed — no finite activation statistic, a candidate that would not validate | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
 | A standing full-corpus verdict suppressed the try | `known-failure` | 3 | checked |
 
@@ -389,13 +389,20 @@ reached that way, so the percentage never claims a screen that never happened.
 
 Since #103 a blocked visit also records **why**, as a reason code on the record
 (`blockedReason`), and each batch logs its skips by the same codes
-(`aggregate-squash: 41, missing-activation: 6`). One number could not be
-attacked; a breakdown can be, and the dominant category — aggregate and typed
-structure the bias fold cannot express — is now proposed as a
-[constant substitution](docs/blocked-reasons.md) rather than blocked. `blocked`
-never meant *not pruneable forever*: it means the current proposal mechanism
-does not know how to test this neuron safely, and the code says which mechanism
-is missing.
+(`missing-activation: 6, known-failure: 3`). One number could not be attacked; a
+breakdown can be, and the dominant category — aggregate and typed structure the
+bias fold cannot express — is now *proposed* as a
+[constant substitution](docs/blocked-reasons.md) rather than blocked, which is
+why `aggregate-squash` is a category the codes can still name but the sweep
+rarely reaches. `blocked` never meant *not pruneable forever*: it means the
+current proposal mechanism does not know how to test this neuron safely, and the
+code says which mechanism is missing.
+
+A substituted candidate is a third scored kind, `constant`, in `screens/` and in
+the journal. It leaves a `constant` neuron where the hidden one was, so `cut:`
+counts it — the hidden neuron is gone and the structure that fed it with it —
+while the creature keeps one node emitting a fixed value. As always, the
+full-corpus scorer decides whether that trade was worth making.
 
 Coverage is still a statement about the creature in front of us, not a score
 that only ever rises: a cut removes a checked neuron, so the count still steps

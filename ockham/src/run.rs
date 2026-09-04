@@ -1869,13 +1869,22 @@ fn prefer_prior_corpus(
 ///
 /// A standing full-corpus verdict is the strongest check there is — the cut was
 /// proposed, scored and judged — so it is filed as a known failure and carries
-/// no blocked reason. Everything the sweep could not propose is filed as a
-/// blocked visit, with the reason code that stopped it.
+/// no blocked reason. Everything else is filed as a blocked visit.
+///
+/// The known-failure claim is made only for the skip that actually carries
+/// [`crate::sweep::KNOWN_FAILURE_REASON`], never as a default: `SweepSkip` has
+/// public fields, and a skip that named no reason code would otherwise be
+/// upgraded to "the fleet scored and judged this cut" — a claim nothing made.
+/// A skip with neither is blocked for an explicit-but-unknown reason, which is
+/// what [`crate::blocked::BlockedReason::Other`] is for.
 fn skip_try(skip: &crate::sweep::SweepSkip) -> ScreenTry<'_> {
-    match skip.blocked {
-        Some(reason) => ScreenTry::blocked(&skip.uuid, reason),
-        None => ScreenTry::visited(&skip.uuid, crate::learnings::SCREEN_KIND_KNOWN_FAILURE),
+    if skip.reason == crate::sweep::KNOWN_FAILURE_REASON && skip.blocked.is_none() {
+        return ScreenTry::visited(&skip.uuid, crate::learnings::SCREEN_KIND_KNOWN_FAILURE);
     }
+    ScreenTry::blocked(
+        &skip.uuid,
+        skip.blocked.unwrap_or(crate::blocked::BlockedReason::Other),
+    )
 }
 
 /// `aggregate-squash: 41, known-failure: 3` — one batch's skips, by reason.
@@ -3835,6 +3844,29 @@ mod tests {
             cov.blocked, 0,
             "a fully scored uuid is checked, not structurally unprunable"
         );
+
+        // A visit that scored nothing files **one** record however many passes
+        // see it (#93): the record already says the sweep has been there, and
+        // repeating it every run would grow the fleet's shared append-only log
+        // without adding a fact.
+        let again = OckhamConfig {
+            output_dir: tmp.path().join("out-2"),
+            ..cfg.clone()
+        };
+        establish_run(&again, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let screens = screens_store(&learnings_dir, &train)
+            .load_screens()
+            .unwrap();
+        assert_eq!(
+            screens.iter().filter(|s| s.uuid == "h_a").count(),
+            1,
+            "one visit record per suppressed uuid: {screens:?}"
+        );
+        assert_eq!(
+            coverage_json(&again.output_dir).checked,
+            2,
+            "coverage held, it did not go backwards"
+        );
     }
 
     #[test]
@@ -5183,6 +5215,19 @@ mod tests {
             Some(BlockedReason::AggregateSquash),
             "a blocked visit files the code that stopped it"
         );
+
+        // Fail closed: a skip carrying neither the known-failure reason nor a
+        // code is blocked for an unknown reason, never upgraded to a verdict
+        // the fleet never reached.
+        let unexplained = SweepSkip {
+            uuid: "h_odd".into(),
+            permutation_index: 2,
+            reason: "something new".into(),
+            blocked: None,
+        };
+        let unexplained = skip_try(&unexplained);
+        assert_eq!(unexplained.kind, crate::learnings::SCREEN_KIND_SKIPPED);
+        assert_eq!(unexplained.blocked_reason, Some(BlockedReason::Other));
     }
 
     /// Issue #77 point 3, the sizing rules, unit by unit. A measured screen is

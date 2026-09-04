@@ -30,12 +30,11 @@
 //! the sampled screen and the authoritative full scorer like any other, and the
 //! scorer alone decides whether the structure it removes was earning its keep.
 
-use std::collections::HashSet;
 use std::fmt;
 
 use neat_core::{CreatureExport, NeuronExport};
 
-use crate::ablation::{RemovedNeuron, StructureSnapshot};
+use crate::ablation::{RemovedNeuron, StructureSnapshot, first_dead_non_output, remove_neuron};
 use crate::blocked::BlockedReason;
 use crate::fixtures::sort_synapses_canonically;
 use crate::incumbent::validate_creature;
@@ -189,28 +188,21 @@ fn constant_slot(neurons: &[NeuronExport]) -> usize {
 /// keeps the same arity.
 fn cascade_dead_sources(working: &mut CreatureExport) -> Vec<RemovedNeuron> {
     let mut removed = Vec::new();
-    loop {
-        let sources: HashSet<&str> = working
-            .synapses
-            .iter()
-            .map(|s| s.from_uuid.as_str())
-            .collect();
-        let dead = working
+    while let Some(uuid) = first_dead_non_output(working) {
+        let neuron_type = working
             .neurons
             .iter()
-            .find(|n| n.neuron_type != "output" && !sources.contains(n.uuid.as_str()))
-            .map(|n| (n.uuid.clone(), n.neuron_type.clone()));
-        let Some((uuid, neuron_type)) = dead else {
-            return removed;
-        };
+            .find(|n| n.uuid == uuid)
+            .map(|n| n.neuron_type.clone())
+            .unwrap_or_else(|| "hidden".into());
         removed.push(RemovedNeuron {
             uuid: uuid.clone(),
             neuron_type,
             reason: "no-outgoing",
         });
-        working.neurons.retain(|n| n.uuid != uuid);
-        working.synapses.retain(|s| s.to_uuid != uuid);
+        remove_neuron(working, &uuid);
     }
+    removed
 }
 
 #[cfg(test)]

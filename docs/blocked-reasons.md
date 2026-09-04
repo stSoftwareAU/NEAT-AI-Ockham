@@ -12,8 +12,8 @@ in `screens/<host>.jsonl`, and every reporting surface counts by it.
 
 | Code | What it means | Can the razor build a candidate? |
 |---|---|---|
-| `aggregate-squash` | The neuron, or something a bias fold would touch, uses an aggregate squash (`IF`, `MEAN`, `MINIMUM`, …) that does not sum its inputs. | **Yes, since #103** — constant substitution. |
-| `unsafe-topology` | A typed (role-carrying) synapse, or a neuron the transform cannot treat as an ordinary hidden unit. | **Yes, since #103** — constant substitution keeps the role-carrying edge. |
+| `aggregate-squash` | The neuron, or something a bias fold would touch, uses an aggregate squash (`IF`, `MEAN`, `MINIMUM`, …) that does not sum its inputs. | **Yes, since #103** — constant substitution. The code is still recorded where no substitution was reachable, chiefly an IDENTITY collapse blocked by an aggregate target with no activation statistic to fall back on. |
+| `unsafe-topology` | The transform cannot treat the neuron as an ordinary hidden unit — it is not hidden, or not on the creature at all. Since #103 the typed-synapse case this code used to cover is proposed rather than blocked, because constant substitution keeps the role-carrying edge. | Case by case; the recorded cases are structural faults, not categories to build a path for. |
 | `missing-activation` | No finite sampled activation statistic for the neuron. | No — there is no value to substitute. See below. |
 | `validation-failed` | A candidate was built and NEAT-AI-core `creature.validate()` rejected it. | No — failing closed is the point. |
 | `no-output-path` | The neuron feeds nothing, so no candidate could be built around it. | Not reachable on a valid incumbent (rule 18). |
@@ -27,8 +27,13 @@ breakdown is a partition of the blocked population rather than a sample of it.
 
 On a forest-heavy GRQ creature roughly four hidden neurons in five feed an
 aggregate squash or carry a typed synapse, so `aggregate-squash` (with
-`unsafe-topology` behind it) dominated the blocked population. Those were the
-neurons worth a new proposal path, and `ockham/src/substitute.rs` is it.
+`unsafe-topology` behind it) dominated the blocked population. That is the
+measurement #93 recorded and the code paths agree with it: before #103 every one
+of those visits ended at the aggregate or typed-synapse check in
+`ablation::ablate_mean`. A run against live GRQ data will now print the figure
+under the codes themselves — the `reasons:` line — which is the first time the
+split is measured rather than reasoned about. Those were the neurons worth a new
+proposal path, and `ockham/src/substitute.rs` is it.
 
 The mean-activation ablation removes the neuron and folds its mean into every
 downstream **bias**. That is only valid where the target sums its inputs. An
@@ -58,14 +63,28 @@ flowchart LR
   the same arity and an `IF` still has one edge of each role (NEAT-AI-core
   rule 12).
 
-The approximation is exactly the one the razor already makes — *this neuron's
-output is close enough to its mean* — and nothing downstream is rewritten, so it
-is no stronger a claim than the bias fold it replaces. Where the neuron really
-is constant, the substitution is exact.
+The claim being made is the razor's usual one — *this neuron's output is close
+enough to its mean* — and nothing downstream is rewritten. It is not, however,
+a *weaker* claim than the bias fold: folding a mean into a summing target is
+linear, whereas pinning a `MEAN`, `MINIMUM` or `IF` **condition** input to its
+mean can change which branch the target takes. That is why this is a proposal
+and not a simplification: the sampled screen and the full-corpus scorer are what
+decide whether the approximation held. Where the neuron really is constant, the
+substitution is exact.
 
 It remains a **proposal**. Every substituted candidate passes
 `creature.validate()`, the sampled screen and the authoritative full-corpus
 scorer like any other, and only the scorer accepts a cut.
+
+### What it counts as
+
+A substituted candidate is scored under a third kind, `constant`, beside
+`identity` and `ablation`, in `screens/<host>.jsonl` and in the journal. An
+accepted one removes a hidden neuron and the structure that fed it, and leaves a
+`constant` neuron in its place — so `cut:` counts it as a cut (the hidden neuron
+is gone) while `neurons.len()` falls by one less than the cut count. The growth
+proxy Ockham reports, `hidden + synapses / 10`, moves the same way the scorer's
+own cost of growth does, and the scorer is what accepts the trade.
 
 ### What it costs
 
@@ -104,11 +123,14 @@ screened are ones nothing was ever going to prune before.
 | `coverage.txt` | The `reasons:` line under `blocked:`, commonest first with each category's share. |
 | `coverage.json` | `blockedByReason`, one fixed key per code. |
 | `experiments.jsonl` | The `coverage` record carries `blockedByReason` beside `blocked`. |
-| `report` | `blockedByReason` and `dominantBlockedReason` for the latest snapshot, plus `blockedEpochs` — one row per screening epoch, holding that epoch's freshest breakdown. |
+| `report` | `blockedByReason` and `dominantBlockedReason` for the latest snapshot, plus `blockedEpochs` — one row per screening epoch, holding that epoch's freshest breakdown as counts and as a rendered `reasons` string with each category's share. |
 
 `blockedEpochs` is the historical half: a corpus change opens a new screening
 epoch, and the series says whether a category is growing, shrinking, or was
-solved by a new proposal path.
+solved by a new proposal path. The rows appear in the order the journals name
+the epochs, and a journal that carries a blocked total with no reasons — every
+journal written before #103 — has the difference filed as `unrecorded`, so the
+sum invariant holds on the replay path too rather than only on the live one.
 
 Every artefact is additive. A `coverage.json`, journal or screen record written
 before #103 still deserialises — as no reasons, and as the `unrecorded`
