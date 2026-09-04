@@ -297,10 +297,10 @@ A run counts only the records measured against the corpus in front of it, so
 `sweep X/X checked (100.0% of epoch)` means the sweep finished *that* corpus,
 not that Ockham is done — and since Issue #102 every surface says so in those
 words: the check-in subject reads `sweep X/Y (Z% of epoch <short-id>)`, and a
-finished sweep is reported as `sweep complete for this epoch`. A corpus that is repacked with identical content hashes the same and keeps
-its coverage; a corpus that is extended starts a fresh epoch at `0 / hidden`,
-with every hidden neuron — `blocked` and `known-failure` included — eligible
-again. Nothing is deleted, so a host that returns to an earlier identity finds
+finished sweep is reported as `sweep complete for this epoch`. A corpus that is
+repacked with identical content hashes the same and keeps its coverage; a corpus
+that is extended starts a fresh epoch at `0 / hidden`, with every hidden neuron
+— `blocked` and `known-failure` included — eligible again. Nothing is deleted, so a host that returns to an earlier identity finds
 that epoch intact. `coverage.json` and the journal `coverage` record carry
 `corpusIdentity`, and the commit-description block gains an `epoch:` line.
 **Read `checked` across an identity change as a new epoch, not as lost
