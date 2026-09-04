@@ -441,6 +441,11 @@ pub fn screen_batch(
 
     let mut winners = Vec::new();
     let mut losers = Vec::new();
+    // Summed from what each creature's result actually reports, never
+    // extrapolated from the incumbent's: the economics of a ladder rung rest on
+    // this figure, and an assumed record count would be a guess wearing the
+    // costume of a measurement (#104).
+    let mut records_scored = baseline.record_count;
     for c in candidates {
         let result = results.get(&c.stem).ok_or_else(|| {
             format!(
@@ -448,6 +453,7 @@ pub fn screen_batch(
                 c.stem
             )
         })?;
+        records_scored = records_scored.saturating_add(result.record_count);
         let delta = result.score - baseline.score;
         if delta > cfg.threshold {
             winners.push(SampledWinner {
@@ -472,7 +478,7 @@ pub fn screen_batch(
         baseline_score: baseline.score,
         winners,
         losers,
-        records_scored: baseline.record_count.saturating_mul(n as u64 + 1),
+        records_scored,
         screen_ms,
         candidates_per_sec,
         estimated_full_sweep_ms,

@@ -337,12 +337,22 @@ Two rules hold at every rung:
   sample merely for being a hair worse.
 
 Each stage scores the incumbent alongside its candidates in one call, so the
-comparison stays apples-to-apples even though the stages read different records.
-Stage sample phases are a pure function of the batch index and the stage
-position (`batch × stages + stage`), so a seed and corpus replay the same
-records exactly. Each rung journals a `screenStage` record — records scored,
-mean sampled Δ, elapsed ms, how many entered, were rejected and were carried —
-so the claim that a loser stopped early is checkable rather than asserted.
+comparison stays apples-to-apples even though the stages sample at different
+phases. Stage sample phases are a pure function of the batch index and the stage
+position (`batch × stages + stage`), so a seed and corpus replay the same records
+exactly. Which records a phase selects is the scorer's stride, so how far two
+rungs' slices overlap is its business, not Ockham's. Each rung journals a
+`screenStage` record — records scored, mean sampled Δ, elapsed ms, how many
+entered, were rejected and were carried — so the claim that a loser stopped
+early is checkable rather than asserted, and the run log names how many losers
+were *clearly worse* against how many merely missed `--screen-threshold`.
+
+**A ladder run's coverage is only as strong as the rung that ended the
+candidate.** A neuron rejected at 0.25% files the same screen record as one
+rejected at 5% ([Screen coverage](#screen-coverage) has no notion of sample
+rate), so `checked` counts a cheaper look than it does under the control. That
+is the trade the ladder makes for its throughput, and it is one more reason the
+default stays at the fixed 5%.
 
 **The default is unchanged.** Omit `--screen-stages` and the screen is one stage
 at `--screen-sample-rate`, which is the fixed 5% control this was measured
@@ -355,13 +365,13 @@ cargo run --release --example progressive_screen_bench
 
 | Measure (300 batches × 100 candidates, modelled scorer) | Fixed 5% control | `0.25% → 1% → 5%` |
 |---|---:|---:|
-| candidates/hour | 306,383 | **434,972** |
-| scorer-records/candidate | 99,600 | **32,395** |
-| full-scores/hour | 20,742 | **28,955** |
-| confirmed cuts/hour | 12,245 | **17,283** |
+| candidates/hour | 304,569 | **434,098** |
+| scorer-records/candidate | 101,000 | **32,728** |
+| full-scores/hour | 20,619 | **28,896** |
+| confirmed cuts/hour | 12,173 | **17,248** |
 | missed-winner rate | 28.84% | 29.26% |
 
-The ladder confirms **1.41×** the cuts per wall-clock hour on **33%** of the
+The ladder confirms **1.42×** the cuts per wall-clock hour on **32%** of the
 screen records, and misses 0.4 percentage points more of the true winners. The
 benchmark models the scorer — cost linear in records read, a sampled score
 carrying `0.15/√n` standard error, an exact full corpus — because the honest
@@ -1072,7 +1082,7 @@ Common options:
 | `--candidates` | `100` | Candidates per sampled sweep batch. |
 | `--screen-sample-rate` | `0.05` | Sample rate used only for screening; `0` disables it. |
 | `--screen-stages` | none | Progressive screening ladder: ascending `rate[:margin]` stages, e.g. `0.0025:0.02,0.01,0.05`. Omitted, the screen is one stage at `--screen-sample-rate` — the control. See [Progressive screening](#progressive-screening). |
-| `--screen-reject-margin` | `0.01` | Early-rejection margin for a ladder stage that names none: a sampled Δ at or below its negation is rejected there instead of re-tested. |
+| `--screen-reject-margin` | `0.01` | Early-rejection margin for a ladder stage that names none: a sampled Δ at or below its negation is rejected there instead of re-tested. Refused without `--screen-stages`, where it would do nothing. |
 | `--screen-threshold` | `0` | Sampled Δscore required for promotion. |
 | `--stats-sample-records` | `100000` | Records sampled for hidden-neuron activation statistics; `0` scans the whole corpus. See [Activation statistics](#activation-statistics). |
 | `--max-full` | none | Cap sampled winners sent to full scoring (highest sample Δ first). |

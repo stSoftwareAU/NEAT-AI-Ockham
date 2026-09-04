@@ -160,17 +160,22 @@ impl OckhamConfig {
 
     /// The screening ladder this run will actually climb (issue #104).
     ///
-    /// `None` when screening is disabled. `--screen-stages` wins when given;
-    /// otherwise the fixed-rate control — one stage at `--screen-sample-rate`,
-    /// which is exactly the screen Ockham has always run.
-    pub fn screen_ladder(&self) -> Option<ScreenLadder> {
-        let rate = self.screen_sample_rate?;
+    /// `Ok(None)` when screening is disabled. `--screen-stages` wins when
+    /// given; otherwise the fixed-rate control — one stage at
+    /// `--screen-sample-rate`, which is exactly the screen Ockham has always
+    /// run.
+    ///
+    /// A rate outside `(0, 1)` is an error rather than a `None`: a caller that
+    /// skipped [`Self::validate`] would otherwise get a silently un-screened
+    /// run — every candidate straight to the full corpus — in place of the
+    /// cheap screen it asked for.
+    pub fn screen_ladder(&self) -> Result<Option<ScreenLadder>, String> {
+        let Some(rate) = self.screen_sample_rate else {
+            return Ok(None);
+        };
         match &self.screen_stages {
-            Some(ladder) => Some(ladder.clone()),
-            // The rate is validated in `(0, 1)` above, so this cannot fail; a
-            // ladder that somehow could not be built is no screen at all
-            // rather than a silently different one.
-            None => ScreenLadder::single(rate).ok(),
+            Some(ladder) => Ok(Some(ladder.clone())),
+            None => ScreenLadder::single(rate).map(Some),
         }
     }
 
@@ -220,8 +225,12 @@ impl OckhamConfig {
             seed: self.seed,
             candidates: self.candidates,
             screen_sample_rate: self.screen_sample_rate,
+            // An unresolvable ladder reports as no stages; `validate` is what
+            // refuses the run, and a report is not the place to panic.
             screen_stages: self
                 .screen_ladder()
+                .ok()
+                .flatten()
                 .map(|l| l.stages().to_vec())
                 .unwrap_or_default(),
             screen_threshold: self.screen_threshold,
@@ -464,7 +473,7 @@ mod tests {
         };
         c.validate().unwrap();
         assert!(c.report().screen_sample_rate.is_none());
-        assert!(c.screen_ladder().is_none());
+        assert!(c.screen_ladder().unwrap().is_none());
         assert!(c.report().screen_stages.is_empty());
     }
 
@@ -472,7 +481,10 @@ mod tests {
     #[test]
     fn the_default_ladder_is_the_fixed_rate_control() {
         let c = OckhamConfig::default();
-        let ladder = c.screen_ladder().expect("screening is on by default");
+        let ladder = c
+            .screen_ladder()
+            .unwrap()
+            .expect("screening is on by default");
         assert!(!ladder.is_progressive());
         assert_eq!(ladder.stages().len(), 1);
         assert_eq!(ladder.stages()[0].rate, DEFAULT_SCREEN_SAMPLE_RATE);
@@ -486,7 +498,7 @@ mod tests {
             ..OckhamConfig::default()
         };
         c.validate().unwrap();
-        let ladder = c.screen_ladder().unwrap();
+        let ladder = c.screen_ladder().unwrap().unwrap();
         assert!(ladder.is_progressive());
         assert_eq!(ladder.promotion_rate(), 0.05);
         assert_eq!(c.report().screen_stages.len(), 3);

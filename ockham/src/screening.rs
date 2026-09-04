@@ -23,9 +23,9 @@
 //!
 //! Every stage scores the incumbent alongside its candidates in one scorer
 //! call, so the comparison stays apples-to-apples even though successive stages
-//! read different records. Stage sample phases are a pure function of the batch
-//! index and the stage position, so a given seed and corpus reproduce the same
-//! records exactly.
+//! sample at different phases. Stage sample phases are a pure function of the
+//! batch index and the stage position, so a given seed and corpus reproduce the
+//! same records exactly.
 //!
 //! The single-stage ladder — [`ScreenLadder::single`] — is the fixed-rate
 //! control, and stays the default until benchmark evidence earns a change.
@@ -171,10 +171,11 @@ impl ScreenLadder {
 
     /// Sample phase for one stage of one batch.
     ///
-    /// A pure function of the batch index and stage position: the same seed and
-    /// corpus replay the same records, and no two stages of a batch read the
-    /// same slice, so each stage adds fresh evidence rather than repeating the
-    /// last one's.
+    /// A pure function of the batch index and stage position, so the same seed
+    /// and corpus replay the same records. Every stage of a batch gets its own
+    /// phase, which is all this side of the boundary can promise: which records
+    /// a phase selects is the scorer's stride, so how far two stages' slices
+    /// overlap is its business, not the ladder's.
     pub fn phase(&self, batch: u64, stage: usize) -> u64 {
         batch
             .wrapping_mul(self.stages.len() as u64)
@@ -234,7 +235,11 @@ pub struct ProgressiveScreen {
     pub losers: Vec<ScreenedLoser>,
     /// Per-stage economics, in ladder order.
     pub stages: Vec<StageRecord>,
-    /// Sampled incumbent score at the promotion stage.
+    /// Sampled incumbent score at the last stage that ran.
+    ///
+    /// That is the promotion stage for a candidate set that reached it, and the
+    /// rung the ladder stopped on otherwise; `NaN` when no stage ran at all,
+    /// which only happens for an empty batch.
     pub baseline_score: f64,
     /// Total scorer wall time across every stage (ms).
     pub screen_ms: u64,
@@ -246,31 +251,35 @@ impl ProgressiveScreen {
         self.stages.iter().map(|s| s.records_scored).sum()
     }
 
-    /// Creature-scores this batch cost, expressed at the promotion rate.
+    /// Creature-scores this batch cost, expressed at the ladder's promotion rate.
     ///
     /// The cost model tracks milliseconds per creature at one sample rate
     /// ([`crate::run`] seeds it with the promotion rate). A stage at a tenth of
     /// that rate is a tenth of a creature-score, so the ladder is converted
     /// rather than counted — counting rungs would tell the model each creature
-    /// costs far less than a promotion-stage score really does. Never zero, so
-    /// a division by it is safe.
-    pub fn promotion_rate_creatures(&self, promotion_rate: f64) -> usize {
-        // A non-positive or NaN rate cannot scale anything; fall back to the
-        // raw creature count rather than dividing by it.
-        if promotion_rate <= 0.0 || promotion_rate.is_nan() {
-            return self
-                .stages
-                .iter()
-                .map(|s| s.entered + 1)
-                .sum::<usize>()
-                .max(1);
-        }
+    /// costs far less than a promotion-stage score really does.
+    ///
+    /// The rate comes from the ladder rather than the caller: `ScreenLadder`
+    /// validates it into `(0, 1)`, so there is no degenerate rate to guard
+    /// against here. Never zero, so a division by the result is safe.
+    pub fn promotion_rate_creatures(&self, ladder: &ScreenLadder) -> usize {
+        let promotion_rate = ladder.promotion_rate();
         let weighted: f64 = self
             .stages
             .iter()
             .map(|s| (s.entered + 1) as f64 * s.rate / promotion_rate)
             .sum();
         (weighted.round() as usize).max(1)
+    }
+
+    /// Candidates each rejection reason ended, for the run log (#104).
+    pub fn rejection_tally(&self) -> (usize, usize) {
+        let clearly_worse = self
+            .losers
+            .iter()
+            .filter(|l| l.reason == ScreenRejection::ClearlyWorse)
+            .count();
+        (clearly_worse, self.losers.len() - clearly_worse)
     }
 }
 
@@ -667,7 +676,7 @@ mod tests {
         assert!(out.winners.is_empty());
         assert_eq!(out.losers.len(), 1);
         // A tenth of one promotion-stage creature-score, floored at 1.
-        assert_eq!(out.promotion_rate_creatures(l.promotion_rate()), 1);
+        assert_eq!(out.promotion_rate_creatures(&l), 1);
     }
 
     /// The control must decide exactly what the single fixed screen decides.
@@ -698,7 +707,7 @@ mod tests {
         assert_eq!(out.winners[0].candidate.stem, "c000");
         assert_eq!(out.losers.len(), 1);
         assert_eq!(out.losers[0].reason, ScreenRejection::BelowThreshold);
-        assert_eq!(out.promotion_rate_creatures(0.05), 3);
+        assert_eq!(out.promotion_rate_creatures(&l), 3);
         // The control scores in the historical `screen-<batch>` directory.
         assert_eq!(l.stage_dir(tmp.path(), 4, 0), screen_dir(tmp.path(), 4));
     }

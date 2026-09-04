@@ -601,6 +601,57 @@ mod tests {
         let report = summarise(&[&path]).unwrap();
         assert_eq!(report.screened, 6);
         assert_eq!(report.screen_calls, 1, "coverage is not a scorer call");
+        assert_eq!(
+            report.screen_stage_calls, 0,
+            "a fixed-rate control run journals no ladder rungs (#104)"
+        );
+        assert_eq!(report.screen_stage_records, 0);
+        assert_eq!(report.screen_stage_rejected, 0);
+    }
+
+    /// Issue #104: ladder economics are summed across rungs and journals, and
+    /// a rung is never mistaken for a screen call.
+    #[test]
+    fn ladder_rungs_total_their_records_without_inflating_screen_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Screen {
+                winners: 1,
+                losers: 9,
+                ms: 40,
+            },
+        )
+        .unwrap();
+        let rung = |stage: usize, rate: f64, entered: usize, rejected: usize, records: u64| {
+            Event::ScreenStage {
+                batch: 0,
+                stage,
+                rate,
+                phase: stage as u64,
+                entered,
+                rejected,
+                promoted: entered - rejected,
+                records_scored: records,
+                mean_delta: -0.02,
+                ms: 10,
+                outcome: if stage == 2 { "promoted" } else { "carried" }.to_string(),
+            }
+        };
+        journal::append(&path, &rung(0, 0.0025, 10, 7, 27_500)).unwrap();
+        journal::append(&path, &rung(1, 0.01, 3, 1, 40_000)).unwrap();
+        journal::append(&path, &rung(2, 0.05, 2, 1, 150_000)).unwrap();
+
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.screen_stage_calls, 3);
+        assert_eq!(report.screen_stage_records, 27_500 + 40_000 + 150_000);
+        assert_eq!(report.screen_stage_rejected, 9);
+        assert_eq!(
+            report.screen_calls, 1,
+            "a rung is part of one screen, not another scorer call"
+        );
     }
 
     #[test]

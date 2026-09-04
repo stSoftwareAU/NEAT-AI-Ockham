@@ -295,6 +295,12 @@ fn run_arm(name: &'static str, ladder: &ScreenLadder, workspace: &Path) -> Arm {
             .filter(|id| true_delta(**id) > MIN_IMPROVEMENT)
             .count() as u64;
 
+        // Screen and full costs are attributed by bracketing each call, never
+        // by subtracting one running total from another: the arithmetic that
+        // "takes the full share back out" at the end silently drops the last
+        // batch's cohort.
+        let before_records = *scorer.records.borrow();
+        let before_ms = *scorer.ms.borrow();
         let screen = screen_progressive(
             &scorer,
             workspace,
@@ -309,8 +315,8 @@ fn run_arm(name: &'static str, ladder: &ScreenLadder, workspace: &Path) -> Arm {
             },
         )
         .expect("model scorer never fails");
-        arm.screen_records = *scorer.records.borrow();
-        arm.screen_ms = *scorer.ms.borrow();
+        arm.screen_records += *scorer.records.borrow() - before_records;
+        arm.screen_ms += *scorer.ms.borrow() - before_ms;
 
         let promoted: Vec<u64> = screen
             .winners
@@ -327,15 +333,11 @@ fn run_arm(name: &'static str, ladder: &ScreenLadder, workspace: &Path) -> Arm {
         }
         // Only the full corpus may accept, in the benchmark exactly as in the
         // run: every promoted candidate is scored authoritatively.
-        let before_ms = *scorer.ms.borrow();
+        let before_full_ms = *scorer.ms.borrow();
         let deltas = scorer.full_score(&promoted);
-        arm.full_ms += *scorer.ms.borrow() - before_ms;
+        arm.full_ms += *scorer.ms.borrow() - before_full_ms;
         arm.confirmed += deltas.iter().filter(|d| **d > MIN_IMPROVEMENT).count() as u64;
     }
-    // The screen figures accumulate every call, full cohorts included; take the
-    // full-corpus share back out so the two lines are not double-counted.
-    arm.screen_ms -= arm.full_ms;
-    arm.screen_records -= arm.full_ms * RECORDS_PER_MS;
     arm.full_scores = *scorer.full_scores.borrow();
     arm
 }

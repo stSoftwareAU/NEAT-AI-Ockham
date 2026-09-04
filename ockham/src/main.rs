@@ -60,8 +60,9 @@ struct Cli {
     screen_stages: Option<String>,
     /// Early-rejection margin for a ladder stage that names none: a sampled Δ
     /// at or below its negation is rejected there instead of re-tested.
-    #[arg(long, default_value_t = DEFAULT_SCREEN_REJECT_MARGIN)]
-    screen_reject_margin: f64,
+    /// Default 0.01; only meaningful with `--screen-stages`.
+    #[arg(long)]
+    screen_reject_margin: Option<f64>,
     /// Sampled Δscore a candidate must exceed to be promoted.
     #[arg(long, default_value_t = DEFAULT_SCREEN_THRESHOLD)]
     screen_threshold: f64,
@@ -159,16 +160,28 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    // A malformed ladder is a configuration fault, not a quietly ignored flag.
+    // A malformed ladder is a configuration fault, not a quietly ignored flag —
+    // and neither is a margin given with no ladder to apply it to.
     let screen_stages = match cli.screen_stages.as_deref() {
-        Some(spec) => match ScreenLadder::parse(spec, cli.screen_reject_margin) {
-            Ok(ladder) => Some(ladder),
-            Err(e) => {
-                eprintln!("{e}");
+        Some(spec) => {
+            let margin = cli
+                .screen_reject_margin
+                .unwrap_or(DEFAULT_SCREEN_REJECT_MARGIN);
+            match ScreenLadder::parse(spec, margin) {
+                Ok(ladder) => Some(ladder),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        None => {
+            if cli.screen_reject_margin.is_some() {
+                eprintln!("--screen-reject-margin has no effect without --screen-stages");
                 return ExitCode::from(2);
             }
-        },
-        None => None,
+            None
+        }
     };
 
     let config = OckhamConfig {

@@ -373,4 +373,8 @@ fn a_bad_screening_ladder_is_refused_with_exit_two() {
         ])
         .contains("--screen-stages")
     );
+    // A margin with no ladder to apply it to would otherwise be a silent no-op.
+    assert!(
+        refuse(&["--screen-reject-margin", "0.5"]).contains("--screen-reject-margin has no effect")
+    );
 }
