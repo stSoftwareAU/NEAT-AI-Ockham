@@ -1007,7 +1007,11 @@ mod tests {
             .map(|n| n.uuid.as_str())
             .collect();
         assert_eq!(requested, vec!["h_up", "h_leaf"]);
-        assert!(result.cascade_uuids().is_empty(), "{:?}", result.removed_neurons);
+        assert!(
+            result.cascade_uuids().is_empty(),
+            "{:?}",
+            result.removed_neurons
+        );
         assert!(result.after.growth_units < result.before.growth_units);
         validate_creature(&result.creature).unwrap();
     }
@@ -1090,7 +1094,11 @@ mod tests {
             .iter()
             .find(|n| n.uuid == "output-0")
             .unwrap();
-        assert!(close(out.bias, 0.25 + 2.0 * 3.0 + 2.0 * 1.0), "bias {}", out.bias);
+        assert!(
+            close(out.bias, 0.25 + 2.0 * 3.0 + 2.0 * 1.0),
+            "bias {}",
+            out.bias
+        );
         validate_creature(&result.creature).unwrap();
     }
 
@@ -1115,7 +1123,11 @@ mod tests {
         assert!(matches!(err, AblationSkip::NonFiniteMean(_)), "{err}");
         let err = ablate_group(&incumbent, &[]).unwrap_err();
         assert!(matches!(err, AblationSkip::EmptyGroup), "{err}");
-        assert_eq!(incumbent, chain_plus_keep(), "a skip must not mutate the source");
+        assert_eq!(
+            incumbent,
+            chain_plus_keep(),
+            "a skip must not mutate the source"
+        );
     }
 
     #[test]

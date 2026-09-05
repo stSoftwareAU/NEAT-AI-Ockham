@@ -225,6 +225,11 @@ impl GroupBatch {
     }
 }
 
+/// Key a membership is remembered by once a run has screened it.
+pub fn group_key(members: &[String]) -> String {
+    members.join(",")
+}
+
 /// Rank neighbourhoods of `incumbent` and build a candidate for each (#108).
 ///
 /// The batch companion of [`propose_neighbourhoods`]: every proposal is put
@@ -232,13 +237,29 @@ impl GroupBatch {
 /// validated by `creature.validate()` and ready for the ordinary sampled
 /// screen. Stems are `g000`, `g001`, … so a group candidate never collides with
 /// the sweep's own `c000` cohort files.
+///
+/// Memberships in `tried` — by [`group_key`] — are passed over, and the search
+/// reaches that much further down the ranked list to refill the batch. Without
+/// it a deterministic generator would re-propose its best groups every batch
+/// and the run would pay to screen the same candidates until the deadline.
 pub fn group_batch(
     incumbent: &CreatureExport,
     stats: &ActivationStats,
     cfg: NeighbourhoodConfig,
+    tried: &HashSet<String>,
 ) -> GroupBatch {
+    let deeper = NeighbourhoodConfig {
+        max_proposals: cfg.max_proposals.saturating_add(tried.len()),
+        ..cfg
+    };
     let mut batch = GroupBatch::default();
-    for group in propose_neighbourhoods(incumbent, stats, cfg) {
+    for group in propose_neighbourhoods(incumbent, stats, deeper) {
+        if batch.candidates.len() >= cfg.max_proposals {
+            break;
+        }
+        if tried.contains(&group_key(&group.members)) {
+            continue;
+        }
         match crate::sweep::propose_group(incumbent, stats, &group.members) {
             Ok(creature) => {
                 let stem = format!("g{:03}", batch.candidates.len());
@@ -484,10 +505,7 @@ mod tests {
     }
 
     /// Statistics carrying `mean_abs` for `pick`ed hidden neurons.
-    fn stats_with(
-        creature: &CreatureExport,
-        pick: impl Fn(&str) -> f64,
-    ) -> ActivationStats {
+    fn stats_with(creature: &CreatureExport, pick: impl Fn(&str) -> f64) -> ActivationStats {
         ActivationStats {
             format_version: STATS_FORMAT_VERSION,
             creature_checksum: "t".into(),
@@ -572,7 +590,12 @@ mod tests {
     fn a_group_batch_builds_a_validated_candidate_per_proposal() {
         let creature = chain_creature();
         let stats = stats_for(&creature, 0.1);
-        let batch = group_batch(&creature, &stats, NeighbourhoodConfig::default());
+        let batch = group_batch(
+            &creature,
+            &stats,
+            NeighbourhoodConfig::default(),
+            &HashSet::new(),
+        );
         assert!(!batch.candidates.is_empty());
         assert!(batch.blocked.is_empty(), "{:?}", batch.blocked);
         assert_eq!(batch.considered(), batch.candidates.len());
@@ -600,6 +623,7 @@ mod tests {
             &creature,
             &ActivationStats::empty(),
             NeighbourhoodConfig::default(),
+            &HashSet::new(),
         );
         assert_eq!(batch, GroupBatch::default());
         assert_eq!(batch.considered(), 0);
@@ -649,7 +673,10 @@ mod tests {
         };
         let first = propose_neighbourhoods(&creature, &stats, cfg);
         let second = propose_neighbourhoods(&creature, &stats, cfg);
-        assert_eq!(first, second, "the same inputs must propose the same groups");
+        assert_eq!(
+            first, second,
+            "the same inputs must propose the same groups"
+        );
         assert_eq!(first.len(), 1, "max_proposals must cap the list");
         assert!(
             first.iter().all(|g| g.members.len() <= 2),
@@ -715,7 +742,10 @@ mod tests {
                 synapse("keep", "output-0", 1.0),
             ],
         );
-        let stats = stats_with(&creature, |uuid| if uuid.starts_with('l') { 4.0 } else { 0.01 });
+        let stats = stats_with(
+            &creature,
+            |uuid| if uuid.starts_with('l') { 4.0 } else { 0.01 },
+        );
         let groups = propose_neighbourhoods(&creature, &stats, NeighbourhoodConfig::default());
         assert_eq!(groups[0].members, vec!["q1", "q2"], "{:?}", names(&groups));
         assert!(groups[0].rank < groups[1].rank);

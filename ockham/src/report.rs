@@ -179,6 +179,25 @@ pub struct Report {
     /// structure the topology said would go, which a constant substitution or a
     /// bundle legitimately does. Above `1.0` it under-promised.
     pub cascade_estimate_ratio: Option<f64>,
+    /// Group candidates the full corpus accepted (Issue #108).
+    ///
+    /// The experiment's own economics: how often a bounded neighbourhood beat
+    /// the incumbent, what it took with it, and what that was worth per hour of
+    /// wall clock. Zero on a run without `--group-cuts`, which is what a
+    /// control run must report.
+    pub group_accepts: u64,
+    /// Hidden neurons those accepted groups were asked to cut.
+    pub group_cuts_accepted: usize,
+    /// Hidden neurons those accepted groups actually removed, cascade included.
+    pub group_hidden_removed: i64,
+    /// Synapses those accepted groups actually removed.
+    pub group_synapses_removed: i64,
+    /// Growth units those accepted groups actually removed.
+    pub group_growth_units_removed: f64,
+    /// Growth units removed per accepted group — the size of the average win.
+    pub group_growth_units_per_accept: Option<f64>,
+    /// Growth units accepted groups removed per wall-clock hour (Issue #108).
+    pub group_growth_units_removed_per_hour: Option<f64>,
     /// Last stop reason.
     pub stop_reason: Option<String>,
     /// Effective seed from the first start record.
@@ -261,6 +280,13 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         cascade_estimated_growth_units: None,
         cascade_actual_growth_units: None,
         cascade_estimate_ratio: None,
+        group_accepts: 0,
+        group_cuts_accepted: 0,
+        group_hidden_removed: 0,
+        group_synapses_removed: 0,
+        group_growth_units_removed: 0.0,
+        group_growth_units_per_accept: None,
+        group_growth_units_removed_per_hour: None,
         stop_reason: None,
         seed: None,
     };
@@ -306,13 +332,27 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                 }
                 Event::SweepRestart { .. } => report.sweep_restarts += 1,
                 Event::Cascade {
+                    kind,
+                    cuts,
                     estimated_growth_units,
                     actual_growth_units,
+                    actual_hidden,
+                    actual_synapses,
                     ..
                 } => {
                     cascade_estimated += estimated_growth_units;
                     cascade_actual += actual_growth_units;
                     report.cascade_accepts += 1;
+                    // One accept record per winner, so the group economics are
+                    // read off the same series the estimate audit uses rather
+                    // than counted twice from a second event (Issue #108).
+                    if kind == "group" {
+                        report.group_accepts += 1;
+                        report.group_cuts_accepted += cuts;
+                        report.group_hidden_removed += actual_hidden;
+                        report.group_synapses_removed += actual_synapses;
+                        report.group_growth_units_removed += actual_growth_units;
+                    }
                 }
                 Event::CoverageTail { batches, .. } => report.coverage_tail_batches += batches,
                 Event::Screen { .. } => report.screen_calls += 1,
@@ -487,6 +527,12 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         // cuts bought per hour, and how much structure they took with them.
         report.cuts_per_hour = Some(report.accepted_cuts as f64 * per_hour);
         report.growth_units_saved_per_hour = report.growth_units_saved.map(|g| g * per_hour);
+        report.group_growth_units_removed_per_hour =
+            Some(report.group_growth_units_removed * per_hour);
+    }
+    if report.group_accepts > 0 {
+        report.group_growth_units_per_accept =
+            Some(report.group_growth_units_removed / report.group_accepts as f64);
     }
     if report.cascade_accepts > 0 {
         report.cascade_estimated_growth_units = Some(cascade_estimated);
@@ -560,6 +606,7 @@ mod tests {
         Event::Full {
             individuals: 1,
             bundles: 0,
+            groups: 0,
             accepted,
             score: accepted.then_some(score),
             delta: accepted.then_some(0.000002),

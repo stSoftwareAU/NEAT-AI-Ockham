@@ -16,6 +16,7 @@ use neat_ai_ockham::config::{
 use neat_ai_ockham::model::{
     DEFAULT_EPOCHS, DEFAULT_L2, DEFAULT_LEARNING_RATE, PriorityModel, TrainingConfig,
 };
+use neat_ai_ockham::neighbourhood::{DEFAULT_NEIGHBOURHOOD_PROPOSALS, DEFAULT_NEIGHBOURHOOD_SIZE};
 use neat_ai_ockham::screening::{DEFAULT_SCREEN_REJECT_MARGIN, ScreenLadder};
 use neat_ai_ockham::stats::DEFAULT_SAMPLE_RECORDS;
 use neat_ai_ockham::telemetry;
@@ -109,6 +110,17 @@ struct Cli {
     /// as offline training data for `train-ordering`. Omitted: write nothing.
     #[arg(long)]
     candidate_log: Option<PathBuf>,
+    /// Also propose bounded structural neighbourhood group cuts — chains and
+    /// low-fan-out branches removed as one candidate (issue #108). Experimental
+    /// and off by default; a group still faces the screen and the full scorer.
+    #[arg(long)]
+    group_cuts: bool,
+    /// Hidden neurons in one group proposal, 2-8. Only with `--group-cuts`.
+    #[arg(long, default_value_t = DEFAULT_NEIGHBOURHOOD_SIZE)]
+    group_max_size: usize,
+    /// Group proposals offered per sweep batch. Only with `--group-cuts`.
+    #[arg(long, default_value_t = DEFAULT_NEIGHBOURHOOD_PROPOSALS)]
+    group_proposals: usize,
     /// Records sampled for hidden-neuron activation statistics; 0 scans the whole corpus.
     #[arg(long, default_value_t = DEFAULT_SAMPLE_RECORDS)]
     stats_sample_records: u64,
@@ -293,6 +305,9 @@ fn main() -> ExitCode {
         unchecked_first: cli.unchecked_first,
         old_corpus_first: cli.old_corpus_first,
         stats_sample_records: cli.stats_sample_records,
+        group_cuts: cli.group_cuts,
+        group_max_size: cli.group_max_size,
+        group_proposals: cli.group_proposals,
     };
     if let Err(e) = config.validate() {
         eprintln!("{e}");

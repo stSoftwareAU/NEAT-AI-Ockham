@@ -869,6 +869,12 @@ fn ockham_loop(
     // In-run state, deliberately not seeded from the cache: cross-run memory is
     // the learnings store's job (Issues #56, #57).
     let mut pool: Vec<BundleMember> = Vec::new();
+    // Neighbourhood memberships this run has already screened (Issue #108).
+    // Generation is deterministic, so without this the same best-ranked groups
+    // would be re-proposed and re-screened every batch until the deadline. It
+    // is cleared on every accept: the incumbent those verdicts were measured
+    // against no longer exists.
+    let mut tried_groups: HashSet<String> = HashSet::new();
     // Resolved once: the ladder is the same every batch, and an unresolvable
     // one must stop the run rather than quietly screen at some other rate.
     let ladder = config.screen_ladder()?;
@@ -975,7 +981,22 @@ fn ockham_loop(
             let confirmed_only = this_corpus.len() - accepted_only;
             let from_history = replayable.len() - this_corpus.len();
             let wins: Vec<String> = replayable.into_iter().map(|c| c.uuid).collect();
-            if wins.is_empty() {
+            // An accepted neighbourhood is replayed as the group it was
+            // (Issue #108). Its members carry no individual verdict — the
+            // scorer never judged them apart — so replaying them one at a time
+            // asks the very question the group was proposed to get past. Only a
+            // run that offers group cuts replays them: a control run must stay
+            // a control run whatever the shared cache holds.
+            let group_plans: Vec<Vec<String>> = if config.group_cuts {
+                crate::learnings::confirmed_groups(
+                    &known,
+                    &incumbent.creature,
+                    config.min_improvement,
+                )
+            } else {
+                Vec::new()
+            };
+            if wins.is_empty() && group_plans.is_empty() {
                 replay_done = true;
                 continue;
             }
@@ -985,7 +1006,7 @@ fn ockham_loop(
                     replay_skipped.insert(u.clone());
                 }
             }
-            if applied.is_empty() {
+            if applied.is_empty() && group_plans.is_empty() {
                 replay_done = true;
                 continue;
             }
@@ -1002,7 +1023,7 @@ fn ockham_loop(
                     plans.last().map_or(0, Vec::len)
                 ));
             }
-            let sampled: Vec<SampledWinner> = if plans.is_empty() {
+            let sampled: Vec<SampledWinner> = if plans.is_empty() && !applied.is_empty() {
                 match propose(&incumbent.creature, &activation, &applied[0]) {
                     Ok((kind, creature)) => vec![SampledWinner {
                         candidate: SweepCandidate {
@@ -1035,6 +1056,17 @@ fn ockham_loop(
             let probe_n = REPLAY_PROBE_LIMIT.min(applied.len());
             experiments += 1;
             let mut extra_plans = plans;
+            if !group_plans.is_empty() {
+                log::info(&format!(
+                    "replay: {} accepted neighbourhood(s) still whole on the incumbent",
+                    group_plans.len()
+                ));
+                for plan in group_plans {
+                    if !extra_plans.contains(&plan) {
+                        extra_plans.push(plan);
+                    }
+                }
+            }
             match evaluate_full(
                 scorer,
                 &config.training_data,
@@ -1284,12 +1316,46 @@ fn ockham_loop(
         }
         // Tagged neurons are candidates like any other (#63); `meta.neuron_tags`
         // is still read below for the informational coverage count.
-        let (candidates, skips) =
+        let (mut candidates, skips) =
             sweep.fill_batch_avoiding(&incumbent.creature, &activation, config.candidates, &avoid);
         pass_candidates += candidates.len();
+        // Structural neighbourhood proposals ride the same batch (Issue #108):
+        // a chain or a low-fan-out branch that no single-neuron cut can expose,
+        // screened and scored exactly like every other candidate. They are
+        // *extra* candidates, not sweep visits — the permutation and the
+        // coverage it drives are untouched, because a group screen says nothing
+        // about whether its members are removable one at a time.
+        let mut group_candidates = 0usize;
+        if config.group_cuts {
+            let groups = crate::neighbourhood::group_batch(
+                &incumbent.creature,
+                &activation,
+                config.neighbourhood_config(),
+                &tried_groups,
+            );
+            if !groups.blocked.is_empty() {
+                log::detail(&format!(
+                    "groups: {} proposal(s) refused: {}",
+                    groups.blocked.len(),
+                    groups.blocked.join("; ")
+                ));
+            }
+            group_candidates = groups.candidates.len();
+            for candidate in groups.candidates {
+                tried_groups.insert(crate::neighbourhood::group_key(&candidate.members));
+                log::detail(&format!(
+                    "group: {} ({} neurons)",
+                    candidate.members.join(" + "),
+                    candidate.members.len()
+                ));
+                candidates.push(candidate);
+            }
+        }
+        let candidates = candidates;
         let remaining_s = deadline.saturating_duration_since(Instant::now()).as_secs();
         log::info(&format!(
-            "batch {batch_idx}: {} candidates, {} skipped, {} hidden left, {remaining_s}s remaining",
+            "batch {batch_idx}: {} candidates ({group_candidates} group), {} skipped, \
+             {} hidden left, {remaining_s}s remaining",
             candidates.len(),
             skips.len(),
             sweep.remaining()
@@ -1410,8 +1476,12 @@ fn ockham_loop(
                         // behind every never-screened neuron on the creature.
                         // It stays unchecked, so the next run screens *and*
                         // scores it (Issue #91).
+                        // A group candidate files no screen record for the
+                        // neuron it was keyed on (Issue #108): what was screened
+                        // is the neighbourhood, and marking a member checked
+                        // would claim coverage of a single cut nothing tried.
                         if !coverage_tail {
-                            for w in &screen.winners {
+                            for w in screen.winners.iter().filter(|w| !w.candidate.is_group()) {
                                 coverage.push(ScreenTry::scored(
                                     w.candidate.uuid.as_str(),
                                     w.candidate.kind,
@@ -1419,7 +1489,11 @@ fn ockham_loop(
                                 ));
                             }
                         }
-                        for l in &screen.losers {
+                        for l in screen
+                            .losers
+                            .iter()
+                            .filter(|l| l.kind != crate::sweep::CandidateKind::Group)
+                        {
                             coverage.push(ScreenTry::scored(
                                 l.uuid.as_str(),
                                 l.kind,
@@ -1481,7 +1555,7 @@ fn ockham_loop(
                 // Screening off: every candidate goes straight to full scoring,
                 // so every candidate is checked and must leave a screen record.
                 let mut coverage = visits.clone();
-                coverage.extend(candidates.iter().map(|c| {
+                coverage.extend(candidates.iter().filter(|c| !c.is_group()).map(|c| {
                     ScreenTry::scored(c.uuid.as_str(), c.kind, ScreenOutcomeKind::Winner)
                 }));
                 file_batch_screens(
@@ -1649,6 +1723,10 @@ fn ockham_loop(
                         &mut pool,
                         &mut pass_candidates,
                     );
+                    // The neighbourhoods this run screened were judged against
+                    // an incumbent that no longer exists, so they are offered
+                    // again on the new one (Issue #108).
+                    tried_groups.clear();
                     log::detail(&format!(
                         "restarted sweep after accept; {} hidden remaining; {} confirmed winner(s) still standing",
                         incumbent.hidden_neurons(),
@@ -2103,6 +2181,7 @@ fn journal_full(
         &Event::Full {
             individuals: full.individuals.len(),
             bundles: full.bundles.len(),
+            groups: full.groups.len(),
             accepted: full.winner.is_some(),
             score: full.winner.as_ref().map(|w| w.candidate.score),
             delta: full.winner.as_ref().map(|w| w.candidate.delta),

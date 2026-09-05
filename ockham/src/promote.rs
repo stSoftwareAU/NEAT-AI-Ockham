@@ -744,6 +744,7 @@ mod tests {
             &incumbent,
             &stats,
             crate::neighbourhood::NeighbourhoodConfig::default(),
+            &HashSet::new(),
         );
         let group = batch
             .candidates
@@ -794,6 +795,7 @@ mod tests {
             &incumbent,
             &stats,
             crate::neighbourhood::NeighbourhoodConfig::default(),
+            &HashSet::new(),
         )
         .candidates
         .remove(0);

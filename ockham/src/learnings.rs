@@ -889,7 +889,11 @@ pub fn confirmed_groups(
                 .is_some_and(|g| g.len() > 1 && g.iter().all(|u| present.contains(u.as_str())))
         })
         .collect();
-    ranked.sort_by(|a, b| b.unix_secs.cmp(&a.unix_secs).then_with(|| a.group.cmp(&b.group)));
+    ranked.sort_by(|a, b| {
+        b.unix_secs
+            .cmp(&a.unix_secs)
+            .then_with(|| a.group.cmp(&b.group))
+    });
     let mut seen: HashSet<Vec<String>> = HashSet::new();
     ranked
         .into_iter()
