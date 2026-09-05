@@ -322,8 +322,7 @@ pub fn ablate_mean(
 }
 
 /// One member of a group cut: a hidden neuron and the mean that replaces it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GroupMember {
     /// Hidden neuron UUID.
     pub uuid: String,
@@ -338,8 +337,7 @@ pub struct GroupMember {
 /// result. Every neuron the transform removed is listed in
 /// [`Self::removed_neurons`], and each entry says whether it was a requested
 /// group cut or structure the cleanup cascade stranded.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GroupAblation {
     /// Requested hidden-neuron UUIDs, in the order they were removed.
     pub requested_uuids: Vec<String>,
@@ -354,7 +352,6 @@ pub struct GroupAblation {
     /// Structure after the transform.
     pub after: StructureSnapshot,
     /// Validated candidate creature.
-    #[serde(skip)]
     pub creature: CreatureExport,
 }
 

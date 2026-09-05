@@ -37,7 +37,6 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use neat_core::CreatureExport;
-use serde::Serialize;
 
 use crate::cascade::{CascadeEstimate, CascadeIndex};
 use crate::sensitivity::SensitivityIndex;
@@ -59,8 +58,7 @@ pub const DEFAULT_NEIGHBOURHOOD_SIZE: usize = 4;
 pub const DEFAULT_NEIGHBOURHOOD_PROPOSALS: usize = 8;
 
 /// What structural shape a proposal came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NeighbourhoodKind {
     /// A linear chain of hidden neurons, each the only source of the next.
     Chain,
@@ -121,8 +119,7 @@ impl NeighbourhoodConfig {
 }
 
 /// One bounded group proposal.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Neighbourhood {
     /// Shape the proposal came from.
     pub kind: NeighbourhoodKind,
@@ -232,17 +229,29 @@ pub fn propose_neighbourhoods(
     out
 }
 
+/// A ranked proposal the transform refused, and why.
+///
+/// Reported rather than dropped: a generator whose proposals are all refused
+/// looks exactly like a creature with no neighbourhoods in it, and those are
+/// very different facts about a run. The membership comes back with the reason
+/// so a caller can remember what it has already been refused — the generator is
+/// deterministic, and would otherwise offer the same unbuildable group on every
+/// batch until the deadline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefusedGroup {
+    /// The neighbourhood that could not be built.
+    pub members: Vec<String>,
+    /// What the transform said, naming the structure that stopped it.
+    pub reason: String,
+}
+
 /// Group candidates built for one batch, and what stopped the rest.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GroupBatch {
     /// Buildable, validated group candidates, best-ranked first.
     pub candidates: Vec<SweepCandidate>,
-    /// One message per ranked proposal the transform refused.
-    ///
-    /// Reported rather than dropped: a generator whose proposals are all
-    /// refused looks exactly like a creature with no neighbourhoods in it, and
-    /// those are very different facts about a run.
-    pub blocked: Vec<String>,
+    /// Ranked proposals the transform refused.
+    pub blocked: Vec<RefusedGroup>,
 }
 
 impl GroupBatch {
@@ -299,9 +308,10 @@ pub fn group_batch(
                     creature,
                 });
             }
-            Err(blocked) => batch
-                .blocked
-                .push(format!("{} [{}]", blocked, group.kind.name())),
+            Err(blocked) => batch.blocked.push(RefusedGroup {
+                members: group.members,
+                reason: format!("{blocked} [{}]", group.kind.name()),
+            }),
         }
     }
     batch

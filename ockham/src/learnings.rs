@@ -1357,6 +1357,28 @@ mod tests {
     }
 
     #[test]
+    fn a_group_that_beat_the_incumbent_but_lost_the_cohort_is_still_replayable() {
+        let c = two_hidden();
+        // Scored, positive, but another candidate won the cohort — the same
+        // escape hatch a confirmed single cut has (#52), keyed on membership.
+        let known = vec![Learning {
+            outcome: Outcome::Rejected,
+            full_delta: Some(0.5),
+            ..group_rec("h_a", &["h_a", "h_b"], 10)
+        }];
+        assert_eq!(
+            confirmed_groups(&known, &c, 1e-6),
+            vec![vec!["h_a".to_string(), "h_b".to_string()]]
+        );
+        // A group the corpus measured *below* the bar stays out.
+        let worse = vec![Learning {
+            full_delta: Some(-0.5),
+            ..known[0].clone()
+        }];
+        assert!(confirmed_groups(&worse, &c, 1e-6).is_empty());
+    }
+
+    #[test]
     fn a_group_record_round_trips_through_the_store_and_older_readers_ignore_it() {
         let learning = group_rec("h_a", &["h_a", "h_b"], 10);
         let json = serde_json::to_string(&learning).unwrap();

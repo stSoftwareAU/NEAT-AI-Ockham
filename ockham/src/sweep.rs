@@ -88,8 +88,12 @@ pub struct SweepCandidate {
 
 impl SweepCandidate {
     /// Whether this candidate cuts a whole neighbourhood at once (#108).
+    ///
+    /// The kind, not the member count: one test for "is this a group?" across
+    /// the run, so screen coverage, the bundle pool, the candidate log and the
+    /// cohort can never disagree about a candidate.
     pub fn is_group(&self) -> bool {
-        self.members.len() > 1
+        self.kind == CandidateKind::Group
     }
 
     /// Hidden neurons this candidate cuts, upstream-first.

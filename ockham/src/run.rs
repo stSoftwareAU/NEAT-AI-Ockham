@@ -1335,10 +1335,21 @@ fn ockham_loop(
                     "groups: {} of {} proposal(s) refused: {}",
                     groups.blocked.len(),
                     groups.considered(),
-                    groups.blocked.join("; ")
+                    groups
+                        .blocked
+                        .iter()
+                        .map(|r| format!("{}: {}", r.members.join(" + "), r.reason))
+                        .collect::<Vec<_>>()
+                        .join("; ")
                 ));
             }
             group_candidates = groups.candidates.len();
+            // A refusal is remembered too: the generator is deterministic, so
+            // an unbuildable neighbourhood would otherwise be re-proposed and
+            // re-refused on every batch to the deadline (#108).
+            for refused in &groups.blocked {
+                tried_groups.insert(crate::neighbourhood::group_key(&refused.members));
+            }
             for candidate in groups.candidates {
                 tried_groups.insert(crate::neighbourhood::group_key(&candidate.members));
                 log::detail(&format!(
@@ -2241,9 +2252,15 @@ fn file_full_outcome(
     sampled: &[SampledWinner],
     full: &FullOutcome,
 ) {
+    // A winning **group** confers nothing on a member's own verdict
+    // (Issue #108): the neuron was judged alone in this very cohort, and its
+    // own delta is what that verdict records. Marking it accepted here would
+    // file a standing win — replayable as a lone cut — on evidence about its
+    // neighbours, which is the mistake this whole design avoids.
     let win: HashSet<&str> = full
         .winner
         .as_ref()
+        .filter(|w| w.candidate.kind != "group")
         .map(|w| w.candidate.uuids.iter().map(String::as_str).collect())
         .unwrap_or_default();
     let mut verdicts = Vec::new();
@@ -2290,9 +2307,13 @@ fn file_full_outcome(
                 } else {
                     Outcome::Rejected
                 },
-                // Measured only inside the group, so the member's individual
-                // contribution is unknown — never guess it.
-                full_delta: None,
+                // The group's own full-corpus delta, which belongs to the
+                // membership this record is keyed on — not to the neuron in
+                // the `uuid` field. A neighbourhood that beat the incumbent
+                // but lost the cohort is therefore replayable later, exactly
+                // as a confirmed single cut is; filing `None` would store a
+                // genuine improvement as a failure.
+                full_delta: Some(scored.delta),
                 group: Some(&scored.uuids[..]),
             });
         }
@@ -2428,12 +2449,14 @@ fn apply_local_win(
 ) -> Result<StampedAccept, String> {
     let last = win.candidate.kind;
     let cuts = win.candidate.uuids.len();
-    let origin = if phase == "replay" && cuts > 1 {
-        "replay-bundle"
-    } else if phase == "replay" {
-        "replay"
-    } else {
-        "search"
+    // A replayed neighbourhood is stamped as the group it is, not as a bundle
+    // (Issue #108): the two are rebuilt by different transforms, and the tag is
+    // what a reader of `best.json` has to tell them apart by.
+    let origin = match (phase, last, cuts) {
+        ("replay", "group", _) => "replay-group",
+        ("replay", _, n) if n > 1 => "replay-bundle",
+        ("replay", _, _) => "replay",
+        _ => "search",
     };
     *current_score = win.candidate.score;
     *accepts += 1;
@@ -5189,6 +5212,63 @@ mod tests {
             dropped_bundles: 0,
             capped_plans: 0,
         }
+    }
+
+    /// Issue #108: a member of a winning group was also screened on its own in
+    /// the same cohort and lost its own full score. The individual verdict must
+    /// record that loss — filing it as an accepted win would let replay try the
+    /// neuron alone on evidence that was only ever about its neighbours.
+    #[test]
+    fn a_winning_group_does_not_accept_its_members_individual_verdicts() {
+        let creature = hidden_creature(&["h_a", "h_b"]);
+        let stats = stats_of(&creature);
+        let mut sweep = Sweep::new(&creature, 1);
+        let (candidates, _) = sweep.fill_batch(&creature, &stats, 4);
+        let solo = candidates
+            .into_iter()
+            .find(|c| c.uuid == "h_a")
+            .expect("h_a proposes on its own");
+        let sampled = vec![crate::promote::sampled(solo, 0.9, 0.5)];
+
+        let group = crate::promote::FullCandidate {
+            stem: "g000".into(),
+            kind: "group",
+            uuids: vec!["h_a".into(), "h_b".into()],
+            score: 0.8,
+            error: 0.5,
+            complexity_penalty: 0.0,
+            after: crate::ablation::StructureSnapshot::of(&creature),
+            delta: 0.3,
+        };
+        let mut full = outcome_with(&[("h_a", -1.0)], None);
+        full.groups = vec![group.clone()];
+        full.winner = Some(LocalWinner {
+            candidate: group,
+            checksum: "c".into(),
+            creature: creature.clone(),
+        });
+
+        let mut known = Vec::new();
+        file_full_outcome(None, &mut known, &sampled, &full);
+        let solo_verdict = known
+            .iter()
+            .find(|l| l.uuid == "h_a" && l.group.is_none())
+            .expect("the individual candidate was scored, so it has a verdict");
+        assert_eq!(
+            solo_verdict.outcome,
+            Outcome::Rejected,
+            "h_a lost on its own; the group's win is not its win"
+        );
+        assert_eq!(solo_verdict.full_delta, Some(-1.0));
+        // And the group itself is filed as accepted, keyed on its membership.
+        let group_verdicts: Vec<&crate::learnings::Learning> =
+            known.iter().filter(|l| l.group.is_some()).collect();
+        assert_eq!(group_verdicts.len(), 2, "{group_verdicts:?}");
+        assert!(
+            group_verdicts
+                .iter()
+                .all(|l| l.outcome == Outcome::Accepted && l.full_delta == Some(0.3))
+        );
     }
 
     #[test]

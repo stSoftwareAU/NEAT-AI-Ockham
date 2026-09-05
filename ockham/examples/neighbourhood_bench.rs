@@ -251,7 +251,7 @@ fn main() {
         println!(
             "  {} proposal(s) the transform refused: {}",
             batch.blocked.len(),
-            batch.blocked[0]
+            batch.blocked[0].reason
         );
     }
 
