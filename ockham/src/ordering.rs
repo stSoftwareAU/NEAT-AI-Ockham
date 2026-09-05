@@ -836,7 +836,6 @@ mod tests {
             ],
         );
         let mut stats = attenuated_stats();
-        stats.neurons.retain(|n| n.uuid == "loud");
         stats.neurons.clear();
         for (i, (uuid, mean_abs)) in [("soft", 0.01), ("hard", 2.0)].iter().enumerate() {
             stats.neurons.push(NeuronStats {
@@ -914,7 +913,7 @@ mod tests {
             ],
         );
         let mut stats = attenuated_stats();
-        stats.neurons.retain(|n| n.uuid == "loud");
+        stats.neurons.clear();
         for (i, uuid) in ["r1", "r2", "muted"].iter().enumerate() {
             stats.neurons.push(NeuronStats {
                 uuid: (*uuid).into(),
