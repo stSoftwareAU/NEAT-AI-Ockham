@@ -1154,6 +1154,8 @@ scoring exactly as it does under the random control.
 | `identity-first` | `IDENTITY` neurons — exact-fold opportunities. |
 | `cascade-saving` | Largest **cascade-aware** growth-unit saving; see [Cascade-aware structural saving](#cascade-aware-structural-saving). |
 | `cascade-risk-ratio` | Least `mean_abs_activation × Σ abs(outgoing weight)` per cascade growth unit. |
+| `low-output-sensitivity` | Least **downstream output sensitivity**; see [Downstream output sensitivity](#downstream-output-sensitivity). |
+| `low-estimated-effect` | Least `mean_abs_activation × output importance` — how loud the neuron is, scaled by how much of that reaches the outputs. |
 | `composite` | Highest hand-built **expected pruning value**: every signal above read together; see [Composite and learned priority](#composite-and-learned-priority). |
 | `learned` | The same economics with `P` from a fitted model (`--ordering-model`). |
 
@@ -1273,6 +1275,110 @@ said would go, and a constant substitution keeps one — and a signal that drift
 from what the razor really removes is a signal to stop paying for. The record is
 written on every accept, whatever ordering the run used, so the control runs
 measure the predictor too.
+
+## Downstream output sensitivity
+
+A neuron can fire hard and still change nothing. The weights and topology
+between it and the outputs may attenuate everything it produces, and activation
+statistics cannot see that: they measure how loud a neuron is, not whether
+anything downstream listens. `low-output-sensitivity` and `low-estimated-effect`
+ask the second question 🪒
+
+```text
+importance(output) = 1
+importance(N)      = Σ abs(weight(N → child)) × importance(child)
+
+estimated_effect(N) = mean_abs_activation(N) × importance(N)
+```
+
+The estimate is topology only and never touches the incumbent. The creature is
+indexed once, condensed into its strongly connected components, and importance
+is propagated backwards from the outputs through those components in reverse
+topological order — `O(neurons + synapses)` work per creature, no scorer calls,
+and no clone of the creature.
+
+```mermaid
+flowchart RL
+    O["outputs<br/>importance = 1"] --> L3["Σ abs(w) × importance(child)"]
+    L3 --> L2["Σ abs(w) × importance(child)"]
+    L2 --> L1["importance(N)"]
+    L1 --> E["× mean_abs_activation(N)"]
+    E --> K["ordering key<br/>lowest screened first"]
+```
+
+`low-outgoing-contribution` is the one-layer special case of the same idea:
+`mean_abs_activation × Σ abs(outgoing weight)` is `estimated_effect` with every
+child's importance pinned at `1`. It therefore sees a dead edge only where that
+edge touches an output, while the backward propagation keeps multiplying all the
+way to the score — the difference the benchmark below measures.
+
+Recurrent and otherwise cyclic topology is handled **conservatively**. A cycle
+has no first-order fixpoint a single backward pass can read, so every member of
+a cyclic component takes the largest importance any member sends out of that
+component: a loop is never ranked as dead wood merely because it could not be
+resolved, and the answer does not depend on which member the walk entered by.
+Outputs anchor the recursion at `1` and are never propagated through. A weight
+product too large to represent, and a neuron the estimate does not cover, rank
+**last** rather than first — missing importance data never removes a neuron from
+the sweep.
+
+```bash
+cargo run --release --example sensitivity_ordering_bench
+```
+
+The benchmark builds a creature carrying exactly the failure mode above: 60
+loud four-neuron chains whose last edge into the output carries weight zero,
+beside 600 quiet neurons wired straight into an output with a heavy weight and
+600 ordinary contributors. Every visited neuron goes through the real
+`ablate_mean` and its recursive cleanup, and the candidate is judged by a
+compiled forward pass over 64 fixed probes — **not** by the ranking key. A cut
+is *confirmed* when the outputs are unchanged within `1e-6`.
+
+| `--ordering` | Time to first confirmed cut | Confirmed cuts/hour | Growth units/hour | Calls per confirmed cut |
+|---|---|---|---|---|
+| `random` | 59.9 ms | 193,217 | 869,478 | 7.1 |
+| `low-variance` | none in 150 visits | 0 | 0 | none |
+| `low-mean-abs` | none in 150 visits | 0 | 0 | none |
+| `low-outgoing-contribution` | 2.6 ms | 548,245 | 2,467,101 | 2.5 |
+| `low-fan-out` | 59.1 ms | 193,526 | 870,869 | 7.1 |
+| `high-growth-saving` | 59.7 ms | 192,526 | 866,369 | 7.1 |
+| `low-output-sensitivity` | 2.6 ms | 1,319,931 | 5,939,688 | 1.0 |
+| `low-estimated-effect` | 2.6 ms | 1,312,038 | 5,904,173 | 1.0 |
+
+The per-hour figures are the rate of this harness, whose judge is a forward pass
+rather than a full corpus; the number that carries across to a real run is
+**calls per confirmed cut**, which is the scorer time an ordering spends per cut
+it earns. The activation-only rankings screen the quiet neurons that matter and
+confirm nothing at all in 150 visits. Building the order costs 1.2 ms against
+`high-growth-saving`'s 8.0 ms on the same creature, so the ranking pays for
+itself several times over before the first candidate is scored. Visits the razor
+could propose nothing for are counted and printed as `blocked` — a ranking that
+spends its budget on refusals must not read as one that spends nothing.
+
+The fixture is a **designed best case** for this failure mode: its dead wood is
+also its loudest structure, and there is more of it than the 150-visit budget,
+so `1.0` calls per confirmed cut is what the ordering achieves when the creature
+really does carry attenuated structure — not a figure to expect from an
+arbitrary creature.
+
+This is a **prioritisation heuristic only**. It is first-order and knows nothing
+of squash saturation or behaviour, so every candidate it ranks first still faces
+`creature.validate()`, the sampled screen and full authoritative scoring. The
+proxy judge above is not the scorer, so these two orderings are **not** the
+default: `random` stays the control until scorer-verified benchmark economics
+from real runs beat it, measured with the `report` recipe below:
+
+```bash
+for o in random low-outgoing-contribution low-output-sensitivity low-estimated-effect; do
+  neat_ai_ockham creature.json training/ --seed 42 --ordering "$o" \
+    --output-dir "runs/$o"
+  neat_ai_ockham report "runs/$o/experiments.jsonl"
+done
+```
+
+`firstWinMs`, `cutsPerHour`, `growthUnitsSavedPerHour` and `fullCalls` against
+`acceptedCuts` are the four measures to compare — the same four the benchmark
+above reports against its proxy judge.
 
 ## Composite and learned priority
 
@@ -1596,6 +1702,7 @@ NEAT-AI-Ockham/
 │       ├── coverage.rs       # checked/total/percent + coverage.txt / coverage.json
 │       ├── ordering.rs        # named candidate ordering strategies
 │       ├── cascade.rs         # topology-only cascade dry-run for ordering
+│       ├── sensitivity.rs     # backward output-sensitivity estimate for ordering
 │       ├── features.rs        # per-candidate feature vectors for ranking
 │       ├── priority.rs        # composite expected-pruning-value ranking
 │       ├── model.rs           # learned logistic ranker (ranking only)
