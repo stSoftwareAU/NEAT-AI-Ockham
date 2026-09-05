@@ -1061,11 +1061,6 @@ fn ockham_loop(
                     "replay: {} accepted neighbourhood(s) still whole on the incumbent",
                     group_plans.len()
                 ));
-                for plan in group_plans {
-                    if !extra_plans.contains(&plan) {
-                        extra_plans.push(plan);
-                    }
-                }
             }
             match evaluate_full(
                 scorer,
@@ -1078,6 +1073,7 @@ fn ockham_loop(
                     dir: &workspace.join(format!("replay-{experiments}")),
                     best_path: Some(&config.output_dir.join("best.json")),
                     extra_plans: &extra_plans,
+                    group_plans: &group_plans,
                     max_individuals: None,
                     pool: &[],
                     max_entries: None,
@@ -1130,6 +1126,7 @@ fn ockham_loop(
                                 dir: &workspace.join(format!("replay-{experiments}")),
                                 best_path: Some(&config.output_dir.join("best.json")),
                                 extra_plans: &extra_plans,
+                                group_plans: &[],
                                 max_individuals: None,
                                 pool: &[],
                                 max_entries: None,
@@ -1641,6 +1638,7 @@ fn ockham_loop(
                 dir: &workspace.join(format!("full-{batch_idx}")),
                 best_path: Some(&config.output_dir.join("best.json")),
                 extra_plans: &[],
+                group_plans: &[],
                 max_individuals: config.max_full,
                 pool: &pool,
                 max_entries,
@@ -2738,6 +2736,241 @@ mod tests {
         assert!(best.contains("replay-bundle"), "{best}");
         assert!(!best.contains("h_a"), "{best}");
         assert!(!best.contains("h_b"), "{best}");
+    }
+
+    /// `input-0 → a1 → a2 → output-0`, beside a lone `z → output-0`, on disk
+    /// with a training corpus (Issue #108).
+    fn chain_paths(tmp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let creature = tmp.join("creature.json");
+        let c = crate::fixtures::creature(
+            1,
+            1,
+            vec![
+                crate::fixtures::neuron("hidden", "a1", 0.0, Some("TANH")),
+                crate::fixtures::neuron("hidden", "a2", 0.0, Some("TANH")),
+                crate::fixtures::neuron("hidden", "z", 0.0, Some("TANH")),
+                crate::fixtures::neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                crate::fixtures::synapse("input-0", "a1", 1.0),
+                crate::fixtures::synapse("a1", "a2", 1.0),
+                crate::fixtures::synapse("a2", "output-0", 0.01),
+                crate::fixtures::synapse("input-0", "z", 1.0),
+                crate::fixtures::synapse("z", "output-0", 1.0),
+            ],
+        );
+        std::fs::write(&creature, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
+        )
+        .unwrap();
+        (creature, train)
+    }
+
+    /// Issue #108: a chain whose members are all standing individual failures
+    /// is exactly the dead wood one-neuron-at-a-time screening cannot reach.
+    /// The group is proposed anyway, scored as a group, accepted by the full
+    /// corpus, and filed with the membership replay needs.
+    #[test]
+    fn a_group_cut_the_single_neuron_sweep_cannot_reach_is_accepted_and_filed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = chain_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let corpus = crate::corpus::corpus_info(&train, &TrainingDataConfig::new(1, 1)).unwrap();
+        let store = LearningsStore::new(&learnings_dir, corpus.identity.clone(), "t".into());
+        // Fresh individual rejections: the sweep skips all three as known
+        // failures, so the only candidate left to propose is the group.
+        for uuid in ["a1", "a2", "z"] {
+            store
+                .append(&crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: uuid.into(),
+                    kind: "ablation".into(),
+                    outcome: Outcome::Rejected,
+                    unix_secs: crate::incumbent::now_unix(),
+                    host: "t".into(),
+                    full_delta: None,
+                    group: None,
+                })
+                .unwrap();
+        }
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            group_cuts: true,
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.90),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.accepts, 1, "stop={}", run.stop_reason);
+
+        let journal_path = cfg.output_dir.join("experiments.jsonl");
+        let journal = std::fs::read_to_string(&journal_path).unwrap();
+        assert!(journal.contains(r#""groups":1"#), "{journal}");
+        assert!(journal.contains(r#""kind":"group""#), "{journal}");
+
+        // The accepted creature lost the whole chain and kept the neuron that
+        // was never in the group.
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(!best.contains("\"a1\""), "{best}");
+        assert!(!best.contains("\"a2\""), "{best}");
+        assert!(best.contains("\"z\""), "{best}");
+
+        // Both members carry the whole membership, so replay can rebuild it.
+        let filed: Vec<crate::learnings::Learning> = store
+            .load()
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.outcome == Outcome::Accepted)
+            .collect();
+        assert_eq!(filed.len(), 2, "{filed:?}");
+        for learning in &filed {
+            assert_eq!(learning.kind, "group");
+            assert_eq!(
+                learning.group.as_deref(),
+                Some(&["a1".to_string(), "a2".to_string()][..]),
+                "{learning:?}"
+            );
+        }
+
+        // A group screen is not coverage of its members: no screen record
+        // claims either neuron was checked on its own by this cohort.
+        assert!(
+            store
+                .load_screens()
+                .unwrap()
+                .iter()
+                .all(|s| s.kind != "group"),
+            "a group must file no per-neuron screen record"
+        );
+
+        let report = crate::report::summarise(&[&journal_path]).unwrap();
+        assert_eq!(report.group_accepts, 1);
+        assert_eq!(report.group_cuts_accepted, 2);
+        assert_eq!(report.group_hidden_removed, 2);
+        assert!(report.group_growth_units_removed > 0.0);
+        assert_eq!(
+            report.group_growth_units_per_accept,
+            Some(report.group_growth_units_removed)
+        );
+    }
+
+    /// Issue #108: a later run rebuilds an accepted neighbourhood from the
+    /// membership its members recorded, even though each member's own latest
+    /// verdict says the cut loses on its own — which is the whole reason the
+    /// group was proposed. Without the membership the plan is unreconstructable
+    /// and the fleet forgets a win it has already paid for.
+    #[test]
+    fn a_recorded_group_is_replayed_as_a_group_by_a_later_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = chain_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let corpus = crate::corpus::corpus_info(&train, &TrainingDataConfig::new(1, 1)).unwrap();
+        let store = LearningsStore::new(&learnings_dir, corpus.identity.clone(), "t".into());
+        let now = crate::incumbent::now_unix();
+        for uuid in ["a1", "a2"] {
+            // The group that was accepted, then a fresher verdict rejecting the
+            // same neuron on its own.
+            store
+                .append(&crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: uuid.into(),
+                    kind: "group".into(),
+                    outcome: Outcome::Accepted,
+                    unix_secs: now - 100,
+                    host: "t".into(),
+                    full_delta: None,
+                    group: Some(vec!["a1".into(), "a2".into()]),
+                })
+                .unwrap();
+            store
+                .append(&crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: uuid.into(),
+                    kind: "ablation".into(),
+                    outcome: Outcome::Rejected,
+                    unix_secs: now,
+                    host: "t".into(),
+                    full_delta: Some(-0.2),
+                    group: None,
+                })
+                .unwrap();
+        }
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            group_cuts: true,
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.90),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.accepts, 1, "stop={}", run.stop_reason);
+        assert_eq!(run.stop_reason, "replay-accepts");
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(!best.contains("\"a1\""), "{best}");
+        assert!(!best.contains("\"a2\""), "{best}");
+    }
+
+    /// A control run must stay a control run: without the flag no group
+    /// candidate is built, scored or counted (Issue #108).
+    #[test]
+    fn without_the_flag_a_run_proposes_no_group_at_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = chain_paths(tmp.path());
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.40),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        establish_run(&cfg, &scorer).unwrap();
+        let journal_path = cfg.output_dir.join("experiments.jsonl");
+        let journal = std::fs::read_to_string(&journal_path).unwrap();
+        assert!(!journal.contains(r#""kind":"group""#), "{journal}");
+        assert!(journal.contains(r#""groups":0"#), "{journal}");
+        assert_eq!(
+            crate::report::summarise(&[&journal_path])
+                .unwrap()
+                .group_accepts,
+            0
+        );
     }
 
     /// Add a GRQ-style tag to each named neuron of a creature file.

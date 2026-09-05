@@ -19,7 +19,7 @@ use crate::ablation::StructureSnapshot;
 use crate::incumbent::{sha256_hex, validate_creature};
 use crate::scorer::{DirectoryScorer, ScoreResult, ScorerMode};
 use crate::stats::ActivationStats;
-use crate::sweep::{CandidateKind, SampledWinner, SweepCandidate, propose};
+use crate::sweep::{CandidateKind, SampledWinner, SweepCandidate, propose, propose_group};
 
 /// Most bundle plans one cohort may carry (Issue #55).
 ///
@@ -96,7 +96,10 @@ pub struct FullOutcome {
     pub winner: Option<LocalWinner>,
     /// Full scorer wall time (ms).
     pub full_ms: u64,
-    /// Plans dropped because a cut in them no longer proposed (Issue #55).
+    /// Plans dropped because the razor could no longer build them (#55, #108).
+    ///
+    /// A bundle whose next cut no longer proposes, or a group whose
+    /// neighbourhood the transform now refuses.
     pub skipped_bundles: usize,
     /// Individual entries dropped to fit the wall-clock budget (Issue #58).
     pub dropped_individuals: usize,
@@ -129,6 +132,14 @@ pub struct FullConfig<'a> {
     pub best_path: Option<&'a Path>,
     /// Extra UUID plans scored as bundles (largest-first replay, etc.).
     pub extra_plans: &'a [Vec<String>],
+    /// Neighbourhood memberships rebuilt as one group cut each (Issue #108).
+    ///
+    /// Kept apart from [`Self::extra_plans`] because a group is not a sequence
+    /// of independent cuts: applying a chain member by member strands the rest
+    /// of the chain in the cleanup cascade, so the second member is "already
+    /// gone" and the plan is dropped. Rebuilt with the group transform, the cut
+    /// the scorer once accepted is the cut it is asked about again.
+    pub group_plans: &'a [Vec<String>],
     /// Cap on winners written as **individual** cohort entries (Issue #54).
     ///
     /// Never restricts bundle membership: an operator capping a short run's
@@ -151,6 +162,7 @@ impl<'a> FullConfig<'a> {
             dir,
             best_path,
             extra_plans: &[],
+            group_plans: &[],
             max_individuals: None,
             pool: &[],
             max_entries: None,
@@ -419,6 +431,9 @@ pub fn evaluate_full(
     // Trim priority: structurally distinct plans, then the strongest
     // individuals, then the nested prefixes that add the least.
     let mut ordered: Vec<Entry<'_>> = Vec::new();
+    for plan in cfg.group_plans {
+        ordered.push(Entry::Group(plan.clone()));
+    }
     for plan in cfg
         .extra_plans
         .iter()
@@ -436,7 +451,7 @@ pub fn evaluate_full(
             let dropped: (usize, usize) =
                 ordered.iter().skip(keep).fold((0, 0), |acc, e| match e {
                     Entry::Individual(_) => (acc.0 + 1, acc.1),
-                    Entry::Bundle(_) => (acc.0, acc.1 + 1),
+                    Entry::Bundle(_) | Entry::Group(_) => (acc.0, acc.1 + 1),
                 });
             ordered.truncate(keep);
             dropped
@@ -453,7 +468,7 @@ pub fn evaluate_full(
         .iter()
         .filter_map(|e| match e {
             Entry::Individual(w) => Some(*w),
-            Entry::Bundle(_) => None,
+            Entry::Bundle(_) | Entry::Group(_) => None,
         })
         .enumerate()
     {
@@ -469,16 +484,34 @@ pub fn evaluate_full(
         pending.push((stem, kind, w.candidate.cuts(), w.candidate.creature.clone()));
     }
     let mut bundle_i = 0usize;
-    for plan in ordered.into_iter().filter_map(|e| match e {
-        Entry::Bundle(plan) => Some(plan),
-        Entry::Individual(_) => None,
-    }) {
-        match apply_bundle(incumbent, stats, &plan) {
+    let mut group_i = 0usize;
+    for entry in ordered {
+        let (kind, plan, built) = match entry {
+            Entry::Individual(_) => continue,
+            Entry::Bundle(plan) => {
+                let built = apply_bundle(incumbent, stats, &plan);
+                ("bundle", plan, built)
+            }
+            // Rebuilt with the group transform the neighbourhood was cut by,
+            // so a chain is not dropped for stranding its own tail (#108).
+            Entry::Group(plan) => {
+                let built = propose_group(incumbent, stats, &plan).map_err(|b| b.to_string());
+                ("group", plan, built)
+            }
+        };
+        match built {
             Ok(creature) => {
-                let stem = format!("b{bundle_i:03}");
-                bundle_i += 1;
+                let stem = if kind == "group" {
+                    let stem = format!("g{group_i:03}");
+                    group_i += 1;
+                    stem
+                } else {
+                    let stem = format!("b{bundle_i:03}");
+                    bundle_i += 1;
+                    stem
+                };
                 write_creature(cfg.dir, &stem, &creature)?;
-                pending.push((stem, "bundle", plan, creature));
+                pending.push((stem, kind, plan, creature));
             }
             Err(_) => skipped_bundles += 1,
         }
@@ -565,6 +598,8 @@ enum Entry<'a> {
     Individual(&'a SampledWinner),
     /// A UUID plan applied in order from the incumbent.
     Bundle(Vec<String>),
+    /// A neighbourhood rebuilt as one group cut (Issue #108).
+    Group(Vec<String>),
 }
 
 fn write_creature(dir: &Path, stem: &str, creature: &CreatureExport) -> Result<(), String> {
