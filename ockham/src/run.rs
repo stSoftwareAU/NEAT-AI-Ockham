@@ -2939,6 +2939,45 @@ mod tests {
         assert!(!best.contains("\"a2\""), "{best}");
     }
 
+    /// Issue #108: a group's verdict is about the neighbourhood, so it must
+    /// never become a training row about one of its neurons — the ranker would
+    /// learn that a neuron the scorer never judged alone is a confirmed cut.
+    #[test]
+    fn a_group_verdict_never_becomes_a_per_neuron_training_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = chain_paths(tmp.path());
+        let log = tmp.path().join("candidates.jsonl");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            candidate_log: Some(log.clone()),
+            group_cuts: true,
+            ..OckhamConfig::default()
+        };
+        // Every candidate loses, so the cohort is judged without an accept
+        // rewriting the incumbent underneath the log.
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.40),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        establish_run(&cfg, &scorer).unwrap();
+        let records = crate::telemetry::load(&log).unwrap();
+        assert!(!records.is_empty(), "the judged individuals must be logged");
+        assert!(
+            records.iter().all(|r| r.kind != "group"),
+            "a group cut names no single neuron: {records:?}"
+        );
+        // Every logged uuid was scored on its own, so its delta is its own.
+        assert!(records.iter().all(|r| r.full_delta.is_some()));
+    }
+
     /// A control run must stay a control run: without the flag no group
     /// candidate is built, scored or counted (Issue #108).
     #[test]
