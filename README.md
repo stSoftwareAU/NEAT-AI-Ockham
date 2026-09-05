@@ -484,7 +484,7 @@ its outputs — screened on a subset of the probes, confirmed on all of them. On
 
 | transform | proposals | candidates | screened | confirmed | confirmed/h | neurons | synapses |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| merge | 860 | 860 | 9% | 9% | 134008 | 40 | 280 |
+| merge | 860 | 860 | 9% | 9% | 82420 | 40 | 280 |
 | ablation | 860 | 860 | 0% | 0% | 0 | 0 | 0 |
 
 Every confirmed cut is a planted duplicate — all forty pairs — and the
@@ -501,13 +501,15 @@ Discovery cost as the creature grows, on synthetic signatures:
 
 | hidden | band bits | buckets | pairs compared | ms |
 |---:|---:|---:|---:|---:|
-| 1000 | 10 | 2679 | 5739 | 1.2 |
-| 2000 | 11 | 4412 | 9733 | 2.1 |
-| 4000 | 12 | 8825 | 19657 | 4.7 |
-| 8000 | 13 | 14073 | 31678 | 8.1 |
+| 1000 | 10 | 2679 | 5739 | 2.1 |
+| 2000 | 11 | 4412 | 9733 | 3.9 |
+| 4000 | 12 | 8825 | 19657 | 6.9 |
+| 8000 | 13 | 14073 | 31678 | 14.1 |
 
 Eight times the creature costs about seven times the discovery, not sixty-four:
-the widening band is what holds the comparison count near linear.
+the widening band is what holds the comparison count near linear. The
+millisecond columns are one run on one host; `buckets`, `pairs compared` and
+`proposals` are deterministic and reproduce exactly.
 
 The same measurement on **real compiled creatures**, probe capture included, so
 the claim covers the forward pass behind the signatures rather than the
@@ -515,13 +517,14 @@ signature pass alone:
 
 | hidden | synapses | probe capture (ms) | pairs compared | discovery (ms) |
 |---:|---:|---:|---:|---:|
-| 1100 | 7700 | 1.3 | 25157 | 5.4 |
-| 2750 | 19250 | 3.4 | 59834 | 12.6 |
-| 5500 | 38500 | 6.5 | 87516 | 18.0 |
+| 1100 | 7700 | 1.7 | 25157 | 6.3 |
+| 2750 | 19250 | 8.4 | 59834 | 17.2 |
+| 5500 | 38500 | 12.9 | 87516 | 26.8 |
 
-Five times the creature costs five times the probe capture and about three
-times the discovery — comfortably inside a forty-five-minute budget at several
-thousand hidden neurons.
+Five times the creature multiplies the comparison count by three and a half,
+not twenty-five, and the whole of discovery — probe capture included — still
+finishes in tens of milliseconds at 5,500 hidden neurons: nothing beside a
+forty-five-minute scorer budget.
 
 ## Sampling and authoritative promotion
 
