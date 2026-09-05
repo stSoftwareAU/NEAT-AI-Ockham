@@ -237,15 +237,25 @@ fn main() {
 
     let started = Instant::now();
     let batch = group_batch(&creature, &stats, batch_cfg, &HashSet::new());
+    // What shape those batch candidates came from, matched back to the ranked
+    // proposals rather than inferred from the candidate — a candidate carries
+    // its members, not the walk that found them.
+    let shape_of = |members: &[String]| {
+        proposals
+            .iter()
+            .find(|p| p.members == members)
+            .map(|p| p.kind)
+    };
+    let batch_clusters = batch
+        .candidates
+        .iter()
+        .filter(|c| shape_of(&c.candidate.members) == Some(NeighbourhoodKind::Cluster))
+        .count();
     println!(
-        "  one default batch: {} candidate(s) built and validated in {:.1}ms ({} of them cluster)",
+        "  one default batch: {} candidate(s) built and validated in {:.1}ms \
+         ({batch_clusters} of them cluster)",
         batch.candidates.len(),
         started.elapsed().as_secs_f64() * 1000.0,
-        batch
-            .candidates
-            .iter()
-            .filter(|c| c.members.len() > 1)
-            .count(),
     );
     if !batch.blocked.is_empty() {
         println!(

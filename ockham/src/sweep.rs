@@ -421,6 +421,11 @@ pub(crate) fn propose(
 
 /// Build the group candidate that cuts every neuron of `members` (Issue #108).
 ///
+/// The whole [`crate::ablation::GroupAblation`] comes back, not just the
+/// creature: it names every neuron the transform removed and says which were
+/// the requested group cuts and which the cleanup cascade stranded, which is
+/// what a run has to record about a group it proposes.
+///
 /// The same substitution [`propose`] applies to one neuron, applied to the
 /// whole neighbourhood on one clone before the exact cleanup runs. A member
 /// without a measured mean blocks the group rather than being guessed at, and
@@ -432,7 +437,7 @@ pub(crate) fn propose_group(
     incumbent: &CreatureExport,
     stats: &ActivationStats,
     members: &[String],
-) -> Result<CreatureExport, Blocked> {
+) -> Result<crate::ablation::GroupAblation, Blocked> {
     let mut cuts = Vec::with_capacity(members.len());
     for uuid in members {
         let mean = stats.by_uuid(uuid).map(|s| s.mean).ok_or_else(|| {
@@ -447,7 +452,6 @@ pub(crate) fn propose_group(
         });
     }
     ablate_group(incumbent, &cuts)
-        .map(|a| a.creature)
         .map_err(|e| Blocked::new(e.blocked_reason(), format!("group: {e}")))
 }
 

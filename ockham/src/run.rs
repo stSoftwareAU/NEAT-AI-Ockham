@@ -605,9 +605,12 @@ fn update_pool(
         if applied.contains(uuid.as_str()) || cand.delta <= min_improvement {
             continue;
         }
+        // The individual candidate for this uuid, never the group keyed on it
+        // (#108): a pool member is a single cut, and a group's kind would
+        // describe a different proposal entirely.
         let kind = sampled
             .iter()
-            .find(|w| w.candidate.uuid == *uuid)
+            .find(|w| !w.candidate.is_group() && w.candidate.uuid == *uuid)
             .map_or(CandidateKind::Ablation, |w| w.candidate.kind);
         pool.push(BundleMember {
             uuid: uuid.clone(),
@@ -1350,14 +1353,22 @@ fn ockham_loop(
             for refused in &groups.blocked {
                 tried_groups.insert(crate::neighbourhood::group_key(&refused.members));
             }
-            for candidate in groups.candidates {
-                tried_groups.insert(crate::neighbourhood::group_key(&candidate.members));
+            for built in groups.candidates {
+                tried_groups.insert(crate::neighbourhood::group_key(&built.candidate.members));
+                // Both halves of what this proposal removes, by name: the cuts
+                // the razor chose and the structure that choice stranded
+                // (Issue #108). Counts alone cannot say which neurons went.
+                let cascade = if built.cascade.is_empty() {
+                    String::from("none")
+                } else {
+                    built.cascade.join(", ")
+                };
                 log::detail(&format!(
-                    "group: {} ({} neurons)",
-                    candidate.members.join(" + "),
-                    candidate.members.len()
+                    "group: cut {} ({} neurons); cleanup cascade: {cascade}",
+                    built.candidate.members.join(" + "),
+                    built.candidate.members.len(),
                 ));
-                candidates.push(candidate);
+                candidates.push(built.candidate);
             }
         }
         let candidates = candidates;

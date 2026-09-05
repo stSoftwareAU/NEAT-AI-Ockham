@@ -1682,9 +1682,9 @@ it actually bought:
 `report` reads those off the `cascade` journal records an accept writes — the
 same series that audits the cascade estimate — so `kind: "group"` accepts are
 counted beside `individual` and `bundle` ones rather than in a series of their
-own. A control run without `--group-cuts` reports `groupAccepts: 0` and leaves
-every derived figure absent rather than reporting a rate it never measured,
-which is what makes the comparison a comparison.
+own. A control run without `--group-cuts` reports `groupAccepts: 0` and every derived
+figure as `null` rather than as a rate it never measured, which is what makes the
+comparison a comparison.
 
 ## Outputs
 

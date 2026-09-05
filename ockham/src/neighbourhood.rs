@@ -245,11 +245,25 @@ pub struct RefusedGroup {
     pub reason: String,
 }
 
+/// One built group candidate and the structure its cleanup stranded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltGroup {
+    /// The candidate the screen and the scorer will see.
+    pub candidate: SweepCandidate,
+    /// Neurons the exact cleanup removed on top of the requested group.
+    ///
+    /// Recorded apart from [`SweepCandidate::members`] because they answer
+    /// different questions: the members are what the razor chose to cut, the
+    /// cascade is what that choice stranded. A run that reported only a count
+    /// could not say which neurons a group actually took with it.
+    pub cascade: Vec<String>,
+}
+
 /// Group candidates built for one batch, and what stopped the rest.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GroupBatch {
     /// Buildable, validated group candidates, best-ranked first.
-    pub candidates: Vec<SweepCandidate>,
+    pub candidates: Vec<BuiltGroup>,
     /// Ranked proposals the transform refused.
     pub blocked: Vec<RefusedGroup>,
 }
@@ -297,15 +311,18 @@ pub fn group_batch(
             continue;
         }
         match crate::sweep::propose_group(incumbent, stats, &group.members) {
-            Ok(creature) => {
+            Ok(built) => {
                 let stem = format!("g{:03}", batch.candidates.len());
-                batch.candidates.push(SweepCandidate {
-                    uuid: group.members[0].clone(),
-                    members: group.members,
-                    permutation_index: 0,
-                    kind: CandidateKind::Group,
-                    stem,
-                    creature,
+                batch.candidates.push(BuiltGroup {
+                    cascade: built.cascade_uuids(),
+                    candidate: SweepCandidate {
+                        uuid: group.members[0].clone(),
+                        members: group.members,
+                        permutation_index: 0,
+                        kind: CandidateKind::Group,
+                        stem,
+                        creature: built.creature,
+                    },
                 });
             }
             Err(blocked) => batch.blocked.push(RefusedGroup {
@@ -367,9 +384,12 @@ fn drop_subsumed(groups: &mut Vec<Neighbourhood>) {
 /// produces still reaches the outputs.
 ///
 /// `None` when the neuron carries no usable measurement: no activation
-/// statistic, a non-finite mean, or an importance that overflowed. A neuron
-/// with no measured mean could not be group-ablated at all, so a group holding
-/// one is never proposed.
+/// statistic, a non-finite mean, an importance that overflowed, or an endpoint
+/// the sensitivity index does not carry — that last one is scored as infinite
+/// importance, which is non-finite and so declines the neuron rather than
+/// ranking it on a number nothing measured. A neuron with no measured mean
+/// could not be group-ablated at all, so a group holding one is never
+/// proposed.
 fn effect_of(
     uuid: &str,
     stats: &ActivationStats,
@@ -738,7 +758,8 @@ mod tests {
         assert!(!batch.candidates.is_empty());
         assert!(batch.blocked.is_empty(), "{:?}", batch.blocked);
         assert_eq!(batch.considered(), batch.candidates.len());
-        let first = &batch.candidates[0];
+        let built = &batch.candidates[0];
+        let first = &built.candidate;
         assert_eq!(first.kind, CandidateKind::Group);
         assert!(first.is_group());
         assert_eq!(first.uuid, first.members[0]);
@@ -751,8 +772,21 @@ mod tests {
                 "{member} must be gone from the candidate"
             );
         }
+        // The cleanup cascade is recorded apart from the requested cuts, by
+        // name, and never repeats one of them.
+        assert!(
+            built.cascade.iter().all(|u| !first.members.contains(u)),
+            "{:?} vs {:?}",
+            built.cascade,
+            first.members
+        );
         // Stems must not collide with the sweep's own `c000` cohort files.
-        assert!(batch.candidates.iter().all(|c| c.stem.starts_with('g')));
+        assert!(
+            batch
+                .candidates
+                .iter()
+                .all(|c| c.candidate.stem.starts_with('g'))
+        );
     }
 
     #[test]
@@ -912,18 +946,24 @@ mod tests {
             max_proposals: 1,
         };
         let first = group_batch(&creature, &stats, cfg, &HashSet::new());
-        let key = group_key(&first.candidates[0].members);
+        let key = group_key(&first.candidates[0].candidate.members);
         let second = group_batch(&creature, &stats, cfg, &HashSet::from([key.clone()]));
         assert!(
             second
                 .candidates
                 .iter()
-                .all(|c| group_key(&c.members) != key),
+                .all(|c| group_key(&c.candidate.members) != key),
             "a membership already screened must not come back this run"
         );
         assert_ne!(
-            second.candidates.first().map(|c| c.members.clone()),
-            first.candidates.first().map(|c| c.members.clone()),
+            second
+                .candidates
+                .first()
+                .map(|c| c.candidate.members.clone()),
+            first
+                .candidates
+                .first()
+                .map(|c| c.candidate.members.clone()),
             "the search must reach further down the ranked list"
         );
     }

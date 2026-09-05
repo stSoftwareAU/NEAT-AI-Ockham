@@ -504,7 +504,9 @@ pub fn evaluate_full(
             // Rebuilt with the group transform the neighbourhood was cut by,
             // so a chain is not dropped for stranding its own tail (#108).
             Entry::Group(plan) => {
-                let built = propose_group(incumbent, stats, &plan).map_err(|b| b.to_string());
+                let built = propose_group(incumbent, stats, &plan)
+                    .map(|a| a.creature)
+                    .map_err(|b| b.to_string());
                 // A neighbourhood the transform now refuses is named, with the
                 // reason: a replayed group that quietly stopped being buildable
                 // would look exactly like one that was never recorded (#108).
@@ -802,8 +804,9 @@ mod tests {
         let group = batch
             .candidates
             .into_iter()
-            .find(|c| c.members == vec!["g1".to_string(), "g2".to_string()])
-            .expect("the chain must be proposed");
+            .find(|c| c.candidate.members == vec!["g1".to_string(), "g2".to_string()])
+            .expect("the chain must be proposed")
+            .candidate;
         let sampled_winners = vec![sampled(group, 0.90, 0.50)];
         let tmp = tempfile::tempdir().unwrap();
         let best = tmp.path().join("best.json");
@@ -851,7 +854,8 @@ mod tests {
             &HashSet::new(),
         )
         .candidates
-        .remove(0);
+        .remove(0)
+        .candidate;
         let single = candidates(&incumbent, &stats)
             .into_iter()
             .find(|c| c.uuid == "h1")

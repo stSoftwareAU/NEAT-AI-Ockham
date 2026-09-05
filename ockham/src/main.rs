@@ -115,7 +115,9 @@ struct Cli {
     /// and off by default; a group still faces the screen and the full scorer.
     #[arg(long)]
     group_cuts: bool,
-    /// Hidden neurons in one group proposal, 2-8. Only with `--group-cuts`.
+    /// Hidden neurons in one group proposal. Refused outside 2-8, whether or
+    /// not `--group-cuts` is given: a size the razor would clamp is a typo
+    /// worth stopping for.
     #[arg(long, default_value_t = DEFAULT_NEIGHBOURHOOD_SIZE)]
     group_max_size: usize,
     /// Group proposals offered per sweep batch. Only with `--group-cuts`.
