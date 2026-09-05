@@ -19,7 +19,7 @@ use crate::ablation::StructureSnapshot;
 use crate::incumbent::{sha256_hex, validate_creature};
 use crate::scorer::{DirectoryScorer, ScoreResult, ScorerMode};
 use crate::stats::ActivationStats;
-use crate::sweep::{CandidateKind, SampledWinner, SweepCandidate, propose};
+use crate::sweep::{CandidateKind, SampledWinner, SweepCandidate, propose, propose_group};
 
 /// Most bundle plans one cohort may carry (Issue #55).
 ///
@@ -83,17 +83,31 @@ pub struct FullOutcome {
     pub individuals: Vec<FullCandidate>,
     /// Bundle full scores (skipped bundles are omitted).
     pub bundles: Vec<FullCandidate>,
+    /// Structural neighbourhood group full scores (Issue #108).
+    ///
+    /// Kept apart from both: a group is one proposal that cuts several neurons,
+    /// so it is neither an individual verdict on a uuid nor a combination of
+    /// verdicts already taken. Folding it into either would attribute a group's
+    /// delta to a neuron nothing measured on its own.
+    pub groups: Vec<FullCandidate>,
     /// Sampled winners whose full score did not beat the incumbent.
     pub sample_false_positives: Vec<String>,
     /// Authoritative local winner, if any.
     pub winner: Option<LocalWinner>,
     /// Full scorer wall time (ms).
     pub full_ms: u64,
-    /// Plans dropped because a cut in them no longer proposed (Issue #55).
+    /// Plans dropped because the razor could no longer build them (#55, #108).
+    ///
+    /// A bundle whose next cut no longer proposes, or a group whose
+    /// neighbourhood the transform now refuses.
     pub skipped_bundles: usize,
     /// Individual entries dropped to fit the wall-clock budget (Issue #58).
     pub dropped_individuals: usize,
-    /// Bundle entries dropped to fit the wall-clock budget (Issue #58).
+    /// Bundle and group entries dropped to fit the wall clock (#58, #108).
+    ///
+    /// One counter for both: a group is a multi-neuron plan trimmed on the same
+    /// terms as a bundle, and splitting the figure would imply the budget
+    /// treats them differently.
     pub dropped_bundles: usize,
     /// Plans the generator's own cap refused to build (Issue #55).
     pub capped_plans: usize,
@@ -102,7 +116,7 @@ pub struct FullOutcome {
 impl FullOutcome {
     /// Creatures the scorer was asked for, excluding the incumbent baseline.
     pub fn entries(&self) -> usize {
-        self.individuals.len() + self.bundles.len()
+        self.individuals.len() + self.bundles.len() + self.groups.len()
     }
 
     /// Entries dropped to fit the budget.
@@ -122,6 +136,14 @@ pub struct FullConfig<'a> {
     pub best_path: Option<&'a Path>,
     /// Extra UUID plans scored as bundles (largest-first replay, etc.).
     pub extra_plans: &'a [Vec<String>],
+    /// Neighbourhood memberships rebuilt as one group cut each (Issue #108).
+    ///
+    /// Kept apart from [`Self::extra_plans`] because a group is not a sequence
+    /// of independent cuts: applying a chain member by member strands the rest
+    /// of the chain in the cleanup cascade, so the second member is "already
+    /// gone" and the plan is dropped. Rebuilt with the group transform, the cut
+    /// the scorer once accepted is the cut it is asked about again.
+    pub group_plans: &'a [Vec<String>],
     /// Cap on winners written as **individual** cohort entries (Issue #54).
     ///
     /// Never restricts bundle membership: an operator capping a short run's
@@ -144,6 +166,7 @@ impl<'a> FullConfig<'a> {
             dir,
             best_path,
             extra_plans: &[],
+            group_plans: &[],
             max_individuals: None,
             pool: &[],
             max_entries: None,
@@ -169,9 +192,15 @@ pub struct BundleMember {
 }
 
 /// Bundle members for this batch's sampled winners.
+///
+/// Group winners are left out (Issue #108): a bundle member is ranked by the
+/// delta measured for **its** cut, and a group's delta belongs to the whole
+/// neighbourhood. Borrowing it for one member would rank that neuron on
+/// evidence about three others.
 pub fn members_of(winners: &[SampledWinner]) -> Vec<BundleMember> {
     winners
         .iter()
+        .filter(|w| !w.candidate.is_group())
         .map(|w| BundleMember {
             uuid: w.candidate.uuid.clone(),
             kind: w.candidate.kind,
@@ -406,6 +435,9 @@ pub fn evaluate_full(
     // Trim priority: structurally distinct plans, then the strongest
     // individuals, then the nested prefixes that add the least.
     let mut ordered: Vec<Entry<'_>> = Vec::new();
+    for plan in cfg.group_plans {
+        ordered.push(Entry::Group(plan.clone()));
+    }
     for plan in cfg
         .extra_plans
         .iter()
@@ -423,7 +455,7 @@ pub fn evaluate_full(
             let dropped: (usize, usize) =
                 ordered.iter().skip(keep).fold((0, 0), |acc, e| match e {
                     Entry::Individual(_) => (acc.0 + 1, acc.1),
-                    Entry::Bundle(_) => (acc.0, acc.1 + 1),
+                    Entry::Bundle(_) | Entry::Group(_) => (acc.0, acc.1 + 1),
                 });
             ordered.truncate(keep);
             dropped
@@ -440,30 +472,66 @@ pub fn evaluate_full(
         .iter()
         .filter_map(|e| match e {
             Entry::Individual(w) => Some(*w),
-            Entry::Bundle(_) => None,
+            Entry::Bundle(_) | Entry::Group(_) => None,
         })
         .enumerate()
     {
         let stem = format!("i{i:03}");
         write_creature(cfg.dir, &stem, &w.candidate.creature)?;
+        // A group carries every neuron it cut, so the winner it may become
+        // names the whole neighbourhood rather than the member it was keyed on.
+        let kind = if w.candidate.is_group() {
+            "group"
+        } else {
+            "individual"
+        };
         pending.push((
             stem,
-            "individual",
-            vec![w.candidate.uuid.clone()],
+            kind,
+            w.candidate.cuts().to_vec(),
             w.candidate.creature.clone(),
         ));
     }
     let mut bundle_i = 0usize;
-    for plan in ordered.into_iter().filter_map(|e| match e {
-        Entry::Bundle(plan) => Some(plan),
-        Entry::Individual(_) => None,
-    }) {
-        match apply_bundle(incumbent, stats, &plan) {
+    let mut group_i = 0usize;
+    for entry in ordered {
+        let (kind, plan, built) = match entry {
+            Entry::Individual(_) => continue,
+            Entry::Bundle(plan) => {
+                let built = apply_bundle(incumbent, stats, &plan);
+                ("bundle", plan, built)
+            }
+            // Rebuilt with the group transform the neighbourhood was cut by,
+            // so a chain is not dropped for stranding its own tail (#108).
+            Entry::Group(plan) => {
+                let built = propose_group(incumbent, stats, &plan)
+                    .map(|a| a.creature)
+                    .map_err(|b| b.to_string());
+                // A neighbourhood the transform now refuses is named, with the
+                // reason: a replayed group that quietly stopped being buildable
+                // would look exactly like one that was never recorded (#108).
+                if let Err(reason) = &built {
+                    crate::log::detail(&format!(
+                        "group plan {} not rebuilt: {reason}",
+                        plan.join(" + ")
+                    ));
+                }
+                ("group", plan, built)
+            }
+        };
+        match built {
             Ok(creature) => {
-                let stem = format!("b{bundle_i:03}");
-                bundle_i += 1;
+                let stem = if kind == "group" {
+                    let stem = format!("g{group_i:03}");
+                    group_i += 1;
+                    stem
+                } else {
+                    let stem = format!("b{bundle_i:03}");
+                    bundle_i += 1;
+                    stem
+                };
                 write_creature(cfg.dir, &stem, &creature)?;
-                pending.push((stem, "bundle", plan, creature));
+                pending.push((stem, kind, plan, creature));
             }
             Err(_) => skipped_bundles += 1,
         }
@@ -480,6 +548,7 @@ pub fn evaluate_full(
 
     let mut individuals = Vec::new();
     let mut bundles = Vec::new();
+    let mut groups = Vec::new();
     let mut sample_false_positives = Vec::new();
     let mut best: Option<(f64, LocalWinner, CreatureExport)> = None;
 
@@ -506,10 +575,10 @@ pub fn evaluate_full(
                 best = Some((cand.score, winner, creature));
             }
         }
-        if kind == "individual" {
-            individuals.push(cand);
-        } else {
-            bundles.push(cand);
+        match kind {
+            "individual" => individuals.push(cand),
+            "group" => groups.push(cand),
+            _ => bundles.push(cand),
         }
     }
 
@@ -532,6 +601,7 @@ pub fn evaluate_full(
         incumbent_error: baseline.error,
         individuals,
         bundles,
+        groups,
         sample_false_positives,
         winner,
         full_ms,
@@ -548,6 +618,8 @@ enum Entry<'a> {
     Individual(&'a SampledWinner),
     /// A UUID plan applied in order from the incumbent.
     Bundle(Vec<String>),
+    /// A neighbourhood rebuilt as one group cut (Issue #108).
+    Group(Vec<String>),
 }
 
 fn write_creature(dir: &Path, stem: &str, creature: &CreatureExport) -> Result<(), String> {
@@ -694,6 +766,107 @@ mod tests {
         assert!(out.winner.is_none());
         assert_eq!(out.sample_false_positives.len(), 1);
         assert!(!best.exists(), "sample win must not write best.json");
+    }
+
+    /// `input-0 → g1 → g2 → output-0`, beside a lone `h1 → output-0`.
+    fn chain_creature() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "g1", 0.0, Some("TANH")),
+                neuron("hidden", "g2", 0.0, Some("TANH")),
+                neuron("hidden", "h1", 0.0, Some("TANH")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "g1", 1.0),
+                synapse("g1", "g2", 1.0),
+                synapse("g2", "output-0", 0.01),
+                synapse("input-0", "h1", 1.0),
+                synapse("h1", "output-0", 1.0),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_group_candidate_wins_as_a_group_and_names_every_neuron_it_cut() {
+        // Issue #108: the chain is only removable as a unit, so the winner must
+        // record both members rather than crediting the one it was keyed on.
+        let incumbent = chain_creature();
+        let stats = stats_for(&incumbent);
+        let batch = crate::neighbourhood::group_batch(
+            &incumbent,
+            &stats,
+            crate::neighbourhood::NeighbourhoodConfig::default(),
+            &HashSet::new(),
+        );
+        let group = batch
+            .candidates
+            .into_iter()
+            .find(|c| c.candidate.members == vec!["g1".to_string(), "g2".to_string()])
+            .expect("the chain must be proposed")
+            .candidate;
+        let sampled_winners = vec![sampled(group, 0.90, 0.50)];
+        let tmp = tempfile::tempdir().unwrap();
+        let best = tmp.path().join("best.json");
+        let mut stem_scores = BTreeMap::new();
+        stem_scores.insert("baseline".into(), 0.50);
+        stem_scores.insert("i000".into(), 0.80);
+        let scorer = ScriptedScorer {
+            stem_scores,
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let out = evaluate_full(
+            &scorer,
+            tmp.path(),
+            &incumbent,
+            &stats,
+            &sampled_winners,
+            FullConfig::new(1e-6, &tmp.path().join("full"), Some(&best)),
+        )
+        .unwrap();
+        assert!(out.individuals.is_empty(), "{:?}", out.individuals);
+        assert_eq!(out.groups.len(), 1);
+        assert_eq!(out.entries(), 1);
+        // A group's delta is never attributed to one of its members.
+        assert!(
+            out.sample_false_positives.is_empty(),
+            "{:?}",
+            out.sample_false_positives
+        );
+        let win = out.winner.expect("the group beats the incumbent");
+        assert_eq!(win.candidate.kind, "group");
+        assert_eq!(win.candidate.uuids, vec!["g1", "g2"]);
+        assert!(win.candidate.delta > 0.0);
+        assert!(best.exists(), "a full-corpus win writes best.json");
+        validate_creature(&win.creature).unwrap();
+    }
+
+    #[test]
+    fn a_group_winner_is_not_offered_as_a_bundle_member() {
+        let incumbent = chain_creature();
+        let stats = stats_for(&incumbent);
+        let group = crate::neighbourhood::group_batch(
+            &incumbent,
+            &stats,
+            crate::neighbourhood::NeighbourhoodConfig::default(),
+            &HashSet::new(),
+        )
+        .candidates
+        .remove(0)
+        .candidate;
+        let single = candidates(&incumbent, &stats)
+            .into_iter()
+            .find(|c| c.uuid == "h1")
+            .expect("h1 proposes on its own");
+        let winners = vec![sampled(group, 0.9, 0.5), sampled(single, 0.8, 0.5)];
+        let members = members_of(&winners);
+        assert_eq!(
+            members.iter().map(|m| m.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["h1"],
+            "a group's delta belongs to the whole neighbourhood"
+        );
     }
 
     #[test]

@@ -190,6 +190,12 @@ pub enum Event {
         individuals: usize,
         /// Bundles scored.
         bundles: usize,
+        /// Structural neighbourhood group candidates scored (Issue #108).
+        ///
+        /// `#[serde(default)]` so a journal written before groups existed still
+        /// reads, as none — which is what those runs scored.
+        #[serde(default)]
+        groups: usize,
         /// Whether a local winner was selected.
         accepted: bool,
         /// Winner score when accepted.
@@ -214,11 +220,14 @@ pub enum Event {
     /// signal that drifts from what the razor really removes is a signal to
     /// stop paying for.
     Cascade {
-        /// Cohort kind of the accepted winner: `individual` or `bundle`.
+        /// Cohort kind of the accepted winner: `individual`, `bundle` or
+        /// `group` (Issue #108).
         ///
         /// A bundle removes structure several cuts share, so its prediction and
         /// its outcome compose differently from a single cut's; without the
-        /// kind the two could not be told apart in the same series.
+        /// kind the two could not be told apart in the same series. A group is
+        /// a third thing again — several neurons cut as one proposal — and the
+        /// benchmark for the experiment counts exactly these records.
         kind: String,
         /// Hidden neurons the accepted winner was asked to cut.
         cuts: usize,

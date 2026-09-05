@@ -60,7 +60,8 @@ Forests champion *after* the run — by then it is too late. Instead:
    it lands checks in with the run.
 
 Sampler commit subject is the creature `ockham` tag (🪒). Skim for
-`replay-bundle` vs `search`.
+`replay-bundle`, `replay-group` (a structural neighbourhood replayed as a
+group, #108) or `search`.
 
 ## How to tell if we actually won
 

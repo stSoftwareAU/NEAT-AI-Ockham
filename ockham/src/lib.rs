@@ -34,6 +34,7 @@
 //! | composite dead-wood priority | [`priority`] | #107 |
 //! | learned candidate ranker | [`model`] | #107 |
 //! | candidate feature/outcome telemetry | [`telemetry`] | #107 |
+//! | structural neighbourhood group cuts | [`neighbourhood`] | #108 |
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
 //! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
 
@@ -55,6 +56,7 @@ pub mod journal;
 pub mod learnings;
 pub mod log;
 pub mod model;
+pub mod neighbourhood;
 pub mod ordering;
 pub mod priority;
 pub mod promote;
@@ -70,7 +72,9 @@ pub mod sweep;
 pub mod tags;
 pub mod telemetry;
 
-pub use ablation::{Ablation, AblationSkip, TransformClass, ablate_mean};
+pub use ablation::{
+    Ablation, AblationSkip, GroupAblation, GroupMember, TransformClass, ablate_group, ablate_mean,
+};
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
 pub use blocked::{BlockedBreakdown, BlockedReason};
 pub use cancel::CancelToken;
@@ -87,6 +91,11 @@ pub use coverage::{
 pub use features::{CandidateFeatures, FEATURE_NAMES, PriorEvidence};
 pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
 pub use model::{PRIORITY_MODEL_FORMAT_VERSION, PriorityModel, TrainingConfig, TrainingRow};
+pub use neighbourhood::{
+    DEFAULT_NEIGHBOURHOOD_PROPOSALS, DEFAULT_NEIGHBOURHOOD_SIZE, MAX_NEIGHBOURHOOD_SIZE,
+    MIN_NEIGHBOURHOOD_SIZE, Neighbourhood, NeighbourhoodConfig, NeighbourhoodKind,
+    propose_neighbourhoods,
+};
 pub use ordering::{Ordering, OrderingConfig, hidden_order};
 pub use priority::{CompositeWeights, PriorityContext, expected_pruning_value};
 pub use promote::{FullOutcome, evaluate_full};

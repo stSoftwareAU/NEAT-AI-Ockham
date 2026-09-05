@@ -179,6 +179,31 @@ pub struct Report {
     /// structure the topology said would go, which a constant substitution or a
     /// bundle legitimately does. Above `1.0` it under-promised.
     pub cascade_estimate_ratio: Option<f64>,
+    /// Group candidates the full corpus accepted (Issue #108).
+    ///
+    /// The experiment's own economics: how often a bounded neighbourhood beat
+    /// the incumbent, what it took with it, and what that was worth per hour of
+    /// wall clock. Zero on a run without `--group-cuts`, which is what a
+    /// control run must report.
+    pub group_accepts: u64,
+    /// Hidden neurons those accepted groups were asked to cut.
+    pub group_cuts_accepted: usize,
+    /// Hidden neurons those accepted groups actually removed, cascade included.
+    pub group_hidden_removed: i64,
+    /// Synapses those accepted groups actually removed.
+    pub group_synapses_removed: i64,
+    /// Growth units those accepted groups actually removed.
+    pub group_growth_units_removed: f64,
+    /// Hidden neurons removed per accepted group — cascade included.
+    pub group_hidden_per_accept: Option<f64>,
+    /// Synapses removed per accepted group.
+    pub group_synapses_per_accept: Option<f64>,
+    /// Growth units removed per accepted group — the size of the average win.
+    pub group_growth_units_per_accept: Option<f64>,
+    /// Accepted group cuts per wall-clock hour (Issue #108).
+    pub group_accepts_per_hour: Option<f64>,
+    /// Growth units accepted groups removed per wall-clock hour (Issue #108).
+    pub group_growth_units_removed_per_hour: Option<f64>,
     /// Last stop reason.
     pub stop_reason: Option<String>,
     /// Effective seed from the first start record.
@@ -261,6 +286,16 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         cascade_estimated_growth_units: None,
         cascade_actual_growth_units: None,
         cascade_estimate_ratio: None,
+        group_accepts: 0,
+        group_cuts_accepted: 0,
+        group_hidden_removed: 0,
+        group_synapses_removed: 0,
+        group_growth_units_removed: 0.0,
+        group_hidden_per_accept: None,
+        group_synapses_per_accept: None,
+        group_growth_units_per_accept: None,
+        group_accepts_per_hour: None,
+        group_growth_units_removed_per_hour: None,
         stop_reason: None,
         seed: None,
     };
@@ -306,13 +341,27 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                 }
                 Event::SweepRestart { .. } => report.sweep_restarts += 1,
                 Event::Cascade {
+                    kind,
+                    cuts,
                     estimated_growth_units,
                     actual_growth_units,
+                    actual_hidden,
+                    actual_synapses,
                     ..
                 } => {
                     cascade_estimated += estimated_growth_units;
                     cascade_actual += actual_growth_units;
                     report.cascade_accepts += 1;
+                    // One accept record per winner, so the group economics are
+                    // read off the same series the estimate audit uses rather
+                    // than counted twice from a second event (Issue #108).
+                    if kind == "group" {
+                        report.group_accepts += 1;
+                        report.group_cuts_accepted += cuts;
+                        report.group_hidden_removed += actual_hidden;
+                        report.group_synapses_removed += actual_synapses;
+                        report.group_growth_units_removed += actual_growth_units;
+                    }
                 }
                 Event::CoverageTail { batches, .. } => report.coverage_tail_batches += batches,
                 Event::Screen { .. } => report.screen_calls += 1,
@@ -487,6 +536,19 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         // cuts bought per hour, and how much structure they took with them.
         report.cuts_per_hour = Some(report.accepted_cuts as f64 * per_hour);
         report.growth_units_saved_per_hour = report.growth_units_saved.map(|g| g * per_hour);
+        // Only when a group was actually accepted: a control run reporting
+        // `0.0 per hour` reads as a measured rate, and it measured nothing.
+        if report.group_accepts > 0 {
+            report.group_accepts_per_hour = Some(report.group_accepts as f64 * per_hour);
+            report.group_growth_units_removed_per_hour =
+                Some(report.group_growth_units_removed * per_hour);
+        }
+    }
+    if report.group_accepts > 0 {
+        let accepts = report.group_accepts as f64;
+        report.group_hidden_per_accept = Some(report.group_hidden_removed as f64 / accepts);
+        report.group_synapses_per_accept = Some(report.group_synapses_removed as f64 / accepts);
+        report.group_growth_units_per_accept = Some(report.group_growth_units_removed / accepts);
     }
     if report.cascade_accepts > 0 {
         report.cascade_estimated_growth_units = Some(cascade_estimated);
@@ -560,6 +622,7 @@ mod tests {
         Event::Full {
             individuals: 1,
             bundles: 0,
+            groups: 0,
             accepted,
             score: accepted.then_some(score),
             delta: accepted.then_some(0.000002),
@@ -780,6 +843,80 @@ mod tests {
         assert_eq!(report.cascade_actual_growth_units, Some(4.8));
         let ratio = report.cascade_estimate_ratio.expect("two accepted cuts");
         assert!((ratio - 0.8).abs() < 1e-9, "{ratio}");
+    }
+
+    /// Stop record with `elapsed_ms` of wall clock, for the per-hour figures.
+    fn stop(final_score: f64, cumulative_delta: f64, elapsed_ms: u64) -> Event {
+        Event::Stop {
+            reason: "timeout".into(),
+            accepts: 0,
+            experiments: 1,
+            final_score,
+            cumulative_delta,
+            final_hidden: 1,
+            final_synapses: 8,
+            elapsed_ms,
+            newly_screened: 0,
+        }
+    }
+
+    #[test]
+    fn group_accepts_report_their_own_economics_beside_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        for (kind, cuts, hidden, synapses, units) in [
+            ("group", 2usize, 3i64, 7i64, 3.7f64),
+            ("group", 3, 5, 13, 6.3),
+            // An individual accept in the same run must not be counted in.
+            ("individual", 1, 1, 2, 1.2),
+        ] {
+            journal::append(
+                &path,
+                &Event::Cascade {
+                    kind: kind.into(),
+                    cuts,
+                    estimated_hidden: hidden as usize,
+                    estimated_synapses: synapses as usize,
+                    estimated_growth_units: units,
+                    actual_hidden: hidden,
+                    actual_synapses: synapses,
+                    actual_growth_units: units,
+                },
+            )
+            .unwrap();
+        }
+        journal::append(&path, &stop(0.51, 0.01, 1_800_000)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.cascade_accepts, 3, "every accept is still audited");
+        assert_eq!(report.group_accepts, 2);
+        assert_eq!(report.group_cuts_accepted, 5);
+        assert_eq!(report.group_hidden_removed, 8);
+        assert_eq!(report.group_synapses_removed, 20);
+        assert!((report.group_growth_units_removed - 10.0).abs() < 1e-9);
+        assert_eq!(report.group_hidden_per_accept, Some(4.0));
+        assert_eq!(report.group_synapses_per_accept, Some(10.0));
+        assert_eq!(report.group_growth_units_per_accept, Some(5.0));
+        // Half an hour of wall clock: two accepts and ten growth units become
+        // four accepts and twenty units an hour.
+        assert_eq!(report.group_accepts_per_hour, Some(4.0));
+        assert_eq!(report.group_growth_units_removed_per_hour, Some(20.0));
+    }
+
+    #[test]
+    fn a_control_run_reports_no_group_economics_rather_than_zeroes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(&path, &stop(0.51, 0.01, 1_800_000)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.group_accepts, 0);
+        assert_eq!(report.group_hidden_removed, 0);
+        assert_eq!(report.group_hidden_per_accept, None);
+        assert_eq!(report.group_synapses_per_accept, None);
+        assert_eq!(report.group_growth_units_per_accept, None);
+        assert_eq!(report.group_accepts_per_hour, None, "nothing was measured");
+        assert_eq!(report.group_growth_units_removed_per_hour, None);
     }
 
     #[test]

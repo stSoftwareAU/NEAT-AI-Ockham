@@ -281,6 +281,7 @@ fn run_arm(name: &'static str, ladder: &ScreenLadder, workspace: &Path) -> Arm {
             let stem = format!("c{i:03}");
             stems.insert(stem.clone(), *id);
             candidates.push(SweepCandidate {
+                members: vec![format!("h_{id}")],
                 uuid: format!("h_{id}"),
                 permutation_index: i,
                 kind: CandidateKind::Ablation,

@@ -369,9 +369,15 @@ impl CandidateLog<'_> {
             // vocabulary. A uuid this run's sweep did not propose (a carried
             // winner from an earlier batch) has no candidate kind to record and
             // is left for the batch that did propose it.
+            // The group candidate keyed on this uuid is not the row's
+            // candidate (#108): a group's kind and sampled delta describe the
+            // whole neighbourhood, and this row is about one neuron the scorer
+            // judged alone.
             let (Some(f), Some(candidate)) = (
                 features.get(uuid),
-                sampled.iter().find(|w| &w.candidate.uuid == uuid),
+                sampled
+                    .iter()
+                    .find(|w| !w.candidate.is_group() && &w.candidate.uuid == uuid),
             ) else {
                 unknown += 1;
                 continue;
