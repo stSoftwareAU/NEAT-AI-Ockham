@@ -157,6 +157,12 @@ pub enum AblationSkip {
     },
     /// Final candidate failed `creature.validate()`.
     Invalid(String),
+    /// A group cut was requested with no members (Issue #108).
+    ///
+    /// Named rather than silently returning the incumbent: a candidate that
+    /// removes nothing would be scored, tie the baseline and be reported as a
+    /// proposal the razor tried.
+    EmptyGroup,
 }
 
 impl AblationSkip {
@@ -170,9 +176,10 @@ impl AblationSkip {
             | Self::AggregateTarget { .. }
             | Self::UnknownSquash { .. } => BlockedReason::AggregateSquash,
             Self::NonFiniteMean(_) => BlockedReason::MissingActivation,
-            Self::UnknownNeuron(_) | Self::NotHidden { .. } | Self::TypedSynapse { .. } => {
-                BlockedReason::UnsafeTopology
-            }
+            Self::UnknownNeuron(_)
+            | Self::NotHidden { .. }
+            | Self::TypedSynapse { .. }
+            | Self::EmptyGroup => BlockedReason::UnsafeTopology,
             Self::Invalid(_) => BlockedReason::ValidationFailed,
         }
     }
@@ -221,6 +228,7 @@ impl fmt::Display for AblationSkip {
                 write!(f, "`{uuid}` squash `{squash}` is unknown; skipped")
             }
             Self::Invalid(m) => write!(f, "candidate failed creature.validate(): {m}"),
+            Self::EmptyGroup => write!(f, "group cut requested with no members"),
         }
     }
 }
@@ -266,62 +274,28 @@ pub fn ablate_mean(
     if !mean.is_finite() {
         return Err(AblationSkip::NonFiniteMean(mean));
     }
-    let requested_index = incumbent
-        .neurons
-        .iter()
-        .position(|n| n.uuid == uuid)
-        .ok_or_else(|| AblationSkip::UnknownNeuron(uuid.to_string()))?;
-    let requested = &incumbent.neurons[requested_index];
-    if requested.neuron_type != "hidden" {
-        return Err(AblationSkip::NotHidden {
-            uuid: uuid.to_string(),
-            neuron_type: requested.neuron_type.clone(),
-        });
-    }
-    let requested_squash = squash_of(requested)?;
-    if requested_squash.is_aggregate() {
-        return Err(AblationSkip::AggregateNeuron {
-            uuid: uuid.to_string(),
-            squash: requested
-                .squash
-                .clone()
-                .unwrap_or_else(|| "IDENTITY".into()),
-        });
-    }
+    let requested_index = require_ablatable_hidden(incumbent, uuid)?;
 
     // Rejection is decided on the incumbent, before anything is copied
     // (Issue #91). Most hidden neurons of a GRQ forest feed an aggregate
     // squash, so most visits end here: cloning a 7,000-neuron creature first
     // and throwing it away was the sweep paying full price for every neuron it
     // could never prune.
-    let outgoing = synapses_from(incumbent, uuid);
-    for syn in &outgoing {
-        require_ordinary(syn)?;
-        let target = neuron_by_uuid(incumbent, &syn.to_uuid)
-            .ok_or_else(|| AblationSkip::UnknownNeuron(syn.to_uuid.clone()))?;
-        reject_aggregate_neuron(target)?;
-    }
-    for syn in &synapses_to(incumbent, uuid) {
-        require_ordinary(syn)?;
-    }
+    reject_unfoldable_edges(incumbent, uuid)?;
 
     let mut working = incumbent.clone();
     working.memetic = None;
     let before = StructureSnapshot::of(&working);
 
     let mut compensations = Vec::new();
-    let mut used_mean = false;
-    for syn in outgoing {
-        apply_bias_fold(&mut working, &syn, mean, "mean", &mut compensations)?;
-        used_mean = true;
-    }
-
-    let mut removed_neurons = vec![RemovedNeuron {
-        uuid: uuid.to_string(),
-        neuron_type: "hidden".into(),
-        reason: "requested",
-    }];
-    remove_neuron(&mut working, uuid);
+    let mut removed_neurons = Vec::new();
+    let used_mean = fold_and_remove(
+        &mut working,
+        uuid,
+        mean,
+        &mut compensations,
+        &mut removed_neurons,
+    )?;
 
     cleanup_cascade(&mut working, &mut compensations, &mut removed_neurons)?;
     sort_synapses_canonically(&mut working);
@@ -345,6 +319,208 @@ pub fn ablate_mean(
         after,
         creature: working,
     })
+}
+
+/// One member of a group cut: a hidden neuron and the mean that replaces it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMember {
+    /// Hidden neuron UUID.
+    pub uuid: String,
+    /// Full-corpus mean post-activation of that neuron.
+    pub mean: f64,
+}
+
+/// Record of one emitted group ablation candidate (Issue #108).
+///
+/// The same transform as [`ablate_mean`], applied to several hidden neurons on
+/// one clone of the incumbent before the exact cleanup runs once over the
+/// result. Every neuron the transform removed is listed in
+/// [`Self::removed_neurons`], and each entry says whether it was a requested
+/// group cut or structure the cleanup cascade stranded.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupAblation {
+    /// Requested hidden-neuron UUIDs, in the order they were removed.
+    pub requested_uuids: Vec<String>,
+    /// Approximate vs exact.
+    pub transform_class: TransformClass,
+    /// Downstream bias updates, in application order.
+    pub compensations: Vec<BiasCompensation>,
+    /// Neurons removed (the requested group first, then the cascade).
+    pub removed_neurons: Vec<RemovedNeuron>,
+    /// Structure before the transform.
+    pub before: StructureSnapshot,
+    /// Structure after the transform.
+    pub after: StructureSnapshot,
+    /// Validated candidate creature.
+    #[serde(skip)]
+    pub creature: CreatureExport,
+}
+
+impl GroupAblation {
+    /// UUIDs the cleanup cascade removed on top of the requested group.
+    ///
+    /// The two are recorded apart because they answer different questions: the
+    /// group is what the razor chose to cut, the cascade is what that choice
+    /// stranded. A learning that conflated them could not reconstruct the
+    /// proposal it came from.
+    pub fn cascade_uuids(&self) -> Vec<String> {
+        self.removed_neurons
+            .iter()
+            .filter(|n| n.reason != "requested")
+            .map(|n| n.uuid.clone())
+            .collect()
+    }
+}
+
+/// Ablate a whole group of hidden neurons from one clone of `incumbent` (#108).
+///
+/// Some structure is only removable as a group: a chain or a low-fan-out branch
+/// can be collectively redundant while each neuron on its own is a poor
+/// approximation. Members are folded and removed in the order given — each with
+/// the same `bias_j += mean_i * w_ij` substitution [`ablate_mean`] applies — and
+/// the exact cleanup cascade then runs once over the result.
+///
+/// Fails closed exactly where the single-neuron transform does: an unknown or
+/// non-hidden member, a non-finite mean, an aggregate squash, an aggregate fold
+/// target, a typed edge, or a candidate `creature.validate()` rejects. Repeated
+/// UUIDs are folded once. An empty group is [`AblationSkip::EmptyGroup`] rather
+/// than a candidate identical to the incumbent.
+///
+/// Being buildable is not being good: a group candidate still faces the sampled
+/// screen and the full-corpus scorer, which alone accepts a cut.
+pub fn ablate_group(
+    incumbent: &CreatureExport,
+    members: &[GroupMember],
+) -> Result<GroupAblation, AblationSkip> {
+    // Deduplicated first so a repeated uuid cannot fold the same mean twice.
+    let mut requested: Vec<&GroupMember> = Vec::with_capacity(members.len());
+    let mut seen = HashSet::new();
+    for member in members {
+        if seen.insert(member.uuid.as_str()) {
+            requested.push(member);
+        }
+    }
+    if requested.is_empty() {
+        return Err(AblationSkip::EmptyGroup);
+    }
+    // Every member is rejected on the incumbent before anything is copied, so a
+    // group the razor could never build costs no clone (Issue #91).
+    for member in &requested {
+        if !member.mean.is_finite() {
+            return Err(AblationSkip::NonFiniteMean(member.mean));
+        }
+        require_ablatable_hidden(incumbent, &member.uuid)?;
+        reject_unfoldable_edges(incumbent, &member.uuid)?;
+    }
+
+    let mut working = incumbent.clone();
+    working.memetic = None;
+    let before = StructureSnapshot::of(&working);
+
+    let mut compensations = Vec::new();
+    let mut removed_neurons = Vec::new();
+    let mut used_mean = false;
+    for member in &requested {
+        used_mean |= fold_and_remove(
+            &mut working,
+            &member.uuid,
+            member.mean,
+            &mut compensations,
+            &mut removed_neurons,
+        )?;
+    }
+
+    cleanup_cascade(&mut working, &mut compensations, &mut removed_neurons)?;
+    sort_synapses_canonically(&mut working);
+
+    validate_creature(&working).map_err(|e| AblationSkip::Invalid(e.to_string()))?;
+
+    let after = StructureSnapshot::of(&working);
+    Ok(GroupAblation {
+        requested_uuids: requested.iter().map(|m| m.uuid.clone()).collect(),
+        transform_class: if used_mean {
+            TransformClass::Approximate
+        } else {
+            TransformClass::Exact
+        },
+        compensations,
+        removed_neurons,
+        before,
+        after,
+        creature: working,
+    })
+}
+
+/// Index of `uuid` in `creature`, once it is a hidden neuron the razor may fold.
+fn require_ablatable_hidden(creature: &CreatureExport, uuid: &str) -> Result<usize, AblationSkip> {
+    let index = creature
+        .neurons
+        .iter()
+        .position(|n| n.uuid == uuid)
+        .ok_or_else(|| AblationSkip::UnknownNeuron(uuid.to_string()))?;
+    let requested = &creature.neurons[index];
+    if requested.neuron_type != "hidden" {
+        return Err(AblationSkip::NotHidden {
+            uuid: uuid.to_string(),
+            neuron_type: requested.neuron_type.clone(),
+        });
+    }
+    if squash_of(requested)?.is_aggregate() {
+        return Err(AblationSkip::AggregateNeuron {
+            uuid: uuid.to_string(),
+            squash: requested
+                .squash
+                .clone()
+                .unwrap_or_else(|| "IDENTITY".into()),
+        });
+    }
+    Ok(index)
+}
+
+/// Reject the edges around `uuid` a bias fold cannot express.
+///
+/// A typed edge carries a role and an aggregate target is not a sum of its
+/// inputs, so neither can absorb a mean. Checked on the creature the candidate
+/// would be built from, before it is cloned.
+fn reject_unfoldable_edges(creature: &CreatureExport, uuid: &str) -> Result<(), AblationSkip> {
+    for syn in &synapses_from(creature, uuid) {
+        require_ordinary(syn)?;
+        let target = neuron_by_uuid(creature, &syn.to_uuid)
+            .ok_or_else(|| AblationSkip::UnknownNeuron(syn.to_uuid.clone()))?;
+        reject_aggregate_neuron(target)?;
+    }
+    for syn in &synapses_to(creature, uuid) {
+        require_ordinary(syn)?;
+    }
+    Ok(())
+}
+
+/// Fold `mean` into every downstream bias of `uuid` on `working`, then remove it.
+///
+/// Returns whether a mean was actually folded — a neuron whose outgoing edges
+/// have already gone with an earlier member of the same group folds nothing,
+/// and a transform that folded no mean is exact.
+fn fold_and_remove(
+    working: &mut CreatureExport,
+    uuid: &str,
+    mean: f64,
+    compensations: &mut Vec<BiasCompensation>,
+    removed: &mut Vec<RemovedNeuron>,
+) -> Result<bool, AblationSkip> {
+    let mut used_mean = false;
+    for syn in synapses_from(working, uuid) {
+        apply_bias_fold(working, &syn, mean, "mean", compensations)?;
+        used_mean = true;
+    }
+    removed.push(RemovedNeuron {
+        uuid: uuid.to_string(),
+        neuron_type: "hidden".into(),
+        reason: "requested",
+    });
+    remove_neuron(working, uuid);
+    Ok(used_mean)
 }
 
 pub(crate) fn cleanup_cascade(
@@ -797,6 +973,160 @@ mod tests {
         assert!(result.creature.neurons.iter().all(|n| n.uuid != "h1"));
         assert_eq!(result.after.hidden_neurons, 0);
         assert!(result.after.growth_units < result.before.growth_units);
+    }
+
+    fn group(uuids: &[&str], mean: f64) -> Vec<GroupMember> {
+        uuids
+            .iter()
+            .map(|u| GroupMember {
+                uuid: (*u).to_string(),
+                mean,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_group_cut_removes_every_member_and_its_cascade() {
+        let incumbent = chain_plus_keep();
+        let original = incumbent.clone();
+        let result = ablate_group(&incumbent, &group(&["h_up", "h_leaf"], 1.0)).unwrap();
+        assert_eq!(incumbent, original, "incumbent must be untouched");
+        assert_eq!(result.requested_uuids, vec!["h_up", "h_leaf"]);
+        let left: Vec<&str> = result
+            .creature
+            .neurons
+            .iter()
+            .map(|n| n.uuid.as_str())
+            .collect();
+        assert_eq!(left, vec!["h_keep", "output-0"], "{left:?}");
+        // Both members are primary cuts; nothing else was strandable here.
+        let requested: Vec<&str> = result
+            .removed_neurons
+            .iter()
+            .filter(|n| n.reason == "requested")
+            .map(|n| n.uuid.as_str())
+            .collect();
+        assert_eq!(requested, vec!["h_up", "h_leaf"]);
+        assert!(result.cascade_uuids().is_empty(), "{:?}", result.removed_neurons);
+        assert!(result.after.growth_units < result.before.growth_units);
+        validate_creature(&result.creature).unwrap();
+    }
+
+    #[test]
+    fn a_group_cut_distinguishes_primary_cuts_from_cleanup_cascade() {
+        // Cutting the leaf alone already strands `h_up`; asking for the leaf
+        // and the keeper leaves `h_up` to the cascade, so the record must say
+        // which two the razor chose and which one that choice stranded.
+        let incumbent = chain_plus_keep();
+        let result = ablate_group(&incumbent, &group(&["h_leaf", "h_keep"], 0.5)).unwrap();
+        assert_eq!(result.requested_uuids, vec!["h_leaf", "h_keep"]);
+        assert_eq!(result.cascade_uuids(), vec!["h_up"]);
+        assert!(
+            result
+                .removed_neurons
+                .iter()
+                .any(|n| n.uuid == "h_up" && n.reason == "no-outgoing")
+        );
+        assert_eq!(result.after.hidden_neurons, 0);
+        validate_creature(&result.creature).unwrap();
+    }
+
+    #[test]
+    fn a_group_cut_folds_each_member_mean_into_what_survives_it() {
+        // Cutting both hidden neurons folds 2.0 * 3.0 and 0.5 * 1.0 into the
+        // output bias, which starts at 0.25.
+        let incumbent = two_hidden();
+        let members = vec![
+            GroupMember {
+                uuid: "h_a".into(),
+                mean: 2.0,
+            },
+            GroupMember {
+                uuid: "h_b".into(),
+                mean: 0.5,
+            },
+        ];
+        let result = ablate_group(&incumbent, &members).unwrap();
+        assert_eq!(result.transform_class, TransformClass::Approximate);
+        let out = result
+            .creature
+            .neurons
+            .iter()
+            .find(|n| n.uuid == "output-0")
+            .unwrap();
+        assert!(
+            close(out.bias, 0.25 + 2.0 * 3.0 + 0.5 * 1.0),
+            "bias {}",
+            out.bias
+        );
+        assert_eq!(result.compensations.len(), 2);
+        validate_creature(&result.creature).unwrap();
+    }
+
+    #[test]
+    fn a_repeated_member_is_folded_once() {
+        let incumbent = two_hidden();
+        let once = ablate_group(&incumbent, &group(&["h_a"], 2.0)).unwrap();
+        let twice = ablate_group(&incumbent, &group(&["h_a", "h_a"], 2.0)).unwrap();
+        assert_eq!(twice.requested_uuids, vec!["h_a"]);
+        assert_eq!(twice.compensations, once.compensations);
+        assert_eq!(twice.creature, once.creature);
+    }
+
+    #[test]
+    fn a_group_cut_that_disconnects_every_output_folds_it_to_a_constant() {
+        // `h_a` and `h_b` are the only paths to the output. Cutting both is
+        // still a *buildable* candidate — the output keeps both folded means as
+        // its bias and stops depending on the input — and it is emitted rather
+        // than second-guessed. A creature that ignores its input scores badly,
+        // and it is the scorer that says so, never the razor.
+        let incumbent = two_hidden();
+        let result = ablate_group(&incumbent, &group(&["h_a", "h_b"], 2.0)).unwrap();
+        assert_eq!(result.after.hidden_neurons, 0);
+        assert_eq!(result.after.synapses, 0);
+        let out = result
+            .creature
+            .neurons
+            .iter()
+            .find(|n| n.uuid == "output-0")
+            .unwrap();
+        assert!(close(out.bias, 0.25 + 2.0 * 3.0 + 2.0 * 1.0), "bias {}", out.bias);
+        validate_creature(&result.creature).unwrap();
+    }
+
+    #[test]
+    fn an_unbuildable_member_blocks_the_whole_group() {
+        let incumbent = chain_plus_keep();
+        for (members, expect_unknown) in [
+            (group(&["h_up", "nope"], 1.0), true),
+            (group(&["h_up", "output-0"], 1.0), false),
+        ] {
+            let err = ablate_group(&incumbent, &members).unwrap_err();
+            if expect_unknown {
+                assert!(matches!(err, AblationSkip::UnknownNeuron(_)), "{err}");
+            } else {
+                assert!(matches!(err, AblationSkip::NotHidden { .. }), "{err}");
+            }
+        }
+        let typed = typed_if_fixture();
+        let err = ablate_group(&typed, &group(&["h_cond"], 0.0)).unwrap_err();
+        assert!(matches!(err, AblationSkip::TypedSynapse { .. }), "{err}");
+        let err = ablate_group(&incumbent, &group(&["h_up"], f64::NAN)).unwrap_err();
+        assert!(matches!(err, AblationSkip::NonFiniteMean(_)), "{err}");
+        let err = ablate_group(&incumbent, &[]).unwrap_err();
+        assert!(matches!(err, AblationSkip::EmptyGroup), "{err}");
+        assert_eq!(incumbent, chain_plus_keep(), "a skip must not mutate the source");
+    }
+
+    #[test]
+    fn a_single_member_group_matches_the_single_neuron_ablation() {
+        let incumbent = chain_plus_keep();
+        let single = ablate_mean(&incumbent, "h_leaf", 1.0, None).unwrap();
+        let grouped = ablate_group(&incumbent, &group(&["h_leaf"], 1.0)).unwrap();
+        assert_eq!(grouped.creature, single.creature);
+        assert_eq!(grouped.removed_neurons, single.removed_neurons);
+        assert_eq!(grouped.compensations, single.compensations);
+        assert_eq!(grouped.transform_class, single.transform_class);
     }
 
     #[test]

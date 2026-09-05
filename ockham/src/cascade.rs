@@ -31,11 +31,13 @@
 use std::collections::HashMap;
 
 use neat_core::{CreatureExport, NeuronExport, parse_squash_name};
+use serde::Serialize;
 
 use crate::ablation::growth_units;
 
 /// Structure a cut is estimated to remove once recursive cleanup has run.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CascadeEstimate {
     /// Whether the transform would refuse this cut outright.
     ///
