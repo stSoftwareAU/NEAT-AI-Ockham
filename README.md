@@ -1127,6 +1127,9 @@ Common options:
 | `--ordering-random-quota` | `0`, `0.1` for `learned` | Fraction of sweep slots reserved for the random control, in `[0, 1)`. A `learned` run reserves one visit in ten unless the flag says otherwise, so a fitted model cannot permanently starve the candidates it ranks last. |
 | `--ordering-model` | none | Fitted ranking model for `--ordering learned`, built by `train-ordering`; see [Composite and learned priority](#composite-and-learned-priority). Ranking only — the scorer still decides what survives. |
 | `--candidate-log` | none | Append one candidate feature/outcome row per scored candidate, as offline training data. Omitted: write nothing. |
+| `--group-cuts` | off | Also propose bounded structural neighbourhoods — chains and low-fan-out branches cut as one candidate; see [Structural neighbourhood group cuts](#structural-neighbourhood-group-cuts). Experimental, opt-in, and no bypass: a group faces the same screen and the same full-corpus scorer. |
+| `--group-max-size` | `4` | Hidden neurons in one group proposal, `2`–`8`. A size outside that range is refused rather than clamped. |
+| `--group-proposals` | `8` | Group proposals offered per sweep batch, best-ranked first. |
 | `--max-experiments` | none | Optional experiment cap in addition to timeout. |
 | `--scorer` | `rust_scorer` | NEAT-AI-scorer binary. |
 | `--scorer-arg` | none | Extra scorer argument; repeatable. |
@@ -1545,6 +1548,125 @@ done
 
 `cutsPerHour`, `growthUnitsSavedPerHour` and `firstWinMs` are what to compare.
 
+## Structural neighbourhood group cuts
+
+Some dead wood is a branch, not a twig 🪒.
+
+A hidden neuron is tested one at a time, and that is the right default — but a
+chain, a leaf branch or a small single-output tributary can be collectively
+redundant while **each** neuron in it is a poor approximation on its own. Cut
+the middle of a chain and one bias has to carry the whole chain's behaviour; the
+sampled screen quite reasonably says no, and the chain stays for ever. `--group-cuts`
+proposes those neighbourhoods as single candidates (#108).
+
+Two shapes are generated, from topology and the ranking signals Ockham already
+builds — never from a brute-force search over neuron subsets:
+
+- **chain** — `a → b → c`, where each link is the only way out of `a` and the
+  only way into `b`, so nothing else reads the intermediate values;
+- **branch** — a single-output tributary: a neuron with one outgoing synapse,
+  grown upstream through predecessors that feed nothing but the group.
+
+```mermaid
+flowchart LR
+    C[incumbent] --> T[index topology once]
+    T --> CH["chains: a → b → c"]
+    T --> BR["branches: one-edge exit,<br/>grown upstream"]
+    CH --> R{"rank: loudest<br/>mean_abs x importance<br/>÷ cascade saving"}
+    BR --> R
+    R --> G["ablate_group: fold every member's<br/>own mean, then the exact cleanup"]
+    G --> V["creature.validate()"]
+    V --> S[sampled screen]
+    S --> F[full-corpus scorer]
+    F --> A["accept: journal cascade kind=group,<br/>file the membership"]
+```
+
+Groups are deliberately **bounded** (`--group-max-size`, 2–8 neurons) and
+**capped** (`--group-proposals` per batch), because the number of connected
+subgraphs grows combinatorially and a razor that spends its budget enumerating
+them prunes nothing. Generation is deterministic: the walk visits neurons in the
+creature's own listing order, and proposals are ranked by
+`max(mean_abs × downstream importance) ÷ estimated growth units saved` with ties
+broken on the member UUIDs. A membership already screened this run is passed
+over and the search reaches further down the ranked list; an accept clears that
+memory, because the incumbent those verdicts were measured against is gone.
+
+Nothing about a group bypasses anything. It is built by the same mean
+substitution applied member by member on one clone, followed by the same exact
+cleanup; it must pass `creature.validate()`, the sampled screen and full-corpus
+scoring; and only that scorer accepts it. What a group does **not** do is claim
+screening coverage for its members: a neighbourhood screen says nothing about
+whether those neurons are removable one at a time, so it files no per-neuron
+screen record.
+
+An accepted group files its **whole membership** on every member's learnings
+record, so a later run rebuilds the plan it was:
+
+```json
+{"version":1,"uuid":"h_a","kind":"group","outcome":"accepted",
+ "group":["h_a","h_b"],"host":"ockham-1","unixSecs":1764930000}
+```
+
+Replay uses it. Each member's own latest verdict may say the cut loses alone —
+that is exactly why the group was proposed — so a group is replayed with the
+group transform rather than as members applied one at a time. Applying a chain
+member by member strands the rest of the chain in the cleanup cascade, the next
+member is "already gone", and the plan would be dropped. The membership is an
+additive optional field, so a mixed-version fleet sharing one cache reads the
+record either way. A group is only replayed while **every** member is still on
+the creature: a partly-applied neighbourhood is a different cut from the one
+that was judged.
+
+### What a group is worth
+
+```bash
+cargo run --release --example neighbourhood_bench
+```
+
+On a synthetic creature of 921 neurons and 1,600 synapses — 500 lone neurons,
+60 chains of four and 60 single-output tributaries — 32 bounded proposals are
+ranked in ~2 ms, and every one of them builds:
+
+| Transform | Proposals | Hidden removed | Synapses | Growth units | Per proposal |
+|---|---:|---:|---:|---:|---:|
+| group cut | 32 | 128 | 160 | 144.0 | 4.00 hidden, 4.50 units |
+| best single cut in the same neighbourhood | 32 | 128 | 160 | 144.0 | 4.00 hidden, 4.50 units |
+
+That `1.00x` is the honest headline: on these shapes the **exact cleanup already
+gets there**. Cutting the head of a chain strands the rest of it, so a single
+cut removes the same structure a group does. What differs is the arithmetic left
+behind — and that is a behavioural difference, not a structural one:
+
+- the **single** cut folds the head's mean into the next neuron, which then has
+  no incoming synapse and is folded onward as `squash(bias + mean × w)` — the
+  activation *at the mean input*;
+- the **group** cut folds each member's **own** measured mean — the mean *of the
+  activations*.
+
+For any curved squash those are different numbers, and neither is universally
+closer. On the benchmark's off-centre three-neuron chain over 401 inputs:
+
+| Transform | Mean \|Δoutput\| | Hidden removed |
+|---|---:|---:|
+| group cut | 0.362 | 3 |
+| single cut of the chain head | 0.344 | 3 |
+| single cut of the middle | 0.362 | 3 |
+
+So the experiment is exactly that — an experiment. The proposal may be clever;
+the scorer is still the judge, and a run reports what it actually bought:
+
+```json
+{"groupAccepts":3,"groupCutsAccepted":8,"groupHiddenRemoved":11,
+ "groupSynapsesRemoved":19,"groupGrowthUnitsRemoved":12.9,
+ "groupGrowthUnitsPerAccept":4.3,"groupGrowthUnitsRemovedPerHour":17.2}
+```
+
+`report` reads those off the `cascade` journal records an accept writes — the
+same series that audits the cascade estimate — so `kind: "group"` accepts are
+counted beside `individual` and `bundle` ones rather than in a series of their
+own. A control run without `--group-cuts` reports `groupAccepts: 0`, which is
+what makes the comparison a comparison.
+
 ## Outputs
 
 | Path | Purpose |
@@ -1706,6 +1828,7 @@ NEAT-AI-Ockham/
 │       ├── features.rs        # per-candidate feature vectors for ranking
 │       ├── priority.rs        # composite expected-pruning-value ranking
 │       ├── model.rs           # learned logistic ranker (ranking only)
+│       ├── neighbourhood.rs   # bounded chain/branch group-cut proposals
 │       ├── telemetry.rs       # candidate feature/outcome training rows
 │       ├── fixtures.rs
 │       ├── run.rs
