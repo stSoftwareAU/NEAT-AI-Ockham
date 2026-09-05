@@ -1553,27 +1553,31 @@ done
 Some dead wood is a branch, not a twig 🪒.
 
 A hidden neuron is tested one at a time, and that is the right default — but a
-chain, a leaf branch or a small single-output tributary can be collectively
-redundant while **each** neuron in it is a poor approximation on its own. Cut
-the middle of a chain and one bias has to carry the whole chain's behaviour; the
-sampled screen quite reasonably says no, and the chain stays for ever. `--group-cuts`
-proposes those neighbourhoods as single candidates (#108).
+chain, a leaf branch or a small low-importance subgraph can be collectively
+redundant while **each** neuron in it is a poor approximation on its own.
+`--group-cuts` proposes those neighbourhoods as single candidates (#108).
 
-Two shapes are generated, from topology and the ranking signals Ockham already
-builds — never from a brute-force search over neuron subsets:
+Three shapes are generated, from topology and the ranking signals Ockham
+already builds — never from a brute-force search over neuron subsets:
 
 - **chain** — `a → b → c`, where each link is the only way out of `a` and the
   only way into `b`, so nothing else reads the intermediate values;
 - **branch** — a single-output tributary: a neuron with one outgoing synapse,
-  grown upstream through predecessors that feed nothing but the group.
+  grown upstream through predecessors that feed nothing but the group;
+- **cluster** — a small connected subgraph grown from one neuron through hidden
+  neighbours **no louder than the neuron it started from**. This is the shape
+  that may leave through several edges, and therefore the one no single cut can
+  stand in for.
 
 ```mermaid
 flowchart LR
     C[incumbent] --> T[index topology once]
     T --> CH["chains: a → b → c"]
     T --> BR["branches: one-edge exit,<br/>grown upstream"]
+    T --> CL["clusters: quiet neighbours,<br/>possibly several exits"]
     CH --> R{"rank: loudest<br/>mean_abs x importance<br/>÷ cascade saving"}
     BR --> R
+    CL --> R
     R --> G["ablate_group: fold every member's<br/>own mean, then the exact cleanup"]
     G --> V["creature.validate()"]
     V --> S[sampled screen]
@@ -1584,10 +1588,13 @@ flowchart LR
 Groups are deliberately **bounded** (`--group-max-size`, 2–8 neurons) and
 **capped** (`--group-proposals` per batch), because the number of connected
 subgraphs grows combinatorially and a razor that spends its budget enumerating
-them prunes nothing. Generation is deterministic: the walk visits neurons in the
+them prunes nothing. Generation is deterministic: the walks follow the
 creature's own listing order, and proposals are ranked by
 `max(mean_abs × downstream importance) ÷ estimated growth units saved` with ties
-broken on the member UUIDs. A membership already screened this run is passed
+broken on the member UUIDs. A proposal whose cascade removes exactly what a
+larger proposal removes is dropped in favour of the larger one — otherwise every
+two-neuron prefix of a chain outranks the chain, because it strands the same
+tail with a quieter numerator. A membership already screened this run is passed
 over and the search reaches further down the ranked list; an accept clears that
 memory, because the incumbent those verdicts were measured against is gone.
 
@@ -1595,9 +1602,9 @@ Nothing about a group bypasses anything. It is built by the same mean
 substitution applied member by member on one clone, followed by the same exact
 cleanup; it must pass `creature.validate()`, the sampled screen and full-corpus
 scoring; and only that scorer accepts it. What a group does **not** do is claim
-screening coverage for its members: a neighbourhood screen says nothing about
-whether those neurons are removable one at a time, so it files no per-neuron
-screen record.
+screening coverage for its members, or a training row, or a place in the bundle
+pool: a neighbourhood verdict is about the neighbourhood, and reading it as a
+verdict on one of its neurons is the mistake this whole design avoids.
 
 An accepted group files its **whole membership** on every member's learnings
 record, so a later run rebuilds the plan it was:
@@ -1611,11 +1618,13 @@ Replay uses it. Each member's own latest verdict may say the cut loses alone —
 that is exactly why the group was proposed — so a group is replayed with the
 group transform rather than as members applied one at a time. Applying a chain
 member by member strands the rest of the chain in the cleanup cascade, the next
-member is "already gone", and the plan would be dropped. The membership is an
-additive optional field, so a mixed-version fleet sharing one cache reads the
-record either way. A group is only replayed while **every** member is still on
-the creature: a partly-applied neighbourhood is a different cut from the one
-that was judged.
+member is "already gone", and the plan would be dropped. A rejected group is
+filed too, keyed on the membership, so a plan that has stopped paying stops
+being replayed exactly as a single cut does. Group records are never read as
+per-neuron evidence: they cannot replay a member alone, and they cannot suppress
+one as a known failure. The membership is an additive optional field, so a
+mixed-version fleet sharing one cache reads the record either way, and a group
+is only replayed while **every** member is still on the creature.
 
 ### What a group is worth
 
@@ -1623,49 +1632,59 @@ that was judged.
 cargo run --release --example neighbourhood_bench
 ```
 
-On a synthetic creature of 921 neurons and 1,600 synapses — 500 lone neurons,
-60 chains of four and 60 single-output tributaries — 32 bounded proposals are
-ranked in ~2 ms, and every one of them builds:
+On a synthetic creature of 1,161 neurons and 2,140 synapses — 500 lone neurons,
+60 chains of four, 60 single-output tributaries and 60 two-exit webs — 300
+bounded proposals are ranked in ~7 ms, and each is scored by what the **real**
+transform removes, against the best single cut available in the same
+neighbourhood:
 
-| Transform | Proposals | Hidden removed | Synapses | Growth units | Per proposal |
-|---|---:|---:|---:|---:|---:|
-| group cut | 32 | 128 | 160 | 144.0 | 4.00 hidden, 4.50 units |
-| best single cut in the same neighbourhood | 32 | 128 | 160 | 144.0 | 4.00 hidden, 4.50 units |
+| Shape | Proposals | Group units | Best single units | Group ÷ single |
+|---|---:|---:|---:|---:|
+| chain | 60 | 270.0 | 270.0 | 1.00x |
+| branch | 120 | 360.0 | 360.0 | 1.00x |
+| cluster | 120 | 444.0 | 228.0 | **1.95x** |
+| all shapes | 300 | 1074.0 | 858.0 | 1.25x |
 
-That `1.00x` is the honest headline: on these shapes the **exact cleanup already
-gets there**. Cutting the head of a chain strands the rest of it, so a single
-cut removes the same structure a group does. What differs is the arithmetic left
-behind — and that is a behavioural difference, not a structural one:
+Those `1.00x` rows are the finding, not a disappointment. A chain and a
+tributary each leave the creature through **one** edge, so cutting that exit
+alone already strands the rest — and the arithmetic agrees exactly: the group
+folds each member's own mean, but only the exit's mean ever reaches a surviving
+neuron, which is precisely what the single cut folds. For those shapes a group
+cut *is* the exit cut, written with more names.
 
-- the **single** cut folds the head's mean into the next neuron, which then has
-  no incoming synapse and is folded onward as `squash(bias + mean × w)` — the
-  activation *at the mean input*;
-- the **group** cut folds each member's **own** measured mean — the mean *of the
-  activations*.
+A cluster can leave through several edges, and there no single cut stands in for
+it: cutting either member leaves the other alive, because each survivor keeps
+its own input. That is where the 1.95x comes from, and it is why the default
+batch on this creature is filled with clusters.
 
-For any curved squash those are different numbers, and neither is universally
-closer. On the benchmark's off-centre three-neuron chain over 401 inputs:
+Fidelity is a separate question from structure. On an off-centre three-neuron
+chain over 401 inputs, the group cut is arithmetically identical to cutting the
+chain's last neuron, and cutting the head is closer still:
 
-| Transform | Mean \|Δoutput\| | Hidden removed |
+| Transform | Mean abs Δoutput | Hidden removed |
 |---|---:|---:|
-| group cut | 0.362 | 3 |
-| single cut of the chain head | 0.344 | 3 |
-| single cut of the middle | 0.362 | 3 |
+| group cut | 0.429 | 3 |
+| single cut of the head (`f0`) | 0.344 | 3 |
+| single cut of the middle (`f1`) | 0.362 | 3 |
+| single cut of the tail (`f2`) | 0.429 | 3 |
 
-So the experiment is exactly that — an experiment. The proposal may be clever;
-the scorer is still the judge, and a run reports what it actually bought:
+So the proposal may be clever; the scorer is still the judge. A run reports what
+it actually bought:
 
 ```json
 {"groupAccepts":3,"groupCutsAccepted":8,"groupHiddenRemoved":11,
  "groupSynapsesRemoved":19,"groupGrowthUnitsRemoved":12.9,
- "groupGrowthUnitsPerAccept":4.3,"groupGrowthUnitsRemovedPerHour":17.2}
+ "groupHiddenPerAccept":3.7,"groupSynapsesPerAccept":6.3,
+ "groupGrowthUnitsPerAccept":4.3,"groupAcceptsPerHour":4.0,
+ "groupGrowthUnitsRemovedPerHour":17.2}
 ```
 
 `report` reads those off the `cascade` journal records an accept writes — the
 same series that audits the cascade estimate — so `kind: "group"` accepts are
 counted beside `individual` and `bundle` ones rather than in a series of their
-own. A control run without `--group-cuts` reports `groupAccepts: 0`, which is
-what makes the comparison a comparison.
+own. A control run without `--group-cuts` reports `groupAccepts: 0` and leaves
+every derived figure absent rather than reporting a rate it never measured,
+which is what makes the comparison a comparison.
 
 ## Outputs
 

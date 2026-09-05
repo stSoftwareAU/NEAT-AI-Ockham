@@ -92,17 +92,12 @@ impl SweepCandidate {
         self.members.len() > 1
     }
 
-    /// Hidden neurons this candidate cuts — never empty.
+    /// Hidden neurons this candidate cuts, upstream-first.
     ///
-    /// Falls back to [`Self::uuid`] for a candidate deserialised from a record
-    /// written before groups existed: a missing member list means one cut, and
-    /// reporting none would silently drop the neuron from every count.
-    pub fn cuts(&self) -> Vec<String> {
-        if self.members.is_empty() {
-            vec![self.uuid.clone()]
-        } else {
-            self.members.clone()
-        }
+    /// Never empty: every construction site seeds [`Self::members`] with at
+    /// least [`Self::uuid`].
+    pub fn cuts(&self) -> &[String] {
+        &self.members
     }
 }
 

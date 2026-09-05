@@ -103,7 +103,11 @@ pub struct FullOutcome {
     pub skipped_bundles: usize,
     /// Individual entries dropped to fit the wall-clock budget (Issue #58).
     pub dropped_individuals: usize,
-    /// Bundle entries dropped to fit the wall-clock budget (Issue #58).
+    /// Bundle and group entries dropped to fit the wall clock (#58, #108).
+    ///
+    /// One counter for both: a group is a multi-neuron plan trimmed on the same
+    /// terms as a bundle, and splitting the figure would imply the budget
+    /// treats them differently.
     pub dropped_bundles: usize,
     /// Plans the generator's own cap refused to build (Issue #55).
     pub capped_plans: usize,
@@ -481,7 +485,12 @@ pub fn evaluate_full(
         } else {
             "individual"
         };
-        pending.push((stem, kind, w.candidate.cuts(), w.candidate.creature.clone()));
+        pending.push((
+            stem,
+            kind,
+            w.candidate.cuts().to_vec(),
+            w.candidate.creature.clone(),
+        ));
     }
     let mut bundle_i = 0usize;
     let mut group_i = 0usize;
@@ -496,6 +505,15 @@ pub fn evaluate_full(
             // so a chain is not dropped for stranding its own tail (#108).
             Entry::Group(plan) => {
                 let built = propose_group(incumbent, stats, &plan).map_err(|b| b.to_string());
+                // A neighbourhood the transform now refuses is named, with the
+                // reason: a replayed group that quietly stopped being buildable
+                // would look exactly like one that was never recorded (#108).
+                if let Err(reason) = &built {
+                    crate::log::detail(&format!(
+                        "group plan {} not rebuilt: {reason}",
+                        plan.join(" + ")
+                    ));
+                }
                 ("group", plan, built)
             }
         };

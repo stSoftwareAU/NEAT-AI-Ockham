@@ -20,9 +20,11 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use neat_ai_ockham::ablation::StructureSnapshot;
 use neat_ai_ockham::fixtures::{creature, neuron, synapse};
 use neat_ai_ockham::neighbourhood::{
-    NeighbourhoodConfig, NeighbourhoodKind, group_batch, propose_neighbourhoods,
+    DEFAULT_NEIGHBOURHOOD_PROPOSALS, NeighbourhoodConfig, NeighbourhoodKind, group_batch,
+    propose_neighbourhoods,
 };
 use neat_ai_ockham::stats::{ActivationStats, NeuronStats};
 use neat_ai_ockham::{GroupMember, ablate_group, ablate_mean};
@@ -40,6 +42,7 @@ fn mixed_creature(
     chains: usize,
     length: usize,
     tributaries: usize,
+    webs: usize,
 ) -> CreatureExport {
     let mut neurons = Vec::new();
     let mut synapses = Vec::new();
@@ -76,6 +79,27 @@ fn mixed_creature(
         neurons.push(neuron("hidden", &exit, 0.0, Some("TANH")));
         synapses.push(synapse(&exit, "output-0", 0.01));
     }
+    // Webs: two very quiet neurons wired to each other but leaving through
+    // **two** different survivors. No single cut removes both — cutting either
+    // leaves the other alive, because each survivor keeps its own input — and
+    // neither the chain nor the tributary walk will find them. This is the
+    // shape only the cluster walk reaches. Survivors are listed after the pair
+    // they are fed by: NEAT-AI-core reads a synapse into an earlier-listed
+    // neuron as recursive, and this creature is forward-only.
+    for w in 0..webs {
+        let (a, b) = (format!("w{w}_a"), format!("w{w}_b"));
+        let (x, y) = (format!("w{w}_x"), format!("w{w}_y"));
+        let input = format!("input-{}", w % inputs);
+        for uuid in [&a, &b, &x, &y] {
+            neurons.push(neuron("hidden", uuid, 0.0, Some("TANH")));
+            synapses.push(synapse(&input, uuid, 0.5));
+        }
+        synapses.push(synapse(&a, &b, 0.5));
+        synapses.push(synapse(&a, &x, 0.01));
+        synapses.push(synapse(&b, &y, 0.01));
+        synapses.push(synapse(&x, "output-0", 0.1));
+        synapses.push(synapse(&y, "output-0", 0.1));
+    }
     neurons.push(neuron("output", "output-0", 0.0, Some("IDENTITY")));
     creature(inputs, 1, neurons, synapses)
 }
@@ -89,7 +113,14 @@ fn stats_for(creature: &CreatureExport) -> ActivationStats {
         .enumerate()
         .filter(|(_, n)| n.neuron_type == "hidden")
         .map(|(i, n)| {
-            let mean_abs = if n.uuid.starts_with('l') { 0.4 } else { 0.05 };
+            let mean_abs = match n.uuid.chars().next() {
+                Some('l') => 0.4,
+                // Quietest of all, so the shape a single cut cannot stand in
+                // for is ranked where the razor will actually reach it.
+                Some('w') if n.uuid.ends_with("_a") || n.uuid.ends_with("_b") => 0.005,
+                Some('w') => 0.4,
+                _ => 0.05,
+            };
             NeuronStats {
                 uuid: n.uuid.clone(),
                 neuron_index: i,
@@ -116,6 +147,31 @@ struct Removed {
 }
 
 impl Removed {
+    /// Fold in what one transform removed, before versus after.
+    fn observe(&mut self, before: &StructureSnapshot, after: &StructureSnapshot) {
+        self.proposals += 1;
+        self.hidden += before.hidden_neurons - after.hidden_neurons;
+        self.synapses += before.synapses - after.synapses;
+        self.growth_units += before.growth_units - after.growth_units;
+    }
+
+    fn add(&mut self, other: &Self) {
+        self.proposals += other.proposals;
+        self.hidden += other.hidden;
+        self.synapses += other.synapses;
+        self.growth_units += other.growth_units;
+    }
+
+    /// Growth units removed against a control's, or infinity when the control
+    /// removed nothing at all.
+    fn ratio(&self, control: &Self) -> f64 {
+        if control.growth_units > 0.0 {
+            self.growth_units / control.growth_units
+        } else {
+            f64::INFINITY
+        }
+    }
+
     fn per_proposal(&self, value: f64) -> f64 {
         if self.proposals == 0 {
             0.0
@@ -144,16 +200,24 @@ fn main() {
     const CHAINS: usize = 60;
     const LENGTH: usize = 4;
     const TRIBUTARIES: usize = 60;
+    const WEBS: usize = 60;
 
-    let creature = mixed_creature(INPUTS, LONE, CHAINS, LENGTH, TRIBUTARIES);
+    let creature = mixed_creature(INPUTS, LONE, CHAINS, LENGTH, TRIBUTARIES, WEBS);
     let stats = stats_for(&creature);
+    // Deliberately wider than a run's default batch: the comparison below wants
+    // every shape the creature offers, while `group_batch` below shows what one
+    // real batch would actually pick at the shipped default.
     let cfg = NeighbourhoodConfig {
         max_size: 4,
-        max_proposals: 32,
+        max_proposals: 512,
+    };
+    let batch_cfg = NeighbourhoodConfig {
+        max_proposals: DEFAULT_NEIGHBOURHOOD_PROPOSALS,
+        ..cfg
     };
     println!(
         "creature: {} neurons, {} synapses ({LONE} lone, {CHAINS} chains of {LENGTH}, \
-         {TRIBUTARIES} tributaries)",
+         {TRIBUTARIES} tributaries, {WEBS} two-exit webs)",
         creature.neurons.len(),
         creature.synapses.len()
     );
@@ -161,20 +225,28 @@ fn main() {
     let started = Instant::now();
     let proposals = propose_neighbourhoods(&creature, &stats, cfg);
     let propose_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let chains = proposals
-        .iter()
-        .filter(|p| p.kind == NeighbourhoodKind::Chain)
-        .count();
+    let count = |kind: NeighbourhoodKind| proposals.iter().filter(|p| p.kind == kind).count();
     println!(
-        "proposals: {} bounded neighbourhoods ({chains} chain, {} branch) ranked in \
+        "proposals: {} bounded neighbourhoods ({} chain, {} branch, {} cluster) ranked in \
          {propose_ms:.1}ms",
         proposals.len(),
-        proposals.len() - chains,
+        count(NeighbourhoodKind::Chain),
+        count(NeighbourhoodKind::Branch),
+        count(NeighbourhoodKind::Cluster),
     );
 
     let started = Instant::now();
-    let batch = group_batch(&creature, &stats, cfg, &HashSet::new());
-    let build_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let batch = group_batch(&creature, &stats, batch_cfg, &HashSet::new());
+    println!(
+        "  one default batch: {} candidate(s) built and validated in {:.1}ms ({} of them cluster)",
+        batch.candidates.len(),
+        started.elapsed().as_secs_f64() * 1000.0,
+        batch
+            .candidates
+            .iter()
+            .filter(|c| c.members.len() > 1)
+            .count(),
+    );
     if !batch.blocked.is_empty() {
         println!(
             "  {} proposal(s) the transform refused: {}",
@@ -183,76 +255,83 @@ fn main() {
         );
     }
 
-    // What the group cuts actually remove.
-    let mut group = Removed::default();
-    for proposal in &proposals {
-        let members: Vec<GroupMember> = proposal
-            .members
-            .iter()
-            .filter_map(|uuid| {
-                stats.by_uuid(uuid).map(|s| GroupMember {
-                    uuid: uuid.clone(),
-                    mean: s.mean,
+    // What each shape actually removes, against the best single cut the sweep
+    // could have made inside the same neighbourhood — the fairest control,
+    // not the weakest.
+    println!("structure removed per shape, measured by the real transforms:");
+    let mut totals = (Removed::default(), Removed::default());
+    for kind in [
+        NeighbourhoodKind::Chain,
+        NeighbourhoodKind::Branch,
+        NeighbourhoodKind::Cluster,
+    ] {
+        let (mut group, mut single) = (Removed::default(), Removed::default());
+        let started_group = Instant::now();
+        for proposal in proposals.iter().filter(|p| p.kind == kind) {
+            let members: Vec<GroupMember> = proposal
+                .members
+                .iter()
+                .filter_map(|uuid| {
+                    stats.by_uuid(uuid).map(|s| GroupMember {
+                        uuid: uuid.clone(),
+                        mean: s.mean,
+                    })
                 })
-            })
-            .collect();
-        let Ok(built) = ablate_group(&creature, &members) else {
-            continue;
-        };
-        group.proposals += 1;
-        group.hidden += built.before.hidden_neurons - built.after.hidden_neurons;
-        group.synapses += built.before.synapses - built.after.synapses;
-        group.growth_units += built.before.growth_units - built.after.growth_units;
-    }
-
-    // The control: the same neurons cut one at a time, each from the untouched
-    // incumbent — which is exactly what the single-neuron sweep would do.
-    let started_single = Instant::now();
-    let mut single = Removed::default();
-    for proposal in &proposals {
-        let mut best: Option<(usize, usize, f64)> = None;
-        for uuid in &proposal.members {
-            let Some(mean) = stats.by_uuid(uuid).map(|s| s.mean) else {
-                continue;
-            };
-            let Ok(built) = ablate_mean(&creature, uuid, mean, None) else {
-                continue;
-            };
-            let removed = (
-                built.before.hidden_neurons - built.after.hidden_neurons,
-                built.before.synapses - built.after.synapses,
-                built.before.growth_units - built.after.growth_units,
-            );
-            // The best single cut the sweep could have made in this
-            // neighbourhood — the fairest control, not the weakest.
-            if best.is_none_or(|b| removed.2 > b.2) {
-                best = Some(removed);
+                .collect();
+            match ablate_group(&creature, &members) {
+                Ok(built) => group.observe(&built.before, &built.after),
+                // Never silent: a refusal changes what the totals below mean.
+                Err(skip) => println!("  refused {}: {skip}", proposal.members.join(" + ")),
             }
         }
-        if let Some((hidden, synapses, growth_units)) = best {
-            single.proposals += 1;
-            single.hidden += hidden;
-            single.synapses += synapses;
-            single.growth_units += growth_units;
-        }
-    }
-    let single_ms = started_single.elapsed().as_secs_f64() * 1000.0;
+        let group_ms = started_group.elapsed().as_secs_f64() * 1000.0;
 
-    println!("structure removed, measured by the real transforms:");
-    println!("{}", group.line("group cut", build_ms));
-    println!("{}", single.line("best single cut", single_ms));
-    let ratio = if single.growth_units > 0.0 {
-        group.growth_units / single.growth_units
-    } else {
-        f64::INFINITY
-    };
+        let started_single = Instant::now();
+        for proposal in proposals.iter().filter(|p| p.kind == kind) {
+            let mut best: Option<(StructureSnapshot, StructureSnapshot)> = None;
+            for uuid in &proposal.members {
+                let Some(mean) = stats.by_uuid(uuid).map(|s| s.mean) else {
+                    continue;
+                };
+                match ablate_mean(&creature, uuid, mean, None) {
+                    Ok(built) => {
+                        let saved = built.before.growth_units - built.after.growth_units;
+                        let better = best.as_ref().is_none_or(|(before, after)| {
+                            saved > before.growth_units - after.growth_units
+                        });
+                        if better {
+                            best = Some((built.before, built.after));
+                        }
+                    }
+                    Err(skip) => println!("  refused single cut of {uuid}: {skip}"),
+                }
+            }
+            if let Some((before, after)) = best {
+                single.observe(&before, &after);
+            }
+        }
+        let single_ms = started_single.elapsed().as_secs_f64() * 1000.0;
+
+        if group.proposals == 0 && single.proposals == 0 {
+            continue;
+        }
+        println!(
+            "{}",
+            group.line(&format!("{} group", kind.name()), group_ms)
+        );
+        println!(
+            "{}",
+            single.line(&format!("{} best single", kind.name()), single_ms)
+        );
+        println!("  {:<26} {:.2}x", "  group ÷ single", group.ratio(&single));
+        totals.0.add(&group);
+        totals.1.add(&single);
+    }
     println!(
-        "  group cuts remove {ratio:.2}x the growth units of the best single cut in the same \
-         neighbourhood"
-    );
-    println!(
-        "  candidates built for one batch: {} (stems g000…)",
-        batch.candidates.len()
+        "  {:<26} {:.2}x over {} proposals",
+        "all shapes, group ÷ single",
+        totals.0.ratio(&totals.1),
+        totals.0.proposals
     );
     fidelity();
 
@@ -299,8 +378,9 @@ fn fidelity() {
         .collect();
     let grouped = ablate_group(&creature, &members).expect("the chain must build");
     println!(
-        "\nfidelity on one {}-neuron chain, {SAMPLES} inputs in [-2, 2]:",
-        proposal.members.len()
+        "\nfidelity on one {}-neuron {}, {SAMPLES} inputs in [-2, 2]:",
+        proposal.members.len(),
+        proposal.kind.name(),
     );
     println!(
         "  {:<26} {:.6} mean |Δoutput|, {} hidden removed",

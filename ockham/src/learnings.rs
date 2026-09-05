@@ -723,14 +723,21 @@ pub fn kind_label(kind: CandidateKind) -> &'static str {
     }
 }
 
-/// Latest outcome per uuid still present on `creature`.
+/// Latest **individual** outcome per uuid still present on `creature`.
+///
+/// Group verdicts are skipped (Issue #108). A group cut was judged as a
+/// neighbourhood, so its record says nothing about whether that neuron comes
+/// out on its own: counted here it would replay a member no scorer measured
+/// alone, or — worse — suppress one for seven days as a known failure on
+/// evidence about its neighbours. [`confirmed_groups`] reads those records
+/// instead, keyed on the membership rather than on any one neuron.
 fn latest_by_uuid<'a>(
     known: &'a [Learning],
     present: &HashSet<&str>,
 ) -> HashMap<&'a str, &'a Learning> {
     let mut latest: HashMap<&str, &Learning> = HashMap::new();
     for l in known {
-        if !present.contains(l.uuid.as_str()) {
+        if !present.contains(l.uuid.as_str()) || l.group.is_some() {
             continue;
         }
         latest
@@ -880,27 +887,37 @@ pub fn confirmed_groups(
     min_improvement: f64,
 ) -> Vec<Vec<String>> {
     let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
-    let mut ranked: Vec<&Learning> = known
-        .iter()
+    // The latest verdict per **membership**, exactly as the single-cut path
+    // takes the latest verdict per uuid. A group the full corpus has since
+    // rejected drops out here, which is what stops a replayed plan being
+    // re-scored on every pass until the deadline.
+    let mut latest: HashMap<&[String], &Learning> = HashMap::new();
+    for l in known {
+        let Some(group) = l.group.as_deref() else {
+            continue;
+        };
+        if group.len() < 2 || !group.iter().all(|u| present.contains(u.as_str())) {
+            continue;
+        }
+        latest
+            .entry(group)
+            .and_modify(|prev| {
+                if l.unix_secs >= prev.unix_secs {
+                    *prev = l;
+                }
+            })
+            .or_insert(l);
+    }
+    let mut ranked: Vec<&Learning> = latest
+        .into_values()
         .filter(|l| l.outcome == Outcome::Accepted || confirmed_positive(l, min_improvement))
-        .filter(|l| {
-            l.group
-                .as_ref()
-                .is_some_and(|g| g.len() > 1 && g.iter().all(|u| present.contains(u.as_str())))
-        })
         .collect();
     ranked.sort_by(|a, b| {
         b.unix_secs
             .cmp(&a.unix_secs)
             .then_with(|| a.group.cmp(&b.group))
     });
-    let mut seen: HashSet<Vec<String>> = HashSet::new();
-    ranked
-        .into_iter()
-        .filter_map(|l| l.group.clone())
-        // One plan per membership: every member of a group files the same list.
-        .filter(|group| seen.insert(group.clone()))
-        .collect()
+    ranked.into_iter().filter_map(|l| l.group.clone()).collect()
 }
 
 /// Still-present uuids an **older** corpus once spoke well of (Issue #88).
@@ -1300,6 +1317,43 @@ mod tests {
         // Nor is a single-neuron verdict, which replay already covers.
         let single = vec![group_rec("h_a", &["h_a"], 10)];
         assert!(confirmed_groups(&single, &c, 1e-6).is_empty());
+    }
+
+    #[test]
+    fn a_group_the_corpus_later_rejected_stops_being_replayed() {
+        let c = two_hidden();
+        let known = vec![
+            group_rec("h_a", &["h_a", "h_b"], 10),
+            group_rec("h_b", &["h_a", "h_b"], 10),
+            Learning {
+                outcome: Outcome::Rejected,
+                ..group_rec("h_a", &["h_a", "h_b"], 20)
+            },
+        ];
+        assert!(
+            confirmed_groups(&known, &c, 1e-6).is_empty(),
+            "the latest verdict on a membership decides, as it does for a uuid"
+        );
+    }
+
+    #[test]
+    fn a_group_verdict_is_never_read_as_a_verdict_on_its_members() {
+        let c = two_hidden();
+        let now = 1_000_000;
+        let accepted = vec![group_rec("h_a", &["h_a", "h_b"], now)];
+        assert!(
+            known_wins(&accepted, &c, ReplayConfig::default()).is_empty(),
+            "a member of an accepted group was never judged on its own"
+        );
+        assert!(ranked_confirmed(&accepted, &c, 1e-6).is_empty());
+        let rejected = vec![Learning {
+            outcome: Outcome::Rejected,
+            ..group_rec("h_a", &["h_a", "h_b"], now)
+        }];
+        assert!(
+            known_failures(&rejected, &c, ReplayConfig::default(), now, 1e-6).is_empty(),
+            "a rejected group must not suppress its members' own screening"
+        );
     }
 
     #[test]

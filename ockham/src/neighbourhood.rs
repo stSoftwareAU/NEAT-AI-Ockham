@@ -66,6 +66,14 @@ pub enum NeighbourhoodKind {
     Chain,
     /// A single-output tributary grown upstream from a one-edge exit.
     Branch,
+    /// A small connected subgraph of neurons no louder than the one it grew
+    /// from — the shape that is **not** reducible to a single cut.
+    ///
+    /// A chain or a tributary leaves the creature through one edge, so cutting
+    /// its exit alone already strands the rest and the group is only a
+    /// different way of writing the same removal. A cluster may leave through
+    /// several, and then no single cut removes what it removes.
+    Cluster,
 }
 
 impl NeighbourhoodKind {
@@ -74,6 +82,7 @@ impl NeighbourhoodKind {
         match self {
             Self::Chain => "chain",
             Self::Branch => "branch",
+            Self::Cluster => "cluster",
         }
     }
 }
@@ -99,6 +108,12 @@ impl Default for NeighbourhoodConfig {
 
 impl NeighbourhoodConfig {
     /// [`Self::max_size`] clamped to the range the generator will honour.
+    ///
+    /// The CLI refuses an out-of-range `--group-max-size` by name rather than
+    /// clamping it ([`crate::config::OckhamConfig::validate`]), so an operator
+    /// is never told a size was honoured when it was not. This clamp is the
+    /// library's own floor for a caller that never passed through that check —
+    /// a bound the generator can rely on, not a second policy for the flag.
     pub fn effective_size(&self) -> usize {
         self.max_size
             .clamp(MIN_NEIGHBOURHOOD_SIZE, MAX_NEIGHBOURHOOD_SIZE)
@@ -144,6 +159,16 @@ pub fn propose_neighbourhoods(
     let topology = Topology::new(creature);
     let max_size = cfg.effective_size();
 
+    let sensitivity = SensitivityIndex::new(creature);
+    let cascade = CascadeIndex::new(creature);
+    // One estimated effect per hidden neuron, measured once: the cluster walk
+    // ranks with it and every proposal is scored by it.
+    let effects: HashMap<&str, f64> = topology
+        .hidden
+        .iter()
+        .filter_map(|uuid| effect_of(uuid, stats, &sensitivity).map(|e| (*uuid, e)))
+        .collect();
+
     let mut groups: Vec<(NeighbourhoodKind, Vec<&str>)> = Vec::new();
     groups.extend(
         topology
@@ -157,9 +182,13 @@ pub fn propose_neighbourhoods(
             .into_iter()
             .map(|m| (NeighbourhoodKind::Branch, m)),
     );
+    groups.extend(
+        topology
+            .clusters(max_size, &effects)
+            .into_iter()
+            .map(|m| (NeighbourhoodKind::Cluster, m)),
+    );
 
-    let sensitivity = SensitivityIndex::new(creature);
-    let cascade = CascadeIndex::new(creature);
     let mut seen: HashSet<BTreeSet<&str>> = HashSet::new();
     let mut out: Vec<Neighbourhood> = Vec::new();
     for (kind, members) in groups {
@@ -171,7 +200,11 @@ pub fn propose_neighbourhoods(
         }
         // Every member needs a measured mean: the group ablation substitutes
         // one per member, and a group missing one could never be built.
-        let Some(effect) = group_effect(&members, stats, &sensitivity) else {
+        let Some(effect) = members
+            .iter()
+            .map(|uuid| effects.get(uuid).copied())
+            .try_fold(0.0f64, |worst, e| e.map(|e| worst.max(e)))
+        else {
             continue;
         };
         let estimate = cascade.estimate(&members);
@@ -186,6 +219,7 @@ pub fn propose_neighbourhoods(
             estimate,
         });
     }
+    drop_subsumed(&mut out);
     // Total order: the ranking key, then the members themselves, so two groups
     // that estimate identically still come back in the same order everywhere.
     out.sort_by(|a, b| {
@@ -273,27 +307,71 @@ pub fn group_batch(
     batch
 }
 
-/// Loudest `mean_abs × downstream importance` in the group, or `None` when a
-/// member has no measured activation.
-fn group_effect(
-    members: &[&str],
+/// Drop a proposal a larger one already removes the whole of (Issue #108).
+///
+/// Every upstream sub-cut of a chain strands the same tail, so it carries the
+/// same estimated saving with a strictly smaller numerator and would always
+/// outrank the chain it is part of. Left alone, the cap fills with two-neuron
+/// prefixes and the whole chain — the shape this experiment exists to test — is
+/// never proposed at all. Where two proposals remove exactly the same structure
+/// and one's members are a subset of the other's, the superset is the proposal:
+/// it names what actually goes, and it substitutes each member's own measured
+/// mean rather than folding a constant through the rest.
+///
+/// Comparison is confined to proposals whose dry runs agree, so this costs a
+/// bucket walk rather than a pass over every pair.
+fn drop_subsumed(groups: &mut Vec<Neighbourhood>) {
+    let sets: Vec<BTreeSet<String>> = groups
+        .iter()
+        .map(|g| g.members.iter().cloned().collect())
+        .collect();
+    // Bucket by what the cut is estimated to remove; only proposals that agree
+    // there can subsume one another.
+    let mut buckets: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (i, group) in groups.iter().enumerate() {
+        buckets
+            .entry((group.estimate.hidden_neurons(), group.estimate.synapses))
+            .or_default()
+            .push(i);
+    }
+    let mut subsumed = vec![false; groups.len()];
+    for bucket in buckets.values() {
+        for &i in bucket {
+            for &j in bucket {
+                if i != j
+                    && !subsumed[j]
+                    && sets[i].len() < sets[j].len()
+                    && sets[i].is_subset(&sets[j])
+                {
+                    subsumed[i] = true;
+                    break;
+                }
+            }
+        }
+    }
+    let mut keep = subsumed.into_iter().map(|s| !s);
+    groups.retain(|_| keep.next().unwrap_or(true));
+}
+
+/// `mean_abs × downstream importance` for one neuron — how much of what it
+/// produces still reaches the outputs.
+///
+/// `None` when the neuron carries no usable measurement: no activation
+/// statistic, a non-finite mean, or an importance that overflowed. A neuron
+/// with no measured mean could not be group-ablated at all, so a group holding
+/// one is never proposed.
+fn effect_of(
+    uuid: &str,
     stats: &ActivationStats,
     sensitivity: &SensitivityIndex<'_>,
 ) -> Option<f64> {
-    let mut worst = 0.0f64;
-    for uuid in members {
-        let neuron = stats.by_uuid(uuid)?;
-        if !neuron.mean.is_finite() {
-            return None;
-        }
-        let importance = sensitivity.importance(uuid).unwrap_or(f64::INFINITY);
-        let effect = neuron.mean_abs * importance;
-        if !effect.is_finite() {
-            return None;
-        }
-        worst = worst.max(effect);
+    let neuron = stats.by_uuid(uuid)?;
+    if !neuron.mean.is_finite() {
+        return None;
     }
-    Some(worst)
+    let importance = sensitivity.importance(uuid).unwrap_or(f64::INFINITY);
+    let effect = neuron.mean_abs * importance;
+    effect.is_finite().then_some(effect)
 }
 
 /// Hidden-neuron adjacency of one creature, in its own listing order.
@@ -387,6 +465,64 @@ impl<'a> Topology<'a> {
                     break;
                 }
                 members.push(next);
+            }
+            if members.len() >= MIN_NEIGHBOURHOOD_SIZE {
+                out.push(members);
+            }
+        }
+        out
+    }
+
+    /// Small connected subgraphs grown from each hidden neuron (Issue #108).
+    ///
+    /// From every hidden neuron with a measured effect, the walk admits hidden
+    /// neighbours — either direction — that are **no louder than the neuron it
+    /// started from**, in the creature's listing order, until the group is
+    /// full. The seed is therefore the loudest member and the group's ranking
+    /// key is the seed's own effect.
+    ///
+    /// That is what keeps this "low-importance neighbourhoods" without
+    /// inventing a threshold for "quiet": a group seeded on a loud neuron is
+    /// ranked on that neuron's volume and sorts behind every genuinely quiet
+    /// group, so the cap never spends a slot on it.
+    ///
+    /// This is the shape a single cut cannot stand in for: a chain or a
+    /// tributary reaches the rest of the creature through one edge, so cutting
+    /// that edge's neuron already strands the rest, but a cluster may leave
+    /// through several. It is still bounded, still deterministic and still
+    /// derived from topology and sensitivity — never a search over arbitrary
+    /// subsets.
+    fn clusters(&self, max_size: usize, effects: &HashMap<&str, f64>) -> Vec<Vec<&'a str>> {
+        let mut out = Vec::new();
+        for seed in &self.hidden {
+            let Some(&loudest) = effects.get(seed) else {
+                continue;
+            };
+            let mut members: Vec<&str> = vec![*seed];
+            let mut set: HashSet<&str> = HashSet::from([*seed]);
+            let mut frontier = 0usize;
+            while frontier < members.len() && members.len() < max_size {
+                let current = members[frontier];
+                frontier += 1;
+                let neighbours = self
+                    .targets(current)
+                    .iter()
+                    .chain(self.sources(current).iter());
+                for neighbour in neighbours {
+                    if members.len() >= max_size {
+                        break;
+                    }
+                    if !self.hidden_set.contains(neighbour) || set.contains(neighbour) {
+                        continue;
+                    }
+                    // Quieter than the seed, or the group would be ranked on a
+                    // neuron the outputs still depend on.
+                    if effects.get(neighbour).is_none_or(|e| *e > loudest) {
+                        continue;
+                    }
+                    set.insert(neighbour);
+                    members.push(neighbour);
+                }
             }
             if members.len() >= MIN_NEIGHBOURHOOD_SIZE {
                 out.push(members);
@@ -610,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_without_statistics_builds_nothing_and_says_so() {
+    fn a_batch_without_statistics_proposes_nothing_to_build() {
         let creature = chain_creature();
         let batch = group_batch(
             &creature,
@@ -654,6 +790,152 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `a` and `b` are quiet and feed each other, but leave through two
+    /// different survivors, each of which keeps its own input.
+    fn web_creature() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "a", 0.0, Some("TANH")),
+                neuron("hidden", "b", 0.0, Some("TANH")),
+                neuron("hidden", "x", 0.0, Some("TANH")),
+                neuron("hidden", "y", 0.0, Some("TANH")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "a", 1.0),
+                synapse("input-0", "b", 1.0),
+                synapse("input-0", "x", 1.0),
+                synapse("input-0", "y", 1.0),
+                synapse("a", "b", 0.5),
+                synapse("a", "x", 0.01),
+                synapse("b", "y", 0.01),
+                synapse("x", "output-0", 1.0),
+                synapse("y", "output-0", 1.0),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_two_exit_cluster_is_proposed_where_no_single_cut_removes_it() {
+        let creature = web_creature();
+        let stats = stats_with(&creature, |uuid| match uuid {
+            "a" | "b" => 0.005,
+            _ => 0.4,
+        });
+        let groups = propose_neighbourhoods(&creature, &stats, NeighbourhoodConfig::default());
+        let cluster = groups
+            .iter()
+            .find(|g| g.kind == NeighbourhoodKind::Cluster)
+            .unwrap_or_else(|| panic!("no cluster proposed: {:?}", names(&groups)));
+        assert_eq!(cluster.members, vec!["a", "b"]);
+        assert_eq!(
+            groups[0].members,
+            vec!["a", "b"],
+            "the quiet pair must rank first: {:?}",
+            names(&groups)
+        );
+        // A group seeded on a loud survivor is ranked on that survivor's
+        // volume, so it sorts behind the quiet pair rather than spending the
+        // cap's first slot.
+        let loud = groups
+            .iter()
+            .position(|g| g.members.iter().any(|m| m == "x" || m == "y"));
+        assert!(loud.is_none_or(|i| i > 0), "{:?}", names(&groups));
+        // Two exits, so no single cut in the neighbourhood removes what the
+        // group does — the case chains and tributaries cannot show.
+        let members: Vec<GroupMember> = cluster
+            .members
+            .iter()
+            .map(|uuid| GroupMember {
+                uuid: uuid.clone(),
+                mean: stats.by_uuid(uuid).unwrap().mean,
+            })
+            .collect();
+        let grouped = ablate_group(&creature, &members).unwrap();
+        let group_saving = grouped.before.growth_units - grouped.after.growth_units;
+        for uuid in &cluster.members {
+            let mean = stats.by_uuid(uuid).unwrap().mean;
+            let single = crate::ablation::ablate_mean(&creature, uuid, mean, None).unwrap();
+            let single_saving = single.before.growth_units - single.after.growth_units;
+            assert!(
+                group_saving > single_saving,
+                "the group must remove more than cutting {uuid} alone: \
+                 {group_saving} vs {single_saving}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_proposal_a_larger_one_already_removes_is_not_offered_twice() {
+        // Every upstream sub-cut of a chain strands the same tail, so without
+        // subsumption the cap fills with two-neuron prefixes and the chain this
+        // experiment is about is never proposed.
+        let creature = chain_creature();
+        let stats = stats_for(&creature, 0.1);
+        let groups = propose_neighbourhoods(&creature, &stats, NeighbourhoodConfig::default());
+        assert!(
+            groups.iter().any(|g| g.members == ["c1", "c2", "c3"]),
+            "the whole chain must survive ranking: {:?}",
+            names(&groups)
+        );
+        assert!(
+            groups.iter().all(|g| g.members != ["c1", "c2"]),
+            "a sub-cut removing exactly the same structure is not a second \
+             proposal: {:?}",
+            names(&groups)
+        );
+    }
+
+    #[test]
+    fn a_membership_already_tried_is_passed_over_for_the_next_one() {
+        let creature = web_creature();
+        let stats = stats_with(&creature, |uuid| match uuid {
+            "a" | "b" => 0.005,
+            _ => 0.4,
+        });
+        let cfg = NeighbourhoodConfig {
+            max_size: 2,
+            max_proposals: 1,
+        };
+        let first = group_batch(&creature, &stats, cfg, &HashSet::new());
+        let key = group_key(&first.candidates[0].members);
+        let second = group_batch(&creature, &stats, cfg, &HashSet::from([key.clone()]));
+        assert!(
+            second
+                .candidates
+                .iter()
+                .all(|c| group_key(&c.members) != key),
+            "a membership already screened must not come back this run"
+        );
+        assert_ne!(
+            second.candidates.first().map(|c| c.members.clone()),
+            first.candidates.first().map(|c| c.members.clone()),
+            "the search must reach further down the ranked list"
+        );
+    }
+
+    #[test]
+    fn a_group_key_names_its_membership_in_order() {
+        assert_eq!(group_key(&["h_a".into(), "h_b".into()]), "h_a,h_b");
+        assert_eq!(group_key(&["h_a".into()]), "h_a");
+        assert_eq!(group_key(&[]), "");
+        // Order is membership order, so two orders of one set are two keys —
+        // the transform folds means in that order and the cut differs.
+        assert_ne!(
+            group_key(&["h_b".into(), "h_a".into()]),
+            group_key(&["h_a".into(), "h_b".into()])
+        );
+    }
+
+    #[test]
+    fn every_shape_has_a_kebab_case_name() {
+        assert_eq!(NeighbourhoodKind::Chain.name(), "chain");
+        assert_eq!(NeighbourhoodKind::Branch.name(), "branch");
+        assert_eq!(NeighbourhoodKind::Cluster.name(), "cluster");
     }
 
     #[test]

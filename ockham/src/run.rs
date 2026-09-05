@@ -440,7 +440,7 @@ struct WinnerTally {
 impl WinnerTally {
     /// Fold one full-score cohort into the tally.
     fn observe(&mut self, full: &FullOutcome, min_improvement: f64) {
-        self.plans += full.bundles.len();
+        self.plans += full.bundles.len() + full.groups.len();
         self.skipped += full.skipped_bundles;
         self.dropped += full.dropped();
         for cand in &full.individuals {
@@ -1507,11 +1507,22 @@ fn ockham_loop(
                             batch_idx,
                         )?;
                         if let Some(log) = &candidate_log {
+                            // A group loser's delta belongs to the whole
+                            // neighbourhood, so it is not a row about the
+                            // neuron it was keyed on (#108) — the same rule the
+                            // judged rows, the bundle pool and screen coverage
+                            // already follow.
+                            let solo: Vec<crate::sweep::ScreenedLoser> = screen
+                                .losers
+                                .iter()
+                                .filter(|l| l.kind != crate::sweep::CandidateKind::Group)
+                                .cloned()
+                                .collect();
                             log.screened_out(
                                 &incumbent.creature,
                                 &activation,
                                 &incumbent.checksum,
-                                &screen.losers,
+                                &solo,
                                 screen.screen_ms,
                                 // Winners, losers and the incumbent: every
                                 // creature the one screen call scored.
@@ -2258,30 +2269,53 @@ fn file_full_outcome(
             group: None,
         });
     }
-    if let Some(winner) = &full.winner {
-        // A group cut is filed as the neighbourhood it was: every member
-        // carries the whole membership so replay can rebuild it (Issue #108).
-        // Without that, N members each look like a lone win that loses when it
-        // is retried alone — which is exactly what the group was proposed to
-        // get past.
-        let group = (winner.candidate.kind == "group").then_some(&winner.candidate.uuids[..]);
-        for uuid in &winner.candidate.uuids {
-            if seen.contains(uuid.as_str()) {
-                continue;
-            }
+    // Every group the cohort scored is filed as the neighbourhood it was, won
+    // or lost (Issue #108). Every member carries the whole membership, so
+    // replay rebuilds the plan rather than retrying members that each lose
+    // alone — and a rejected group drops out of `confirmed_groups`, which is
+    // what stops a replayed plan being re-scored on every pass to the deadline.
+    // The verdict is keyed on the membership, never on the neuron: it says
+    // nothing about whether that neuron comes out on its own.
+    for scored in &full.groups {
+        let accepted = full
+            .winner
+            .as_ref()
+            .is_some_and(|w| w.candidate.uuids == scored.uuids);
+        for uuid in &scored.uuids {
             verdicts.push(Verdict {
                 uuid: uuid.as_str(),
-                kind: if group.is_some() {
-                    crate::sweep::CandidateKind::Group
+                kind: crate::sweep::CandidateKind::Group,
+                outcome: if accepted {
+                    Outcome::Accepted
                 } else {
-                    crate::sweep::CandidateKind::Ablation
+                    Outcome::Rejected
                 },
-                outcome: Outcome::Accepted,
-                // Measured only inside the winning bundle or group, so its
-                // individual contribution is unknown — never guess it.
+                // Measured only inside the group, so the member's individual
+                // contribution is unknown — never guess it.
                 full_delta: None,
-                group,
+                group: Some(&scored.uuids[..]),
             });
+        }
+    }
+    if let Some(winner) = &full.winner {
+        // A winning bundle's members are filed too, unless the group loop above
+        // already covered them.
+        let group = (winner.candidate.kind == "group").then_some(&winner.candidate.uuids[..]);
+        if group.is_none() {
+            for uuid in &winner.candidate.uuids {
+                if seen.contains(uuid.as_str()) {
+                    continue;
+                }
+                verdicts.push(Verdict {
+                    uuid: uuid.as_str(),
+                    kind: crate::sweep::CandidateKind::Ablation,
+                    outcome: Outcome::Accepted,
+                    // Measured only inside the winning bundle, so its
+                    // individual contribution is unknown — never guess it.
+                    full_delta: None,
+                    group: None,
+                });
+            }
         }
     }
     let n = file_verdicts(store, &verdicts, known);
@@ -2937,6 +2971,69 @@ mod tests {
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
         assert!(!best.contains("\"a1\""), "{best}");
         assert!(!best.contains("\"a2\""), "{best}");
+    }
+
+    /// Issue #108: a replayed group the corpus now rejects must be filed as
+    /// rejected, or `confirmed_groups` hands the same plan back on every pass
+    /// and the run re-scores it until the deadline. The single-cut path
+    /// converges for exactly this reason.
+    #[test]
+    fn a_replayed_group_the_corpus_rejects_is_filed_and_not_offered_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = chain_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let corpus = crate::corpus::corpus_info(&train, &TrainingDataConfig::new(1, 1)).unwrap();
+        let store = LearningsStore::new(&learnings_dir, corpus.identity.clone(), "t".into());
+        for uuid in ["a1", "a2"] {
+            store
+                .append(&crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: uuid.into(),
+                    kind: "group".into(),
+                    outcome: Outcome::Accepted,
+                    unix_secs: crate::incumbent::now_unix() - 100,
+                    host: "t".into(),
+                    full_delta: None,
+                    group: Some(vec!["a1".into(), "a2".into()]),
+                })
+                .unwrap();
+        }
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(3),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            group_cuts: true,
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.10),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.accepts, 0, "nothing beats the incumbent here");
+        let filed = store.load().unwrap();
+        let group_verdicts: Vec<&crate::learnings::Learning> =
+            filed.iter().filter(|l| l.group.is_some()).collect();
+        assert!(
+            group_verdicts
+                .iter()
+                .any(|l| l.outcome == Outcome::Rejected),
+            "the rejected group must be recorded: {group_verdicts:?}"
+        );
+        // And with that record filed, the plan is no longer offered.
+        let incumbent = crate::incumbent::load_incumbent(&cfg.creature).unwrap();
+        assert!(
+            crate::learnings::confirmed_groups(&filed, &incumbent.creature, cfg.min_improvement)
+                .is_empty()
+        );
     }
 
     /// Issue #108: a group's verdict is about the neighbourhood, so it must
