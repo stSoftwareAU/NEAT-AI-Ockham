@@ -172,12 +172,15 @@ impl Sweep {
         creature: &CreatureExport,
         stats: &ActivationStats,
         seed: u64,
-        cfg: OrderingConfig,
+        cfg: OrderingConfig<'_>,
     ) -> Self {
         let order = hidden_order(creature, stats, cfg, seed);
+        // The strategy that actually ranked, so a permutation identity always
+        // names the ranking behind it (#107).
+        let strategy = cfg.effective_strategy();
         let mut ident = format!(
             "seed={seed}\nordering={}\nrandomQuota={}\n",
-            cfg.strategy.name(),
+            strategy.name(),
             cfg.random_quota
         );
         for uuid in &order {
@@ -186,7 +189,7 @@ impl Sweep {
         }
         Self {
             seed,
-            ordering: cfg.strategy,
+            ordering: strategy,
             permutation_identity: sha256_hex(ident.as_bytes()),
             order,
             next: 0,
@@ -319,7 +322,11 @@ impl Sweep {
     }
 }
 
-fn is_identity(creature: &CreatureExport, uuid: &str) -> bool {
+/// Whether `uuid` carries an `IDENTITY` squash — an exact-fold opportunity.
+///
+/// Shared with the orderings (#107) so one place decides what counts as an
+/// identity neuron, including that an unparsable squash name does not.
+pub(crate) fn is_identity(creature: &CreatureExport, uuid: &str) -> bool {
     creature.neurons.iter().any(|n| {
         n.uuid == uuid
             && parse_squash_name(n.squash.as_deref().unwrap_or("IDENTITY"))
@@ -809,6 +816,7 @@ mod tests {
         let cfg = OrderingConfig {
             strategy: Ordering::LowMeanAbs,
             random_quota: 0.25,
+            priority: None,
         };
         let a = Sweep::with_ordering(&creature, &stats, 17, cfg);
         let b = Sweep::with_ordering(&creature, &stats, 17, cfg);
@@ -861,13 +869,14 @@ mod tests {
         uuids.iter().map(|u| (*u).to_string()).collect()
     }
 
-    fn every_ordering() -> Vec<OrderingConfig> {
+    fn every_ordering() -> Vec<OrderingConfig<'static>> {
         let mut cfgs = Vec::new();
         for strategy in Ordering::ALL {
             for random_quota in [0.0, 0.25, 0.5, 0.9] {
                 cfgs.push(OrderingConfig {
                     strategy: *strategy,
                     random_quota,
+                    priority: None,
                 });
             }
         }
@@ -954,6 +963,7 @@ mod tests {
         let cfg = OrderingConfig {
             strategy: Ordering::LowMeanAbs,
             random_quota: 0.3,
+            priority: None,
         };
         let mut a = Sweep::with_ordering(&creature, &stats, 17, cfg);
         let mut b = Sweep::with_ordering(&creature, &stats, 17, cfg);

@@ -1099,6 +1099,7 @@ noise floor is measured before it is trusted.
 ```bash
 neat_ai_ockham <creature.json> <training-data-dir> [OPTIONS]
 neat_ai_ockham report <experiments.jsonl> [...]
+neat_ai_ockham train-ordering <candidates.jsonl> [...] --out <model.json>
 neat_ai_ockham --help
 ```
 
@@ -1123,7 +1124,9 @@ Common options:
 | `--unchecked-first` | on with `--learnings-dir`, off without | Screen never-checked neurons first, then recycle the stalest; see [Unchecked-first selection](#unchecked-first-selection). Set `--unchecked-first=false` to keep the raw seeded permutation. |
 | `--old-corpus-first` | on with `--learnings-dir`, off without | Read what older corpus epochs learnt: check the hidden neurons they once removed before the rest, and replay their confirmed winners early as hypotheses; see [Old-corpus priority](#old-corpus-priority). Evidence only — every one is re-scored against the current corpus, and no historical record can suppress or accept a cut. Set `--old-corpus-first=false` to disable. |
 | `--ordering` | `random` | Named candidate ordering; see [Candidate ordering](#candidate-ordering). |
-| `--ordering-random-quota` | `0` | Fraction of sweep slots reserved for the random control, in `[0, 1)`. |
+| `--ordering-random-quota` | `0`, `0.1` for `learned` | Fraction of sweep slots reserved for the random control, in `[0, 1)`. A `learned` run reserves one visit in ten unless the flag says otherwise, so a fitted model cannot permanently starve the candidates it ranks last. |
+| `--ordering-model` | none | Fitted ranking model for `--ordering learned`, built by `train-ordering`; see [Composite and learned priority](#composite-and-learned-priority). Ranking only — the scorer still decides what survives. |
+| `--candidate-log` | none | Append one candidate feature/outcome row per scored candidate, as offline training data. Omitted: write nothing. |
 | `--max-experiments` | none | Optional experiment cap in addition to timeout. |
 | `--scorer` | `rust_scorer` | NEAT-AI-scorer binary. |
 | `--scorer-arg` | none | Extra scorer argument; repeatable. |
@@ -1153,6 +1156,8 @@ scoring exactly as it does under the random control.
 | `cascade-risk-ratio` | Least `mean_abs_activation × Σ abs(outgoing weight)` per cascade growth unit. |
 | `low-output-sensitivity` | Least **downstream output sensitivity**; see [Downstream output sensitivity](#downstream-output-sensitivity). |
 | `low-estimated-effect` | Least `mean_abs_activation × output importance` — how loud the neuron is, scaled by how much of that reaches the outputs. |
+| `composite` | Highest hand-built **expected pruning value**: every signal above read together; see [Composite and learned priority](#composite-and-learned-priority). |
+| `learned` | The same economics with `P` from a fitted model (`--ordering-model`). |
 
 Every strategy starts from the seeded random permutation and then applies a
 **stable** sort by its ranking key, so ties keep an unbiased random order and
@@ -1375,6 +1380,171 @@ done
 `acceptedCuts` are the four measures to compare — the same four the benchmark
 above reports against its proxy judge.
 
+## Composite and learned priority
+
+Each ordering above reads one signal. `composite` reads them together and ranks
+by the economics the sweep is actually paid in:
+
+```text
+expected_pruning_value = P(the full scorer confirms the cut)
+                       × ln(1 + expected growth-unit saving)
+                       ÷ expected evaluation cost
+```
+
+- **`P`** is a transparent logistic of the signals in `features.rs` — quietness
+  (`mean_abs`, variance), downstream sensitivity, fan-out, `IDENTITY` squash,
+  topology depth, and what earlier corpus epochs learnt about the uuid.
+- **the saving** is the cascade dry-run's growth units, entered as
+  `ln(1 + units)`: a cut twice the size is not twice as likely to compound into
+  cumulative improvement, so the cascade breaks ties between candidates of
+  similar odds rather than overruling them.
+- **the cost** is one sampled screen plus a full score at the fleet's promotion
+  rate. It is charged at a *rate*, not per candidate: the ranking cannot predict
+  which candidates the screen promotes — sampled false positives are exactly the
+  ones no signal saw coming — and charging `P × full-score cost` instead makes a
+  hopeless candidate look cheap, promoting precisely the cuts the scorer will not
+  confirm. The benchmark below measured that form as worse on both economics.
+
+`learned` is the same expression with `P` from a fitted model. The model is a
+logistic regression over the same fifteen named features — fifteen coefficients
+and a bias in a JSON file, readable by a human — fitted offline from Ockham's own
+outcomes:
+
+```mermaid
+flowchart LR
+    R["run --candidate-log"] --> L[("candidates.jsonl")]
+    L --> T["train-ordering"] --> M[("model.json")]
+    M --> N["next run --ordering learned"]
+    N --> K[ranking key only]
+    K --> S[sampled screen] --> F[full scorer] --> A[accept]
+    N --> L
+```
+
+**The model only ranks.** It chooses what is tested sooner and nothing else:
+every candidate it promotes still passes `creature.validate()`, the sampled
+screen and full-corpus scoring, and only that scorer accepts a cut. No model,
+weight or historical record can remove a neuron.
+
+### Telemetry
+
+`--candidate-log <path>` appends one self-describing JSON line per candidate the
+run spent scorer time on — the feature vector the ranking saw, beside what the
+scorer made of it:
+
+```json
+{"version":1,"unixSecs":1770000000,"host":"GRQ-23","corpusIdentity":"9f3c…",
+ "creatureChecksum":"a3d4…","ordering":"composite","seed":42,"uuid":"h_a",
+ "kind":"ablation","features":{"measured":1.0,"logMeanAbs":0.916,"…":0.0},
+ "sampleDelta":0.31,"fullDelta":0.002,"outcome":"accepted",
+ "growthUnitsRemoved":1.1,"scorerMs":804}
+```
+
+Written **after** a verdict and never read during one. A candidate the screen
+threw out is logged too, with its sampled Δ and no full Δ: it is the only
+evidence the ranker gets about what does *not* work. `kind` is always the
+sweep's — `identity`, `ablation` or `constant`.
+
+Three exclusions, each for the same reason — a row must carry only what the
+scorer actually said about that neuron:
+
+- **replayed candidates are not logged.** A replay candidate is a uuid the
+  learnings cache already called a winner, so its outcomes come from a
+  population the ranking did not choose;
+- **only individually scored uuids carry a `fullDelta`.** A uuid measured solely
+  inside a bundle had no contribution of its own measured;
+- **`growthUnitsRemoved` is non-zero only for an accepted individual.** A
+  bundle's saving is shared structure no member removed alone, so it is
+  attributed to none of them rather than counted once per member.
+
+### Training
+
+```bash
+neat_ai_ockham train-ordering runs/*/candidates.jsonl --out model.json
+neat_ai_ockham creature.json training/ --ordering learned --ordering-model model.json
+```
+
+`train-ordering` is offline, deterministic and reproducible: full-batch gradient
+descent from a zero start, no RNG, and a holdout of every fifth row by position
+— the same rows and hyper-parameters give the same model on every host. It
+prints the fit's held-out ranking quality (`auc`, `accuracy`, `logLoss`), the
+corpus identities the rows came from, and every coefficient by name. `--epochs`,
+`--learning-rate`, `--l2`, `--holdout-every` and `--min-improvement` tune the
+fit; `--holdout-every 0` evaluates on the training rows and says so rather than
+presenting an optimistic number as a held-out one.
+
+The model records the feature schema it was fitted on, and a model whose schema
+differs from the running binary's is **refused at load** rather than read against
+the wrong columns. `--ordering learned` without a model that loads stops the run
+— a run that asked to be ranked by a model must not quietly rank by something
+else.
+
+Historical evidence is a **prior, not current truth**: verdicts from older corpus
+epochs — and only older epochs — enter `P` as saturating `ln(1 + wins)` and
+`ln(1 + failures)` terms that move a candidate earlier or later and can never
+rule one in or out.
+
+Every strategy keeps `--ordering-random-quota`, and a `learned` run reserves
+`0.1` of its visits for the random control by default. A hand-written ranking is
+a fixed function of the creature, so a neuron it buries is buried for a reason a
+human can read; a fitted model learns from the outcomes of the candidates it
+chose, so a uuid it ranks last is never tried, never logged and never gets to
+change its own mind. Reserved exploration is what stops that loop closing — and
+every strategy still visits every eligible neuron eventually.
+
+### Benchmark
+
+```bash
+cargo run --release --example priority_ordering_bench
+```
+
+The benchmark simulates one budget per strategy against a declared ground truth,
+the same screen and full-score costs, and the same creature — 2,250 hidden
+neurons as 1,500 lone neurons and 150 five-neuron chains, with the loud neurons
+carrying the heavy outgoing weights they earned. A quiet neuron is confirmable,
+except that one in ten is not and one loud neuron in twenty is anyway: a ground
+truth that *is* one of the ranking signals would score that signal against
+itself. Growth units are what the real `ablate_mean` and its recursive cleanup
+remove, not the ranking key. The budget is deliberately smaller than the sweep,
+because an ordering only matters when the budget cannot reach everything:
+
+| `--ordering` | Time to first cut | Confirmed cuts/hour | Growth units/hour | Missed winners |
+|---|---:|---:|---:|---:|
+| `random` | 0.9s | 3012 | 8044 | 59.6% |
+| `low-variance` | 0.8s | 4212 | 11461 | 37.6% |
+| `low-mean-abs` | 0.8s | 4212 | 11461 | 37.6% |
+| `narrow-range` | 0.8s | 4212 | 11461 | 37.6% |
+| `low-outgoing-contribution` | 0.8s | 4224 | 12612 | 37.4% |
+| `low-fan-out` | 0.8s | 2928 | 12578 | 61.1% |
+| `high-growth-saving` | 0.9s | 3000 | 3900 | 59.8% |
+| `identity-first` | 0.9s | 3012 | 8044 | 59.6% |
+| `cascade-saving` | 0.8s | 2928 | 12578 | 61.1% |
+| `cascade-risk-ratio` | 0.8s | 4224 | 12612 | 37.4% |
+| `composite` | 0.8s | 4128 | 12642 | 39.1% |
+| `learned` | 0.8s | 4236 | 12628 | 37.1% |
+
+Both new strategies beat the random control on every measure. `learned` — fitted
+from 400 rows of a previous run's outcomes, held-out AUC 0.895 on 200 rows the
+fit never saw — finds the most
+confirmed cuts per hour and misses the fewest winners of any strategy;
+`composite` removes the most growth units per hour, marginally ahead of
+`cascade-risk-ratio`, while trailing it slightly on cuts. Order-building is a
+once-per-sweep 29ms at this size, the same order as `cascade-risk-ratio`'s.
+
+That is **not** a promotion. The simulated scorer's ground truth is quietness
+plus noise, and quietness is a signal both new strategies read, so the harness
+can show a ranking's discovery rate and cannot show whether a real scorer agrees.
+`random` stays the default until real runs on a mature creature say otherwise:
+
+```bash
+for o in random cascade-risk-ratio composite; do
+  neat_ai_ockham creature.json training/ --seed 42 --ordering "$o" \
+    --candidate-log "runs/$o/candidates.jsonl" --output-dir "runs/$o"
+  neat_ai_ockham report "runs/$o/experiments.jsonl"
+done
+```
+
+`cutsPerHour`, `growthUnitsSavedPerHour` and `firstWinMs` are what to compare.
+
 ## Outputs
 
 | Path | Purpose |
@@ -1533,6 +1703,10 @@ NEAT-AI-Ockham/
 │       ├── ordering.rs        # named candidate ordering strategies
 │       ├── cascade.rs         # topology-only cascade dry-run for ordering
 │       ├── sensitivity.rs     # backward output-sensitivity estimate for ordering
+│       ├── features.rs        # per-candidate feature vectors for ranking
+│       ├── priority.rs        # composite expected-pruning-value ranking
+│       ├── model.rs           # learned logistic ranker (ranking only)
+│       ├── telemetry.rs       # candidate feature/outcome training rows
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs

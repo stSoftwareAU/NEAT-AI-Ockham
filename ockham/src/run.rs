@@ -758,6 +758,50 @@ fn ockham_loop(
         PriorHint::none()
     };
 
+    // What the composite and learned rankings read beyond the creature (#107):
+    // the fleet's own history as a prior, and a fitted model when one was
+    // configured. Built once, borrowed by every sweep this run rebuilds.
+    // Historical epochs only (#88, #101): a verdict this corpus has already
+    // returned is current truth the sweep acts on elsewhere, not a prior, and
+    // folding the two into one counter would leave neither the ranking nor the
+    // training rows able to tell them apart.
+    let evidence =
+        crate::features::PriorEvidence::from_history(&prior_records, config.min_improvement);
+    let model = match &config.ordering_model {
+        Some(path) => Some(crate::model::PriorityModel::load(path)?),
+        None => None,
+    };
+    if let Some(model) = &model {
+        log::info(&format!(
+            "ordering model: {} row(s), {} win(s), fitted by {} — ranking only (#107)",
+            model.training().rows,
+            model.training().wins,
+            model.training().crate_version
+        ));
+    }
+    let priority = crate::priority::PriorityContext::with(evidence, model);
+    // A `learned` run whose model never loaded stops here rather than ranking
+    // by something it was not asked for.
+    let ordering = ordering.with_priority(&priority);
+    ordering.validate_ranker()?;
+    let candidate_log =
+        config
+            .candidate_log
+            .as_deref()
+            .map(|path| crate::telemetry::CandidateLog {
+                path,
+                stamp: crate::telemetry::RunStamp {
+                    host: config.learnings_host.clone().unwrap_or_else(default_host),
+                    corpus_identity: corpus.identity.clone(),
+                    // Stamped per row from the incumbent the features were read
+                    // from; an accept moves the incumbent mid-run.
+                    creature_checksum: incumbent.checksum.clone(),
+                    ordering: ordering.effective_strategy().name().to_string(),
+                    seed,
+                },
+                evidence: &priority.evidence,
+            });
+
     // Coverage is fleet state, so it reprioritises the sweep one layer above
     // the ordering strategies — after the identity above is already fixed.
     let unchecked_first = config.unchecked_first_enabled();
@@ -1388,6 +1432,18 @@ fn ockham_loop(
                             &journal_path,
                             batch_idx,
                         )?;
+                        if let Some(log) = &candidate_log {
+                            log.screened_out(
+                                &incumbent.creature,
+                                &activation,
+                                &incumbent.checksum,
+                                &screen.losers,
+                                screen.screen_ms,
+                                // Winners, losers and the incumbent: every
+                                // creature the one screen call scored.
+                                screen.winners.len() + screen.losers.len() + 1,
+                            );
+                        }
                         screen.winners
                     }
                     Err(e) => {
@@ -1551,6 +1607,15 @@ fn ockham_loop(
                     },
                 )?;
                 tally.observe(&full, config.min_improvement);
+                if let Some(log) = &candidate_log {
+                    log.judged(
+                        &incumbent.creature,
+                        &activation,
+                        &incumbent.checksum,
+                        &sampled,
+                        &full,
+                    );
+                }
                 file_full_outcome(store, &mut known, &sampled, &full);
                 update_pool(&mut pool, &sampled, &full, config.min_improvement);
                 if let Some(win) = full.winner {
@@ -1794,7 +1859,7 @@ fn open_coverage_tail(
     incumbent: &Incumbent,
     activation: &ActivationStats,
     seed: u64,
-    ordering: crate::ordering::OrderingConfig,
+    ordering: crate::ordering::OrderingConfig<'_>,
     unchecked_first: bool,
     screens: &[Screened],
     prior: &PriorHint<'_>,
@@ -1841,7 +1906,7 @@ fn restart_after_accept(
     incumbent: &Incumbent,
     activation: &ActivationStats,
     seed: u64,
-    ordering: crate::ordering::OrderingConfig,
+    ordering: crate::ordering::OrderingConfig<'_>,
     unchecked_first: bool,
     screens: &[Screened],
     prior: &PriorHint<'_>,
@@ -1872,7 +1937,7 @@ fn fresh_sweep(
     creature: &CreatureExport,
     activation: &ActivationStats,
     seed: u64,
-    ordering: crate::ordering::OrderingConfig,
+    ordering: crate::ordering::OrderingConfig<'_>,
     unchecked_first: bool,
     screens: &[Screened],
     prior: &PriorHint<'_>,
@@ -2748,6 +2813,169 @@ mod tests {
         // scorer ends up accepting.
         let ratio = report.cascade_estimate_ratio.expect("estimate and actual");
         assert!(ratio > 0.5 && ratio <= 1.0, "{ratio}: {journal}");
+    }
+
+    /// Issue #107: the learned ranker is only as good as the rows it is fitted
+    /// from, so a run must record one per candidate the scorer actually judged.
+    #[test]
+    fn a_candidate_log_records_the_features_and_the_verdict_of_every_judged_candidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let log = tmp.path().join("telemetry").join("candidates.jsonl");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(2),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            ordering: crate::ordering::Ordering::Composite,
+            candidate_log: Some(log.clone()),
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert!(run.accepts >= 1, "stop={}", run.stop_reason);
+        let records = crate::telemetry::load(&log).unwrap();
+        assert!(
+            !records.is_empty(),
+            "the run judged candidates but logged none"
+        );
+        let accepted: Vec<_> = records
+            .iter()
+            .filter(|r| r.outcome == crate::telemetry::CandidateOutcome::Accepted)
+            .collect();
+        assert_eq!(
+            accepted.len(),
+            run.accepts as usize,
+            "one accepted row per accept: {records:?}"
+        );
+        let win = accepted[0];
+        assert!(win.full_delta.unwrap() > 0.0, "{win:?}");
+        assert!(
+            win.growth_units_removed > 0.0,
+            "an accepted cut removed structure: {win:?}"
+        );
+        assert!(win.is_win(cfg.min_improvement));
+        assert_eq!(win.ordering, "composite");
+        assert_eq!(win.seed, 1);
+        for name in crate::features::FEATURE_NAMES {
+            assert!(win.features.contains_key(*name), "missing {name}: {win:?}");
+        }
+        // Every row is trainable against the current schema.
+        let (rows, skipped) = crate::telemetry::training_rows(&records, cfg.min_improvement);
+        assert_eq!(skipped, 0);
+        assert_eq!(rows.len(), records.len());
+    }
+
+    /// A candidate the sampled screen threw out is training data too: it is the
+    /// only evidence the ranker gets about what does *not* work.
+    #[test]
+    fn a_screened_out_candidate_is_logged_with_its_sampled_delta() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let log = tmp.path().join("candidates.jsonl");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: Some(0.5),
+            candidate_log: Some(log.clone()),
+            ..OckhamConfig::default()
+        };
+        // Candidates that never beat the incumbent: every one is screened out.
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.10),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        establish_run(&cfg, &scorer).unwrap();
+        let records = crate::telemetry::load(&log).unwrap();
+        assert!(
+            !records.is_empty(),
+            "screened-out candidates must be logged"
+        );
+        assert!(
+            records
+                .iter()
+                .all(|r| r.outcome == crate::telemetry::CandidateOutcome::ScreenedOut),
+            "{records:?}"
+        );
+        let row = &records[0];
+        assert!(row.sample_delta.unwrap() < 0.0, "{row:?}");
+        assert!(
+            row.full_delta.is_none(),
+            "nothing was fully scored: {row:?}"
+        );
+        assert_eq!(row.growth_units_removed, 0.0);
+        assert!(!row.is_win(cfg.min_improvement));
+    }
+
+    /// The candidate log is evidence about the search, not part of it: a log
+    /// that cannot be written warns and the run keeps pruning (#107).
+    #[test]
+    fn an_unwritable_candidate_log_warns_without_stopping_the_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        // A file where the log's parent directory should be.
+        let blocker = tmp.path().join("blocked");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(2),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            candidate_log: Some(blocker.join("candidates.jsonl")),
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert!(run.accepts >= 1, "stop={}", run.stop_reason);
+        assert!(
+            !blocker.is_dir(),
+            "the run must not have created the log directory"
+        );
+    }
+
+    /// A run that asked to be ranked by a model must stop when the model is
+    /// missing, never rank by something else and say nothing (#107).
+    #[test]
+    fn a_learned_run_without_a_readable_model_stops_rather_than_ranking_by_something_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            screen_sample_rate: None,
+            ordering: crate::ordering::Ordering::Learned,
+            ordering_model: Some(tmp.path().join("absent-model.json")),
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer::ok(0.50, 0.50);
+        let err = establish_run(&cfg, &scorer).unwrap_err();
+        assert!(err.contains("absent-model.json"), "{err}");
     }
 
     #[test]

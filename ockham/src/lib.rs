@@ -30,6 +30,10 @@
 //! | progressive adaptive screening ladder | [`screening`] | #104 |
 //! | cascade-aware structural saving | [`cascade`] | #106 |
 //! | downstream output sensitivity | [`sensitivity`] | #105 |
+//! | candidate feature vectors | [`features`] | #107 |
+//! | composite dead-wood priority | [`priority`] | #107 |
+//! | learned candidate ranker | [`model`] | #107 |
+//! | candidate feature/outcome telemetry | [`telemetry`] | #107 |
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
 //! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
 
@@ -44,12 +48,15 @@ pub mod collapse;
 pub mod config;
 pub mod corpus;
 pub mod coverage;
+pub mod features;
 pub mod fixtures;
 pub mod incumbent;
 pub mod journal;
 pub mod learnings;
 pub mod log;
+pub mod model;
 pub mod ordering;
+pub mod priority;
 pub mod promote;
 pub mod reentry;
 pub mod report;
@@ -61,6 +68,7 @@ pub mod stats;
 pub mod substitute;
 pub mod sweep;
 pub mod tags;
+pub mod telemetry;
 
 pub use ablation::{Ablation, AblationSkip, TransformClass, ablate_mean};
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
@@ -76,8 +84,11 @@ pub use corpus::{CorpusInfo, RecordRange, corpus_info};
 pub use coverage::{
     COVERAGE_JSON_FILE, COVERAGE_TEXT_FILE, Coverage, coverage, write_files as write_coverage_files,
 };
+pub use features::{CandidateFeatures, FEATURE_NAMES, PriorEvidence};
 pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
+pub use model::{PRIORITY_MODEL_FORMAT_VERSION, PriorityModel, TrainingConfig, TrainingRow};
 pub use ordering::{Ordering, OrderingConfig, hidden_order};
+pub use priority::{CompositeWeights, PriorityContext, expected_pruning_value};
 pub use promote::{FullOutcome, evaluate_full};
 pub use report::{Report, summarise};
 pub use run::{BaselineRun, establish_run};
@@ -94,6 +105,7 @@ pub use sweep::{
     screen_batch,
 };
 pub use tags::{CreatureMeta, OckhamProgress, ockham_progress_message};
+pub use telemetry::{CANDIDATE_LOG_FORMAT_VERSION, CandidateOutcome, CandidateRecord, RunStamp};
 
 /// Crate version from `ockham/Cargo.toml`.
 pub fn crate_version() -> &'static str {

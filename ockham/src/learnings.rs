@@ -773,7 +773,7 @@ pub fn known_failures(
 }
 
 /// Whether this record measured a full-corpus win for the uuid on its own.
-fn confirmed_positive(l: &Learning, min_improvement: f64) -> bool {
+pub(crate) fn confirmed_positive(l: &Learning, min_improvement: f64) -> bool {
     l.full_delta.is_some_and(|d| d > min_improvement)
 }
 

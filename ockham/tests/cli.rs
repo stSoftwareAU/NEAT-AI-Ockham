@@ -378,3 +378,198 @@ fn a_bad_screening_ladder_is_refused_with_exit_two() {
         refuse(&["--screen-reject-margin", "0.5"]).contains("--screen-reject-margin has no effect")
     );
 }
+
+/// Issue #107: the learned ranker is fitted offline from the candidate logs a
+/// run writes, so the CLI has to close that loop end to end — log rows in,
+/// versioned model out, and a model the sweep will then accept.
+#[test]
+fn train_ordering_fits_a_model_from_candidate_logs_and_reports_its_ranking_quality() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("candidates.jsonl");
+    let stamp = neat_ai_ockham::RunStamp {
+        host: "GRQ-1".into(),
+        corpus_identity: "corpus-a".into(),
+        creature_checksum: "abc".into(),
+        ordering: "composite".into(),
+        seed: 7,
+    };
+    // Quiet neurons are the wins; loud ones are not. Nothing here decides
+    // anything — these are outcomes a scorer already returned.
+    let rows: Vec<neat_ai_ockham::CandidateRecord> = (0..40)
+        .map(|i| {
+            let quiet = i % 2 == 0;
+            let features = neat_ai_ockham::CandidateFeatures {
+                measured: true,
+                mean_abs: if quiet { 0.01 } else { 3.0 },
+                outgoing_weight: 1.0,
+                cascade_growth_units: 2.0,
+                ..Default::default()
+            };
+            let mut record = neat_ai_ockham::CandidateRecord::new(
+                &stamp,
+                &format!("h{i}"),
+                "ablation",
+                &features,
+                if quiet {
+                    neat_ai_ockham::CandidateOutcome::Accepted
+                } else {
+                    neat_ai_ockham::CandidateOutcome::Rejected
+                },
+            );
+            record.full_delta = Some(if quiet { 0.02 } else { -0.02 });
+            record
+        })
+        .collect();
+    neat_ai_ockham::telemetry::append(&log, &rows).unwrap();
+
+    let model = tmp.path().join("model.json");
+    let out = bin()
+        .arg("train-ordering")
+        .arg(&log)
+        .arg("--out")
+        .arg(&model)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(report["records"], 40);
+    assert_eq!(report["skippedRecords"], 0);
+    assert_eq!(report["evaluatedOn"], "holdout");
+    assert_eq!(report["corpora"][0], "corpus-a");
+    let auc = report["evaluation"]["auc"].as_f64().unwrap();
+    assert!(
+        auc > 0.9,
+        "the model must rank the signal it was given: {auc}"
+    );
+    assert!(report["coefficients"]["logMeanAbs"].as_f64().unwrap() < 0.0);
+
+    // The model the trainer wrote is the model the sweep accepts.
+    let loaded = neat_ai_ockham::PriorityModel::load(&model).unwrap();
+    assert_eq!(
+        loaded.format_version(),
+        neat_ai_ockham::PRIORITY_MODEL_FORMAT_VERSION
+    );
+    assert_eq!(loaded.training().rows, 32, "every fifth row is held out");
+    assert_eq!(loaded.training().config.corpora, ["corpus-a"]);
+}
+
+/// Helper: a candidate log whose quiet rows are the wins.
+fn write_candidate_log(path: &Path) {
+    let stamp = neat_ai_ockham::RunStamp {
+        host: "GRQ-1".into(),
+        corpus_identity: "corpus-a".into(),
+        creature_checksum: "abc".into(),
+        ordering: "composite".into(),
+        seed: 7,
+    };
+    let rows: Vec<neat_ai_ockham::CandidateRecord> = (0..40)
+        .map(|i| {
+            let quiet = i % 2 == 0;
+            let features = neat_ai_ockham::CandidateFeatures {
+                measured: true,
+                mean_abs: if quiet { 0.01 } else { 3.0 },
+                outgoing_weight: 1.0,
+                cascade_growth_units: 2.0,
+                ..Default::default()
+            };
+            let mut record = neat_ai_ockham::CandidateRecord::new(
+                &stamp,
+                &format!("h{i}"),
+                "ablation",
+                &features,
+                if quiet {
+                    neat_ai_ockham::CandidateOutcome::Accepted
+                } else {
+                    neat_ai_ockham::CandidateOutcome::Rejected
+                },
+            );
+            record.full_delta = Some(if quiet { 0.02 } else { -0.02 });
+            record
+        })
+        .collect();
+    neat_ai_ockham::telemetry::append(path, &rows).unwrap();
+}
+
+/// `--holdout-every 0` is the documented "no holdout" setting, and the report
+/// must say which rows the numbers came from rather than implying a holdout.
+#[test]
+fn train_ordering_without_a_holdout_says_it_evaluated_on_the_training_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("candidates.jsonl");
+    write_candidate_log(&log);
+    let out = bin()
+        .arg("train-ordering")
+        .arg(&log)
+        .arg("--out")
+        .arg(tmp.path().join("model.json"))
+        .arg("--holdout-every")
+        .arg("0")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(report["evaluatedOn"], "train");
+    assert_eq!(report["holdoutRows"], 0);
+    assert_eq!(report["trainingRows"], 40);
+}
+
+/// Holding out every row leaves nothing to fit; refused by name rather than
+/// quietly reinterpreted.
+#[test]
+fn train_ordering_refuses_a_holdout_of_every_row() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("candidates.jsonl");
+    write_candidate_log(&log);
+    let model = tmp.path().join("model.json");
+    let out = bin()
+        .arg("train-ordering")
+        .arg(&log)
+        .arg("--out")
+        .arg(&model)
+        .arg("--holdout-every")
+        .arg("1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--holdout-every"), "{}", stderr(&out));
+    assert!(!model.exists(), "a refused fit must write no model");
+}
+
+#[test]
+fn train_ordering_without_logs_prints_usage() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = bin()
+        .arg("train-ordering")
+        .arg("--out")
+        .arg(tmp.path().join("model.json"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("train-ordering"), "{}", stderr(&out));
+}
+
+/// A `learned` run with no model must stop rather than rank by something else.
+#[test]
+fn learned_ordering_without_a_model_names_the_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let creature = tmp.path().join("creature.json");
+    std::fs::write(&creature, identity_creature_json(1, 1)).unwrap();
+    let train = tmp.path().join("training");
+    std::fs::create_dir_all(&train).unwrap();
+    write_training(&train, 4);
+    let out = bin()
+        .arg(&creature)
+        .arg(&train)
+        .arg("--ordering")
+        .arg("learned")
+        .arg("--output-dir")
+        .arg(tmp.path().join("out"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("--ordering-model"),
+        "{}",
+        stderr(&out)
+    );
+}

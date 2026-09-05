@@ -3,18 +3,22 @@
 //! Issue #2: load the immutable incumbent, copy it, and score a full-corpus
 //! baseline. Pruning lands in later issues; this binary must not prune yet.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use neat_ai_ockham::config::{
     DEFAULT_CANDIDATE_COUNT, DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES, DEFAULT_MIN_IMPROVEMENT,
-    DEFAULT_ORDERING, DEFAULT_ORDERING_RANDOM_QUOTA, DEFAULT_SCREEN_SAMPLE_RATE,
-    DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
+    DEFAULT_ORDERING, DEFAULT_SCREEN_SAMPLE_RATE, DEFAULT_SCREEN_THRESHOLD,
+    DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
+};
+use neat_ai_ockham::model::{
+    DEFAULT_EPOCHS, DEFAULT_L2, DEFAULT_LEARNING_RATE, PriorityModel, TrainingConfig,
 };
 use neat_ai_ockham::screening::{DEFAULT_SCREEN_REJECT_MARGIN, ScreenLadder};
 use neat_ai_ockham::stats::DEFAULT_SAMPLE_RECORDS;
+use neat_ai_ockham::telemetry;
 use neat_ai_ockham::{ExternalScorer, Ordering, establish_run, log};
 
 #[derive(Parser, Debug)]
@@ -93,8 +97,18 @@ struct Cli {
     #[arg(long, default_value_t = DEFAULT_ORDERING, value_parser = Ordering::parse)]
     ordering: Ordering,
     /// Fraction of sweep slots reserved for the random control, in [0, 1).
-    #[arg(long, default_value_t = DEFAULT_ORDERING_RANDOM_QUOTA)]
-    ordering_random_quota: f64,
+    /// Omitted: 0, or 0.1 for `--ordering learned`, so a fitted model cannot
+    /// permanently starve the candidates it ranks last.
+    #[arg(long)]
+    ordering_random_quota: Option<f64>,
+    /// Fitted ranking model for `--ordering learned`, from `train-ordering`.
+    /// Ranking only: the scorer still decides what survives.
+    #[arg(long)]
+    ordering_model: Option<PathBuf>,
+    /// Append one candidate feature/outcome row per scored candidate here,
+    /// as offline training data for `train-ordering`. Omitted: write nothing.
+    #[arg(long)]
+    candidate_log: Option<PathBuf>,
     /// Records sampled for hidden-neuron activation statistics; 0 scans the whole corpus.
     #[arg(long, default_value_t = DEFAULT_SAMPLE_RECORDS)]
     stats_sample_records: u64,
@@ -126,10 +140,71 @@ enum Command {
         /// Journal files.
         journals: Vec<PathBuf>,
     },
+    /// Fit the learned candidate ranker from `--candidate-log` files (#107).
+    ///
+    /// Offline and reproducible: the same rows and hyper-parameters produce the
+    /// same model. The model only ever ranks the sweep — it can never accept a
+    /// cut, which stays the full-corpus scorer's decision alone.
+    TrainOrdering {
+        /// Candidate logs written by `--candidate-log`.
+        logs: Vec<PathBuf>,
+        /// Where to write the fitted model JSON.
+        #[arg(long)]
+        out: PathBuf,
+        /// Gradient-descent passes.
+        #[arg(long, default_value_t = DEFAULT_EPOCHS)]
+        epochs: usize,
+        /// Learning rate.
+        #[arg(long, default_value_t = DEFAULT_LEARNING_RATE)]
+        learning_rate: f64,
+        /// L2 penalty.
+        #[arg(long, default_value_t = DEFAULT_L2)]
+        l2: f64,
+        /// Hold every Nth row out of training to evaluate the fit; 0 evaluates
+        /// on the training rows and says so. 1 is refused — it would hold out
+        /// every row and leave nothing to fit.
+        #[arg(long, default_value_t = 5)]
+        holdout_every: usize,
+        /// Confirmed-win threshold on the full-corpus delta.
+        #[arg(long, default_value_t = DEFAULT_MIN_IMPROVEMENT)]
+        min_improvement: f64,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(Command::TrainOrdering {
+        logs,
+        out,
+        epochs,
+        learning_rate,
+        l2,
+        holdout_every,
+        min_improvement,
+    }) = &cli.command
+    {
+        return match train_ordering(
+            logs,
+            out,
+            TrainingConfig {
+                epochs: *epochs,
+                learning_rate: *learning_rate,
+                l2: *l2,
+                corpora: Vec::new(),
+            },
+            *holdout_every,
+            *min_improvement,
+        ) {
+            Ok(report) => {
+                println!("{report}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if let Some(Command::Report { journals }) = cli.command {
         if journals.is_empty() {
             eprintln!("usage: neat_ai_ockham report <experiments.jsonl> [...]");
@@ -209,7 +284,12 @@ fn main() -> ExitCode {
         learnings_host: cli.learnings_host,
         learnings_replay: cli.learnings_replay,
         ordering: cli.ordering,
-        ordering_random_quota: cli.ordering_random_quota,
+        ordering_random_quota: OckhamConfig::resolve_random_quota(
+            cli.ordering,
+            cli.ordering_random_quota,
+        ),
+        ordering_model: cli.ordering_model,
+        candidate_log: cli.candidate_log,
         unchecked_first: cli.unchecked_first,
         old_corpus_first: cli.old_corpus_first,
         stats_sample_records: cli.stats_sample_records,
@@ -239,4 +319,80 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Fit and evaluate the learned ranker, returning the JSON report to print.
+///
+/// The holdout is every `holdout_every`-th row by position, so the split is
+/// reproducible from the inputs alone — no RNG, no shuffle, no seed to carry.
+/// `0` trains and evaluates on the same rows and labels the report `train`, so
+/// an optimistic number is never presented as a held-out one.
+fn train_ordering(
+    logs: &[PathBuf],
+    out: &Path,
+    mut config: TrainingConfig,
+    holdout_every: usize,
+    min_improvement: f64,
+) -> Result<String, String> {
+    if logs.is_empty() {
+        return Err(
+            "usage: neat_ai_ockham train-ordering <candidates.jsonl> [...] --out <model.json>"
+                .into(),
+        );
+    }
+    // Holding out every row leaves nothing to fit. Refused by name rather than
+    // quietly reinterpreted as "no holdout", which would report a training-set
+    // number under the holdout heading.
+    if holdout_every == 1 {
+        return Err(
+            "--holdout-every 1 would hold out every row; use 0 to evaluate on the training rows"
+                .into(),
+        );
+    }
+    let mut records = Vec::new();
+    for log in logs {
+        records.extend(telemetry::load(log)?);
+    }
+    let (rows, skipped) = telemetry::training_rows(&records, min_improvement);
+    if skipped > 0 {
+        eprintln!("train-ordering: {skipped} row(s) do not carry the current feature schema");
+    }
+    config.corpora = telemetry::corpora(&records);
+    let (train, holdout): (Vec<_>, Vec<_>) = if holdout_every > 0 {
+        let (a, b): (Vec<_>, Vec<_>) = rows
+            .iter()
+            .cloned()
+            .enumerate()
+            .partition(|(i, _)| i % holdout_every != 0);
+        (
+            a.into_iter().map(|(_, r)| r).collect(),
+            b.into_iter().map(|(_, r)| r).collect(),
+        )
+    } else {
+        (rows.clone(), Vec::new())
+    };
+    let model = PriorityModel::fit(&train, config)?;
+    model.save(out)?;
+    let evaluated_on = if holdout.is_empty() {
+        "train"
+    } else {
+        "holdout"
+    };
+    let evaluation = model.evaluate(if holdout.is_empty() { &train } else { &holdout });
+    let report = serde_json::json!({
+        "model": out,
+        "records": records.len(),
+        "skippedRecords": skipped,
+        "trainingRows": train.len(),
+        "holdoutRows": holdout.len(),
+        "evaluatedOn": evaluated_on,
+        "evaluation": evaluation,
+        "corpora": telemetry::corpora(&records),
+        "coefficients": model
+            .coefficients()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>(),
+        "bias": model.bias(),
+    });
+    serde_json::to_string_pretty(&report).map_err(|e| e.to_string())
 }

@@ -15,13 +15,29 @@ fn readme() -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
+/// Subcommands whose own flags the README must document too (Issue #107).
+///
+/// `--help` lists the subcommands but not their flags, so a flag like
+/// `train-ordering --out` was invisible to both directions of this contract:
+/// undocumented flags went unnoticed, and documenting one was reported as a
+/// flag the binary does not accept.
+const SUBCOMMANDS: &[&str] = &["report", "train-ordering"];
+
 fn help() -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_neat_ai_ockham"))
-        .arg("--help")
-        .output()
-        .expect("run --help");
-    assert!(out.status.success(), "--help failed");
-    String::from_utf8(out.stdout).unwrap()
+    let mut text = String::new();
+    for args in [vec!["--help"]]
+        .into_iter()
+        .chain(SUBCOMMANDS.iter().map(|c| vec![*c, "--help"]))
+    {
+        let out = Command::new(env!("CARGO_BIN_EXE_neat_ai_ockham"))
+            .args(&args)
+            .output()
+            .unwrap_or_else(|e| panic!("run {args:?}: {e}"));
+        assert!(out.status.success(), "{args:?} failed");
+        text.push_str(&String::from_utf8(out.stdout).unwrap());
+        text.push('\n');
+    }
+    text
 }
 
 fn long_flags(text: &str) -> BTreeSet<String> {
