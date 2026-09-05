@@ -201,22 +201,26 @@ impl OckhamConfig {
             return Err("--max-full must be > 0".into());
         }
         self.ordering_config().validate()?;
-        // The model is a file rather than a flag value, so the path is checked
-        // here and the loaded model is checked again at `--ordering learned`
-        // run start: a run that asked to be ranked by a model must stop when it
-        // is missing, never rank by something else and say nothing.
         // Only checked when merging is on: the other knobs keep their defaults
         // on a control run, and refusing a run for a knob it never reads would
         // be a fault report about nothing.
         if let Some(cfg) = self.merge_discovery() {
             cfg.validate()?;
-            if self.merge_probes < crate::signature::MIN_PROBE_RECORDS {
+            if !(crate::signature::MIN_PROBE_RECORDS..=crate::stats::MAX_PROBE_RECORDS)
+                .contains(&self.merge_probes)
+            {
                 return Err(format!(
-                    "--merge-probes must be >= {} for a usable signature",
-                    crate::signature::MIN_PROBE_RECORDS
+                    "--merge-probes must be in {}..={}; below that the signature is noise, \
+                     and above it the extra records fall outside the 64-bit bucket key",
+                    crate::signature::MIN_PROBE_RECORDS,
+                    crate::stats::MAX_PROBE_RECORDS
                 ));
             }
         }
+        // The model is a file rather than a flag value, so the path is checked
+        // here and the loaded model is checked again at `--ordering learned`
+        // run start: a run that asked to be ranked by a model must stop when it
+        // is missing, never rank by something else and say nothing.
         if self.ordering == Ordering::Learned && self.ordering_model.is_none() {
             return Err("--ordering learned requires --ordering-model <model.json> \
                  (build one with `neat_ai_ockham train-ordering`)"
@@ -721,6 +725,17 @@ mod tests {
                 OckhamConfig {
                     merge_correlation: Some(0.99),
                     merge_probes: 4,
+                    ..OckhamConfig::default()
+                },
+                "--merge-probes",
+            ),
+            // Above the 64-bit signature, refused by name rather than clamped:
+            // a silently shortened probe set is a weaker signature than the one
+            // the run asked for.
+            (
+                OckhamConfig {
+                    merge_correlation: Some(0.99),
+                    merge_probes: 128,
                     ..OckhamConfig::default()
                 },
                 "--merge-probes",

@@ -35,7 +35,7 @@ use crate::corpus::{CorpusInfo, RecordRange, for_each_selected_chunk};
 use crate::incumbent::Incumbent;
 
 /// Cache / on-disk format version. Bump when the JSON shape changes.
-pub const STATS_FORMAT_VERSION: u32 = 3;
+pub const STATS_FORMAT_VERSION: u32 = 2;
 /// Default records per streaming chunk.
 pub const DEFAULT_CHUNK_RECORDS: usize = 4096;
 /// Default cap on records visited by the activation scan (issue #44).
@@ -122,14 +122,12 @@ impl SampleSpec {
 
     /// This spec with `probes` activations retained per neuron (Issue #109).
     ///
-    /// Clamped to [`MAX_PROBE_RECORDS`] because the bucket key is a `u64`
-    /// signature: a longer probe vector would put part of the behaviour outside
-    /// the key that decides which pairs are correlated at all.
+    /// Not clamped: a count above [`MAX_PROBE_RECORDS`] is refused by
+    /// [`crate::config::OckhamConfig::validate`] under the flag's own name,
+    /// because a silently shortened probe set would give a run weaker
+    /// signatures than the ones it asked for and say nothing.
     pub fn with_probes(self, probes: usize) -> Self {
-        Self {
-            probes: probes.min(MAX_PROBE_RECORDS),
-            ..self
-        }
+        Self { probes, ..self }
     }
 
     /// Filename-safe tag identifying this spec in a cache key.

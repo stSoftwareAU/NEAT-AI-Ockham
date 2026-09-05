@@ -704,6 +704,31 @@ mod tests {
         validate_creature(&result.creature).unwrap();
     }
 
+    /// Two correlated neurons in a chain: the removed one already feeds the
+    /// survivor, so absorbing its edge would connect the survivor to itself.
+    #[test]
+    fn a_removed_neuron_that_feeds_the_survivor_is_refused() {
+        let incumbent = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_b", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_b", 1.0),
+                synapse("h_b", "h_a", 1.0),
+                synapse("h_a", "output-0", 1.0),
+            ],
+        );
+        validate_creature(&incumbent).unwrap();
+        let err =
+            merge_correlated(&incumbent, "h_a", "h_b", LinearRelation::IDENTICAL).unwrap_err();
+        assert!(matches!(err, MergeSkip::SelfLoop { .. }), "{err}");
+        assert_eq!(err.blocked_reason(), BlockedReason::UnsafeTopology);
+    }
+
     #[test]
     fn unusable_requests_are_named_rather_than_guessed() {
         let incumbent = twin_creature("IDENTITY");

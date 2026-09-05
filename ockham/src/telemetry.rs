@@ -91,8 +91,16 @@ pub struct CandidateRecord {
     pub seed: u64,
     /// Hidden neuron the candidate cut.
     pub uuid: String,
-    /// How the sweep built the candidate: `identity`, `ablation` or `constant`.
+    /// How the sweep built the candidate: `identity`, `ablation`, `constant`
+    /// or `merge`.
     pub kind: String,
+    /// Survivor that absorbed the neuron, for a `merge` candidate (#109).
+    ///
+    /// The pair is the provenance a merge needs and no other kind has: the same
+    /// uuid removed against a different survivor is a different cut. Additive
+    /// and optional, so a row written by an older host still loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_with: Option<String>,
     /// Feature values by name — the schema is carried, not assumed.
     pub features: BTreeMap<String, f64>,
     /// Sampled Δ against the incumbent scored in the same call.
@@ -129,6 +137,7 @@ impl CandidateRecord {
             seed: stamp.seed,
             uuid: uuid.to_string(),
             kind: kind.to_string(),
+            merged_with: None,
             features: features
                 .named()
                 .into_iter()
@@ -314,6 +323,7 @@ impl CandidateLog<'_> {
                 CandidateOutcome::ScreenedOut,
             );
             record.creature_checksum = checksum.to_string();
+            record.merged_with = loser.merged_with.clone();
             record.sample_delta = Some(loser.delta);
             record.scorer_ms = each_ms;
             records.push(record);
@@ -364,9 +374,9 @@ impl CandidateLog<'_> {
                 unknown += 1;
                 continue;
             };
-            // The kind is the sweep's — `identity`, `ablation` or `constant` —
-            // never the cohort's `individual`, so one column carries one
-            // vocabulary. A uuid this run's sweep did not propose (a carried
+            // The kind is the sweep's — `identity`, `ablation`, `constant` or
+            // `merge` — never the cohort's `individual`, so one column carries
+            // one vocabulary. A uuid this run's sweep did not propose (a carried
             // winner from an earlier batch) has no candidate kind to record and
             // is left for the batch that did propose it.
             let (Some(f), Some(candidate)) = (
@@ -389,6 +399,7 @@ impl CandidateLog<'_> {
                 },
             );
             record.creature_checksum = checksum.to_string();
+            record.merged_with = candidate.candidate.merged_with.clone();
             record.sample_delta = Some(candidate.delta);
             record.full_delta = Some(scored.delta);
             // Nothing is removed by a candidate that was not applied, so a

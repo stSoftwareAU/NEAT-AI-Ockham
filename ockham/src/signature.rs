@@ -218,12 +218,16 @@ impl MergeIndex {
 /// neurons on wildly different scales — a neuron oscillating around 40 and one
 /// oscillating around 0.004 produce the same signature when they move together.
 pub fn signature(values: &[f32]) -> u64 {
-    if values.is_empty() {
+    // The mean is taken over exactly the probes the bits are read from: a
+    // longer vector centred on records outside the signature would set bits
+    // against a threshold no bit describes.
+    let used = &values[..values.len().min(SIGNATURE_BITS as usize)];
+    if used.is_empty() {
         return 0;
     }
-    let mean = values.iter().map(|v| f64::from(*v)).sum::<f64>() / values.len() as f64;
+    let mean = used.iter().map(|v| f64::from(*v)).sum::<f64>() / used.len() as f64;
     let mut bits = 0u64;
-    for (i, v) in values.iter().take(SIGNATURE_BITS as usize).enumerate() {
+    for (i, v) in used.iter().enumerate() {
         if f64::from(*v) >= mean {
             bits |= 1u64 << i;
         }
@@ -371,7 +375,7 @@ pub fn discover(stats: &ActivationStats, cfg: DiscoveryConfig) -> MergeIndex {
         if members.len() < 2 {
             continue;
         }
-        let kept = members.len().min(cfg.max_bucket.max(2));
+        let kept = members.len().min(cfg.max_bucket);
         if kept < members.len() {
             report.truncated_buckets += 1;
             report.dropped_members += members.len() - kept;
@@ -392,13 +396,15 @@ pub fn discover(stats: &ActivationStats, cfg: DiscoveryConfig) -> MergeIndex {
         if r.abs() < cfg.min_correlation {
             continue;
         }
-        report.correlated_pairs += 1;
         // Both survivor directions: which of two near-duplicates is the cheaper
         // one to lose is a structural question this pass cannot answer, so it
-        // proposes each and lets the transform and the scorer settle it.
+        // proposes each and lets the transform and the scorer settle it. The
+        // pair is counted only once both fits exist, so a counted pair is one
+        // that really did produce proposals.
         let Some((_, backward)) = correlate(signed[b].values, signed[a].values) else {
             continue;
         };
+        report.correlated_pairs += 1;
         for (survivor, removed, relation) in [
             (signed[a].uuid, signed[b].uuid, forward),
             (signed[b].uuid, signed[a].uuid, backward),
@@ -454,6 +460,42 @@ mod tests {
         (0..n)
             .map(|i| (((i + phase) % 17) as f32) - 8.0)
             .collect::<Vec<f32>>()
+    }
+
+    #[test]
+    fn a_signature_is_the_sign_of_each_probe_against_its_own_mean() {
+        assert_eq!(signature(&[]), 0, "nothing probed sets no bit");
+        // mean 1.0: below, at, above.
+        assert_eq!(signature(&[0.0, 1.0, 2.0]), 0b110);
+        // A flat neuron never crosses its own mean, so every bit is set — the
+        // all-ones case `discover` refuses to sign.
+        assert_eq!(signature(&[3.0; 5]), 0b11111);
+        // A vector longer than the signature is thresholded on the mean of the
+        // records the bits actually come from, not on records outside them.
+        let mut long = vec![0.0f32; SIGNATURE_BITS as usize];
+        long.push(1_000.0);
+        long[0] = 1.0;
+        assert_eq!(signature(&long), 1, "the tail must not move the threshold");
+    }
+
+    #[test]
+    fn correlation_needs_two_moving_vectors_of_usable_length() {
+        let a = wave(32, 0);
+        assert!(correlate(&a[..4], &a[..4]).is_none(), "too short to sign");
+        assert!(
+            correlate(&a, &[2.0f32; 32]).is_none(),
+            "a flat partner has no correlation to measure"
+        );
+        let (r, rel) = correlate(&a, &a).expect("a vector correlates with itself");
+        assert_eq!(r, 1.0);
+        assert_eq!(rel.scale, 1.0);
+        assert_eq!(rel.offset, 0.0);
+        // The fit is directional: removed on survivor, not the other way round.
+        let scaled: Vec<f32> = a.iter().map(|v| 4.0 * v - 1.0).collect();
+        let (_, forward) = correlate(&a, &scaled).unwrap();
+        let (_, backward) = correlate(&scaled, &a).unwrap();
+        assert!((forward.scale - 4.0).abs() < 1e-5, "{forward:?}");
+        assert!((backward.scale - 0.25).abs() < 1e-5, "{backward:?}");
     }
 
     #[test]
@@ -629,10 +671,6 @@ mod tests {
         DiscoveryConfig::default().validate().unwrap();
     }
 
-    /// Issue #109 requires discovery that scales: the cost has to follow the
-    /// neuron count, not its square. A ratio, never a wall-clock budget — the
-    /// same work is timed at one size and four times that size on the same
-    /// machine, so a loaded runner slows both readings and the test still holds.
     /// A distinct pseudo-random probe vector per neuron, from a fixed seed.
     fn distinct(index: usize, len: usize) -> Vec<f32> {
         let mut state = (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;

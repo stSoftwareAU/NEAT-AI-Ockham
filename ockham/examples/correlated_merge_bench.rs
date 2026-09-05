@@ -183,6 +183,11 @@ fn measured_stats(creature: &CreatureExport, probes: &[Vec<f32>]) -> ActivationS
 }
 
 /// One judged proposal set.
+///
+/// `neurons_removed` / `synapses_removed` count each **unordered pair** once.
+/// Both survivor directions of one pair are proposed and both can confirm, but
+/// only one of the two neurons is actually redundant — summing per proposal
+/// would report twice the saving the creature could ever make.
 #[derive(Default)]
 struct Tally {
     proposals: usize,
@@ -192,6 +197,16 @@ struct Tally {
     neurons_removed: usize,
     synapses_removed: usize,
     judge_ms: f64,
+    counted: std::collections::HashSet<(String, String)>,
+}
+
+/// The unordered key for a confirmed cut, so a pair is counted once.
+fn pair_key(a: &str, b: &str) -> (String, String) {
+    if a <= b {
+        (a.into(), b.into())
+    } else {
+        (b.into(), a.into())
+    }
 }
 
 impl Tally {
@@ -290,8 +305,13 @@ fn main() {
         }
         if agrees(&baseline, &after, PROBES) {
             merge.confirmed += 1;
-            merge.neurons_removed += built.before.hidden_neurons - built.after.hidden_neurons;
-            merge.synapses_removed += built.before.synapses - built.after.synapses;
+            if merge
+                .counted
+                .insert(pair_key(&proposal.survivor_uuid, &proposal.removed_uuid))
+            {
+                merge.neurons_removed += built.before.hidden_neurons - built.after.hidden_neurons;
+                merge.synapses_removed += built.before.synapses - built.after.synapses;
+            }
         }
     }
     merge.judge_ms = judging.elapsed().as_secs_f64() * 1000.0;
@@ -319,8 +339,11 @@ fn main() {
         }
         if agrees(&baseline, &after, PROBES) {
             ablation.confirmed += 1;
-            ablation.neurons_removed += built.before.hidden_neurons - built.after.hidden_neurons;
-            ablation.synapses_removed += built.before.synapses - built.after.synapses;
+            if ablation.counted.insert(pair_key(uuid, uuid)) {
+                ablation.neurons_removed +=
+                    built.before.hidden_neurons - built.after.hidden_neurons;
+                ablation.synapses_removed += built.before.synapses - built.after.synapses;
+            }
         }
     }
     ablation.judge_ms = judging.elapsed().as_secs_f64() * 1000.0;
@@ -342,7 +365,8 @@ fn main() {
     println!(
         "screened is the share of candidates the {SCREEN_PROBES}-probe screen kept; confirmed is \
          the share the full {PROBES}-probe judge confirmed; neurons and synapses are what the \
-         confirmed cuts removed."
+         confirmed cuts removed, counting each pair once — both survivor directions confirm, but \
+         only one neuron of the two is redundant."
     );
 
     println!("\ndiscovery cost as the creature grows (signatures only, no scoring):");
@@ -359,6 +383,36 @@ fn main() {
         println!(
             "  {scale:>9} {:>9} {:>10} {:>14} {:>11} {ms:>10.1}",
             r.band_bits, r.buckets, r.compared_pairs, r.proposals
+        );
+    }
+
+    // The same measurement on a **real** compiled creature of several thousand
+    // hidden neurons, so the scaling claim covers the probe capture and the
+    // forward pass behind it rather than the signature pass alone.
+    println!("\nthe same on real compiled creatures, probe capture included:");
+    println!(
+        "  {:>9} {:>11} {:>10} {:>14} {:>11} {:>12}",
+        "hidden", "synapses", "probe(ms)", "pairsCompared", "proposals", "discover(ms)"
+    );
+    for (twins, solo) in [(100usize, 900usize), (250, 2_250), (500, 4_500)] {
+        let big = duplicated_creature(INPUTS, twins, 0, solo);
+        let hidden = big
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .count();
+        let started = Instant::now();
+        let big_stats = measured_stats(&big, &probes);
+        let probe_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let started = Instant::now();
+        let big_index = discover(&big_stats, cfg);
+        let discover_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let r = big_index.report();
+        println!(
+            "  {hidden:>9} {:>11} {probe_ms:>10.1} {:>14} {:>11} {discover_ms:>12.1}",
+            big.synapses.len(),
+            r.compared_pairs,
+            r.proposals
         );
     }
     println!(

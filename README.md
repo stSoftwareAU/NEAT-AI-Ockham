@@ -372,10 +372,22 @@ Unlike an `IDENTITY` collapse a merge cannot cost more than it saves: it deletes
 one hidden neuron and every synapse incident to it, and writes back at most one
 edge per *outgoing* synapse it deleted, so NEAT growth units always fall.
 
-A merge candidate carries its survivor (`mergedWith`) so a learnings entry, a
-replay or a GRQ check-in records **which pair** was tried, and the run
-re-discovers the pairs after every accept — a proposal naming a survivor the
-accept already removed would be a stale cut wearing a winner's uuid.
+A merge candidate carries its survivor (`mergedWith`) through screening and into
+the candidate log written by `--candidate-log`, so the audit trail records
+**which pair** was tried rather than only which neuron went. The shared
+learnings cache stores the verdict by uuid and kind, as it does for every other
+transform; the survivor is re-derived from the current signatures at replay,
+which is why the run re-discovers the pairs after every accept — a proposal
+naming a survivor the accept already removed would be a stale cut wearing a
+winner's uuid.
+
+Two consequences a reader should know rather than discover. A replayed verdict
+is a **hypothesis** that is re-scored on the full corpus, so re-deriving the
+survivor cannot accept a cut the scorer did not confirm — but it can re-propose
+a *different* pair under the same uuid. And a merge is tried **before** the
+mean-activation ablation for a visited neuron, so a neuron with a valid merge
+candidate spends that visit on the merge; the ablation is offered on a later
+pass.
 
 The threshold only ever **generates** proposals. Every merge candidate faces
 `creature.validate()`, the sampled screen and the authoritative full scorer like
@@ -396,27 +408,44 @@ its outputs — screened on a subset of the probes, confirmed on all of them. On
 
 | transform | proposals | candidates | screened | confirmed | confirmed/h | neurons | synapses |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| merge | 860 | 860 | 9% | 9% | 128354 | 80 | 560 |
+| merge | 860 | 860 | 9% | 9% | 134008 | 40 | 280 |
 | ablation | 860 | 860 | 0% | 0% | 0 | 0 | 0 |
 
-Every one of the eighty confirmed cuts is a planted duplicate, and the
+Every confirmed cut is a planted duplicate — all forty pairs — and the
 mean-activation control confirms none of them: the neurons are all busy, which
-is exactly the blind spot this transform exists to cover. Nine per cent of the
-proposals surviving is the cost side of the same measurement — a `0.98`
-threshold on 64 sign bits proposes generously, and the screen is what pays for
-that.
+is exactly the blind spot this transform exists to cover. `neurons` and
+`synapses` count each pair **once**: both survivor directions confirm, but only
+one neuron of the two was ever redundant. Nine per cent of the proposals
+surviving is the cost side of the same measurement — a `0.98` threshold on 64
+sign bits proposes generously, and the screen is what pays for that.
+`confirmed/h` is this harness's proxy judge, not scorer economics; the
+run-level figures come from `report` on a real run.
 
 Discovery cost as the creature grows, on synthetic signatures:
 
 | hidden | band bits | buckets | pairs compared | ms |
 |---:|---:|---:|---:|---:|
-| 1000 | 10 | 2679 | 5739 | 1.1 |
+| 1000 | 10 | 2679 | 5739 | 1.2 |
 | 2000 | 11 | 4412 | 9733 | 2.1 |
-| 4000 | 12 | 8825 | 19657 | 4.5 |
-| 8000 | 13 | 14073 | 31678 | 7.8 |
+| 4000 | 12 | 8825 | 19657 | 4.7 |
+| 8000 | 13 | 14073 | 31678 | 8.1 |
 
 Eight times the creature costs about seven times the discovery, not sixty-four:
 the widening band is what holds the comparison count near linear.
+
+The same measurement on **real compiled creatures**, probe capture included, so
+the claim covers the forward pass behind the signatures rather than the
+signature pass alone:
+
+| hidden | synapses | probe capture (ms) | pairs compared | discovery (ms) |
+|---:|---:|---:|---:|---:|
+| 1100 | 7700 | 1.3 | 25157 | 5.4 |
+| 2750 | 19250 | 3.4 | 59834 | 12.6 |
+| 5500 | 38500 | 6.5 | 87516 | 18.0 |
+
+Five times the creature costs five times the probe capture and about three
+times the discovery — comfortably inside a forty-five-minute budget at several
+thousand hidden neurons.
 
 ## Sampling and authoritative promotion
 
@@ -568,7 +597,7 @@ against:
 
 | Visit | Record `kind` | Version | Counted as |
 |---|---|---|---|
-| Candidate the scorer screened, winner or loser | `identity` / `ablation` / `constant` | 2 | checked |
+| Candidate the scorer screened, winner or loser | `identity` / `ablation` / `constant` / `merge` | 2 | checked |
 | Nothing could be proposed — no finite activation statistic, a candidate that would not validate | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
 | A standing full-corpus verdict suppressed the try | `known-failure` | 3 | checked |
 
@@ -1585,7 +1614,8 @@ scorer made of it:
 Written **after** a verdict and never read during one. A candidate the screen
 threw out is logged too, with its sampled Δ and no full Δ: it is the only
 evidence the ranker gets about what does *not* work. `kind` is always the
-sweep's — `identity`, `ablation` or `constant`.
+sweep's — `identity`, `ablation`, `constant` or `merge`. A `merge` row also
+carries `mergedWith`, the survivor that absorbed the neuron.
 
 Three exclusions, each for the same reason — a row must carry only what the
 scorer actually said about that neuron:

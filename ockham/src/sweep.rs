@@ -29,7 +29,7 @@ use crate::ablation::ablate_mean;
 use crate::blocked::BlockedReason;
 use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
 use crate::incumbent::sha256_hex;
-use crate::merge::merge_correlated;
+use crate::merge::{MergeSkip, merge_correlated};
 use crate::ordering::{Ordering, OrderingConfig, hidden_order};
 use crate::scorer::{DirectoryScorer, ScorerMode};
 use crate::signature::MergeIndex;
@@ -289,13 +289,7 @@ impl Sweep {
         stats: &ActivationStats,
         size: usize,
     ) -> (Vec<SweepCandidate>, Vec<SweepSkip>) {
-        self.fill_batch_avoiding(
-            incumbent,
-            stats,
-            &MergeIndex::default(),
-            size,
-            &HashSet::new(),
-        )
+        self.fill_batch_avoiding(incumbent, stats, MergeIndex::empty(), size, &HashSet::new())
     }
 
     /// [`Self::fill_batch`] with merge proposals, skipping UUIDs in `avoid`.
@@ -388,19 +382,40 @@ impl Proposed {
 /// Proposals arrive strongest-correlation first, and most of a forest-heavy
 /// creature's pairs are structurally unmergeable, so the strongest partner is
 /// tried first and the rest are fallbacks rather than a search.
-fn propose_merge(incumbent: &CreatureExport, merges: &MergeIndex, uuid: &str) -> Option<Proposed> {
+fn propose_merge(
+    incumbent: &CreatureExport,
+    merges: &MergeIndex,
+    uuid: &str,
+) -> Result<Proposed, Option<MergeSkip>> {
+    let mut first: Option<MergeSkip> = None;
     for proposal in merges.for_removed(uuid) {
-        if let Ok(merge) =
-            merge_correlated(incumbent, &proposal.survivor_uuid, uuid, proposal.relation)
-        {
-            return Some(Proposed {
-                kind: CandidateKind::Merge,
-                merged_with: Some(proposal.survivor_uuid.clone()),
-                creature: merge.creature,
-            });
-        }
+        match merge_correlated(incumbent, &proposal.survivor_uuid, uuid, proposal.relation) {
+            Ok(merge) => {
+                return Ok(Proposed {
+                    kind: CandidateKind::Merge,
+                    merged_with: Some(proposal.survivor_uuid.clone()),
+                    creature: merge.creature,
+                });
+            }
+            // Kept, not dropped: a run where every merge proposal fails on the
+            // same structure must be able to say so rather than reporting only
+            // whatever the fallback path went on to complain about.
+            Err(skip) => first.get_or_insert(skip),
+        };
     }
-    None
+    Err(first)
+}
+
+/// Append the merge skip to `blocked`, when discovery proposed one at all.
+///
+/// The fallback path's own reason still classifies the visit — it is the one
+/// that actually stopped the razor — but the merge attempt is named beside it
+/// so a merge-enabled run can see why its proposals went nowhere.
+fn with_merge_detail(mut blocked: Blocked, merge: Option<MergeSkip>) -> Blocked {
+    if let Some(skip) = merge {
+        blocked.detail = format!("{}; merge: {skip}", blocked.detail);
+    }
+    blocked
 }
 
 pub(crate) fn propose(
@@ -418,9 +433,10 @@ pub(crate) fn propose(
                     // A near-duplicate partner is a path that needs no mean of
                     // this neuron at all, so it is tried before the statistic
                     // this branch is about to report missing.
-                    if let Some(merged) = propose_merge(incumbent, merges, uuid) {
-                        return Ok(merged);
-                    }
+                    let merge = match propose_merge(incumbent, merges, uuid) {
+                        Ok(merged) => return Ok(merged),
+                        Err(skip) => skip,
+                    };
                     // Without a measured mean there is no fallback to take, so
                     // a collapse the razor could otherwise have retried is
                     // blocked on the missing statistic rather than on itself.
@@ -428,7 +444,10 @@ pub(crate) fn propose(
                         CollapseSkip::CostIncrease { .. } => BlockedReason::MissingActivation,
                         ref skip => skip.blocked_reason(),
                     };
-                    return Err(Blocked::new(reason, e.to_string()));
+                    return Err(with_merge_detail(
+                        Blocked::new(reason, e.to_string()),
+                        merge,
+                    ));
                 }
             }
         }
@@ -436,15 +455,19 @@ pub(crate) fn propose(
     // A merge removes a whole neuron and compensates through a partner that is
     // already carrying the same behaviour, so it is tried ahead of folding this
     // neuron's activation down to its own mean (#109).
-    if let Some(merged) = propose_merge(incumbent, merges, uuid) {
-        return Ok(merged);
-    }
-    let mean = stats.by_uuid(uuid).map(|s| s.mean).ok_or_else(|| {
-        Blocked::new(
-            BlockedReason::MissingActivation,
-            format!("no activation stats for `{uuid}`"),
-        )
-    })?;
+    let merge = match propose_merge(incumbent, merges, uuid) {
+        Ok(merged) => return Ok(merged),
+        Err(skip) => skip,
+    };
+    let Some(mean) = stats.by_uuid(uuid).map(|s| s.mean) else {
+        return Err(with_merge_detail(
+            Blocked::new(
+                BlockedReason::MissingActivation,
+                format!("no activation stats for `{uuid}`"),
+            ),
+            merge,
+        ));
+    };
     let ablation = match ablate_mean(incumbent, uuid, mean, stats.by_uuid(uuid)) {
         Ok(a) => return Ok(Proposed::of(CandidateKind::Ablation, a.creature)),
         Err(e) => e,
@@ -454,16 +477,19 @@ pub(crate) fn propose(
     // constant-folding the source can (Issue #103) — and when it cannot either,
     // the reason reported is the one that actually stopped the razor.
     if !ablation.substitution_may_help() {
-        return Err(Blocked::new(
-            ablation.blocked_reason(),
-            ablation.to_string(),
+        return Err(with_merge_detail(
+            Blocked::new(ablation.blocked_reason(), ablation.to_string()),
+            merge,
         ));
     }
     match substitute_constant(incumbent, uuid, mean) {
         Ok(s) => Ok(Proposed::of(CandidateKind::Constant, s.creature)),
-        Err(substitution) => Err(Blocked::new(
-            substitution.blocked_reason(),
-            format!("{ablation}; constant substitution: {substitution}"),
+        Err(substitution) => Err(with_merge_detail(
+            Blocked::new(
+                substitution.blocked_reason(),
+                format!("{ablation}; constant substitution: {substitution}"),
+            ),
+            merge,
         )),
     }
 }
@@ -494,6 +520,9 @@ pub struct ScreenedLoser {
     pub uuid: String,
     /// How the candidate was built.
     pub kind: CandidateKind,
+    /// Survivor that absorbed it, for a [`CandidateKind::Merge`] (#109).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_with: Option<String>,
     /// Sampled Δ against the incumbent scored in the same call.
     pub delta: f64,
     /// Ladder stage that ended it; `0` for the fixed-rate control (#104).
@@ -627,6 +656,7 @@ pub fn screen_batch(
             losers.push(ScreenedLoser {
                 uuid: c.uuid,
                 kind: c.kind,
+                merged_with: c.merged_with,
                 delta,
                 stage: 0,
                 reason: ScreenRejection::BelowThreshold,
