@@ -29,6 +29,7 @@
 //! | named candidate orderings | [`ordering`] | #11 |
 //! | progressive adaptive screening ladder | [`screening`] | #104 |
 //! | cascade-aware structural saving | [`cascade`] | #106 |
+//! | downstream output sensitivity | [`sensitivity`] | #105 |
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
 //! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
 
@@ -55,6 +56,7 @@ pub mod report;
 pub mod run;
 pub mod scorer;
 pub mod screening;
+pub mod sensitivity;
 pub mod stats;
 pub mod substitute;
 pub mod sweep;
@@ -84,6 +86,7 @@ pub use screening::{
     DEFAULT_SCREEN_REJECT_MARGIN, ProgressiveConfig, ProgressiveScreen, ScreenLadder, ScreenStage,
     StageRecord, screen_progressive,
 };
+pub use sensitivity::SensitivityIndex;
 pub use stats::{ActivationStats, NeuronStats, SampleSpec, ensure_activation_stats};
 pub use substitute::{ConstantSubstitution, SubstitutionSkip, substitute_constant};
 pub use sweep::{
