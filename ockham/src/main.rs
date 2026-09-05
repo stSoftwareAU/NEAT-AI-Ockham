@@ -123,6 +123,13 @@ struct Cli {
     /// Group proposals offered per sweep batch. Only with `--group-cuts`.
     #[arg(long, default_value_t = DEFAULT_NEIGHBOURHOOD_PROPOSALS)]
     group_proposals: usize,
+    /// Skip the exact structural cleanup pre-pass. The pre-pass removes only
+    /// structure proven redundant — dead wood exposed by exactly-zero weights,
+    /// constant folds and cost-reducing IDENTITY collapses — before the first
+    /// sampled screen, and spends no scorer budget doing it. Skip it to measure
+    /// what it buys.
+    #[arg(long)]
+    no_exact_cleanup: bool,
     /// Records sampled for hidden-neuron activation statistics; 0 scans the whole corpus.
     #[arg(long, default_value_t = DEFAULT_SAMPLE_RECORDS)]
     stats_sample_records: u64,
@@ -310,6 +317,7 @@ fn main() -> ExitCode {
         group_cuts: cli.group_cuts,
         group_max_size: cli.group_max_size,
         group_proposals: cli.group_proposals,
+        exact_cleanup: !cli.no_exact_cleanup,
     };
     if let Err(e) = config.validate() {
         eprintln!("{e}");

@@ -126,6 +126,9 @@ fn stats_sample_records_bounds_the_activation_scan_and_zero_restores_the_full_on
             .arg(&scorer)
             .arg("--stats-sample-records")
             .arg(sample)
+            // The hidden neuron this measures is an IDENTITY, which the exact
+            // cleanup pre-pass would collapse before the scan (Issue #110).
+            .arg("--no-exact-cleanup")
             .arg("--timeout-seconds")
             .arg("1")
             .output()
@@ -317,6 +320,9 @@ fn a_run_that_screens_nothing_warns_that_it_advanced_no_coverage() {
         // Stops the loop before a single batch is filled.
         .arg("--max-experiments")
         .arg("0")
+        // The unchecked neuron this warning counts is an IDENTITY, which the
+        // exact cleanup pre-pass would collapse first (Issue #110).
+        .arg("--no-exact-cleanup")
         .arg("--timeout-seconds")
         .arg("30")
         .output()

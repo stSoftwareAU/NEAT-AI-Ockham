@@ -288,6 +288,83 @@ when the resulting NEAT growth cost is lower.
 Every completed structural candidate must pass NEAT-AI-core
 `creature.validate()` before it reaches the scorer.
 
+### The exact cleanup pre-pass
+
+Those rewrites are also run **before** the first statistical screen, as a
+canonicalisation pass over the incumbent (`--no-exact-cleanup` turns it off).
+If we can prove the wood is dead, we do not buy an experiment to find out. 🪒
+
+```mermaid
+flowchart LR
+    A[incumbent] --> B{exact rules}
+    B -->|zero-weight synapse| C[cleanup cascade]
+    B -->|IDENTITY collapse| C
+    C -->|changed| B
+    C -->|fixed point| D[canonicalised creature]
+    D --> E[authoritative baseline<br/>one scorer pass]
+    E --> F[sampled screen · full scorer]
+```
+
+The rules, and why each is exact:
+
+| Rule | Transformation | Invariant |
+|---|---|---|
+| `zero-weight-synapse` | drop an ordinary synapse of weight exactly `0.0` | it contributes `0.0 * x = 0.0` to a weighted sum for every finite `x` |
+| `dead-structure` | drop a non-output neuron with no outgoing synapse | its value reaches no output |
+| `constant-fold` | fold a hidden neuron with no incoming synapse into its targets' biases | its activation is the constant `squash(bias)` |
+| `identity-collapse` | eliminate a hidden `IDENTITY` neuron | the substitution above, cost-gated on growth units |
+
+Exactly zero, never "near zero": a weight of `1e-18` is small, not absent, and
+cutting it stays the scorer's decision. Typed synapses and aggregate-squash
+targets (`MIN`, `MAX`, `IF`, `HYPOT`, `MEAN`) are skipped, never guessed — an
+aggregate reduces its whole synapse range, so dropping a member changes the
+reduction. Duplicate consolidation needs no rule of its own: NEAT-AI-core
+refuses duplicate ordinary synapses, and the one transform that can create a
+parallel edge merges it by adding weights as it writes it.
+
+The pass runs to a deterministic fixed point (rules in a fixed order, targets in
+declaration order, every applied rewrite strictly lowering growth units), and
+the canonicalised creature must pass `creature.validate()`. A rewrite that fails
+validation is rolled back and named in `rejected` — never dropped silently. A
+collapse that was offered and declined is counted by reason in `collapseSkips`
+(`cost-increase` is the ordinary one: collapsing a wide neuron costs more
+structure than it saves; the rest — `typed-synapse`, `aggregate-target`,
+`self-loop`, `not-identity`, `not-hidden`, `unknown-neuron`, `invalid` — name a
+topology the pass refused to guess at).
+
+"Exact" here means *algebraically* exact: the canonicalised creature computes
+the same function term for term. It does not promise bit-identical `f32`
+arithmetic — folding a bias and composing weights re-order floating-point
+operations, so outputs agree to rounding rather than to the last bit.
+
+**It buys no scorer time of its own.** The authoritative baseline is established
+*after* the pass, so that single full-corpus score is the sanity check over the
+canonicalised creature; no exact rewrite consumes a candidate or a full score.
+What it removed is reported in `exact-cleanup.json`, as the first
+`exactCleanup` record in `experiments.jsonl`, and in `ockham report` as
+`exactCleanupHiddenRemoved` / `exactCleanupGrowthUnitsSaved`.
+
+Measured by `cargo run --release --example exact_cleanup_bench` — the pre-pass
+is real and timed, the scorer is modelled at 2,000,000 records and 20,000
+records/ms:
+
+```text
+   live   ident    zero |   hidden↓    growth↓  pass ms |  screen+full        saved
+     50      25      25 |        50       59.9     13.7 |         5250         383×
+    200     100     100 |       200      239.9    144.7 |        21000         145×
+   1000     250     250 |       500      599.9   2311.5 |        52500          23×
+   2000     500     500 |      1000     1199.9   9468.2 |       105000          11×
+```
+
+One representative run: the `pass ms` column is host-dependent, the
+`screen+full` column is the model, and the ratio is only as good as the model's
+assumptions.
+
+Seconds of local work replace minutes of scorer work, and the saving is
+structure the sweep never has to propose. The pass costs roughly one creature
+clone and one validation per `IDENTITY` candidate, so it grows with the
+creature: budget for a few seconds on a large forest, once per run.
+
 ## Sampling and authoritative promotion
 
 The current defaults are deliberately simple:
@@ -1130,6 +1207,7 @@ Common options:
 | `--group-cuts` | off | Also propose bounded structural neighbourhoods — chains and low-fan-out branches cut as one candidate; see [Structural neighbourhood group cuts](#structural-neighbourhood-group-cuts). Experimental, opt-in, and no bypass: a group faces the same screen and the same full-corpus scorer. |
 | `--group-max-size` | `4` | Hidden neurons in one group proposal, `2`–`8`. A size outside that range is refused rather than clamped. |
 | `--group-proposals` | `8` | Group proposals offered per sweep batch, best-ranked first. |
+| `--no-exact-cleanup` | off (the pre-pass runs) | Skip the exact structural cleanup pre-pass; see [The exact cleanup pre-pass](#the-exact-cleanup-pre-pass). The pre-pass removes only structure it can prove redundant, before the first sampled screen and without a scorer call of its own — skip it to measure what it buys. |
 | `--max-experiments` | none | Optional experiment cap in addition to timeout. |
 | `--scorer` | `rust_scorer` | NEAT-AI-scorer binary. |
 | `--scorer-arg` | none | Extra scorer argument; repeatable. |
@@ -1692,6 +1770,7 @@ comparison a comparison.
 |---|---|
 | `best.json` | Best authoritative local Ockham result found during the run. |
 | `experiments.jsonl` | Append-only experiment journal. |
+| `exact-cleanup.json` | What the exact cleanup pre-pass removed and why — written whenever the pass ran, because "already canonical" is a finding too. Absent under `--no-exact-cleanup`; see [The exact cleanup pre-pass](#the-exact-cleanup-pre-pass). |
 | `coverage.txt` | Screening-coverage block for the GRQ commit description. Written only with `--learnings-dir`. |
 | `coverage.json` | The same coverage figures as JSON. Written only with `--learnings-dir`. |
 | `winners/` | Accepted intermediate Ockham incumbents. |
@@ -1736,6 +1815,10 @@ Useful measures include:
   block (`hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`,
   `coveragePercent`);
 - growth-cost reduction (`growthUnitsSaved`);
+- structure the exact pre-pass removed before the first statistical screen
+  (`exactCleanupHiddenRemoved`, `exactCleanupSynapsesRemoved`,
+  `exactCleanupGrowthUnitsSaved`, `exactCleanupMs`) — all `0` under
+  `--no-exact-cleanup`, and all bought with no scorer call of their own;
 - neurons and synapses removed;
 - sampled-screen false positives;
 - individual versus bundled winners;
@@ -1830,6 +1913,7 @@ NEAT-AI-Ockham/
 │       ├── stats.rs           # hidden-neuron activation statistics
 │       ├── ablation.rs        # mean-activation ablation + cleanup
 │       ├── collapse.rs        # exact IDENTITY neuron collapse
+│       ├── canonical.rs       # exact zero-risk cleanup pre-pass
 │       ├── substitute.rs      # mean-valued constant substitution
 │       ├── blocked.rs         # blocked-reason codes + per-epoch breakdown
 │       ├── sweep.rs           # seeded random sweep + 5% screen

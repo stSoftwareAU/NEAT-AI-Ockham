@@ -19,6 +19,7 @@
 //! | sampled activation statistics | [`stats`] | #3, #44 |
 //! | mean-activation ablation + cleanup | [`ablation`] | #4 |
 //! | exact IDENTITY collapse | [`collapse`] | #5 |
+//! | exact canonicalisation pre-pass | [`canonical`] | #110 |
 //! | seeded sampled sweep | [`sweep`] | #6 |
 //! | full scoring + bundles | [`promote`] | #7 |
 //! | iterative 45-minute loop | [`run`], [`journal`] | #8 |
@@ -44,6 +45,7 @@ pub mod ablation;
 pub mod baseline;
 pub mod blocked;
 pub mod cancel;
+pub mod canonical;
 pub mod cascade;
 pub mod collapse;
 pub mod config;
@@ -78,6 +80,9 @@ pub use ablation::{
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
 pub use blocked::{BlockedBreakdown, BlockedReason};
 pub use cancel::CancelToken;
+pub use canonical::{
+    Canonicalisation, CleanupError, CleanupReport, ExactRule, RuleTally, canonicalise,
+};
 pub use cascade::{CascadeEstimate, CascadeIndex, estimate_cut};
 pub use collapse::{CollapseOptions, CollapseSkip, IdentityCollapse, collapse_identity};
 pub use config::{
