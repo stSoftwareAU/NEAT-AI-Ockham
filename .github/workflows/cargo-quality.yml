@@ -58,12 +58,10 @@ jobs:
 
       # NEAT-AI-core is a path dependency required for `cargo fmt --all` and
       # `cargo clippy` to resolve the workspace. The checkout + sibling symlink
-      # live in the shared composite action (Issue #401).
-      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
-        uses: ./.github/actions/setup-neat-core
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+      # (Issue #401) and the toolchain pin (Issue #126) live in the shared
+      # composite action.
+      - name: Set up Rust workspace (neat-core sibling + toolchain)
+        uses: ./.github/actions/setup-rust-workspace
         with:
           components: rustfmt, clippy
 
