@@ -125,13 +125,6 @@ pub struct Neighbourhood {
     pub rank: f64,
 }
 
-impl Neighbourhood {
-    /// Members as string slices, for the estimator and the ablation.
-    pub fn member_refs(&self) -> Vec<&str> {
-        self.members.iter().map(String::as_str).collect()
-    }
-}
-
 /// Rank bounded chain and branch neighbourhoods of `creature` (Issue #108).
 ///
 /// Returns at most [`NeighbourhoodConfig::max_proposals`] groups, best first,

@@ -1332,8 +1332,9 @@ fn ockham_loop(
             );
             if !groups.blocked.is_empty() {
                 log::detail(&format!(
-                    "groups: {} proposal(s) refused: {}",
+                    "groups: {} of {} proposal(s) refused: {}",
                     groups.blocked.len(),
+                    groups.considered(),
                     groups.blocked.join("; ")
                 ));
             }
