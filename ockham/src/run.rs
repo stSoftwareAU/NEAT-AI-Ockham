@@ -1439,6 +1439,9 @@ fn ockham_loop(
                                 &incumbent.checksum,
                                 &screen.losers,
                                 screen.screen_ms,
+                                // Winners, losers and the incumbent: every
+                                // creature the one screen call scored.
+                                screen.winners.len() + screen.losers.len() + 1,
                             );
                         }
                         screen.winners

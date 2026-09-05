@@ -47,7 +47,12 @@ pub enum CandidateOutcome {
     ScreenedOut,
     /// Fully scored and not applied.
     Rejected,
-    /// Fully scored and applied to the incumbent.
+    /// Fully scored and applied to the incumbent, alone or inside a winning
+    /// bundle.
+    ///
+    /// A bundle member was applied without its own delta deciding it, so
+    /// [`CandidateRecord::full_delta`] — what the scorer measured for the neuron
+    /// alone — is what [`CandidateRecord::is_win`] reads when it is present.
     Accepted,
 }
 
@@ -86,7 +91,7 @@ pub struct CandidateRecord {
     pub seed: u64,
     /// Hidden neuron the candidate cut.
     pub uuid: String,
-    /// `identity` or `ablation`.
+    /// How the sweep built the candidate: `identity`, `ablation` or `constant`.
     pub kind: String,
     /// Feature values by name — the schema is carried, not assumed.
     pub features: BTreeMap<String, f64>,
@@ -139,13 +144,19 @@ impl CandidateRecord {
 
     /// Whether this row is a scorer-confirmed pruning win.
     ///
-    /// An accept is one, and so is a candidate whose own full-corpus Δ cleared
-    /// `min_improvement` while a better cut won its cohort — *confirmed but not
-    /// applied* is a win the ranking should learn from, not a failure
-    /// (Issue #52).
+    /// The scorer's own measurement of *this* neuron decides whenever it exists:
+    /// a candidate whose full-corpus Δ cleared `min_improvement` while a better
+    /// cut won its cohort is a win the ranking should learn from — *confirmed
+    /// but not applied* is not a failure (Issue #52) — and a bundle member that
+    /// rode a winning bundle to acceptance on a Δ of its own below the threshold
+    /// is not a win, whatever the bundle did.
+    ///
+    /// With no individual Δ measured, an accept is the only evidence there is.
     pub fn is_win(&self, min_improvement: f64) -> bool {
-        self.outcome == CandidateOutcome::Accepted
-            || self.full_delta.is_some_and(|d| d > min_improvement)
+        match self.full_delta {
+            Some(delta) => delta > min_improvement,
+            None => self.outcome == CandidateOutcome::Accepted,
+        }
     }
 
     /// The feature vector in [`FEATURE_NAMES`] order, or `None` when this row
@@ -270,8 +281,10 @@ impl CandidateLog<'_> {
     /// checksum for a creature it was never extracted from cannot be traced
     /// back to the topology that produced it.
     ///
-    /// The screen time is the cohort's, so it is shared evenly across the
-    /// candidates it judged rather than charged in full to each of them.
+    /// The screen time is the whole cohort's — winners, losers and the
+    /// incumbent scored in one call — so it is shared across `cohort` creatures
+    /// rather than charged to the losers alone, which would inflate the column
+    /// every time the screen promoted anything.
     pub fn screened_out(
         &self,
         creature: &CreatureExport,
@@ -279,12 +292,13 @@ impl CandidateLog<'_> {
         checksum: &str,
         losers: &[crate::sweep::ScreenedLoser],
         screen_ms: u64,
+        cohort: usize,
     ) {
         if losers.is_empty() {
             return;
         }
         let features = crate::features::extract(creature, stats, self.evidence);
-        let each_ms = screen_ms / losers.len().max(1) as u64;
+        let each_ms = screen_ms / cohort.max(losers.len()).max(1) as u64;
         let mut records = Vec::with_capacity(losers.len());
         let mut unknown = 0usize;
         for loser in losers {
@@ -344,7 +358,10 @@ impl CandidateLog<'_> {
         let mut records = Vec::with_capacity(full.individuals.len());
         let mut unknown = 0usize;
         for scored in &full.individuals {
+            // A cohort entry naming no uuid describes no neuron; counted, not
+            // dropped in silence.
             let Some(uuid) = scored.uuids.first() else {
+                unknown += 1;
                 continue;
             };
             // The kind is the sweep's — `identity`, `ablation` or `constant` —

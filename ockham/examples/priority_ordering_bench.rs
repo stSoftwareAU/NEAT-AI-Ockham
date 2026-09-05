@@ -253,17 +253,25 @@ fn simulate(creature: &CreatureExport, stats: &ActivationStats, order: &[String]
     economics
 }
 
-/// Training rows from a previous random-ordering run over the same creature.
+/// Training and held-out rows from a previous random-ordering run.
 ///
 /// This is the offline pipeline exactly as an operator would run it: an earlier
 /// sweep wrote its candidate log, and the model is fitted from those outcomes
-/// before it ranks anything.
-fn history(creature: &CreatureExport, stats: &ActivationStats, rows: usize) -> Vec<TrainingRow> {
+/// before it ranks anything. The two blocks are disjoint prefixes of that run's
+/// order, so the reported quality is measured on rows the fit never saw —
+/// evaluating on the training rows would flatter the model with a number the
+/// `train-ordering` command deliberately refuses to present as held out.
+fn history(
+    creature: &CreatureExport,
+    stats: &ActivationStats,
+    rows: usize,
+    holdout: usize,
+) -> (Vec<TrainingRow>, Vec<TrainingRow>) {
     let order = hidden_order(creature, stats, OrderingConfig::default(), 7);
     let features = neat_ai_ockham::features::extract(creature, stats, &PriorEvidence::new());
-    order
+    let mut all: Vec<TrainingRow> = order
         .iter()
-        .take(rows)
+        .take(rows + holdout)
         .filter_map(|uuid| {
             let f: &CandidateFeatures = features.get(uuid)?;
             Some(TrainingRow {
@@ -271,7 +279,9 @@ fn history(creature: &CreatureExport, stats: &ActivationStats, rows: usize) -> V
                 win: confirmable(stats, uuid),
             })
         })
-        .collect()
+        .collect();
+    let held = all.split_off(all.len().min(rows));
+    (all, held)
 }
 
 fn main() {
@@ -295,13 +305,15 @@ fn main() {
         BUDGET_MS / 60_000.0
     );
 
-    let training = history(&creature, &stats, 400);
+    let (training, holdout) = history(&creature, &stats, 400, 200);
     let model = PriorityModel::fit(&training, TrainingConfig::default())
         .expect("a previous run's outcomes fit a model");
-    let evaluation = model.evaluate(&training);
+    let evaluation = model.evaluate(&holdout);
     println!(
-        "learned model: {} training row(s), {} win(s), AUC {:.3}",
+        "learned model: {} training row(s), {} held-out row(s), {} held-out win(s), \
+         held-out AUC {:.3}",
         training.len(),
+        holdout.len(),
         evaluation.wins,
         evaluation.auc
     );

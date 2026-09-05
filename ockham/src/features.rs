@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use neat_core::{CreatureExport, SquashType, parse_squash_name};
+use neat_core::CreatureExport;
 use serde::{Deserialize, Serialize};
 
 use crate::ablation::growth_units;
@@ -143,7 +143,7 @@ impl PriorEvidence {
     /// cohort loss it was filed as.
     pub fn add(&mut self, learning: &Learning, min_improvement: f64) {
         let win = learning.outcome == Outcome::Accepted
-            || learning.full_delta.is_some_and(|d| d > min_improvement);
+            || crate::learnings::confirmed_positive(learning, min_improvement);
         let entry = self.counts.entry(learning.uuid.clone()).or_insert((0, 0));
         if win {
             entry.0 += 1;
@@ -224,8 +224,7 @@ pub fn extract(
                 fan_out,
                 direct_growth_units: growth_units(1, fan_in + fan_out),
                 cascade_growth_units: estimate.map_or(0.0, |e| e.growth_units),
-                identity: parse_squash_name(n.squash.as_deref().unwrap_or("IDENTITY"))
-                    .is_ok_and(|s| s == SquashType::Identity),
+                identity: crate::sweep::is_identity(creature, uuid),
                 blocked: estimate.is_none_or(|e| e.blocked),
                 depth_fraction: depth.get(uuid).copied().unwrap_or(1.0),
                 prior_wins,

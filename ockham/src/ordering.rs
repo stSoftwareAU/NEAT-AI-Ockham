@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use neat_core::{CreatureExport, SquashType, parse_squash_name};
+use neat_core::CreatureExport;
 use serde::{Deserialize, Serialize};
 
 use crate::ablation::growth_units;
@@ -63,9 +63,9 @@ pub enum Ordering {
     /// Highest hand-built expected pruning value first (Issue #107).
     ///
     /// Every signal above read together — quietness, downstream sensitivity,
-    /// fan-out, squash, depth, cascade saving and what earlier epochs learnt —
-    /// combined by [`crate::priority`] into
-    /// `P(scorer confirms) × expected saving ÷ expected cost`.
+    /// fan-in, fan-out, range, squash, depth, cascade saving and what earlier
+    /// epochs learnt — combined by [`crate::priority`] into
+    /// `P(scorer confirms) × ln(1 + expected saving) ÷ expected cost`.
     Composite,
     /// [`Ordering::Composite`] with `P` from a fitted model (Issue #107).
     ///
@@ -308,12 +308,11 @@ fn rank_key(
             -growth_units(1, touching)
         }
         Ordering::IdentityFirst => {
-            let identity = creature.neurons.iter().any(|n| {
-                n.uuid == uuid
-                    && parse_squash_name(n.squash.as_deref().unwrap_or("IDENTITY"))
-                        .is_ok_and(|s| s == SquashType::Identity)
-            });
-            if identity { 0.0 } else { 1.0 }
+            if crate::sweep::is_identity(creature, uuid) {
+                0.0
+            } else {
+                1.0
+            }
         }
         // Negated so the largest cascade saving sorts first. A neuron the
         // estimate does not cover, and one whose cut the transform would

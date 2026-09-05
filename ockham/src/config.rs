@@ -26,6 +26,15 @@ pub const DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES: u32 = 3;
 pub const DEFAULT_ORDERING: Ordering = Ordering::Random;
 /// Default fraction of sweep slots reserved for random exploration (issue #11).
 pub const DEFAULT_ORDERING_RANDOM_QUOTA: f64 = 0.0;
+/// Random exploration a `learned` run reserves when the flag is omitted (#107).
+///
+/// A hand-written ranking is a fixed function of the creature, so a neuron it
+/// buries is buried for a reason a human can read. A fitted model is not: it
+/// learns from the outcomes of the candidates it chose, so a uuid it ranks last
+/// is never tried, never logged, and never gets to change its own mind. One
+/// visit in ten drawn from the random control is what stops that loop closing —
+/// `--ordering-random-quota` still overrides it, `0` included.
+pub const DEFAULT_LEARNED_RANDOM_QUOTA: f64 = 0.1;
 
 /// Complete configuration.
 #[derive(Debug, Clone, PartialEq)]
@@ -202,6 +211,20 @@ impl OckhamConfig {
         }
     }
 
+    /// Reserved random quota for `ordering`, honouring `flag` when given (#107).
+    ///
+    /// A `learned` run that names no quota reserves
+    /// [`DEFAULT_LEARNED_RANDOM_QUOTA`]; every other ordering keeps
+    /// [`DEFAULT_ORDERING_RANDOM_QUOTA`]. An explicit flag always wins, so a
+    /// control comparison can still pin a learned run to no exploration at all.
+    pub fn resolve_random_quota(ordering: Ordering, flag: Option<f64>) -> f64 {
+        match (flag, ordering) {
+            (Some(quota), _) => quota,
+            (None, Ordering::Learned) => DEFAULT_LEARNED_RANDOM_QUOTA,
+            (None, _) => DEFAULT_ORDERING_RANDOM_QUOTA,
+        }
+    }
+
     /// Strategy plus reserved random quota for the sweep (issue #11).
     pub fn ordering_config(&self) -> OrderingConfig<'static> {
         OrderingConfig {
@@ -366,6 +389,34 @@ mod tests {
         assert!(c.candidate_log.is_none());
         assert!(c.ordering_model.is_none());
         assert!(c.report().candidate_log.is_none());
+    }
+
+    #[test]
+    fn a_learned_run_reserves_exploration_unless_the_flag_says_otherwise() {
+        // A fitted model learns only from the candidates it chose, so a run
+        // that names no quota still draws one visit in ten from the control.
+        assert_eq!(
+            OckhamConfig::resolve_random_quota(Ordering::Learned, None),
+            DEFAULT_LEARNED_RANDOM_QUOTA
+        );
+        // Hand-written rankings are unchanged: the control stays the control.
+        for ordering in [Ordering::Random, Ordering::Composite, Ordering::LowVariance] {
+            assert_eq!(
+                OckhamConfig::resolve_random_quota(ordering, None),
+                DEFAULT_ORDERING_RANDOM_QUOTA,
+                "{ordering} must keep its default"
+            );
+        }
+        // An explicit flag always wins, `0` included, so a control comparison
+        // can pin a learned run to no exploration at all.
+        assert_eq!(
+            OckhamConfig::resolve_random_quota(Ordering::Learned, Some(0.0)),
+            0.0
+        );
+        assert_eq!(
+            OckhamConfig::resolve_random_quota(Ordering::Composite, Some(0.5)),
+            0.5
+        );
     }
 
     #[test]

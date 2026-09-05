@@ -10,8 +10,8 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use neat_ai_ockham::config::{
     DEFAULT_CANDIDATE_COUNT, DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES, DEFAULT_MIN_IMPROVEMENT,
-    DEFAULT_ORDERING, DEFAULT_ORDERING_RANDOM_QUOTA, DEFAULT_SCREEN_SAMPLE_RATE,
-    DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
+    DEFAULT_ORDERING, DEFAULT_SCREEN_SAMPLE_RATE, DEFAULT_SCREEN_THRESHOLD,
+    DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
 };
 use neat_ai_ockham::model::{
     DEFAULT_EPOCHS, DEFAULT_L2, DEFAULT_LEARNING_RATE, PriorityModel, TrainingConfig,
@@ -97,8 +97,10 @@ struct Cli {
     #[arg(long, default_value_t = DEFAULT_ORDERING, value_parser = Ordering::parse)]
     ordering: Ordering,
     /// Fraction of sweep slots reserved for the random control, in [0, 1).
-    #[arg(long, default_value_t = DEFAULT_ORDERING_RANDOM_QUOTA)]
-    ordering_random_quota: f64,
+    /// Omitted: 0, or 0.1 for `--ordering learned`, so a fitted model cannot
+    /// permanently starve the candidates it ranks last.
+    #[arg(long)]
+    ordering_random_quota: Option<f64>,
     /// Fitted ranking model for `--ordering learned`, from `train-ordering`.
     /// Ranking only: the scorer still decides what survives.
     #[arg(long)]
@@ -282,7 +284,10 @@ fn main() -> ExitCode {
         learnings_host: cli.learnings_host,
         learnings_replay: cli.learnings_replay,
         ordering: cli.ordering,
-        ordering_random_quota: cli.ordering_random_quota,
+        ordering_random_quota: OckhamConfig::resolve_random_quota(
+            cli.ordering,
+            cli.ordering_random_quota,
+        ),
         ordering_model: cli.ordering_model,
         candidate_log: cli.candidate_log,
         unchecked_first: cli.unchecked_first,

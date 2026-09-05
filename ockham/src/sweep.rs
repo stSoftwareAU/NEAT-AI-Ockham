@@ -322,7 +322,11 @@ impl Sweep {
     }
 }
 
-fn is_identity(creature: &CreatureExport, uuid: &str) -> bool {
+/// Whether `uuid` carries an `IDENTITY` squash — an exact-fold opportunity.
+///
+/// Shared with the orderings (#107) so one place decides what counts as an
+/// identity neuron, including that an unparseable squash name does not.
+pub(crate) fn is_identity(creature: &CreatureExport, uuid: &str) -> bool {
     creature.neurons.iter().any(|n| {
         n.uuid == uuid
             && parse_squash_name(n.squash.as_deref().unwrap_or("IDENTITY"))

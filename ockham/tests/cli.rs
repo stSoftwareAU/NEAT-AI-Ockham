@@ -453,6 +453,88 @@ fn train_ordering_fits_a_model_from_candidate_logs_and_reports_its_ranking_quali
     assert_eq!(loaded.training().config.corpora, ["corpus-a"]);
 }
 
+/// Helper: a candidate log whose quiet rows are the wins.
+fn write_candidate_log(path: &Path) {
+    let stamp = neat_ai_ockham::RunStamp {
+        host: "GRQ-1".into(),
+        corpus_identity: "corpus-a".into(),
+        creature_checksum: "abc".into(),
+        ordering: "composite".into(),
+        seed: 7,
+    };
+    let rows: Vec<neat_ai_ockham::CandidateRecord> = (0..40)
+        .map(|i| {
+            let quiet = i % 2 == 0;
+            let features = neat_ai_ockham::CandidateFeatures {
+                measured: true,
+                mean_abs: if quiet { 0.01 } else { 3.0 },
+                outgoing_weight: 1.0,
+                cascade_growth_units: 2.0,
+                ..Default::default()
+            };
+            let mut record = neat_ai_ockham::CandidateRecord::new(
+                &stamp,
+                &format!("h{i}"),
+                "ablation",
+                &features,
+                if quiet {
+                    neat_ai_ockham::CandidateOutcome::Accepted
+                } else {
+                    neat_ai_ockham::CandidateOutcome::Rejected
+                },
+            );
+            record.full_delta = Some(if quiet { 0.02 } else { -0.02 });
+            record
+        })
+        .collect();
+    neat_ai_ockham::telemetry::append(path, &rows).unwrap();
+}
+
+/// `--holdout-every 0` is the documented "no holdout" setting, and the report
+/// must say which rows the numbers came from rather than implying a holdout.
+#[test]
+fn train_ordering_without_a_holdout_says_it_evaluated_on_the_training_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("candidates.jsonl");
+    write_candidate_log(&log);
+    let out = bin()
+        .arg("train-ordering")
+        .arg(&log)
+        .arg("--out")
+        .arg(tmp.path().join("model.json"))
+        .arg("--holdout-every")
+        .arg("0")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(report["evaluatedOn"], "train");
+    assert_eq!(report["holdoutRows"], 0);
+    assert_eq!(report["trainingRows"], 40);
+}
+
+/// Holding out every row leaves nothing to fit; refused by name rather than
+/// quietly reinterpreted.
+#[test]
+fn train_ordering_refuses_a_holdout_of_every_row() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("candidates.jsonl");
+    write_candidate_log(&log);
+    let model = tmp.path().join("model.json");
+    let out = bin()
+        .arg("train-ordering")
+        .arg(&log)
+        .arg("--out")
+        .arg(&model)
+        .arg("--holdout-every")
+        .arg("1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--holdout-every"), "{}", stderr(&out));
+    assert!(!model.exists(), "a refused fit must write no model");
+}
+
 #[test]
 fn train_ordering_without_logs_prints_usage() {
     let tmp = tempfile::tempdir().unwrap();

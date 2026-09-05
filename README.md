@@ -1124,7 +1124,7 @@ Common options:
 | `--unchecked-first` | on with `--learnings-dir`, off without | Screen never-checked neurons first, then recycle the stalest; see [Unchecked-first selection](#unchecked-first-selection). Set `--unchecked-first=false` to keep the raw seeded permutation. |
 | `--old-corpus-first` | on with `--learnings-dir`, off without | Read what older corpus epochs learnt: check the hidden neurons they once removed before the rest, and replay their confirmed winners early as hypotheses; see [Old-corpus priority](#old-corpus-priority). Evidence only — every one is re-scored against the current corpus, and no historical record can suppress or accept a cut. Set `--old-corpus-first=false` to disable. |
 | `--ordering` | `random` | Named candidate ordering; see [Candidate ordering](#candidate-ordering). |
-| `--ordering-random-quota` | `0` | Fraction of sweep slots reserved for the random control, in `[0, 1)`. |
+| `--ordering-random-quota` | `0`, `0.1` for `learned` | Fraction of sweep slots reserved for the random control, in `[0, 1)`. A `learned` run reserves one visit in ten unless the flag says otherwise, so a fitted model cannot permanently starve the candidates it ranks last. |
 | `--ordering-model` | none | Fitted ranking model for `--ordering learned`, built by `train-ordering`; see [Composite and learned priority](#composite-and-learned-priority). Ranking only — the scorer still decides what survives. |
 | `--candidate-log` | none | Append one candidate feature/outcome row per scored candidate, as offline training data. Omitted: write nothing. |
 | `--max-experiments` | none | Optional experiment cap in addition to timeout. |
@@ -1373,10 +1373,16 @@ the wrong columns. `--ordering learned` without a model that loads stops the run
 else.
 
 Historical evidence is a **prior, not current truth**: verdicts from older corpus
-epochs enter `P` as saturating `ln(1 + wins)` and `ln(1 + failures)` terms that
-move a candidate earlier or later and can never rule one in or out. Every
-strategy keeps `--ordering-random-quota`, so reserved exploration stops any
-ranking — hand-built or learned — permanently starving unusual candidates, and
+epochs — and only older epochs — enter `P` as saturating `ln(1 + wins)` and
+`ln(1 + failures)` terms that move a candidate earlier or later and can never
+rule one in or out.
+
+Every strategy keeps `--ordering-random-quota`, and a `learned` run reserves
+`0.1` of its visits for the random control by default. A hand-written ranking is
+a fixed function of the creature, so a neuron it buries is buried for a reason a
+human can read; a fitted model learns from the outcomes of the candidates it
+chose, so a uuid it ranks last is never tried, never logged and never gets to
+change its own mind. Reserved exploration is what stops that loop closing — and
 every strategy still visits every eligible neuron eventually.
 
 ### Benchmark
@@ -1411,11 +1417,12 @@ because an ordering only matters when the budget cannot reach everything:
 | `learned` | 0.8s | 4236 | 12628 | 37.1% |
 
 Both new strategies beat the random control on every measure. `learned` — fitted
-from 400 rows of a previous run's outcomes, held-out AUC 0.905 — finds the most
+from 400 rows of a previous run's outcomes, held-out AUC 0.895 on 200 rows the
+fit never saw — finds the most
 confirmed cuts per hour and misses the fewest winners of any strategy;
 `composite` removes the most growth units per hour, marginally ahead of
 `cascade-risk-ratio`, while trailing it slightly on cuts. Order-building is a
-once-per-sweep 23ms at this size, against `cascade-risk-ratio`'s 30ms.
+once-per-sweep 29ms at this size, the same order as `cascade-risk-ratio`'s.
 
 That is **not** a promotion. The simulated scorer's ground truth is quietness
 plus noise, and quietness is a signal both new strategies read, so the harness

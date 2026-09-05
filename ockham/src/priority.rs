@@ -5,15 +5,20 @@
 //!
 //! ```text
 //! expected_pruning_value = P(the full scorer confirms the cut)
-//!                        × expected growth-unit saving
+//!                        × ln(1 + expected growth-unit saving)
 //!                        ÷ expected evaluation cost
 //! ```
 //!
 //! `P` is a transparent logistic of the quietness, structural and historical
-//! features in [`crate::features`]; the saving is the cascade dry-run's (#106);
-//! and the cost is the screen every candidate pays plus the full-corpus score
-//! only a survivor triggers — so a candidate that is likelier to survive is
-//! worth more *and* costs more, which is exactly the trade the sweep makes.
+//! features in [`crate::features`]. The saving is the cascade dry-run's (#106),
+//! entered with diminishing returns so the odds of surviving the scorer decide
+//! the order and the structure breaks the ties ([`expected_pruning_value`]).
+//!
+//! The cost is one screen plus a full score at the fleet's promotion rate —
+//! charged at a **rate**, not per candidate, because the ranking cannot predict
+//! which candidates the sampled screen promotes. It sets the scale of the value
+//! and reorders nothing; [`CompositeWeights::screen_survival`] says why the
+//! per-candidate form was measured and rejected.
 //!
 //! The weights are a hand-built starting point, deliberately separate from the
 //! learned model in [`crate::model`]: the composite ordering must be usable,
