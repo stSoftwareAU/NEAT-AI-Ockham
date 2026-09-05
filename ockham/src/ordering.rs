@@ -845,6 +845,7 @@ mod tests {
                     unix_secs: 1,
                     host: "h".into(),
                     full_delta: None,
+                    group: None,
                 },
                 1e-6,
             );

@@ -44,6 +44,10 @@ pub struct BaselineRun {
     /// Isolated workspace directory.
     pub workspace: PathBuf,
     /// Incumbent metadata written beside the byte-for-byte copy.
+    ///
+    /// Describes the creature **as supplied**. When the exact cleanup pre-pass
+    /// canonicalised it, the creature the baseline was scored over is the one
+    /// `exactCleanup.after` describes (Issue #110).
     pub incumbent: IncumbentMeta,
     /// Authoritative full-corpus scorer baseline. Larger `score` is better.
     pub baseline: AuthoritativeBaseline,
@@ -60,7 +64,17 @@ pub struct BaselineRun {
     /// Distinct hidden UUIDs this run screened for the first time (Issue #77).
     pub newly_screened: usize,
     /// Cumulative score gain from the opening parent.
+    ///
+    /// The opening parent is the canonicalised incumbent when the exact
+    /// cleanup pre-pass fired, so this counts what *screening* bought; what the
+    /// pre-pass removed is reported by `exactCleanup` (Issue #110).
     pub cumulative_delta: f64,
+    /// Exact structural cleanup pre-pass, when it ran (Issue #110).
+    ///
+    /// `None` only under `--no-exact-cleanup`; a pass that removed nothing
+    /// still reports, because "already canonical" is a finding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_cleanup: Option<crate::canonical::CleanupReport>,
     /// Population re-entry comparison, when a global champion was supplied.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reentry: Option<crate::reentry::ReentryOutcome>,
@@ -78,7 +92,7 @@ pub fn establish_run(
 ) -> Result<BaselineRun, String> {
     let source = config.creature.clone();
     let source_before = std::fs::read(&source).map_err(|e| format!("{}: {e}", source.display()))?;
-    let incumbent = load_incumbent(&source).map_err(|e| e.to_string())?;
+    let mut incumbent = load_incumbent(&source).map_err(|e| e.to_string())?;
     log::info(&format!(
         "incumbent {}  neurons={} synapses={} forwardOnly={}",
         incumbent.short_checksum(),
@@ -98,12 +112,28 @@ pub fn establish_run(
         "corpus {}  {} records in {} files",
         corpus.identity, corpus.record_count, corpus.file_count
     ));
-    let creature_meta = CreatureMeta::from_json(&incumbent.text);
+    let mut creature_meta = CreatureMeta::from_json(&incumbent.text);
     log::detail(&format!(
         "tags: {} creature tags, {} tagged neurons",
         creature_meta.tags.len(),
         creature_meta.neuron_tags.len()
     ));
+
+    // Exact cleanup before any scorer budget is spent (Issue #110). Every rule
+    // is provably behaviour-preserving, so the structure it removes needs no
+    // experiment to justify — and the baseline below doubles as the single
+    // scorer sanity check over the canonicalised creature.
+    let exact_cleanup = if config.exact_cleanup {
+        Some(exact_cleanup_pre_pass(
+            config,
+            &mut incumbent,
+            &mut creature_meta,
+        )?)
+    } else {
+        log::detail("exact cleanup pre-pass disabled (--no-exact-cleanup)");
+        None
+    };
+    let canonicalised = exact_cleanup.as_ref().is_some_and(|r| r.changed);
 
     let baseline = establish_baseline(
         &incumbent,
@@ -155,7 +185,16 @@ pub fn establish_run(
 
     std::fs::create_dir_all(&config.output_dir)
         .map_err(|e| format!("{}: {e}", config.output_dir.display()))?;
-    std::fs::write(config.output_dir.join("best.json"), &incumbent.text)
+    // Tagged when the pre-pass rewrote the creature: `best.json` must be the
+    // creature the baseline was scored over, tags and all.
+    let opening_best = if canonicalised {
+        creature_meta
+            .serialize_with(&incumbent.creature, true)
+            .map_err(|e| format!("tag best.json: {e}"))?
+    } else {
+        incumbent.text.clone()
+    };
+    std::fs::write(config.output_dir.join("best.json"), &opening_best)
         .map_err(|e| format!("best.json: {e}"))?;
 
     let cancel = CancelToken::new();
@@ -219,9 +258,81 @@ pub fn establish_run(
         stop_reason: loop_out.stop_reason,
         newly_screened: loop_out.newly_screened,
         cumulative_delta: loop_out.cumulative_delta,
+        exact_cleanup,
         reentry,
         optimisation: "complete",
     })
+}
+
+/// File name of the cleanup report written beside `best.json` (Issue #110).
+pub const EXACT_CLEANUP_FILE: &str = "exact-cleanup.json";
+
+/// Canonicalise the incumbent with exact rewrites before any screening.
+///
+/// Runs [`crate::canonical::canonicalise`] to a fixed point, adopts the result
+/// as the incumbent, and reports what it removed to the log, the journal and
+/// `exact-cleanup.json`. Nothing here consumes a candidate or full score: the
+/// authoritative baseline is established afterwards over the canonicalised
+/// creature, which is the one scorer sanity check the pass gets.
+///
+/// Provenance is carried, not dropped: per-neuron tags for surviving neurons
+/// are kept and tags for removed neurons go with them
+/// ([`CreatureMeta::retain_neurons`]), the byte-for-byte workspace copy of the
+/// source creature is untouched, and the canonicalised creature is what
+/// `best.json` opens on.
+fn exact_cleanup_pre_pass(
+    config: &OckhamConfig,
+    incumbent: &mut Incumbent,
+    meta: &mut CreatureMeta,
+) -> Result<crate::canonical::CleanupReport, String> {
+    let started = Instant::now();
+    let done = crate::canonical::canonicalise(&incumbent.creature).map_err(|e| e.to_string())?;
+    let ms = started.elapsed().as_millis() as u64;
+    let report = done.report;
+    log::info(&format!("{} in {ms}ms", report.summary()));
+    for tally in &report.rules {
+        log::detail(&format!(
+            "exact rule {}: ×{} removing {} neuron(s) and {} synapse(s), {:.1} growth units",
+            tally.rule,
+            tally.applications,
+            tally.neurons_removed,
+            tally.synapses_removed,
+            tally.growth_units_saved
+        ));
+    }
+    for note in &report.rejected {
+        log::warn(&format!("exact cleanup: {note}"));
+    }
+    std::fs::create_dir_all(&config.output_dir)
+        .map_err(|e| format!("{}: {e}", config.output_dir.display()))?;
+    let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    std::fs::write(config.output_dir.join(EXACT_CLEANUP_FILE), json)
+        .map_err(|e| format!("{EXACT_CLEANUP_FILE}: {e}"))?;
+    if !report.changed {
+        return Ok(report);
+    }
+
+    meta.retain_neurons(&done.creature);
+    *incumbent =
+        Incumbent::from_creature(done.creature, "ockham-canonical").map_err(|e| e.to_string())?;
+    journal::append(
+        &config.output_dir.join("experiments.jsonl"),
+        &Event::ExactCleanup {
+            hidden_before: report.before.hidden_neurons,
+            hidden_after: report.after.hidden_neurons,
+            synapses_before: report.before.synapses,
+            synapses_after: report.after.synapses,
+            growth_units_saved: report.growth_units_saved,
+            passes: report.passes,
+            rules: report
+                .rules
+                .iter()
+                .map(|t| (t.rule.name().to_string(), t.applications))
+                .collect(),
+            ms,
+        },
+    )?;
+    Ok(report)
 }
 
 struct LoopOut {
@@ -441,7 +552,7 @@ struct WinnerTally {
 impl WinnerTally {
     /// Fold one full-score cohort into the tally.
     fn observe(&mut self, full: &FullOutcome, min_improvement: f64) {
-        self.plans += full.bundles.len();
+        self.plans += full.bundles.len() + full.groups.len();
         self.skipped += full.skipped_bundles;
         self.dropped += full.dropped();
         for cand in &full.individuals {
@@ -607,9 +718,12 @@ fn update_pool(
         if applied.contains(uuid.as_str()) || cand.delta <= min_improvement {
             continue;
         }
+        // The individual candidate for this uuid, never the group keyed on it
+        // (#108): a pool member is a single cut, and a group's kind would
+        // describe a different proposal entirely.
         let kind = sampled
             .iter()
-            .find(|w| w.candidate.uuid == *uuid)
+            .find(|w| !w.candidate.is_group() && w.candidate.uuid == *uuid)
             .map_or(CandidateKind::Ablation, |w| w.candidate.kind);
         pool.push(BundleMember {
             uuid: uuid.clone(),
@@ -917,6 +1031,12 @@ fn ockham_loop(
     // In-run state, deliberately not seeded from the cache: cross-run memory is
     // the learnings store's job (Issues #56, #57).
     let mut pool: Vec<BundleMember> = Vec::new();
+    // Neighbourhood memberships this run has already screened (Issue #108).
+    // Generation is deterministic, so without this the same best-ranked groups
+    // would be re-proposed and re-screened every batch until the deadline. It
+    // is cleared on every accept: the incumbent those verdicts were measured
+    // against no longer exists.
+    let mut tried_groups: HashSet<String> = HashSet::new();
     // Resolved once: the ladder is the same every batch, and an unresolvable
     // one must stop the run rather than quietly screen at some other rate.
     let ladder = config.screen_ladder()?;
@@ -1023,7 +1143,22 @@ fn ockham_loop(
             let confirmed_only = this_corpus.len() - accepted_only;
             let from_history = replayable.len() - this_corpus.len();
             let wins: Vec<String> = replayable.into_iter().map(|c| c.uuid).collect();
-            if wins.is_empty() {
+            // An accepted neighbourhood is replayed as the group it was
+            // (Issue #108). Its members carry no individual verdict — the
+            // scorer never judged them apart — so replaying them one at a time
+            // asks the very question the group was proposed to get past. Only a
+            // run that offers group cuts replays them: a control run must stay
+            // a control run whatever the shared cache holds.
+            let group_plans: Vec<Vec<String>> = if config.group_cuts {
+                crate::learnings::confirmed_groups(
+                    &known,
+                    &incumbent.creature,
+                    config.min_improvement,
+                )
+            } else {
+                Vec::new()
+            };
+            if wins.is_empty() && group_plans.is_empty() {
                 replay_done = true;
                 continue;
             }
@@ -1033,7 +1168,7 @@ fn ockham_loop(
                     replay_skipped.insert(u.clone());
                 }
             }
-            if applied.is_empty() {
+            if applied.is_empty() && group_plans.is_empty() {
                 replay_done = true;
                 continue;
             }
@@ -1050,10 +1185,11 @@ fn ockham_loop(
                     plans.last().map_or(0, Vec::len)
                 ));
             }
-            let sampled: Vec<SampledWinner> = if plans.is_empty() {
+            let sampled: Vec<SampledWinner> = if plans.is_empty() && !applied.is_empty() {
                 match propose(&incumbent.creature, &activation, &merges, &applied[0]) {
                     Ok(proposed) => vec![SampledWinner {
                         candidate: SweepCandidate {
+                            members: vec![applied[0].clone()],
                             uuid: applied[0].clone(),
                             permutation_index: 0,
                             kind: proposed.kind,
@@ -1083,6 +1219,12 @@ fn ockham_loop(
             let probe_n = REPLAY_PROBE_LIMIT.min(applied.len());
             experiments += 1;
             let mut extra_plans = plans;
+            if !group_plans.is_empty() {
+                log::info(&format!(
+                    "replay: {} accepted neighbourhood(s) still whole on the incumbent",
+                    group_plans.len()
+                ));
+            }
             match evaluate_full(
                 scorer,
                 &config.training_data,
@@ -1094,6 +1236,7 @@ fn ockham_loop(
                     dir: &workspace.join(format!("replay-{experiments}")),
                     best_path: Some(&config.output_dir.join("best.json")),
                     extra_plans: &extra_plans,
+                    group_plans: &group_plans,
                     max_individuals: None,
                     pool: &[],
                     max_entries: None,
@@ -1114,6 +1257,7 @@ fn ockham_loop(
                             match propose(&incumbent.creature, &activation, &merges, uuid) {
                                 Ok(proposed) => probe.push(SampledWinner {
                                     candidate: SweepCandidate {
+                                        members: vec![uuid.clone()],
                                         uuid: uuid.clone(),
                                         permutation_index: 0,
                                         kind: proposed.kind,
@@ -1147,6 +1291,7 @@ fn ockham_loop(
                                 dir: &workspace.join(format!("replay-{experiments}")),
                                 best_path: Some(&config.output_dir.join("best.json")),
                                 extra_plans: &extra_plans,
+                                group_plans: &[],
                                 max_individuals: None,
                                 pool: &[],
                                 max_entries: None,
@@ -1338,7 +1483,7 @@ fn ockham_loop(
         }
         // Tagged neurons are candidates like any other (#63); `meta.neuron_tags`
         // is still read below for the informational coverage count.
-        let (candidates, skips) = sweep.fill_batch_avoiding(
+        let (mut candidates, skips) = sweep.fill_batch_avoiding(
             &incumbent.creature,
             &activation,
             &merges,
@@ -1346,9 +1491,63 @@ fn ockham_loop(
             &avoid,
         );
         pass_candidates += candidates.len();
+        // Structural neighbourhood proposals ride the same batch (Issue #108):
+        // a chain or a low-fan-out branch that no single-neuron cut can expose,
+        // screened and scored exactly like every other candidate. They are
+        // *extra* candidates, not sweep visits — the permutation and the
+        // coverage it drives are untouched, because a group screen says nothing
+        // about whether its members are removable one at a time.
+        let mut group_candidates = 0usize;
+        if config.group_cuts {
+            let groups = crate::neighbourhood::group_batch(
+                &incumbent.creature,
+                &activation,
+                config.neighbourhood_config(),
+                &tried_groups,
+            );
+            if !groups.blocked.is_empty() {
+                log::detail(&format!(
+                    "groups: {} of {} proposal(s) refused: {}",
+                    groups.blocked.len(),
+                    groups.considered(),
+                    groups
+                        .blocked
+                        .iter()
+                        .map(|r| format!("{}: {}", r.members.join(" + "), r.reason))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+            }
+            group_candidates = groups.candidates.len();
+            // A refusal is remembered too: the generator is deterministic, so
+            // an unbuildable neighbourhood would otherwise be re-proposed and
+            // re-refused on every batch to the deadline (#108).
+            for refused in &groups.blocked {
+                tried_groups.insert(crate::neighbourhood::group_key(&refused.members));
+            }
+            for built in groups.candidates {
+                tried_groups.insert(crate::neighbourhood::group_key(&built.candidate.members));
+                // Both halves of what this proposal removes, by name: the cuts
+                // the razor chose and the structure that choice stranded
+                // (Issue #108). Counts alone cannot say which neurons went.
+                let cascade = if built.cascade.is_empty() {
+                    String::from("none")
+                } else {
+                    built.cascade.join(", ")
+                };
+                log::detail(&format!(
+                    "group: cut {} ({} neurons); cleanup cascade: {cascade}",
+                    built.candidate.members.join(" + "),
+                    built.candidate.members.len(),
+                ));
+                candidates.push(built.candidate);
+            }
+        }
+        let candidates = candidates;
         let remaining_s = deadline.saturating_duration_since(Instant::now()).as_secs();
         log::info(&format!(
-            "batch {batch_idx}: {} candidates, {} skipped, {} hidden left, {remaining_s}s remaining",
+            "batch {batch_idx}: {} candidates ({group_candidates} group), {} skipped, \
+             {} hidden left, {remaining_s}s remaining",
             candidates.len(),
             skips.len(),
             sweep.remaining()
@@ -1469,8 +1668,12 @@ fn ockham_loop(
                         // behind every never-screened neuron on the creature.
                         // It stays unchecked, so the next run screens *and*
                         // scores it (Issue #91).
+                        // A group candidate files no screen record for the
+                        // neuron it was keyed on (Issue #108): what was screened
+                        // is the neighbourhood, and marking a member checked
+                        // would claim coverage of a single cut nothing tried.
                         if !coverage_tail {
-                            for w in &screen.winners {
+                            for w in screen.winners.iter().filter(|w| !w.candidate.is_group()) {
                                 coverage.push(ScreenTry::scored(
                                     w.candidate.uuid.as_str(),
                                     w.candidate.kind,
@@ -1478,7 +1681,11 @@ fn ockham_loop(
                                 ));
                             }
                         }
-                        for l in &screen.losers {
+                        for l in screen
+                            .losers
+                            .iter()
+                            .filter(|l| l.kind != crate::sweep::CandidateKind::Group)
+                        {
                             coverage.push(ScreenTry::scored(
                                 l.uuid.as_str(),
                                 l.kind,
@@ -1494,11 +1701,22 @@ fn ockham_loop(
                             batch_idx,
                         )?;
                         if let Some(log) = &candidate_log {
+                            // A group loser's delta belongs to the whole
+                            // neighbourhood, so it is not a row about the
+                            // neuron it was keyed on (#108) — the same rule the
+                            // judged rows, the bundle pool and screen coverage
+                            // already follow.
+                            let solo: Vec<crate::sweep::ScreenedLoser> = screen
+                                .losers
+                                .iter()
+                                .filter(|l| l.kind != crate::sweep::CandidateKind::Group)
+                                .cloned()
+                                .collect();
                             log.screened_out(
                                 &incumbent.creature,
                                 &activation,
                                 &incumbent.checksum,
-                                &screen.losers,
+                                &solo,
                                 screen.screen_ms,
                                 // Winners, losers and the incumbent: every
                                 // creature the one screen call scored.
@@ -1540,7 +1758,7 @@ fn ockham_loop(
                 // Screening off: every candidate goes straight to full scoring,
                 // so every candidate is checked and must leave a screen record.
                 let mut coverage = visits.clone();
-                coverage.extend(candidates.iter().map(|c| {
+                coverage.extend(candidates.iter().filter(|c| !c.is_group()).map(|c| {
                     ScreenTry::scored(c.uuid.as_str(), c.kind, ScreenOutcomeKind::Winner)
                 }));
                 file_batch_screens(
@@ -1626,6 +1844,7 @@ fn ockham_loop(
                 dir: &workspace.join(format!("full-{batch_idx}")),
                 best_path: Some(&config.output_dir.join("best.json")),
                 extra_plans: &[],
+                group_plans: &[],
                 max_individuals: config.max_full,
                 pool: &pool,
                 max_entries,
@@ -1711,6 +1930,10 @@ fn ockham_loop(
                         &mut pool,
                         &mut pass_candidates,
                     );
+                    // The neighbourhoods this run screened were judged against
+                    // an incumbent that no longer exists, so they are offered
+                    // again on the new one (Issue #108).
+                    tried_groups.clear();
                     log::detail(&format!(
                         "restarted sweep after accept; {} hidden remaining; {} confirmed winner(s) still standing",
                         incumbent.hidden_neurons(),
@@ -2168,6 +2391,7 @@ fn journal_full(
         &Event::Full {
             individuals: full.individuals.len(),
             bundles: full.bundles.len(),
+            groups: full.groups.len(),
             accepted: full.winner.is_some(),
             score: full.winner.as_ref().map(|w| w.candidate.score),
             delta: full.winner.as_ref().map(|w| w.candidate.delta),
@@ -2217,9 +2441,15 @@ fn file_full_outcome(
     sampled: &[SampledWinner],
     full: &FullOutcome,
 ) {
+    // A winning **group** confers nothing on a member's own verdict
+    // (Issue #108): the neuron was judged alone in this very cohort, and its
+    // own delta is what that verdict records. Marking it accepted here would
+    // file a standing win — replayable as a lone cut — on evidence about its
+    // neighbours, which is the mistake this whole design avoids.
     let win: HashSet<&str> = full
         .winner
         .as_ref()
+        .filter(|w| w.candidate.kind != "group")
         .map(|w| w.candidate.uuids.iter().map(String::as_str).collect())
         .unwrap_or_default();
     let mut verdicts = Vec::new();
@@ -2242,21 +2472,60 @@ fn file_full_outcome(
                 Outcome::Rejected
             },
             full_delta: Some(scored.delta),
+            group: None,
         });
     }
-    if let Some(winner) = &full.winner {
-        for uuid in &winner.candidate.uuids {
-            if seen.contains(uuid.as_str()) {
-                continue;
-            }
+    // Every group the cohort scored is filed as the neighbourhood it was, won
+    // or lost (Issue #108). Every member carries the whole membership, so
+    // replay rebuilds the plan rather than retrying members that each lose
+    // alone — and a rejected group drops out of `confirmed_groups`, which is
+    // what stops a replayed plan being re-scored on every pass to the deadline.
+    // The verdict is keyed on the membership, never on the neuron: it says
+    // nothing about whether that neuron comes out on its own.
+    for scored in &full.groups {
+        let accepted = full
+            .winner
+            .as_ref()
+            .is_some_and(|w| w.candidate.uuids == scored.uuids);
+        for uuid in &scored.uuids {
             verdicts.push(Verdict {
                 uuid: uuid.as_str(),
-                kind: crate::sweep::CandidateKind::Ablation,
-                outcome: Outcome::Accepted,
-                // Measured only inside the winning bundle, so its individual
-                // contribution is unknown — never guess it from the bundle.
-                full_delta: None,
+                kind: crate::sweep::CandidateKind::Group,
+                outcome: if accepted {
+                    Outcome::Accepted
+                } else {
+                    Outcome::Rejected
+                },
+                // The group's own full-corpus delta, which belongs to the
+                // membership this record is keyed on — not to the neuron in
+                // the `uuid` field. A neighbourhood that beat the incumbent
+                // but lost the cohort is therefore replayable later, exactly
+                // as a confirmed single cut is; filing `None` would store a
+                // genuine improvement as a failure.
+                full_delta: Some(scored.delta),
+                group: Some(&scored.uuids[..]),
             });
+        }
+    }
+    if let Some(winner) = &full.winner {
+        // A winning bundle's members are filed too, unless the group loop above
+        // already covered them.
+        let group = (winner.candidate.kind == "group").then_some(&winner.candidate.uuids[..]);
+        if group.is_none() {
+            for uuid in &winner.candidate.uuids {
+                if seen.contains(uuid.as_str()) {
+                    continue;
+                }
+                verdicts.push(Verdict {
+                    uuid: uuid.as_str(),
+                    kind: crate::sweep::CandidateKind::Ablation,
+                    outcome: Outcome::Accepted,
+                    // Measured only inside the winning bundle, so its
+                    // individual contribution is unknown — never guess it.
+                    full_delta: None,
+                    group: None,
+                });
+            }
         }
     }
     let n = file_verdicts(store, &verdicts, known);
@@ -2370,12 +2639,14 @@ fn apply_local_win(
 ) -> Result<StampedAccept, String> {
     let last = win.candidate.kind;
     let cuts = win.candidate.uuids.len();
-    let origin = if phase == "replay" && cuts > 1 {
-        "replay-bundle"
-    } else if phase == "replay" {
-        "replay"
-    } else {
-        "search"
+    // A replayed neighbourhood is stamped as the group it is, not as a bundle
+    // (Issue #108): the two are rebuilt by different transforms, and the tag is
+    // what a reader of `best.json` has to tell them apart by.
+    let origin = match (phase, last, cuts) {
+        ("replay", "group", _) => "replay-group",
+        ("replay", _, n) if n > 1 => "replay-bundle",
+        ("replay", _, _) => "replay",
+        _ => "search",
     };
     *current_score = win.candidate.score;
     *accepts += 1;
@@ -2466,6 +2737,20 @@ mod tests {
     use neat_core::training_data::TrainingDataConfig;
     use std::time::Duration;
 
+    /// Loop-test configuration defaults, with the exact cleanup pre-pass off.
+    ///
+    /// Issue #110 turned the pre-pass on by default. These fixtures are hidden
+    /// IDENTITY creatures built to exercise the *sampled* path, and
+    /// canonicalising one first collapses the very neurons the sweep is meant
+    /// to screen — so the loop tests opt out and the pre-pass is covered by its
+    /// own tests, here and in `canonical`.
+    fn test_defaults() -> OckhamConfig {
+        OckhamConfig {
+            exact_cleanup: false,
+            ..OckhamConfig::default()
+        }
+    }
+
     fn config(tmp: &std::path::Path) -> OckhamConfig {
         let creature = tmp.join("creature.json");
         std::fs::write(&creature, identity_creature_json(1, 1)).unwrap();
@@ -2481,7 +2766,7 @@ mod tests {
             training_data: train,
             output_dir: tmp.join("out"),
             timeout: Duration::from_secs(60),
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 
@@ -2545,7 +2830,7 @@ mod tests {
             max_experiments: Some(4),
             seed: Some(1),
             candidates: 8,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let before = std::fs::read(&creature).unwrap();
         let scorer = ScriptedScorer {
@@ -2622,6 +2907,230 @@ mod tests {
         (creature, train)
     }
 
+    /// A creature the exact pre-pass can prove down: `h1 → h2` is a chain of
+    /// hidden IDENTITY neurons, and both neurons carry check-in tags.
+    fn tagged_identity_chain(tmp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        use crate::fixtures::{neuron, synapse};
+        let c = crate::fixtures::creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h1", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h2", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h1", 2.0),
+                synapse("h1", "h2", 3.0),
+                synapse("h2", "output-0", 1.0),
+            ],
+        );
+        let mut value: serde_json::Value =
+            serde_json::from_str(&neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let tag = |name: &str| serde_json::json!([{ "name": "grq", "value": name }]);
+        value["tags"] = tag("run");
+        for n in value["neurons"].as_array_mut().unwrap() {
+            let uuid = n["uuid"].as_str().unwrap().to_string();
+            n["tags"] = tag(&uuid);
+        }
+        let creature = tmp.join("creature.json");
+        std::fs::write(&creature, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
+        )
+        .unwrap();
+        (creature, train)
+    }
+
+    /// A scorer that counts how many times the run asked it to score.
+    struct CountingScorer {
+        inner: ScriptedScorer,
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl CountingScorer {
+        fn new(score: f64, error: f64) -> Self {
+            Self {
+                inner: ScriptedScorer::ok(score, error),
+                calls: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl crate::scorer::DirectoryScorer for CountingScorer {
+        fn score_directory(
+            &self,
+            creature_dir: &std::path::Path,
+            training_dir: &std::path::Path,
+            mode: crate::scorer::ScorerMode,
+        ) -> Result<
+            std::collections::BTreeMap<String, crate::scorer::ScoreResult>,
+            crate::scorer::ScorerError,
+        > {
+            self.calls.set(self.calls.get() + 1);
+            self.inner.score_directory(creature_dir, training_dir, mode)
+        }
+
+        fn identity(&self) -> String {
+            self.inner.identity()
+        }
+    }
+
+    fn cleanup_config(
+        creature: std::path::PathBuf,
+        train: std::path::PathBuf,
+        out: std::path::PathBuf,
+        exact_cleanup: bool,
+    ) -> OckhamConfig {
+        OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: out,
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(0),
+            seed: Some(1),
+            exact_cleanup,
+            ..OckhamConfig::default()
+        }
+    }
+
+    #[test]
+    fn the_exact_pre_pass_removes_provable_structure_before_the_first_screen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = tagged_identity_chain(tmp.path());
+        let source_before = std::fs::read(&creature).unwrap();
+        let cfg = cleanup_config(creature.clone(), train, tmp.path().join("out"), true);
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.9, 0.1)).unwrap();
+
+        let report = run.exact_cleanup.expect("the pre-pass reports");
+        assert!(report.changed, "{}", report.summary());
+        assert_eq!(report.before.hidden_neurons, 2);
+        assert_eq!(report.after.hidden_neurons, 0);
+        assert!(report.growth_units_saved > 0.0);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        assert_eq!(
+            run.incumbent.hidden_neurons, 2,
+            "the source is reported as it was"
+        );
+
+        // The report is on disk, deterministic and machine-readable.
+        let filed: crate::canonical::CleanupReport = serde_json::from_str(
+            &std::fs::read_to_string(cfg.output_dir.join(EXACT_CLEANUP_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(filed, report);
+
+        // Journalled before anything statistical: it is the first record.
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        let line = journal.lines().next().unwrap();
+        let raw: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(raw["record"], "exactCleanup");
+        match serde_json::from_str::<Event>(line).unwrap() {
+            Event::ExactCleanup {
+                hidden_before,
+                hidden_after,
+                growth_units_saved,
+                ..
+            } => {
+                assert_eq!((hidden_before, hidden_after), (2, 0));
+                assert!(growth_units_saved > 0.0);
+            }
+            other => panic!("first journal record must be the cleanup: {other:?}"),
+        }
+
+        // `best.json` is the canonicalised creature, with the surviving
+        // neuron's tags intact and the removed neurons' tags gone with them.
+        let best: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap(),
+        )
+        .unwrap();
+        let neurons = best["neurons"].as_array().unwrap();
+        assert_eq!(neurons.len(), 1, "{best}");
+        assert_eq!(neurons[0]["uuid"], "output-0");
+        assert_eq!(neurons[0]["tags"][0]["value"], "output-0");
+        assert_eq!(best["tags"][0]["value"], "run");
+        // input-0 → output-0 with the product weight: 2 × 3 × 1.
+        let synapses = best["synapses"].as_array().unwrap();
+        assert_eq!(synapses.len(), 1, "{best}");
+        assert!((synapses[0]["weight"].as_f64().unwrap() - 6.0).abs() <= 1e-9);
+
+        assert_eq!(
+            std::fs::read(&creature).unwrap(),
+            source_before,
+            "the source creature is never written"
+        );
+    }
+
+    #[test]
+    fn the_exact_pre_pass_spends_no_scorer_call_per_rewrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = tagged_identity_chain(tmp.path());
+
+        let with = CountingScorer::new(0.9, 0.1);
+        let on = cleanup_config(creature.clone(), train.clone(), tmp.path().join("on"), true);
+        let run = establish_run(&on, &with).unwrap();
+        assert!(run.exact_cleanup.expect("reports").changed);
+
+        let without = CountingScorer::new(0.9, 0.1);
+        let off = cleanup_config(creature, train, tmp.path().join("off"), false);
+        let control = establish_run(&off, &without).unwrap();
+        assert!(control.exact_cleanup.is_none());
+
+        assert_eq!(
+            with.calls.get(),
+            without.calls.get(),
+            "two exact rewrites must cost no scorer call of their own"
+        );
+    }
+
+    #[test]
+    fn no_exact_cleanup_leaves_the_structure_for_the_sweep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = tagged_identity_chain(tmp.path());
+        let cfg = cleanup_config(creature, train, tmp.path().join("out"), false);
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.9, 0.1)).unwrap();
+        assert!(run.exact_cleanup.is_none());
+        assert!(!cfg.output_dir.join(EXACT_CLEANUP_FILE).exists());
+        let best: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(best["neurons"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn an_already_canonical_incumbent_reports_and_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = OckhamConfig {
+            exact_cleanup: true,
+            ..config(tmp.path())
+        };
+        let source = std::fs::read(&cfg.creature).unwrap();
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.9, 0.1)).unwrap();
+        let report = run.exact_cleanup.expect("the pre-pass still reports");
+        assert!(!report.changed);
+        assert_eq!(report.growth_units_saved, 0.0);
+        // "Already canonical" is a finding, so the report is still filed.
+        let filed: crate::canonical::CleanupReport = serde_json::from_str(
+            &std::fs::read_to_string(cfg.output_dir.join(EXACT_CLEANUP_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(filed, report);
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            !journal.contains("exactCleanup"),
+            "a pass that removed nothing journals nothing: {journal}"
+        );
+        assert_eq!(
+            std::fs::read(cfg.output_dir.join("best.json")).unwrap(),
+            source,
+            "an untouched creature is published byte for byte"
+        );
+    }
+
     /// Store pointed at the screen records a run under `train` would have filed.
     fn screens_store(learnings_dir: &std::path::Path, train: &std::path::Path) -> LearningsStore {
         let corpus = crate::corpus::corpus_info(train, &TrainingDataConfig::new(1, 1)).unwrap();
@@ -2655,7 +3164,7 @@ mod tests {
             seed: Some(1),
             candidates: 8,
             screen_sample_rate: None,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -2688,6 +3197,7 @@ mod tests {
                     unix_secs: secs,
                     host: "t".into(),
                     full_delta: None,
+                    group: None,
                 })
                 .unwrap();
         }
@@ -2702,7 +3212,7 @@ mod tests {
             screen_sample_rate: None,
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -2716,6 +3226,343 @@ mod tests {
         assert!(best.contains("replay-bundle"), "{best}");
         assert!(!best.contains("h_a"), "{best}");
         assert!(!best.contains("h_b"), "{best}");
+    }
+
+    /// `input-0 → a1 → a2 → output-0`, beside a lone `z → output-0`, on disk
+    /// with a training corpus (Issue #108).
+    fn chain_paths(tmp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let creature = tmp.join("creature.json");
+        let c = crate::fixtures::creature(
+            1,
+            1,
+            vec![
+                crate::fixtures::neuron("hidden", "a1", 0.0, Some("TANH")),
+                crate::fixtures::neuron("hidden", "a2", 0.0, Some("TANH")),
+                crate::fixtures::neuron("hidden", "z", 0.0, Some("TANH")),
+                crate::fixtures::neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                crate::fixtures::synapse("input-0", "a1", 1.0),
+                crate::fixtures::synapse("a1", "a2", 1.0),
+                crate::fixtures::synapse("a2", "output-0", 0.01),
+                crate::fixtures::synapse("input-0", "z", 1.0),
+                crate::fixtures::synapse("z", "output-0", 1.0),
+            ],
+        );
+        std::fs::write(&creature, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
+        )
+        .unwrap();
+        (creature, train)
+    }
+
+    /// Issue #108: a chain whose members are all standing individual failures
+    /// is exactly the dead wood one-neuron-at-a-time screening cannot reach.
+    /// The group is proposed anyway, scored as a group, accepted by the full
+    /// corpus, and filed with the membership replay needs.
+    #[test]
+    fn a_group_cut_the_single_neuron_sweep_cannot_reach_is_accepted_and_filed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = chain_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let corpus = crate::corpus::corpus_info(&train, &TrainingDataConfig::new(1, 1)).unwrap();
+        let store = LearningsStore::new(&learnings_dir, corpus.identity.clone(), "t".into());
+        // Fresh individual rejections: the sweep skips all three as known
+        // failures, so the only candidate left to propose is the group.
+        for uuid in ["a1", "a2", "z"] {
+            store
+                .append(&crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: uuid.into(),
+                    kind: "ablation".into(),
+                    outcome: Outcome::Rejected,
+                    unix_secs: crate::incumbent::now_unix(),
+                    host: "t".into(),
+                    full_delta: None,
+                    group: None,
+                })
+                .unwrap();
+        }
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            group_cuts: true,
+            ..test_defaults()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.90),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.accepts, 1, "stop={}", run.stop_reason);
+
+        let journal_path = cfg.output_dir.join("experiments.jsonl");
+        let journal = std::fs::read_to_string(&journal_path).unwrap();
+        assert!(journal.contains(r#""groups":1"#), "{journal}");
+        assert!(journal.contains(r#""kind":"group""#), "{journal}");
+
+        // The accepted creature lost the whole chain and kept the neuron that
+        // was never in the group.
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(!best.contains("\"a1\""), "{best}");
+        assert!(!best.contains("\"a2\""), "{best}");
+        assert!(best.contains("\"z\""), "{best}");
+
+        // Both members carry the whole membership, so replay can rebuild it.
+        let filed: Vec<crate::learnings::Learning> = store
+            .load()
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.outcome == Outcome::Accepted)
+            .collect();
+        assert_eq!(filed.len(), 2, "{filed:?}");
+        for learning in &filed {
+            assert_eq!(learning.kind, "group");
+            assert_eq!(
+                learning.group.as_deref(),
+                Some(&["a1".to_string(), "a2".to_string()][..]),
+                "{learning:?}"
+            );
+        }
+
+        // A group screen is not coverage of its members: no screen record
+        // claims either neuron was checked on its own by this cohort.
+        assert!(
+            store
+                .load_screens()
+                .unwrap()
+                .iter()
+                .all(|s| s.kind != "group"),
+            "a group must file no per-neuron screen record"
+        );
+
+        let report = crate::report::summarise(&[&journal_path]).unwrap();
+        assert_eq!(report.group_accepts, 1);
+        assert_eq!(report.group_cuts_accepted, 2);
+        assert_eq!(report.group_hidden_removed, 2);
+        assert!(report.group_growth_units_removed > 0.0);
+        assert_eq!(
+            report.group_growth_units_per_accept,
+            Some(report.group_growth_units_removed)
+        );
+    }
+
+    /// Issue #108: a later run rebuilds an accepted neighbourhood from the
+    /// membership its members recorded, even though each member's own latest
+    /// verdict says the cut loses on its own — which is the whole reason the
+    /// group was proposed. Without the membership the plan is unreconstructable
+    /// and the fleet forgets a win it has already paid for.
+    #[test]
+    fn a_recorded_group_is_replayed_as_a_group_by_a_later_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = chain_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let corpus = crate::corpus::corpus_info(&train, &TrainingDataConfig::new(1, 1)).unwrap();
+        let store = LearningsStore::new(&learnings_dir, corpus.identity.clone(), "t".into());
+        let now = crate::incumbent::now_unix();
+        for uuid in ["a1", "a2"] {
+            // The group that was accepted, then a fresher verdict rejecting the
+            // same neuron on its own.
+            store
+                .append(&crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: uuid.into(),
+                    kind: "group".into(),
+                    outcome: Outcome::Accepted,
+                    unix_secs: now - 100,
+                    host: "t".into(),
+                    full_delta: None,
+                    group: Some(vec!["a1".into(), "a2".into()]),
+                })
+                .unwrap();
+            store
+                .append(&crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: uuid.into(),
+                    kind: "ablation".into(),
+                    outcome: Outcome::Rejected,
+                    unix_secs: now,
+                    host: "t".into(),
+                    full_delta: Some(-0.2),
+                    group: None,
+                })
+                .unwrap();
+        }
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            group_cuts: true,
+            ..test_defaults()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.90),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.accepts, 1, "stop={}", run.stop_reason);
+        assert_eq!(run.stop_reason, "replay-accepts");
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        assert!(!best.contains("\"a1\""), "{best}");
+        assert!(!best.contains("\"a2\""), "{best}");
+    }
+
+    /// Issue #108: a replayed group the corpus now rejects must be filed as
+    /// rejected, or `confirmed_groups` hands the same plan back on every pass
+    /// and the run re-scores it until the deadline. The single-cut path
+    /// converges for exactly this reason.
+    #[test]
+    fn a_replayed_group_the_corpus_rejects_is_filed_and_not_offered_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = chain_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let corpus = crate::corpus::corpus_info(&train, &TrainingDataConfig::new(1, 1)).unwrap();
+        let store = LearningsStore::new(&learnings_dir, corpus.identity.clone(), "t".into());
+        for uuid in ["a1", "a2"] {
+            store
+                .append(&crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: uuid.into(),
+                    kind: "group".into(),
+                    outcome: Outcome::Accepted,
+                    unix_secs: crate::incumbent::now_unix() - 100,
+                    host: "t".into(),
+                    full_delta: None,
+                    group: Some(vec!["a1".into(), "a2".into()]),
+                })
+                .unwrap();
+        }
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(3),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            group_cuts: true,
+            ..test_defaults()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.10),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.accepts, 0, "nothing beats the incumbent here");
+        let filed = store.load().unwrap();
+        let group_verdicts: Vec<&crate::learnings::Learning> =
+            filed.iter().filter(|l| l.group.is_some()).collect();
+        assert!(
+            group_verdicts
+                .iter()
+                .any(|l| l.outcome == Outcome::Rejected),
+            "the rejected group must be recorded: {group_verdicts:?}"
+        );
+        // And with that record filed, the plan is no longer offered.
+        let incumbent = crate::incumbent::load_incumbent(&cfg.creature).unwrap();
+        assert!(
+            crate::learnings::confirmed_groups(&filed, &incumbent.creature, cfg.min_improvement)
+                .is_empty()
+        );
+    }
+
+    /// Issue #108: a group's verdict is about the neighbourhood, so it must
+    /// never become a training row about one of its neurons — the ranker would
+    /// learn that a neuron the scorer never judged alone is a confirmed cut.
+    #[test]
+    fn a_group_verdict_never_becomes_a_per_neuron_training_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = chain_paths(tmp.path());
+        let log = tmp.path().join("candidates.jsonl");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            candidate_log: Some(log.clone()),
+            group_cuts: true,
+            ..test_defaults()
+        };
+        // Every candidate loses, so the cohort is judged without an accept
+        // rewriting the incumbent underneath the log.
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.40),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        establish_run(&cfg, &scorer).unwrap();
+        let records = crate::telemetry::load(&log).unwrap();
+        assert!(!records.is_empty(), "the judged individuals must be logged");
+        assert!(
+            records.iter().all(|r| r.kind != "group"),
+            "a group cut names no single neuron: {records:?}"
+        );
+        // Every logged uuid was scored on its own, so its delta is its own.
+        assert!(records.iter().all(|r| r.full_delta.is_some()));
+    }
+
+    /// A control run must stay a control run: without the flag no group
+    /// candidate is built, scored or counted (Issue #108).
+    #[test]
+    fn without_the_flag_a_run_proposes_no_group_at_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = chain_paths(tmp.path());
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            ..test_defaults()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.40),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        establish_run(&cfg, &scorer).unwrap();
+        let journal_path = cfg.output_dir.join("experiments.jsonl");
+        let journal = std::fs::read_to_string(&journal_path).unwrap();
+        assert!(!journal.contains(r#""kind":"group""#), "{journal}");
+        assert!(journal.contains(r#""groups":0"#), "{journal}");
+        assert_eq!(
+            crate::report::summarise(&[&journal_path])
+                .unwrap()
+                .group_accepts,
+            0
+        );
     }
 
     /// Add a GRQ-style tag to each named neuron of a creature file.
@@ -2754,6 +3601,7 @@ mod tests {
                 unix_secs: 10,
                 host: "t".into(),
                 full_delta: None,
+                group: None,
             })
             .unwrap();
         let cfg = OckhamConfig {
@@ -2767,7 +3615,7 @@ mod tests {
             screen_sample_rate: None,
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -2804,7 +3652,7 @@ mod tests {
             screen_sample_rate: Some(0.5),
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -2857,7 +3705,7 @@ mod tests {
             candidates: 8,
             screen_sample_rate: None,
             ordering: crate::ordering::Ordering::CascadeSaving,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -2905,7 +3753,7 @@ mod tests {
             screen_sample_rate: None,
             ordering: crate::ordering::Ordering::Composite,
             candidate_log: Some(log.clone()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -2963,7 +3811,7 @@ mod tests {
             candidates: 8,
             screen_sample_rate: Some(0.5),
             candidate_log: Some(log.clone()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         // Candidates that never beat the incumbent: every one is screened out.
         let scorer = ScriptedScorer {
@@ -3012,7 +3860,7 @@ mod tests {
             candidates: 8,
             screen_sample_rate: None,
             candidate_log: Some(blocker.join("candidates.jsonl")),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -3043,7 +3891,7 @@ mod tests {
             screen_sample_rate: None,
             ordering: crate::ordering::Ordering::Learned,
             ordering_model: Some(tmp.path().join("absent-model.json")),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer::ok(0.50, 0.50);
         let err = establish_run(&cfg, &scorer).unwrap_err();
@@ -3065,7 +3913,7 @@ mod tests {
             screen_sample_rate: None,
             ordering: crate::ordering::Ordering::LowVariance,
             ordering_random_quota: 0.25,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(run.accepts, 0, "a flat scorer must not accept anything");
@@ -3101,7 +3949,7 @@ mod tests {
             candidates: 2,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         // Flat scorer: every candidate loses the screen, and losers are the
         // bulk of coverage.
@@ -3192,7 +4040,7 @@ mod tests {
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
             unchecked_first,
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 
@@ -3259,6 +4107,7 @@ mod tests {
                 unix_secs,
                 host: "GRQ-23".into(),
                 full_delta: None,
+                group: None,
             })
             .unwrap();
     }
@@ -3420,7 +4269,7 @@ mod tests {
             screen_threshold: 1.0,
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 
@@ -3634,7 +4483,7 @@ mod tests {
             screen_sample_rate: None,
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -3695,7 +4544,7 @@ mod tests {
             candidates: 2,
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(run.accepts, 0, "a flat scorer must not accept anything");
@@ -4027,7 +4876,7 @@ mod tests {
             candidates: 2,
             learnings_dir,
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 
@@ -4188,7 +5037,7 @@ mod tests {
             candidates: 8,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         // Flat scorer: nothing is accepted, so the run's own coverage is the
         // only thing that moves.
@@ -4244,7 +5093,7 @@ mod tests {
             candidates: 8,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
 
@@ -4296,6 +5145,7 @@ mod tests {
                 unix_secs: crate::incumbent::now_unix(),
                 host: "t".into(),
                 full_delta: Some(-1.0),
+                group: None,
             })
             .unwrap();
         let cfg = OckhamConfig {
@@ -4308,7 +5158,7 @@ mod tests {
             candidates: 8,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
 
@@ -4494,7 +5344,7 @@ mod tests {
             screen_sample_rate: None,
             learnings_dir: Some(tmp.path().join("learnings")),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -4530,7 +5380,7 @@ mod tests {
             seed: Some(1),
             candidates: 2,
             screen_sample_rate: None,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -4559,7 +5409,7 @@ mod tests {
             max_experiments: Some(1),
             seed: Some(1),
             candidates: 2,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         let journal_path = cfg.output_dir.join("experiments.jsonl");
@@ -4588,7 +5438,7 @@ mod tests {
             screen_sample_rate: None,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(run.accepts, 0);
@@ -4625,7 +5475,7 @@ mod tests {
             candidates: 1,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             fail_sample_with: Some("screen exploded".into()),
@@ -4656,7 +5506,7 @@ mod tests {
             max_experiments: Some(2),
             seed: Some(1),
             candidates: 8,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(run.accepts, 0);
@@ -4782,6 +5632,7 @@ mod tests {
                 .map(|(uuid, delta)| candidate(uuid, *delta))
                 .collect(),
             bundles: Vec::new(),
+            groups: Vec::new(),
             sample_false_positives: Vec::new(),
             winner: winner.map(|uuid| LocalWinner {
                 candidate: candidate(uuid, 0.3),
@@ -4794,6 +5645,63 @@ mod tests {
             dropped_bundles: 0,
             capped_plans: 0,
         }
+    }
+
+    /// Issue #108: a member of a winning group was also screened on its own in
+    /// the same cohort and lost its own full score. The individual verdict must
+    /// record that loss — filing it as an accepted win would let replay try the
+    /// neuron alone on evidence that was only ever about its neighbours.
+    #[test]
+    fn a_winning_group_does_not_accept_its_members_individual_verdicts() {
+        let creature = hidden_creature(&["h_a", "h_b"]);
+        let stats = stats_of(&creature);
+        let mut sweep = Sweep::new(&creature, 1);
+        let (candidates, _) = sweep.fill_batch(&creature, &stats, 4);
+        let solo = candidates
+            .into_iter()
+            .find(|c| c.uuid == "h_a")
+            .expect("h_a proposes on its own");
+        let sampled = vec![crate::promote::sampled(solo, 0.9, 0.5)];
+
+        let group = crate::promote::FullCandidate {
+            stem: "g000".into(),
+            kind: "group",
+            uuids: vec!["h_a".into(), "h_b".into()],
+            score: 0.8,
+            error: 0.5,
+            complexity_penalty: 0.0,
+            after: crate::ablation::StructureSnapshot::of(&creature),
+            delta: 0.3,
+        };
+        let mut full = outcome_with(&[("h_a", -1.0)], None);
+        full.groups = vec![group.clone()];
+        full.winner = Some(LocalWinner {
+            candidate: group,
+            checksum: "c".into(),
+            creature: creature.clone(),
+        });
+
+        let mut known = Vec::new();
+        file_full_outcome(None, &mut known, &sampled, &full);
+        let solo_verdict = known
+            .iter()
+            .find(|l| l.uuid == "h_a" && l.group.is_none())
+            .expect("the individual candidate was scored, so it has a verdict");
+        assert_eq!(
+            solo_verdict.outcome,
+            Outcome::Rejected,
+            "h_a lost on its own; the group's win is not its win"
+        );
+        assert_eq!(solo_verdict.full_delta, Some(-1.0));
+        // And the group itself is filed as accepted, keyed on its membership.
+        let group_verdicts: Vec<&crate::learnings::Learning> =
+            known.iter().filter(|l| l.group.is_some()).collect();
+        assert_eq!(group_verdicts.len(), 2, "{group_verdicts:?}");
+        assert!(
+            group_verdicts
+                .iter()
+                .all(|l| l.outcome == Outcome::Accepted && l.full_delta == Some(0.3))
+        );
     }
 
     #[test]
@@ -4878,7 +5786,7 @@ mod tests {
             seed: Some(1),
             candidates: 2,
             screen_sample_rate: None,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -4954,6 +5862,7 @@ mod tests {
                     unix_secs: *unix_secs,
                     host: "t".into(),
                     full_delta: *full_delta,
+                    group: None,
                 })
                 .unwrap();
         }
@@ -4979,7 +5888,7 @@ mod tests {
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
             max_full,
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 
@@ -5325,7 +6234,7 @@ mod tests {
             seed: Some(1),
             candidates: 4,
             screen_sample_rate: Some(0.01),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             delay_per_creature: Duration::from_millis(100),
@@ -5354,7 +6263,7 @@ mod tests {
             max_experiments: Some(1),
             seed: Some(1),
             candidates: 4,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -5437,8 +6346,72 @@ mod tests {
             candidates: 2,
             learnings_dir,
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
+    }
+
+    /// Issue #110: the pre-pass runs before coverage and the learnings store,
+    /// so both must describe the canonicalised creature — never a neuron the
+    /// exact rewrite already removed.
+    #[test]
+    fn coverage_and_learnings_describe_the_canonicalised_creature() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creature = tmp.path().join("creature.json");
+        let c = crate::fixtures::creature(
+            1,
+            1,
+            vec![
+                // Collapsible: an IDENTITY passthrough the pre-pass removes.
+                crate::fixtures::neuron("hidden", "h_pass", 0.0, Some("IDENTITY")),
+                // Not collapsible: only the scorer may decide about this one.
+                crate::fixtures::neuron("hidden", "h_live", 0.1, Some("TANH")),
+                crate::fixtures::neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                crate::fixtures::synapse("input-0", "h_pass", 1.0),
+                crate::fixtures::synapse("input-0", "h_live", 0.5),
+                crate::fixtures::synapse("h_pass", "output-0", 1.0),
+                crate::fixtures::synapse("h_live", "output-0", 0.7),
+            ],
+        );
+        std::fs::write(&creature, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let train = tmp.path().join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
+        )
+        .unwrap();
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = OckhamConfig {
+            exact_cleanup: true,
+            ..restart_cfg(
+                creature,
+                train.clone(),
+                tmp.path().join("out"),
+                Some(learnings_dir.clone()),
+                Some(1),
+            )
+        };
+        let run = establish_run(&cfg, &losing_scorer()).unwrap();
+
+        let report = run.exact_cleanup.expect("the pre-pass reports");
+        assert!(report.changed);
+        assert!(
+            report.removed_neurons.iter().any(|n| n.uuid == "h_pass"),
+            "{:?}",
+            report.removed_neurons
+        );
+
+        // Coverage counts what is left to screen, not what was proven away.
+        let cov = coverage_json(&cfg.output_dir);
+        assert_eq!(cov.hidden, 1, "{cov:?}");
+        assert_eq!(cov.checked, 1, "{cov:?}");
+
+        // Screen records name the surviving neuron only: a verdict about a
+        // neuron the creature no longer has would poison the fleet cache.
+        let uuids = screened_uuids(&screens_store(&learnings_dir, &train));
+        assert_eq!(uuids, vec!["h_live".to_string()], "{uuids:?}");
     }
 
     /// What #77 removes: before this an exhausted sweep ended the run outright,
@@ -5990,7 +6963,7 @@ mod tests {
             seed: Some(1),
             candidates: 2,
             screen_stages: stages.map(|s| crate::screening::ScreenLadder::parse(s, 0.01).unwrap()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 

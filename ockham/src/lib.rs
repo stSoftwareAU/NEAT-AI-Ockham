@@ -19,6 +19,7 @@
 //! | sampled activation statistics | [`stats`] | #3, #44 |
 //! | mean-activation ablation + cleanup | [`ablation`] | #4 |
 //! | exact IDENTITY collapse | [`collapse`] | #5 |
+//! | exact canonicalisation pre-pass | [`canonical`] | #110 |
 //! | seeded sampled sweep | [`sweep`] | #6 |
 //! | full scoring + bundles | [`promote`] | #7 |
 //! | iterative 45-minute loop | [`run`], [`journal`] | #8 |
@@ -34,6 +35,7 @@
 //! | composite dead-wood priority | [`priority`] | #107 |
 //! | learned candidate ranker | [`model`] | #107 |
 //! | candidate feature/outcome telemetry | [`telemetry`] | #107 |
+//! | structural neighbourhood group cuts | [`neighbourhood`] | #108 |
 //! | behavioural signatures + correlated-pair discovery | [`signature`] | #109 |
 //! | correlated-neuron merging | [`merge`] | #109 |
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
@@ -45,6 +47,7 @@ pub mod ablation;
 pub mod baseline;
 pub mod blocked;
 pub mod cancel;
+pub mod canonical;
 pub mod cascade;
 pub mod collapse;
 pub mod config;
@@ -58,6 +61,7 @@ pub mod learnings;
 pub mod log;
 pub mod merge;
 pub mod model;
+pub mod neighbourhood;
 pub mod ordering;
 pub mod priority;
 pub mod promote;
@@ -74,10 +78,15 @@ pub mod sweep;
 pub mod tags;
 pub mod telemetry;
 
-pub use ablation::{Ablation, AblationSkip, TransformClass, ablate_mean};
+pub use ablation::{
+    Ablation, AblationSkip, GroupAblation, GroupMember, TransformClass, ablate_group, ablate_mean,
+};
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
 pub use blocked::{BlockedBreakdown, BlockedReason};
 pub use cancel::CancelToken;
+pub use canonical::{
+    Canonicalisation, CleanupError, CleanupReport, ExactRule, RuleTally, canonicalise,
+};
 pub use cascade::{CascadeEstimate, CascadeIndex, estimate_cut};
 pub use collapse::{CollapseOptions, CollapseSkip, IdentityCollapse, collapse_identity};
 pub use config::{
@@ -92,6 +101,11 @@ pub use features::{CandidateFeatures, FEATURE_NAMES, PriorEvidence};
 pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
 pub use merge::{LinearRelation, MergeSkip, NeuronMerge, merge_correlated};
 pub use model::{PRIORITY_MODEL_FORMAT_VERSION, PriorityModel, TrainingConfig, TrainingRow};
+pub use neighbourhood::{
+    DEFAULT_NEIGHBOURHOOD_PROPOSALS, DEFAULT_NEIGHBOURHOOD_SIZE, MAX_NEIGHBOURHOOD_SIZE,
+    MIN_NEIGHBOURHOOD_SIZE, Neighbourhood, NeighbourhoodConfig, NeighbourhoodKind,
+    propose_neighbourhoods,
+};
 pub use ordering::{Ordering, OrderingConfig, hidden_order};
 pub use priority::{CompositeWeights, PriorityContext, expected_pruning_value};
 pub use promote::{FullOutcome, evaluate_full};

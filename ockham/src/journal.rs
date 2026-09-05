@@ -190,6 +190,12 @@ pub enum Event {
         individuals: usize,
         /// Bundles scored.
         bundles: usize,
+        /// Structural neighbourhood group candidates scored (Issue #108).
+        ///
+        /// `#[serde(default)]` so a journal written before groups existed still
+        /// reads, as none — which is what those runs scored.
+        #[serde(default)]
+        groups: usize,
         /// Whether a local winner was selected.
         accepted: bool,
         /// Winner score when accepted.
@@ -205,6 +211,31 @@ pub enum Event {
         #[serde(default)]
         elapsed_ms: u64,
     },
+    /// What the exact structural cleanup pre-pass removed (Issue #110).
+    ///
+    /// Written once, before the first sampled screen, and only when the
+    /// pre-pass changed the creature. Every rewrite behind it is provably
+    /// behaviour-preserving, so this structure left the creature without
+    /// spending a candidate or full score on it — which is exactly why it is
+    /// journalled apart from the accepts.
+    ExactCleanup {
+        /// Hidden neurons before the pre-pass.
+        hidden_before: usize,
+        /// Hidden neurons after it.
+        hidden_after: usize,
+        /// Synapses before the pre-pass.
+        synapses_before: usize,
+        /// Synapses after it.
+        synapses_after: usize,
+        /// Growth units it saved.
+        growth_units_saved: f64,
+        /// Rule-loop passes to the fixed point.
+        passes: usize,
+        /// `rule=applications` pairs, in rule order.
+        rules: Vec<(String, usize)>,
+        /// Wall time (ms).
+        ms: u64,
+    },
     /// Estimated versus actual structural saving of an accepted cut (#106).
     ///
     /// The cascade dry-run predicts, from topology alone, what an ablation of
@@ -214,11 +245,14 @@ pub enum Event {
     /// signal that drifts from what the razor really removes is a signal to
     /// stop paying for.
     Cascade {
-        /// Cohort kind of the accepted winner: `individual` or `bundle`.
+        /// Cohort kind of the accepted winner: `individual`, `bundle` or
+        /// `group` (Issue #108).
         ///
         /// A bundle removes structure several cuts share, so its prediction and
         /// its outcome compose differently from a single cut's; without the
-        /// kind the two could not be told apart in the same series.
+        /// kind the two could not be told apart in the same series. A group is
+        /// a third thing again — several neurons cut as one proposal — and the
+        /// benchmark for the experiment counts exactly these records.
         kind: String,
         /// Hidden neurons the accepted winner was asked to cut.
         cuts: usize,

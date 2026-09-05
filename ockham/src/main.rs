@@ -16,6 +16,7 @@ use neat_ai_ockham::config::{
 use neat_ai_ockham::model::{
     DEFAULT_EPOCHS, DEFAULT_L2, DEFAULT_LEARNING_RATE, PriorityModel, TrainingConfig,
 };
+use neat_ai_ockham::neighbourhood::{DEFAULT_NEIGHBOURHOOD_PROPOSALS, DEFAULT_NEIGHBOURHOOD_SIZE};
 use neat_ai_ockham::screening::{DEFAULT_SCREEN_REJECT_MARGIN, ScreenLadder};
 use neat_ai_ockham::signature::{DEFAULT_BAND_BITS, DEFAULT_MAX_BUCKET, DEFAULT_MAX_PARTNERS};
 use neat_ai_ockham::stats::{DEFAULT_PROBE_RECORDS, DEFAULT_SAMPLE_RECORDS};
@@ -110,6 +111,26 @@ struct Cli {
     /// as offline training data for `train-ordering`. Omitted: write nothing.
     #[arg(long)]
     candidate_log: Option<PathBuf>,
+    /// Also propose bounded structural neighbourhood group cuts — chains and
+    /// low-fan-out branches removed as one candidate (issue #108). Experimental
+    /// and off by default; a group still faces the screen and the full scorer.
+    #[arg(long)]
+    group_cuts: bool,
+    /// Hidden neurons in one group proposal. Refused outside 2-8, whether or
+    /// not `--group-cuts` is given: a size the razor would clamp is a typo
+    /// worth stopping for.
+    #[arg(long, default_value_t = DEFAULT_NEIGHBOURHOOD_SIZE)]
+    group_max_size: usize,
+    /// Group proposals offered per sweep batch. Only with `--group-cuts`.
+    #[arg(long, default_value_t = DEFAULT_NEIGHBOURHOOD_PROPOSALS)]
+    group_proposals: usize,
+    /// Skip the exact structural cleanup pre-pass. The pre-pass removes only
+    /// structure proven redundant — dead wood exposed by exactly-zero weights,
+    /// constant folds and cost-reducing IDENTITY collapses — before the first
+    /// sampled screen, and spends no scorer budget doing it. Skip it to measure
+    /// what it buys.
+    #[arg(long)]
+    no_exact_cleanup: bool,
     /// Records sampled for hidden-neuron activation statistics; 0 scans the whole corpus.
     #[arg(long, default_value_t = DEFAULT_SAMPLE_RECORDS)]
     stats_sample_records: u64,
@@ -319,6 +340,10 @@ fn main() -> ExitCode {
         merge_band_bits: cli.merge_band_bits,
         merge_max_bucket: cli.merge_max_bucket,
         merge_max_partners: cli.merge_max_partners,
+        group_cuts: cli.group_cuts,
+        group_max_size: cli.group_max_size,
+        group_proposals: cli.group_proposals,
+        exact_cleanup: !cli.no_exact_cleanup,
     };
     if let Err(e) = config.validate() {
         eprintln!("{e}");

@@ -25,7 +25,7 @@ use std::time::Instant;
 use neat_core::{CreatureExport, SquashType, creature_to_json, parse_squash_name};
 use serde::Serialize;
 
-use crate::ablation::ablate_mean;
+use crate::ablation::{GroupMember, ablate_group, ablate_mean};
 use crate::blocked::BlockedReason;
 use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
 use crate::incumbent::sha256_hex;
@@ -58,6 +58,12 @@ pub enum CandidateKind {
     /// The path for structure the ablation fails closed on: the neuron becomes
     /// a `constant` and its outgoing edge — role and weight — is preserved.
     Constant,
+    /// Structural neighbourhood group ablation (#108).
+    ///
+    /// A whole chain or low-fan-out branch cut as one proposal, because some
+    /// structure is only removable as a group. Screened and scored exactly like
+    /// any other candidate.
+    Group,
     /// Correlated-neuron merge (#109).
     ///
     /// Two hidden neurons behaved almost identically, so one of them goes and
@@ -69,8 +75,15 @@ pub enum CandidateKind {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SweepCandidate {
-    /// Hidden neuron that was visited.
+    /// Hidden neuron that was visited; the first member of a group (#108).
     pub uuid: String,
+    /// Every hidden neuron this candidate was asked to cut (Issue #108).
+    ///
+    /// One entry — [`Self::uuid`] — for a single-neuron candidate, and the
+    /// whole neighbourhood, upstream-first, for a group proposal. Always
+    /// non-empty and always headed by [`Self::uuid`], so a reader that only
+    /// knows about single cuts still names a real neuron.
+    pub members: Vec<String>,
     /// Index in the seeded permutation.
     pub permutation_index: usize,
     /// How the candidate was built.
@@ -87,6 +100,25 @@ pub struct SweepCandidate {
     /// Candidate creature.
     #[serde(skip)]
     pub creature: CreatureExport,
+}
+
+impl SweepCandidate {
+    /// Whether this candidate cuts a whole neighbourhood at once (#108).
+    ///
+    /// The kind, not the member count: one test for "is this a group?" across
+    /// the run, so screen coverage, the bundle pool, the candidate log and the
+    /// cohort can never disagree about a candidate.
+    pub fn is_group(&self) -> bool {
+        self.kind == CandidateKind::Group
+    }
+
+    /// Hidden neurons this candidate cuts, upstream-first.
+    ///
+    /// Never empty: every construction site seeds [`Self::members`] with at
+    /// least [`Self::uuid`].
+    pub fn cuts(&self) -> &[String] {
+        &self.members
+    }
 }
 
 /// Why one visit produced no candidate, in words and as a code (Issue #103).
@@ -324,6 +356,7 @@ impl Sweep {
                 Ok(proposed) => {
                     let stem = format!("c{:03}", candidates.len());
                     candidates.push(SweepCandidate {
+                        members: vec![uuid.clone()],
                         uuid,
                         permutation_index,
                         kind: proposed.kind,
@@ -492,6 +525,42 @@ pub(crate) fn propose(
             merge,
         )),
     }
+}
+
+/// Build the group candidate that cuts every neuron of `members` (Issue #108).
+///
+/// The whole [`crate::ablation::GroupAblation`] comes back, not just the
+/// creature: it names every neuron the transform removed and says which were
+/// the requested group cuts and which the cleanup cascade stranded, which is
+/// what a run has to record about a group it proposes.
+///
+/// The same substitution [`propose`] applies to one neuron, applied to the
+/// whole neighbourhood on one clone before the exact cleanup runs. A member
+/// without a measured mean blocks the group rather than being guessed at, and
+/// every other refusal is the one [`crate::ablation::ablate_group`] reports.
+///
+/// Building a group is not accepting one: the candidate goes through the same
+/// sampled screen and the same full-corpus scoring as every other proposal.
+pub(crate) fn propose_group(
+    incumbent: &CreatureExport,
+    stats: &ActivationStats,
+    members: &[String],
+) -> Result<crate::ablation::GroupAblation, Blocked> {
+    let mut cuts = Vec::with_capacity(members.len());
+    for uuid in members {
+        let mean = stats.by_uuid(uuid).map(|s| s.mean).ok_or_else(|| {
+            Blocked::new(
+                BlockedReason::MissingActivation,
+                format!("group: no activation stats for `{uuid}`"),
+            )
+        })?;
+        cuts.push(GroupMember {
+            uuid: uuid.clone(),
+            mean,
+        });
+    }
+    ablate_group(incumbent, &cuts)
+        .map_err(|e| Blocked::new(e.blocked_reason(), format!("group: {e}")))
 }
 
 /// One sampled winner. Not an acceptance.

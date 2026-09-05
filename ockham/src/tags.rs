@@ -174,7 +174,10 @@ pub struct OckhamProgress<'a> {
     pub error: f64,
     /// Last accepted strategy label (`individual`, `bundle`, …).
     pub last: &'a str,
-    /// `replay-bundle`, `replay`, or `search` — flows through the population as the `ockham` tag.
+    /// `replay-group`, `replay-bundle`, `replay`, or `search` — flows through
+    /// the population as the `ockham` tag. A replayed neighbourhood is named
+    /// apart from a replayed bundle (#108): the two are rebuilt by different
+    /// transforms, and this string is what a reader tells them apart by.
     pub origin: &'a str,
     /// Hidden UUIDs removed in this accept.
     pub cuts: usize,

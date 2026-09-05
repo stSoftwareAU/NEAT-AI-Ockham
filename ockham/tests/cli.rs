@@ -7,6 +7,7 @@ use std::process::Command;
 use neat_ai_ockham::corpus::write_bin_file;
 use neat_ai_ockham::fixtures::{
     hidden_identity_creature, identity_creature_json, recurrent_flagged_creature_json,
+    wide_creature,
 };
 
 fn bin() -> Command {
@@ -126,6 +127,9 @@ fn stats_sample_records_bounds_the_activation_scan_and_zero_restores_the_full_on
             .arg(&scorer)
             .arg("--stats-sample-records")
             .arg(sample)
+            // The hidden neuron this measures is an IDENTITY, which the exact
+            // cleanup pre-pass would collapse before the scan (Issue #110).
+            .arg("--no-exact-cleanup")
             .arg("--timeout-seconds")
             .arg("1")
             .output()
@@ -153,13 +157,17 @@ fn stats_sample_records_bounds_the_activation_scan_and_zero_restores_the_full_on
 /// Issue #109: merging is opt-in end to end. Without the flag the run retains
 /// no probe records at all; with it, the scan carries the signatures merge
 /// discovery needs.
+///
+/// The hidden neuron squashes with `TANH` so the exact cleanup pre-pass (#110)
+/// leaves it standing — an `IDENTITY` hidden neuron is collapsed before the
+/// scan runs, and a creature with nothing hidden left probes nothing.
 #[test]
 fn merge_correlation_turns_on_probe_capture_and_nothing_else_does() {
     let tmp = tempfile::tempdir().unwrap();
     let creature = tmp.path().join("creature.json");
     std::fs::write(
         &creature,
-        neat_core::creature_to_json_pretty(&hidden_identity_creature(0.0, 1.0)).unwrap(),
+        neat_core::creature_to_json_pretty(&wide_creature(1, 1, "TANH")).unwrap(),
     )
     .unwrap();
     let train = tmp.path().join("train");
@@ -205,7 +213,7 @@ fn merge_correlation_turns_on_probe_capture_and_nothing_else_does() {
     assert_eq!(merging["sample"]["probes"], 24);
     let probes = merging["probes"].as_array().expect("probes array");
     assert_eq!(probes.len(), 1, "one hidden neuron: {merging}");
-    assert_eq!(probes[0]["uuid"], "h1");
+    assert_eq!(probes[0]["uuid"], "h0");
     assert_eq!(probes[0]["values"].as_array().map(Vec::len), Some(24));
 }
 
@@ -396,6 +404,9 @@ fn a_run_that_screens_nothing_warns_that_it_advanced_no_coverage() {
         // Stops the loop before a single batch is filled.
         .arg("--max-experiments")
         .arg("0")
+        // The unchecked neuron this warning counts is an IDENTITY, which the
+        // exact cleanup pre-pass would collapse first (Issue #110).
+        .arg("--no-exact-cleanup")
         .arg("--timeout-seconds")
         .arg("30")
         .output()

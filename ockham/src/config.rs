@@ -5,6 +5,10 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::neighbourhood::{
+    DEFAULT_NEIGHBOURHOOD_PROPOSALS, DEFAULT_NEIGHBOURHOOD_SIZE, MAX_NEIGHBOURHOOD_SIZE,
+    MIN_NEIGHBOURHOOD_SIZE, NeighbourhoodConfig,
+};
 use crate::ordering::{Ordering, OrderingConfig};
 use crate::screening::{ScreenLadder, ScreenStage};
 use crate::signature::{
@@ -108,6 +112,22 @@ pub struct OckhamConfig {
     pub old_corpus_first: Option<bool>,
     /// Cap on records visited by the activation scan; `0` = full corpus (#44).
     pub stats_sample_records: u64,
+    /// Offer bounded structural neighbourhood group cuts (issue #108).
+    ///
+    /// Deliberately opt-in: the experiment adds proposals no single-neuron
+    /// sweep would make, and a control run must be able to leave them out.
+    pub group_cuts: bool,
+    /// Hidden neurons in one group proposal (issue #108).
+    pub group_max_size: usize,
+    /// Group proposals offered per sweep batch (issue #108).
+    pub group_proposals: usize,
+    /// Run the exact structural cleanup pre-pass before screening (issue #110).
+    ///
+    /// On by default: every rule in [`crate::canonical`] is provably
+    /// behaviour-preserving, so the structure it removes costs no scorer
+    /// budget to justify. The switch exists so a control run can measure what
+    /// the pre-pass buys.
+    pub exact_cleanup: bool,
     /// `|Pearson r|` at which correlated-neuron merging proposes a pair (#109).
     ///
     /// `None` — the default — turns the whole feature off: no probe records are
@@ -154,6 +174,10 @@ impl Default for OckhamConfig {
             unchecked_first: None,
             old_corpus_first: None,
             stats_sample_records: DEFAULT_SAMPLE_RECORDS,
+            group_cuts: false,
+            group_max_size: DEFAULT_NEIGHBOURHOOD_SIZE,
+            group_proposals: DEFAULT_NEIGHBOURHOOD_PROPOSALS,
+            exact_cleanup: true,
             merge_correlation: None,
             merge_probes: DEFAULT_PROBE_RECORDS,
             merge_band_bits: DEFAULT_BAND_BITS,
@@ -226,7 +250,26 @@ impl OckhamConfig {
                  (build one with `neat_ai_ockham train-ordering`)"
                 .into());
         }
+        // A size the generator would silently clamp is refused by name: an
+        // operator who asked for groups of twenty must be told the razor caps
+        // them, not left believing the run tried twenty (#108).
+        if !(MIN_NEIGHBOURHOOD_SIZE..=MAX_NEIGHBOURHOOD_SIZE).contains(&self.group_max_size) {
+            return Err(format!(
+                "--group-max-size must be in {MIN_NEIGHBOURHOOD_SIZE}..={MAX_NEIGHBOURHOOD_SIZE}"
+            ));
+        }
+        if self.group_cuts && self.group_proposals == 0 {
+            return Err("--group-proposals must be > 0 with --group-cuts".into());
+        }
         Ok(())
+    }
+
+    /// Bounded neighbourhood limits for this run (issue #108).
+    pub fn neighbourhood_config(&self) -> NeighbourhoodConfig {
+        NeighbourhoodConfig {
+            max_size: self.group_max_size,
+            max_proposals: self.group_proposals,
+        }
     }
 
     /// The screening ladder this run will actually climb (issue #104).
@@ -353,6 +396,10 @@ impl OckhamConfig {
             unchecked_first: self.unchecked_first_enabled(),
             old_corpus_first: self.old_corpus_first_enabled(),
             stats_sample_records: self.stats_sample_records,
+            group_cuts: self.group_cuts,
+            group_max_size: self.neighbourhood_config().effective_size(),
+            group_proposals: self.group_proposals,
+            exact_cleanup: self.exact_cleanup,
             merge_correlation: self.merge_correlation,
             // Reported resolved: the probe count a control run retains is zero,
             // whatever `--merge-probes` was typed as.
@@ -426,6 +473,14 @@ pub struct ConfigReport {
     pub old_corpus_first: bool,
     /// Cap on records visited by the activation scan (`0` = full corpus).
     pub stats_sample_records: u64,
+    /// Whether bounded neighbourhood group cuts are offered (issue #108).
+    pub group_cuts: bool,
+    /// Hidden neurons in one group proposal (issue #108).
+    pub group_max_size: usize,
+    /// Group proposals offered per sweep batch (issue #108).
+    pub group_proposals: usize,
+    /// Whether the exact structural cleanup pre-pass runs (issue #110).
+    pub exact_cleanup: bool,
     /// Correlated-neuron merge threshold (`None` = merging disabled).
     pub merge_correlation: Option<f64>,
     /// Probe activations actually retained per neuron (`0` = merging disabled).
@@ -754,6 +809,51 @@ mod tests {
         }
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn group_cuts_are_off_by_default_and_bounded_when_asked_for() {
+        let off = OckhamConfig::default();
+        off.validate().unwrap();
+        assert!(!off.group_cuts, "the experiment must be opt-in");
+        assert!(!off.report().group_cuts);
+        assert_eq!(
+            off.neighbourhood_config(),
+            NeighbourhoodConfig {
+                max_size: DEFAULT_NEIGHBOURHOOD_SIZE,
+                max_proposals: DEFAULT_NEIGHBOURHOOD_PROPOSALS,
+            }
+        );
+
+        let on = OckhamConfig {
+            group_cuts: true,
+            group_max_size: 3,
+            group_proposals: 2,
+            ..OckhamConfig::default()
+        };
+        on.validate().unwrap();
+        assert_eq!(on.report().group_max_size, 3);
+        assert_eq!(on.report().group_proposals, 2);
+
+        // A size the generator would clamp is refused by name rather than
+        // quietly reinterpreted.
+        for size in [0, 1, MAX_NEIGHBOURHOOD_SIZE + 1] {
+            let err = OckhamConfig {
+                group_max_size: size,
+                ..OckhamConfig::default()
+            }
+            .validate()
+            .unwrap_err();
+            assert!(err.contains("--group-max-size"), "{err}");
+        }
+        let err = OckhamConfig {
+            group_cuts: true,
+            group_proposals: 0,
+            ..OckhamConfig::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert!(err.contains("--group-proposals"), "{err}");
     }
 
     #[test]

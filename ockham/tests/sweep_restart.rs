@@ -91,6 +91,10 @@ fn an_exhausted_sweep_restarts_rather_than_idling() {
         .arg("30")
         .arg("--seed")
         .arg("1")
+        // The two hidden neurons are IDENTITY passthroughs, which the exact
+        // cleanup pre-pass would collapse before the sweep ever ran (#110);
+        // this test is about the sweep restarting, so it opts out.
+        .arg("--no-exact-cleanup")
         .output()
         .unwrap();
     assert!(
