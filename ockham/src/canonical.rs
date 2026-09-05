@@ -50,7 +50,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use neat_core::{CreatureExport, parse_squash_name};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ablation::{StructureSnapshot, cleanup_cascade};
 use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
@@ -58,7 +58,7 @@ use crate::fixtures::sort_synapses_canonically;
 use crate::incumbent::validate_creature;
 
 /// One exact rewrite rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExactRule {
     /// Non-output neuron with no outgoing synapse: no path to any output.
@@ -110,7 +110,10 @@ impl fmt::Display for CleanupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidIncumbent(m) => {
-                write!(f, "incumbent failed creature.validate() before cleanup: {m}")
+                write!(
+                    f,
+                    "incumbent failed creature.validate() before cleanup: {m}"
+                )
             }
             Self::Invalid(m) => write!(f, "canonicalised creature failed validation: {m}"),
             Self::NoFixedPoint { passes } => write!(
@@ -124,7 +127,7 @@ impl fmt::Display for CleanupError {
 impl std::error::Error for CleanupError {}
 
 /// A neuron the pre-pass removed.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemovedNeuron {
     /// Neuron UUID.
@@ -136,7 +139,7 @@ pub struct RemovedNeuron {
 }
 
 /// A synapse the pre-pass removed.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemovedSynapse {
     /// Source UUID.
@@ -150,7 +153,7 @@ pub struct RemovedSynapse {
 }
 
 /// What one rule achieved over the whole pass.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleTally {
     /// The rule.
@@ -168,7 +171,7 @@ pub struct RuleTally {
 }
 
 /// Deterministic record of one canonicalisation pre-pass.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanupReport {
     /// True when the creature changed.
@@ -439,12 +442,11 @@ fn try_drop(
     keys: &[(String, String)],
     report: &mut CleanupReport,
 ) -> Option<DropStep> {
-    let wanted: HashSet<(&str, &str)> = keys
-        .iter()
-        .map(|(f, t)| (f.as_str(), t.as_str()))
-        .collect();
+    let wanted: HashSet<(&str, &str)> =
+        keys.iter().map(|(f, t)| (f.as_str(), t.as_str())).collect();
     let is_dropped = |syn: &neat_core::SynapseExport| {
-        syn.synapse_type.is_none() && wanted.contains(&(syn.from_uuid.as_str(), syn.to_uuid.as_str()))
+        syn.synapse_type.is_none()
+            && wanted.contains(&(syn.from_uuid.as_str(), syn.to_uuid.as_str()))
     };
     let dropped: Vec<_> = working
         .synapses
@@ -494,10 +496,7 @@ fn commit_drop(working: &mut CreatureExport, step: DropStep, report: &mut Cleanu
 
     // Attributed per item, so the per-rule figures sum to the pass totals.
     let mut totals: BTreeMap<ExactRule, (usize, usize, usize, i64)> = BTreeMap::new();
-    totals
-        .entry(ExactRule::ZeroWeightSynapse)
-        .or_default()
-        .0 += step.dropped.len();
+    totals.entry(ExactRule::ZeroWeightSynapse).or_default().0 += step.dropped.len();
     for r in &step.cascade {
         let rule = rule_for_reason(r.reason);
         let entry = totals.entry(rule).or_default();
@@ -809,7 +808,8 @@ mod tests {
             .find(|n| n.uuid == "output-0")
             .unwrap()
             .bias;
-        let folded = 0.25 + f64::from(neat_core::apply_squash(neat_core::SquashType::Tanh, 0.5)) * 2.0;
+        let folded =
+            0.25 + f64::from(neat_core::apply_squash(neat_core::SquashType::Tanh, 0.5)) * 2.0;
         assert!((bias - folded).abs() <= 1e-12, "{bias} vs {folded}");
         assert_same_outputs(&incumbent, &done.creature, &grid(1));
     }
@@ -976,7 +976,12 @@ mod tests {
         );
         let done = canonicalise(&incumbent).unwrap();
         assert!(done.report.changed, "{}", done.report.summary());
-        assert!(done.creature.neurons.iter().all(|n| n.neuron_type != "hidden"));
+        assert!(
+            done.creature
+                .neurons
+                .iter()
+                .all(|n| n.neuron_type != "hidden")
+        );
         assert_same_outputs(&incumbent, &done.creature, &grid(2));
 
         // Fixed point: canonicalising the result again changes nothing.
@@ -1069,8 +1074,7 @@ mod tests {
         let report = &done.report;
         assert_eq!(report.after, StructureSnapshot::of(&done.creature));
         assert!(
-            (report.growth_units_saved
-                - (report.before.growth_units - report.after.growth_units))
+            (report.growth_units_saved - (report.before.growth_units - report.after.growth_units))
                 .abs()
                 <= 1e-12
         );

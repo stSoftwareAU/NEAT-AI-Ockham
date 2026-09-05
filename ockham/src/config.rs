@@ -118,6 +118,13 @@ pub struct OckhamConfig {
     pub group_max_size: usize,
     /// Group proposals offered per sweep batch (issue #108).
     pub group_proposals: usize,
+    /// Run the exact structural cleanup pre-pass before screening (issue #110).
+    ///
+    /// On by default: every rule in [`crate::canonical`] is provably
+    /// behaviour-preserving, so the structure it removes costs no scorer
+    /// budget to justify. The switch exists so a control run can measure what
+    /// the pre-pass buys.
+    pub exact_cleanup: bool,
 }
 
 impl Default for OckhamConfig {
@@ -152,6 +159,7 @@ impl Default for OckhamConfig {
             group_cuts: false,
             group_max_size: DEFAULT_NEIGHBOURHOOD_SIZE,
             group_proposals: DEFAULT_NEIGHBOURHOOD_PROPOSALS,
+            exact_cleanup: true,
         }
     }
 }
@@ -332,6 +340,7 @@ impl OckhamConfig {
             group_cuts: self.group_cuts,
             group_max_size: self.neighbourhood_config().effective_size(),
             group_proposals: self.group_proposals,
+            exact_cleanup: self.exact_cleanup,
             optimisation: "loop",
         }
     }
@@ -404,6 +413,8 @@ pub struct ConfigReport {
     pub group_max_size: usize,
     /// Group proposals offered per sweep batch (issue #108).
     pub group_proposals: usize,
+    /// Whether the exact structural cleanup pre-pass runs (issue #110).
+    pub exact_cleanup: bool,
     /// Optimisation status for this bootstrap issue (`deferred`).
     pub optimisation: &'static str,
 }

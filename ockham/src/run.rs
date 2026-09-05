@@ -60,6 +60,12 @@ pub struct BaselineRun {
     pub newly_screened: usize,
     /// Cumulative score gain from the opening parent.
     pub cumulative_delta: f64,
+    /// Exact structural cleanup pre-pass, when it ran (Issue #110).
+    ///
+    /// `None` only under `--no-exact-cleanup`; a pass that removed nothing
+    /// still reports, because "already canonical" is a finding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_cleanup: Option<crate::canonical::CleanupReport>,
     /// Population re-entry comparison, when a global champion was supplied.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reentry: Option<crate::reentry::ReentryOutcome>,
@@ -77,7 +83,7 @@ pub fn establish_run(
 ) -> Result<BaselineRun, String> {
     let source = config.creature.clone();
     let source_before = std::fs::read(&source).map_err(|e| format!("{}: {e}", source.display()))?;
-    let incumbent = load_incumbent(&source).map_err(|e| e.to_string())?;
+    let mut incumbent = load_incumbent(&source).map_err(|e| e.to_string())?;
     log::info(&format!(
         "incumbent {}  neurons={} synapses={} forwardOnly={}",
         incumbent.short_checksum(),
@@ -97,12 +103,29 @@ pub fn establish_run(
         "corpus {}  {} records in {} files",
         corpus.identity, corpus.record_count, corpus.file_count
     ));
-    let creature_meta = CreatureMeta::from_json(&incumbent.text);
+    let mut creature_meta = CreatureMeta::from_json(&incumbent.text);
     log::detail(&format!(
         "tags: {} creature tags, {} tagged neurons",
         creature_meta.tags.len(),
         creature_meta.neuron_tags.len()
     ));
+
+    // Exact cleanup before any scorer budget is spent (Issue #110). Every rule
+    // is provably behaviour-preserving, so the structure it removes needs no
+    // experiment to justify — and the baseline below doubles as the single
+    // scorer sanity check over the canonicalised creature.
+    let exact_cleanup = if config.exact_cleanup {
+        Some(exact_cleanup_pre_pass(
+            config,
+            &mut incumbent,
+            &mut creature_meta,
+            &workspace,
+        )?)
+    } else {
+        log::detail("exact cleanup pre-pass disabled (--no-exact-cleanup)");
+        None
+    };
+    let canonicalised = exact_cleanup.as_ref().is_some_and(|r| r.changed);
 
     let baseline = establish_baseline(
         &incumbent,
@@ -154,7 +177,16 @@ pub fn establish_run(
 
     std::fs::create_dir_all(&config.output_dir)
         .map_err(|e| format!("{}: {e}", config.output_dir.display()))?;
-    std::fs::write(config.output_dir.join("best.json"), &incumbent.text)
+    // Tagged when the pre-pass rewrote the creature: `best.json` must be the
+    // creature the baseline was scored over, tags and all.
+    let opening_best = if canonicalised {
+        creature_meta
+            .serialize_with(&incumbent.creature, true)
+            .map_err(|e| format!("tag best.json: {e}"))?
+    } else {
+        incumbent.text.clone()
+    };
+    std::fs::write(config.output_dir.join("best.json"), &opening_best)
         .map_err(|e| format!("best.json: {e}"))?;
 
     let cancel = CancelToken::new();
@@ -218,9 +250,84 @@ pub fn establish_run(
         stop_reason: loop_out.stop_reason,
         newly_screened: loop_out.newly_screened,
         cumulative_delta: loop_out.cumulative_delta,
+        exact_cleanup,
         reentry,
         optimisation: "complete",
     })
+}
+
+/// File name of the cleanup report written beside `best.json` (Issue #110).
+pub const EXACT_CLEANUP_FILE: &str = "exact-cleanup.json";
+
+/// Canonicalise the incumbent with exact rewrites before any screening.
+///
+/// Runs [`crate::canonical::canonicalise`] to a fixed point, adopts the result
+/// as the incumbent, and reports what it removed to the log, the journal and
+/// `exact-cleanup.json`. Nothing here consumes a candidate or full score: the
+/// authoritative baseline is established afterwards over the canonicalised
+/// creature, which is the one scorer sanity check the pass gets.
+///
+/// Provenance is carried, not dropped: per-neuron tags for surviving neurons
+/// are kept and tags for removed neurons go with them ([`CreatureMeta::retain_neurons`]),
+/// and the byte-for-byte workspace copy of the source creature is untouched —
+/// the canonicalised creature is written beside it as `canonical.json`.
+fn exact_cleanup_pre_pass(
+    config: &OckhamConfig,
+    incumbent: &mut Incumbent,
+    meta: &mut CreatureMeta,
+    workspace: &std::path::Path,
+) -> Result<crate::canonical::CleanupReport, String> {
+    let started = Instant::now();
+    let done = crate::canonical::canonicalise(&incumbent.creature).map_err(|e| e.to_string())?;
+    let ms = started.elapsed().as_millis() as u64;
+    let report = done.report;
+    log::info(&format!("{} in {ms}ms", report.summary()));
+    for tally in &report.rules {
+        log::detail(&format!(
+            "exact rule {}: ×{} removing {} neuron(s) and {} synapse(s), {:.1} growth units",
+            tally.rule,
+            tally.applications,
+            tally.neurons_removed,
+            tally.synapses_removed,
+            tally.growth_units_saved
+        ));
+    }
+    for note in &report.rejected {
+        log::warn(&format!("exact cleanup: {note}"));
+    }
+    if !report.changed {
+        return Ok(report);
+    }
+
+    meta.retain_neurons(&done.creature);
+    *incumbent =
+        Incumbent::from_creature(done.creature, "ockham-canonical").map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&config.output_dir)
+        .map_err(|e| format!("{}: {e}", config.output_dir.display()))?;
+    let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    std::fs::write(config.output_dir.join(EXACT_CLEANUP_FILE), json)
+        .map_err(|e| format!("{EXACT_CLEANUP_FILE}: {e}"))?;
+    std::fs::create_dir_all(workspace).map_err(|e| format!("{}: {e}", workspace.display()))?;
+    std::fs::write(workspace.join("canonical.json"), &incumbent.text)
+        .map_err(|e| format!("canonical.json: {e}"))?;
+    journal::append(
+        &config.output_dir.join("experiments.jsonl"),
+        &Event::ExactCleanup {
+            hidden_before: report.before.hidden_neurons,
+            hidden_after: report.after.hidden_neurons,
+            synapses_before: report.before.synapses,
+            synapses_after: report.after.synapses,
+            growth_units_saved: report.growth_units_saved,
+            passes: report.passes,
+            rules: report
+                .rules
+                .iter()
+                .map(|t| (t.rule.name().to_string(), t.applications))
+                .collect(),
+            ms,
+        },
+    )?;
+    Ok(report)
 }
 
 struct LoopOut {
@@ -2554,6 +2661,20 @@ mod tests {
     use neat_core::training_data::TrainingDataConfig;
     use std::time::Duration;
 
+    /// Loop-test configuration defaults, with the exact cleanup pre-pass off.
+    ///
+    /// Issue #110 turned the pre-pass on by default. These fixtures are hidden
+    /// IDENTITY creatures built to exercise the *sampled* path, and
+    /// canonicalising one first collapses the very neurons the sweep is meant
+    /// to screen — so the loop tests opt out and the pre-pass is covered by its
+    /// own tests, here and in `canonical`.
+    fn test_defaults() -> OckhamConfig {
+        OckhamConfig {
+            exact_cleanup: false,
+            ..OckhamConfig::default()
+        }
+    }
+
     fn config(tmp: &std::path::Path) -> OckhamConfig {
         let creature = tmp.join("creature.json");
         std::fs::write(&creature, identity_creature_json(1, 1)).unwrap();
@@ -2569,7 +2690,7 @@ mod tests {
             training_data: train,
             output_dir: tmp.join("out"),
             timeout: Duration::from_secs(60),
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 
@@ -2633,7 +2754,7 @@ mod tests {
             max_experiments: Some(4),
             seed: Some(1),
             candidates: 8,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let before = std::fs::read(&creature).unwrap();
         let scorer = ScriptedScorer {
@@ -2710,6 +2831,221 @@ mod tests {
         (creature, train)
     }
 
+    /// A creature the exact pre-pass can prove down: `h1 → h2` is a chain of
+    /// hidden IDENTITY neurons, and both neurons carry check-in tags.
+    fn tagged_identity_chain(tmp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        use crate::fixtures::{neuron, synapse};
+        let c = crate::fixtures::creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h1", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h2", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h1", 2.0),
+                synapse("h1", "h2", 3.0),
+                synapse("h2", "output-0", 1.0),
+            ],
+        );
+        let mut value: serde_json::Value =
+            serde_json::from_str(&neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let tag = |name: &str| serde_json::json!([{ "name": "grq", "value": name }]);
+        value["tags"] = tag("run");
+        for n in value["neurons"].as_array_mut().unwrap() {
+            let uuid = n["uuid"].as_str().unwrap().to_string();
+            n["tags"] = tag(&uuid);
+        }
+        let creature = tmp.join("creature.json");
+        std::fs::write(&creature, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
+        )
+        .unwrap();
+        (creature, train)
+    }
+
+    /// A scorer that counts how many times the run asked it to score.
+    struct CountingScorer {
+        inner: ScriptedScorer,
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl CountingScorer {
+        fn new(score: f64, error: f64) -> Self {
+            Self {
+                inner: ScriptedScorer::ok(score, error),
+                calls: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl crate::scorer::DirectoryScorer for CountingScorer {
+        fn score_directory(
+            &self,
+            creature_dir: &std::path::Path,
+            training_dir: &std::path::Path,
+            mode: crate::scorer::ScorerMode,
+        ) -> Result<
+            std::collections::BTreeMap<String, crate::scorer::ScoreResult>,
+            crate::scorer::ScorerError,
+        > {
+            self.calls.set(self.calls.get() + 1);
+            self.inner.score_directory(creature_dir, training_dir, mode)
+        }
+
+        fn identity(&self) -> String {
+            self.inner.identity()
+        }
+    }
+
+    fn cleanup_config(
+        creature: std::path::PathBuf,
+        train: std::path::PathBuf,
+        out: std::path::PathBuf,
+        exact_cleanup: bool,
+    ) -> OckhamConfig {
+        OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: out,
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(0),
+            seed: Some(1),
+            exact_cleanup,
+            ..OckhamConfig::default()
+        }
+    }
+
+    #[test]
+    fn the_exact_pre_pass_removes_provable_structure_before_the_first_screen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = tagged_identity_chain(tmp.path());
+        let source_before = std::fs::read(&creature).unwrap();
+        let cfg = cleanup_config(creature.clone(), train, tmp.path().join("out"), true);
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.9, 0.1)).unwrap();
+
+        let report = run.exact_cleanup.expect("the pre-pass reports");
+        assert!(report.changed, "{}", report.summary());
+        assert_eq!(report.before.hidden_neurons, 2);
+        assert_eq!(report.after.hidden_neurons, 0);
+        assert!(report.growth_units_saved > 0.0);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        assert_eq!(
+            run.incumbent.hidden_neurons, 2,
+            "the source is reported as it was"
+        );
+
+        // The report is on disk, deterministic and machine-readable.
+        let filed: crate::canonical::CleanupReport = serde_json::from_str(
+            &std::fs::read_to_string(cfg.output_dir.join(EXACT_CLEANUP_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(filed, report);
+        assert!(run.workspace.join("canonical.json").exists());
+
+        // Journalled before anything statistical: it is the first record.
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        let line = journal.lines().next().unwrap();
+        let raw: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(raw["record"], "exactCleanup");
+        match serde_json::from_str::<Event>(line).unwrap() {
+            Event::ExactCleanup {
+                hidden_before,
+                hidden_after,
+                growth_units_saved,
+                ..
+            } => {
+                assert_eq!((hidden_before, hidden_after), (2, 0));
+                assert!(growth_units_saved > 0.0);
+            }
+            other => panic!("first journal record must be the cleanup: {other:?}"),
+        }
+
+        // `best.json` is the canonicalised creature, with the surviving
+        // neuron's tags intact and the removed neurons' tags gone with them.
+        let best: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap(),
+        )
+        .unwrap();
+        let neurons = best["neurons"].as_array().unwrap();
+        assert_eq!(neurons.len(), 1, "{best}");
+        assert_eq!(neurons[0]["uuid"], "output-0");
+        assert_eq!(neurons[0]["tags"][0]["value"], "output-0");
+        assert_eq!(best["tags"][0]["value"], "run");
+        // input-0 → output-0 with the product weight: 2 × 3 × 1.
+        let synapses = best["synapses"].as_array().unwrap();
+        assert_eq!(synapses.len(), 1, "{best}");
+        assert!((synapses[0]["weight"].as_f64().unwrap() - 6.0).abs() <= 1e-9);
+
+        assert_eq!(
+            std::fs::read(&creature).unwrap(),
+            source_before,
+            "the source creature is never written"
+        );
+    }
+
+    #[test]
+    fn the_exact_pre_pass_spends_no_scorer_call_per_rewrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = tagged_identity_chain(tmp.path());
+
+        let with = CountingScorer::new(0.9, 0.1);
+        let on = cleanup_config(creature.clone(), train.clone(), tmp.path().join("on"), true);
+        let run = establish_run(&on, &with).unwrap();
+        assert!(run.exact_cleanup.expect("reports").changed);
+
+        let without = CountingScorer::new(0.9, 0.1);
+        let off = cleanup_config(creature, train, tmp.path().join("off"), false);
+        let control = establish_run(&off, &without).unwrap();
+        assert!(control.exact_cleanup.is_none());
+
+        assert_eq!(
+            with.calls.get(),
+            without.calls.get(),
+            "two exact rewrites must cost no scorer call of their own"
+        );
+    }
+
+    #[test]
+    fn no_exact_cleanup_leaves_the_structure_for_the_sweep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = tagged_identity_chain(tmp.path());
+        let cfg = cleanup_config(creature, train, tmp.path().join("out"), false);
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.9, 0.1)).unwrap();
+        assert!(run.exact_cleanup.is_none());
+        assert!(!cfg.output_dir.join(EXACT_CLEANUP_FILE).exists());
+        let best: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(best["neurons"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn an_already_canonical_incumbent_reports_and_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = OckhamConfig {
+            exact_cleanup: true,
+            ..config(tmp.path())
+        };
+        let source = std::fs::read(&cfg.creature).unwrap();
+        let run = establish_run(&cfg, &ScriptedScorer::ok(0.9, 0.1)).unwrap();
+        let report = run.exact_cleanup.expect("the pre-pass still reports");
+        assert!(!report.changed);
+        assert_eq!(report.growth_units_saved, 0.0);
+        assert!(!cfg.output_dir.join(EXACT_CLEANUP_FILE).exists());
+        assert_eq!(
+            std::fs::read(cfg.output_dir.join("best.json")).unwrap(),
+            source,
+            "an untouched creature is published byte for byte"
+        );
+    }
+
     /// Store pointed at the screen records a run under `train` would have filed.
     fn screens_store(learnings_dir: &std::path::Path, train: &std::path::Path) -> LearningsStore {
         let corpus = crate::corpus::corpus_info(train, &TrainingDataConfig::new(1, 1)).unwrap();
@@ -2743,7 +3079,7 @@ mod tests {
             seed: Some(1),
             candidates: 8,
             screen_sample_rate: None,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -2791,7 +3127,7 @@ mod tests {
             screen_sample_rate: None,
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -2878,7 +3214,7 @@ mod tests {
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
             group_cuts: true,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -2992,7 +3328,7 @@ mod tests {
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
             group_cuts: true,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -3044,7 +3380,7 @@ mod tests {
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
             group_cuts: true,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -3089,7 +3425,7 @@ mod tests {
             screen_sample_rate: None,
             candidate_log: Some(log.clone()),
             group_cuts: true,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         // Every candidate loses, so the cohort is judged without an accept
         // rewriting the incumbent underneath the log.
@@ -3124,7 +3460,7 @@ mod tests {
             seed: Some(1),
             candidates: 8,
             screen_sample_rate: None,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -3194,7 +3530,7 @@ mod tests {
             screen_sample_rate: None,
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -3231,7 +3567,7 @@ mod tests {
             screen_sample_rate: Some(0.5),
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -3284,7 +3620,7 @@ mod tests {
             candidates: 8,
             screen_sample_rate: None,
             ordering: crate::ordering::Ordering::CascadeSaving,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -3332,7 +3668,7 @@ mod tests {
             screen_sample_rate: None,
             ordering: crate::ordering::Ordering::Composite,
             candidate_log: Some(log.clone()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -3390,7 +3726,7 @@ mod tests {
             candidates: 8,
             screen_sample_rate: Some(0.5),
             candidate_log: Some(log.clone()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         // Candidates that never beat the incumbent: every one is screened out.
         let scorer = ScriptedScorer {
@@ -3439,7 +3775,7 @@ mod tests {
             candidates: 8,
             screen_sample_rate: None,
             candidate_log: Some(blocker.join("candidates.jsonl")),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -3470,7 +3806,7 @@ mod tests {
             screen_sample_rate: None,
             ordering: crate::ordering::Ordering::Learned,
             ordering_model: Some(tmp.path().join("absent-model.json")),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer::ok(0.50, 0.50);
         let err = establish_run(&cfg, &scorer).unwrap_err();
@@ -3492,7 +3828,7 @@ mod tests {
             screen_sample_rate: None,
             ordering: crate::ordering::Ordering::LowVariance,
             ordering_random_quota: 0.25,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(run.accepts, 0, "a flat scorer must not accept anything");
@@ -3528,7 +3864,7 @@ mod tests {
             candidates: 2,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         // Flat scorer: every candidate loses the screen, and losers are the
         // bulk of coverage.
@@ -3619,7 +3955,7 @@ mod tests {
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
             unchecked_first,
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 
@@ -3848,7 +4184,7 @@ mod tests {
             screen_threshold: 1.0,
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 
@@ -4062,7 +4398,7 @@ mod tests {
             screen_sample_rate: None,
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -4123,7 +4459,7 @@ mod tests {
             candidates: 2,
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(run.accepts, 0, "a flat scorer must not accept anything");
@@ -4455,7 +4791,7 @@ mod tests {
             candidates: 2,
             learnings_dir,
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 
@@ -4616,7 +4952,7 @@ mod tests {
             candidates: 8,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         // Flat scorer: nothing is accepted, so the run's own coverage is the
         // only thing that moves.
@@ -4672,7 +5008,7 @@ mod tests {
             candidates: 8,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
 
@@ -4737,7 +5073,7 @@ mod tests {
             candidates: 8,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
 
@@ -4923,7 +5259,7 @@ mod tests {
             screen_sample_rate: None,
             learnings_dir: Some(tmp.path().join("learnings")),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -4959,7 +5295,7 @@ mod tests {
             seed: Some(1),
             candidates: 2,
             screen_sample_rate: None,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -4988,7 +5324,7 @@ mod tests {
             max_experiments: Some(1),
             seed: Some(1),
             candidates: 2,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         let journal_path = cfg.output_dir.join("experiments.jsonl");
@@ -5017,7 +5353,7 @@ mod tests {
             screen_sample_rate: None,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(run.accepts, 0);
@@ -5054,7 +5390,7 @@ mod tests {
             candidates: 1,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             fail_sample_with: Some("screen exploded".into()),
@@ -5085,7 +5421,7 @@ mod tests {
             max_experiments: Some(2),
             seed: Some(1),
             candidates: 8,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let run = establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(run.accepts, 0);
@@ -5364,7 +5700,7 @@ mod tests {
             seed: Some(1),
             candidates: 2,
             screen_sample_rate: None,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -5466,7 +5802,7 @@ mod tests {
             learnings_dir: Some(learnings_dir),
             learnings_host: Some("t".into()),
             max_full,
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 
@@ -5812,7 +6148,7 @@ mod tests {
             seed: Some(1),
             candidates: 4,
             screen_sample_rate: Some(0.01),
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             delay_per_creature: Duration::from_millis(100),
@@ -5841,7 +6177,7 @@ mod tests {
             max_experiments: Some(1),
             seed: Some(1),
             candidates: 4,
-            ..OckhamConfig::default()
+            ..test_defaults()
         };
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -5924,7 +6260,7 @@ mod tests {
             candidates: 2,
             learnings_dir,
             learnings_host: Some("t".into()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 
@@ -6477,7 +6813,7 @@ mod tests {
             seed: Some(1),
             candidates: 2,
             screen_stages: stages.map(|s| crate::screening::ScreenLadder::parse(s, 0.01).unwrap()),
-            ..OckhamConfig::default()
+            ..test_defaults()
         }
     }
 

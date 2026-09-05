@@ -36,7 +36,8 @@ pub fn growth_units(hidden_neurons: usize, synapses: usize) -> f64 {
 }
 
 /// Neuron/synapse counts and the unitless growth-cost proxy.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+// `Deserialize` so a filed cleanup report can be read back (Issue #110).
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StructureSnapshot {
     /// Hidden neuron count.

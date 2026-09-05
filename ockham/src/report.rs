@@ -163,6 +163,19 @@ pub struct Report {
     pub cuts_per_hour: Option<f64>,
     /// Growth units removed per hour of loop wall-clock (Issue #106).
     pub growth_units_saved_per_hour: Option<f64>,
+    /// Hidden neurons the exact cleanup pre-pass removed before screening (#110).
+    ///
+    /// Structure proven redundant costs no scorer budget to remove, so it is
+    /// counted apart from the accepts: a run that opened by canonicalising its
+    /// incumbent shed this much before the first statistical screen.
+    pub exact_cleanup_hidden_removed: usize,
+    /// Synapses the pre-pass removed; signed, as an IDENTITY collapse can add
+    /// synapses while its growth units still fall (#110).
+    pub exact_cleanup_synapses_removed: i64,
+    /// Growth units the pre-pass saved (#110).
+    pub exact_cleanup_growth_units_saved: f64,
+    /// Wall-clock the pre-pass cost, in milliseconds (#110).
+    pub exact_cleanup_ms: u64,
     /// Accepted winners carrying an estimated-versus-actual record (#106).
     ///
     /// Beside the two totals so a missing ratio is never ambiguous: `0` says no
@@ -282,6 +295,10 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         growth_units_saved: None,
         cuts_per_hour: None,
         growth_units_saved_per_hour: None,
+        exact_cleanup_hidden_removed: 0,
+        exact_cleanup_synapses_removed: 0,
+        exact_cleanup_growth_units_saved: 0.0,
+        exact_cleanup_ms: 0,
         cascade_accepts: 0,
         cascade_estimated_growth_units: None,
         cascade_actual_growth_units: None,
@@ -491,6 +508,22 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     } else {
                         report.full_rejects += 1;
                     }
+                }
+                Event::ExactCleanup {
+                    hidden_before,
+                    hidden_after,
+                    synapses_before,
+                    synapses_after,
+                    growth_units_saved,
+                    ms,
+                    ..
+                } => {
+                    report.exact_cleanup_hidden_removed +=
+                        hidden_before.saturating_sub(hidden_after);
+                    report.exact_cleanup_synapses_removed +=
+                        synapses_before as i64 - synapses_after as i64;
+                    report.exact_cleanup_growth_units_saved += growth_units_saved;
+                    report.exact_cleanup_ms += ms;
                 }
                 Event::Stop {
                     reason,

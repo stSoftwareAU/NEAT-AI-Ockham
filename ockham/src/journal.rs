@@ -211,6 +211,31 @@ pub enum Event {
         #[serde(default)]
         elapsed_ms: u64,
     },
+    /// What the exact structural cleanup pre-pass removed (Issue #110).
+    ///
+    /// Written once, before the first sampled screen, and only when the
+    /// pre-pass changed the creature. Every rewrite behind it is provably
+    /// behaviour-preserving, so this structure left the creature without
+    /// spending a candidate or full score on it — which is exactly why it is
+    /// journalled apart from the accepts.
+    ExactCleanup {
+        /// Hidden neurons before the pre-pass.
+        hidden_before: usize,
+        /// Hidden neurons after it.
+        hidden_after: usize,
+        /// Synapses before the pre-pass.
+        synapses_before: usize,
+        /// Synapses after it.
+        synapses_after: usize,
+        /// Growth units it saved.
+        growth_units_saved: f64,
+        /// Rule-loop passes to the fixed point.
+        passes: usize,
+        /// `rule=applications` pairs, in rule order.
+        rules: Vec<(String, usize)>,
+        /// Wall time (ms).
+        ms: u64,
+    },
     /// Estimated versus actual structural saving of an accepted cut (#106).
     ///
     /// The cascade dry-run predicts, from topology alone, what an ablation of
