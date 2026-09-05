@@ -611,6 +611,24 @@ mod tests {
         assert!(json.contains("\"ordering\":\"low-variance\""), "{json}");
     }
 
+    /// Every strategy has to survive the journal, or two runs of different
+    /// orderings are indistinguishable in the report that compares them.
+    #[test]
+    fn every_ordering_strategy_round_trips_through_the_journal_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        for strategy in Ordering::ALL {
+            let path = tmp.path().join(format!("{}.jsonl", strategy.name()));
+            journal::append(&path, &start(*strategy)).unwrap();
+            let written = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                written.contains(&format!("\"ordering\":\"{}\"", strategy.name())),
+                "{strategy}: {written}"
+            );
+            let report = summarise(&[&path]).unwrap();
+            assert_eq!(report.ordering, Some(*strategy), "{strategy}");
+        }
+    }
+
     /// Issue #77: a sweep restart is fleet news — a creature screened end to
     /// end and recycled — so the report counts it rather than dropping it.
     #[test]

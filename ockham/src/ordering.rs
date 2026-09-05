@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ablation::growth_units;
 use crate::cascade::{CascadeEstimate, CascadeIndex};
+use crate::sensitivity::SensitivityIndex;
 use crate::stats::ActivationStats;
 
 /// Ranking strategy for the pruning sweep.
@@ -58,6 +59,19 @@ pub enum Ordering {
     /// the cascade saving, so a quiet neuron that takes a lot of structure with
     /// it is tried before a loud one that takes little.
     CascadeRiskRatio,
+    /// Least downstream output sensitivity first (Issue #105).
+    ///
+    /// The [`crate::sensitivity`] importance propagated backwards from the
+    /// outputs, so a neuron whose whole downstream path is attenuated is tried
+    /// before one the outputs still depend on — however loud either is.
+    LowOutputSensitivity,
+    /// Least `mean_abs_activation × output importance` first (Issue #105).
+    ///
+    /// The estimated effect of the neuron on the final outputs: how loud it is,
+    /// scaled by how much the topology behind it survives to the outputs.
+    /// [`Ordering::LowOutgoingContribution`] is its one-layer special case —
+    /// this one keeps multiplying all the way to the score.
+    LowEstimatedEffect,
 }
 
 impl Ordering {
@@ -73,6 +87,8 @@ impl Ordering {
         Ordering::IdentityFirst,
         Ordering::CascadeSaving,
         Ordering::CascadeRiskRatio,
+        Ordering::LowOutputSensitivity,
+        Ordering::LowEstimatedEffect,
     ];
 
     /// Kebab-case name used on the CLI and in the journal.
@@ -88,6 +104,8 @@ impl Ordering {
             Ordering::IdentityFirst => "identity-first",
             Ordering::CascadeSaving => "cascade-saving",
             Ordering::CascadeRiskRatio => "cascade-risk-ratio",
+            Ordering::LowOutputSensitivity => "low-output-sensitivity",
+            Ordering::LowEstimatedEffect => "low-estimated-effect",
         }
     }
 
@@ -97,6 +115,17 @@ impl Ordering {
     /// the strategies that read them.
     fn needs_cascade(self) -> bool {
         matches!(self, Ordering::CascadeSaving | Ordering::CascadeRiskRatio)
+    }
+
+    /// Whether the strategy ranks by downstream output sensitivity (#105).
+    ///
+    /// The backward propagation costs one index of the creature, so it is built
+    /// only for the strategies that read it.
+    fn needs_sensitivity(self) -> bool {
+        matches!(
+            self,
+            Ordering::LowOutputSensitivity | Ordering::LowEstimatedEffect
+        )
     }
 
     /// Comma-separated list of every accepted name.
@@ -196,6 +225,30 @@ pub fn random_order(creature: &CreatureExport, seed: u64) -> Vec<String> {
     order
 }
 
+/// Per-creature ranking signals, built once for the strategies that read them.
+///
+/// Topology does not change while an order is built, so each signal is walked
+/// once per hidden neuron rather than once per comparison the sort makes.
+#[derive(Debug, Default)]
+struct Signals<'a> {
+    /// Cascade dry-run per hidden neuron (Issue #106).
+    cascade: Option<HashMap<&'a str, CascadeEstimate>>,
+    /// Downstream output sensitivity per hidden neuron (Issue #105).
+    importance: Option<HashMap<&'a str, f64>>,
+}
+
+impl Signals<'_> {
+    /// Estimated cascade growth-unit saving for `uuid`, when one was computed.
+    fn cascade_saving(&self, uuid: &str) -> Option<f64> {
+        self.cascade.as_ref()?.get(uuid).map(|e| e.growth_units)
+    }
+
+    /// Downstream output sensitivity of `uuid`, when one was computed.
+    fn importance(&self, uuid: &str) -> Option<f64> {
+        self.importance.as_ref()?.get(uuid).copied()
+    }
+}
+
 /// Ranking key for `uuid` under `strategy`. Lower sorts earlier.
 ///
 /// Neurons the statistics do not cover sort last rather than being dropped:
@@ -204,7 +257,7 @@ fn rank_key(
     creature: &CreatureExport,
     stats: &ActivationStats,
     strategy: Ordering,
-    cascade: Option<&HashMap<&str, CascadeEstimate>>,
+    signals: &Signals<'_>,
     uuid: &str,
 ) -> f64 {
     let neuron_stats = stats.by_uuid(uuid);
@@ -241,8 +294,8 @@ fn rank_key(
         // Negated so the largest cascade saving sorts first. A neuron the
         // estimate does not cover, and one whose cut the transform would
         // refuse, sorts last rather than being dropped.
-        Ordering::CascadeSaving => -cascade_saving(cascade, uuid).unwrap_or(0.0),
-        Ordering::CascadeRiskRatio => match (neuron_stats, cascade_saving(cascade, uuid)) {
+        Ordering::CascadeSaving => -signals.cascade_saving(uuid).unwrap_or(0.0),
+        Ordering::CascadeRiskRatio => match (neuron_stats, signals.cascade_saving(uuid)) {
             // No predicted saving is a refused cut, not a free one: it ranks
             // last rather than dividing by zero.
             (Some(s), Some(saving)) if saving > 0.0 => {
@@ -250,6 +303,26 @@ fn rank_key(
             }
             _ => f64::INFINITY,
         },
+        // Topology alone: a neuron nothing downstream depends on is screened
+        // first, whatever its activation statistics say.
+        Ordering::LowOutputSensitivity => rankable(signals.importance(uuid)),
+        // How loud the neuron is, scaled by how much of that survives to the
+        // outputs. Either half missing ranks it last rather than dropping it.
+        Ordering::LowEstimatedEffect => match (neuron_stats, signals.importance(uuid)) {
+            (Some(s), Some(importance)) => rankable(Some(s.mean_abs * importance)),
+            _ => f64::INFINITY,
+        },
+    }
+}
+
+/// A missing or undefined signal ranks last; a real one ranks on its value.
+///
+/// Screening early is a claim that a neuron is unlikely to matter, and neither
+/// an absent estimate nor an unrepresentable one supports that claim.
+fn rankable(value: Option<f64>) -> f64 {
+    match value {
+        Some(value) if !value.is_nan() => value,
+        _ => f64::INFINITY,
     }
 }
 
@@ -261,11 +334,6 @@ fn outgoing_weight_sum(creature: &CreatureExport, uuid: &str) -> f64 {
         .filter(|s| s.from_uuid == uuid)
         .map(|s| s.weight.abs())
         .sum()
-}
-
-/// Estimated cascade growth-unit saving for `uuid`, when one was computed.
-fn cascade_saving(cascade: Option<&HashMap<&str, CascadeEstimate>>, uuid: &str) -> Option<f64> {
-    cascade?.get(uuid).map(|e| e.growth_units)
 }
 
 /// Interleave `ranked` with the random control, reserving `quota` of the slots.
@@ -325,19 +393,28 @@ pub fn hidden_order(
     if cfg.strategy == Ordering::Random {
         return random;
     }
-    // Topology does not change while the order is built, so the cascade
-    // dry-runs are the creature's own index, walked once per hidden neuron
-    // (Issue #106) rather than once per comparison the sort makes.
-    let index = cfg
+    // Topology does not change while the order is built, so both graph signals
+    // are the creature's own index, walked once per hidden neuron rather than
+    // once per comparison the sort makes.
+    let cascade_index = cfg
         .strategy
         .needs_cascade()
         .then(|| CascadeIndex::new(creature));
-    let cascade = index.as_ref().map(CascadeIndex::hidden_estimates);
+    let sensitivity_index = cfg
+        .strategy
+        .needs_sensitivity()
+        .then(|| SensitivityIndex::new(creature));
+    let signals = Signals {
+        cascade: cascade_index.as_ref().map(CascadeIndex::hidden_estimates),
+        importance: sensitivity_index
+            .as_ref()
+            .map(SensitivityIndex::hidden_importance),
+    };
     let mut keyed: Vec<(f64, String)> = random
         .iter()
         .map(|uuid| {
             (
-                rank_key(creature, stats, cfg.strategy, cascade.as_ref(), uuid),
+                rank_key(creature, stats, cfg.strategy, &signals, uuid),
                 uuid.clone(),
             )
         })
@@ -645,6 +722,217 @@ mod tests {
         );
         assert_eq!(got.len(), 4, "{got:?}");
         assert_eq!(got[3], "hub", "{got:?}");
+    }
+
+    /// A loud neuron the topology mutes, beside two quieter ones that matter.
+    ///
+    /// `loud` fires hardest of all, but everything it produces reaches the
+    /// output through a zero weight, so nothing downstream cares. `quiet` is
+    /// barely audible yet feeds the output directly with weight 2, and `mid`
+    /// sits between them. Activation statistics alone rank `loud` last; the
+    /// output sensitivity ranks it first (Issue #105).
+    fn attenuated() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "loud", 0.0, Some("TANH")),
+                neuron("hidden", "tap", 0.0, Some("TANH")),
+                neuron("hidden", "quiet", 0.0, Some("TANH")),
+                neuron("hidden", "mid", 0.0, Some("TANH")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "loud", 1.0),
+                synapse("loud", "tap", 5.0),
+                // The dead weight: nothing behind it reaches the output.
+                synapse("tap", "output-0", 0.0),
+                synapse("input-0", "quiet", 1.0),
+                synapse("quiet", "output-0", 2.0),
+                synapse("input-0", "mid", 1.0),
+                synapse("mid", "output-0", 0.1),
+            ],
+        )
+    }
+
+    /// Statistics for [`attenuated`]: `loud` is by far the noisiest neuron.
+    fn attenuated_stats() -> ActivationStats {
+        let mut stats = stats();
+        stats.neurons.clear();
+        for (i, (uuid, mean_abs)) in [("loud", 3.0), ("tap", 0.2), ("quiet", 0.05), ("mid", 0.5)]
+            .iter()
+            .enumerate()
+        {
+            stats.neurons.push(NeuronStats {
+                uuid: (*uuid).into(),
+                neuron_index: i,
+                count: 10,
+                mean: 0.0,
+                variance: *mean_abs,
+                std_dev: mean_abs.sqrt(),
+                mean_abs: *mean_abs,
+                min: -*mean_abs,
+                max: *mean_abs,
+            });
+        }
+        stats
+    }
+
+    fn attenuated_order(strategy: Ordering) -> Vec<String> {
+        hidden_order(
+            &attenuated(),
+            &attenuated_stats(),
+            OrderingConfig::new(strategy),
+            7,
+        )
+    }
+
+    #[test]
+    fn low_output_sensitivity_screens_the_neurons_nothing_downstream_depends_on_first() {
+        // loud and tap reach the output through a zero weight (importance 0);
+        // mid carries 0.1 and quiet carries 2.0.
+        let got = attenuated_order(Ordering::LowOutputSensitivity);
+        let mut muted = got[..2].to_vec();
+        muted.sort();
+        assert_eq!(muted, ["loud", "tap"], "{got:?}");
+        assert_eq!(got[2], "mid", "{got:?}");
+        assert_eq!(got[3], "quiet", "{got:?}");
+    }
+
+    #[test]
+    fn low_estimated_effect_screens_the_loudest_neuron_first_when_nothing_downstream_cares() {
+        // effect = mean_abs × importance: loud 3.0×0, tap 0.2×0, mid 0.5×0.1,
+        // quiet 0.05×2.0. The activation-only ranking reads the opposite way.
+        let effect = attenuated_order(Ordering::LowEstimatedEffect);
+        let mut muted = effect[..2].to_vec();
+        muted.sort();
+        assert_eq!(muted, ["loud", "tap"], "{effect:?}");
+        assert_eq!(effect[2], "mid", "{effect:?}");
+        assert_eq!(effect[3], "quiet", "{effect:?}");
+        let loudness = attenuated_order(Ordering::LowMeanAbs);
+        assert_eq!(
+            loudness[3], "loud",
+            "the activation ranking visits the muted neuron last: {loudness:?}"
+        );
+    }
+
+    #[test]
+    fn the_estimated_effect_separates_neurons_the_topology_alone_ties() {
+        // `soft` and `hard` have identical downstream topology, so the
+        // sensitivity alone cannot order them; the activation scale can.
+        let fixture = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "soft", 0.0, Some("TANH")),
+                neuron("hidden", "hard", 0.0, Some("TANH")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "soft", 1.0),
+                synapse("soft", "output-0", 0.1),
+                synapse("input-0", "hard", 1.0),
+                synapse("hard", "output-0", 0.1),
+            ],
+        );
+        let mut stats = attenuated_stats();
+        stats.neurons.retain(|n| n.uuid == "loud");
+        stats.neurons.clear();
+        for (i, (uuid, mean_abs)) in [("soft", 0.01), ("hard", 2.0)].iter().enumerate() {
+            stats.neurons.push(NeuronStats {
+                uuid: (*uuid).into(),
+                neuron_index: i,
+                count: 10,
+                mean: 0.0,
+                variance: *mean_abs,
+                std_dev: mean_abs.sqrt(),
+                mean_abs: *mean_abs,
+                min: -*mean_abs,
+                max: *mean_abs,
+            });
+        }
+        let index = crate::sensitivity::SensitivityIndex::new(&fixture);
+        assert_eq!(index.importance("soft"), index.importance("hard"));
+        let got = hidden_order(
+            &fixture,
+            &stats,
+            OrderingConfig::new(Ordering::LowEstimatedEffect),
+            7,
+        );
+        assert_eq!(got, ["soft", "hard"], "{got:?}");
+    }
+
+    #[test]
+    fn a_neuron_the_sensitivity_covers_but_the_statistics_do_not_keeps_its_place() {
+        let creature = attenuated();
+        let mut partial = attenuated_stats();
+        partial.neurons.retain(|n| n.uuid != "loud");
+        // Topology-only ranking is unaffected by the missing statistics.
+        let topological = hidden_order(
+            &creature,
+            &partial,
+            OrderingConfig::new(Ordering::LowOutputSensitivity),
+            5,
+        );
+        assert_eq!(topological.len(), 4, "{topological:?}");
+        assert!(
+            topological[..2].contains(&"loud".to_string()),
+            "{topological:?}"
+        );
+        // The combined ranking cannot estimate an effect without an activation
+        // scale, so it visits the neuron last rather than dropping it.
+        let combined = hidden_order(
+            &creature,
+            &partial,
+            OrderingConfig::new(Ordering::LowEstimatedEffect),
+            5,
+        );
+        assert_eq!(combined.len(), 4, "{combined:?}");
+        assert_eq!(combined[3], "loud", "{combined:?}");
+    }
+
+    #[test]
+    fn a_recurrent_loop_is_not_screened_ahead_of_a_genuinely_muted_neuron() {
+        // r1 ⇄ r2 with r2 → output-0: the loop has no first-order fixpoint, so
+        // it must rank behind the neuron whose downstream weight is zero.
+        let fixture = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "r1", 0.0, Some("TANH")),
+                neuron("hidden", "r2", 0.0, Some("TANH")),
+                neuron("hidden", "muted", 0.0, Some("TANH")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "r1", 1.0),
+                synapse("r1", "r2", 2.0),
+                synapse("r2", "r1", 0.5),
+                synapse("r2", "output-0", 7.0),
+                synapse("input-0", "muted", 1.0),
+                synapse("muted", "output-0", 0.0),
+            ],
+        );
+        let mut stats = attenuated_stats();
+        stats.neurons.retain(|n| n.uuid == "loud");
+        for (i, uuid) in ["r1", "r2", "muted"].iter().enumerate() {
+            stats.neurons.push(NeuronStats {
+                uuid: (*uuid).into(),
+                neuron_index: i,
+                count: 10,
+                mean: 0.0,
+                variance: 0.5,
+                std_dev: 0.5f64.sqrt(),
+                mean_abs: 0.5,
+                min: -0.5,
+                max: 0.5,
+            });
+        }
+        for strategy in [Ordering::LowOutputSensitivity, Ordering::LowEstimatedEffect] {
+            let got = hidden_order(&fixture, &stats, OrderingConfig::new(strategy), 3);
+            assert_eq!(got[0], "muted", "{strategy}: {got:?}");
+            assert_eq!(got.len(), 3, "{strategy}: {got:?}");
+        }
     }
 
     #[test]
