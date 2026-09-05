@@ -36,6 +36,8 @@
 //! | learned candidate ranker | [`model`] | #107 |
 //! | candidate feature/outcome telemetry | [`telemetry`] | #107 |
 //! | structural neighbourhood group cuts | [`neighbourhood`] | #108 |
+//! | behavioural signatures + correlated-pair discovery | [`signature`] | #109 |
+//! | correlated-neuron merging | [`merge`] | #109 |
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
 //! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
 
@@ -57,6 +59,7 @@ pub mod incumbent;
 pub mod journal;
 pub mod learnings;
 pub mod log;
+pub mod merge;
 pub mod model;
 pub mod neighbourhood;
 pub mod ordering;
@@ -68,6 +71,7 @@ pub mod run;
 pub mod scorer;
 pub mod screening;
 pub mod sensitivity;
+pub mod signature;
 pub mod stats;
 pub mod substitute;
 pub mod sweep;
@@ -95,6 +99,7 @@ pub use coverage::{
 };
 pub use features::{CandidateFeatures, FEATURE_NAMES, PriorEvidence};
 pub use incumbent::{Incumbent, IncumbentError, load_incumbent};
+pub use merge::{LinearRelation, MergeSkip, NeuronMerge, merge_correlated};
 pub use model::{PRIORITY_MODEL_FORMAT_VERSION, PriorityModel, TrainingConfig, TrainingRow};
 pub use neighbourhood::{
     DEFAULT_NEIGHBOURHOOD_PROPOSALS, DEFAULT_NEIGHBOURHOOD_SIZE, MAX_NEIGHBOURHOOD_SIZE,
@@ -112,7 +117,10 @@ pub use screening::{
     StageRecord, screen_progressive,
 };
 pub use sensitivity::SensitivityIndex;
-pub use stats::{ActivationStats, NeuronStats, SampleSpec, ensure_activation_stats};
+pub use signature::{
+    DiscoveryConfig, DiscoveryReport, MergeIndex, MergeProposal, discover as discover_merges,
+};
+pub use stats::{ActivationStats, NeuronProbes, NeuronStats, SampleSpec, ensure_activation_stats};
 pub use substitute::{ConstantSubstitution, SubstitutionSkip, substitute_constant};
 pub use sweep::{
     ScreenConfig, ScreenOutcome, ScreenRejection, ScreenedLoser, Sweep, SweepCandidate, draw_seed,

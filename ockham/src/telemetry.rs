@@ -91,8 +91,16 @@ pub struct CandidateRecord {
     pub seed: u64,
     /// Hidden neuron the candidate cut.
     pub uuid: String,
-    /// How the sweep built the candidate: `identity`, `ablation` or `constant`.
+    /// How the sweep built the candidate: `identity`, `ablation`, `constant`
+    /// or `merge`.
     pub kind: String,
+    /// Survivor that absorbed the neuron, for a `merge` candidate (#109).
+    ///
+    /// The pair is the provenance a merge needs and no other kind has: the same
+    /// uuid removed against a different survivor is a different cut. Additive
+    /// and optional, so a row written by an older host still loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_with: Option<String>,
     /// Feature values by name — the schema is carried, not assumed.
     pub features: BTreeMap<String, f64>,
     /// Sampled Δ against the incumbent scored in the same call.
@@ -129,6 +137,7 @@ impl CandidateRecord {
             seed: stamp.seed,
             uuid: uuid.to_string(),
             kind: kind.to_string(),
+            merged_with: None,
             features: features
                 .named()
                 .into_iter()
@@ -314,6 +323,7 @@ impl CandidateLog<'_> {
                 CandidateOutcome::ScreenedOut,
             );
             record.creature_checksum = checksum.to_string();
+            record.merged_with = loser.merged_with.clone();
             record.sample_delta = Some(loser.delta);
             record.scorer_ms = each_ms;
             records.push(record);
@@ -364,9 +374,9 @@ impl CandidateLog<'_> {
                 unknown += 1;
                 continue;
             };
-            // The kind is the sweep's — `identity`, `ablation` or `constant` —
-            // never the cohort's `individual`, so one column carries one
-            // vocabulary. A uuid this run's sweep did not propose (a carried
+            // The kind is the sweep's — `identity`, `ablation`, `constant` or
+            // `merge` — never the cohort's `individual`, so one column carries
+            // one vocabulary. A uuid this run's sweep did not propose (a carried
             // winner from an earlier batch) has no candidate kind to record and
             // is left for the batch that did propose it.
             // The group candidate keyed on this uuid is not the row's
@@ -395,6 +405,7 @@ impl CandidateLog<'_> {
                 },
             );
             record.creature_checksum = checksum.to_string();
+            record.merged_with = candidate.candidate.merged_with.clone();
             record.sample_delta = Some(candidate.delta);
             record.full_delta = Some(scored.delta);
             // Nothing is removed by a candidate that was not applied, so a
@@ -510,6 +521,85 @@ mod tests {
         append(&path, &[]).unwrap();
         let read = load(&path).unwrap();
         assert_eq!(read, vec![screened, accepted]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #109: the pair is the provenance a merge needs, so it has to reach
+    /// the candidate log — a survivor recorded nowhere leaves the audit trail
+    /// naming which neuron went but not what it was merged into.
+    #[test]
+    fn a_screened_out_merge_writes_its_survivor_to_the_log() {
+        use crate::sweep::{CandidateKind, ScreenRejection, ScreenedLoser};
+
+        let dir = temp_dir("merge-provenance");
+        let path = dir.join("candidates.jsonl");
+        let creature = crate::fixtures::wide_creature(1, 2, "TANH");
+        let stats = crate::stats::ActivationStats {
+            neurons: creature
+                .neurons
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.neuron_type == "hidden")
+                .map(|(i, n)| crate::stats::NeuronStats {
+                    uuid: n.uuid.clone(),
+                    neuron_index: i,
+                    count: 10,
+                    mean: 0.0,
+                    variance: 1.0,
+                    std_dev: 1.0,
+                    mean_abs: 0.5,
+                    min: -1.0,
+                    max: 1.0,
+                })
+                .collect(),
+            ..crate::stats::ActivationStats::empty()
+        };
+        let evidence = crate::features::PriorEvidence::new();
+        let log = CandidateLog {
+            path: &path,
+            stamp: stamp(),
+            evidence: &evidence,
+        };
+        log.screened_out(
+            &creature,
+            &stats,
+            "checksum-1",
+            &[
+                ScreenedLoser {
+                    uuid: "h0".into(),
+                    kind: CandidateKind::Merge,
+                    merged_with: Some("h1".into()),
+                    delta: -0.4,
+                    stage: 1,
+                    reason: ScreenRejection::BelowThreshold,
+                },
+                ScreenedLoser {
+                    uuid: "h1".into(),
+                    kind: CandidateKind::Ablation,
+                    merged_with: None,
+                    delta: -0.5,
+                    stage: 1,
+                    reason: ScreenRejection::BelowThreshold,
+                },
+            ],
+            100,
+            2,
+        );
+
+        let rows = load(&path).unwrap();
+        let merged = rows.iter().find(|r| r.uuid == "h0").expect("merge row");
+        assert_eq!(merged.kind, "merge");
+        assert_eq!(
+            merged.merged_with.as_deref(),
+            Some("h1"),
+            "the survivor must survive the round trip: {merged:?}"
+        );
+        let ablated = rows.iter().find(|r| r.uuid == "h1").expect("ablation row");
+        assert_eq!(ablated.kind, "ablation");
+        assert!(
+            ablated.merged_with.is_none(),
+            "only a merge names a survivor"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

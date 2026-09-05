@@ -595,6 +595,7 @@ mod tests {
             stopped_early: false,
             scan_ms: 0,
             from_cache: false,
+            probes: Vec::new(),
             neurons: rows
                 .iter()
                 .enumerate()

@@ -29,6 +29,7 @@ use crate::promote::{
 };
 use crate::scorer::DirectoryScorer;
 use crate::screening::{ProgressiveConfig, screen_progressive};
+use crate::signature::{DiscoveryReport, MergeIndex, discover};
 use crate::stats::{ActivationStats, ensure_activation_stats};
 use crate::sweep::{CandidateKind, SampledWinner, Sweep, SweepCandidate, draw_seed, propose};
 use crate::tags::{CreatureMeta, OckhamProgress};
@@ -680,12 +681,13 @@ fn standing_pool(
     pool: &[BundleMember],
     incumbent: &CreatureExport,
     stats: &ActivationStats,
+    merges: &MergeIndex,
 ) -> Vec<BundleMember> {
     if pool.is_empty() {
         return Vec::new();
     }
     let uuids: Vec<String> = pool.iter().map(|m| m.uuid.clone()).collect();
-    let (applied, _) = apply_available(incumbent, stats, &uuids);
+    let (applied, _) = apply_available(incumbent, stats, merges, &uuids);
     let kept: HashSet<&str> = applied.iter().map(String::as_str).collect();
     pool.iter()
         .filter(|m| kept.contains(m.uuid.as_str()))
@@ -744,6 +746,50 @@ fn update_pool(
     }
 }
 
+/// Discover correlated-neuron merge proposals for the creature in hand (#109).
+///
+/// Empty — and free — when `--merge-correlation` is absent, which is the
+/// control every earlier issue ran. What the pass cost and found is logged
+/// rather than assumed, including the buckets it declined to finish: a bounded
+/// sweep reported as a complete one is how a partial search comes to read as
+/// proof that nothing was there.
+fn build_merge_index(config: &OckhamConfig, activation: &ActivationStats) -> MergeIndex {
+    let Some(cfg) = config.merge_discovery() else {
+        return MergeIndex::default();
+    };
+    let index = discover(activation, cfg);
+    let DiscoveryReport {
+        signed,
+        unsignable,
+        compared_pairs,
+        correlated_pairs,
+        proposals,
+        band_bits,
+        truncated_buckets,
+        dropped_members,
+        discovery_ms,
+        ..
+    } = index.report();
+    log::info(&format!(
+        "merge discovery: {proposals} proposal(s) from {signed} signed neuron(s); \
+         {compared_pairs} pair(s) compared, {correlated_pairs} above |r|>={} \
+         (bands of {band_bits} bits, {discovery_ms}ms)",
+        cfg.min_correlation
+    ));
+    if unsignable > 0 {
+        log::detail(&format!(
+            "merge discovery: {unsignable} neuron(s) had no usable probe vector"
+        ));
+    }
+    if truncated_buckets > 0 {
+        log::detail(&format!(
+            "merge discovery: {truncated_buckets} bucket(s) truncated; \
+             {dropped_members} member(s) were not compared"
+        ));
+    }
+    index
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ockham_loop(
     config: &OckhamConfig,
@@ -770,6 +816,8 @@ fn ockham_loop(
         config.timeout.as_secs(),
         config.candidates
     ));
+
+    let mut merges = build_merge_index(config, &activation);
 
     let replay_cfg = ReplayConfig {
         max: config.learnings_replay,
@@ -1114,7 +1162,14 @@ fn ockham_loop(
                 replay_done = true;
                 continue;
             }
-            let (applied, _) = apply_available(&incumbent.creature, &activation, &wins);
+            // A replayed verdict is rebuilt as the transform it was judged as
+            // (#109): only the uuids the cache recorded as merges may re-derive
+            // a merge here, or an accepted ablation would come back as a
+            // different cut wearing the winner's uuid.
+            let replay_merges =
+                merges.restricted_to(&crate::learnings::merge_wins(&known, &incumbent.creature));
+            let (applied, _) =
+                apply_available(&incumbent.creature, &activation, &replay_merges, &wins);
             for u in &wins {
                 if !applied.iter().any(|a| a == u) {
                     replay_skipped.insert(u.clone());
@@ -1138,15 +1193,21 @@ fn ockham_loop(
                 ));
             }
             let sampled: Vec<SampledWinner> = if plans.is_empty() && !applied.is_empty() {
-                match propose(&incumbent.creature, &activation, &applied[0]) {
-                    Ok((kind, creature)) => vec![SampledWinner {
+                match propose(
+                    &incumbent.creature,
+                    &activation,
+                    &replay_merges,
+                    &applied[0],
+                ) {
+                    Ok(proposed) => vec![SampledWinner {
                         candidate: SweepCandidate {
                             members: vec![applied[0].clone()],
                             uuid: applied[0].clone(),
                             permutation_index: 0,
-                            kind,
+                            kind: proposed.kind,
+                            merged_with: proposed.merged_with,
                             stem: "r000".into(),
-                            creature,
+                            creature: proposed.creature,
                         },
                         score: 0.0,
                         baseline_score: 0.0,
@@ -1191,6 +1252,7 @@ fn ockham_loop(
                     max_individuals: None,
                     pool: &[],
                     max_entries: None,
+                    merges: &merges,
                 },
             ) {
                 Ok(full) => {
@@ -1204,15 +1266,16 @@ fn ockham_loop(
                         ));
                         let mut probe = Vec::new();
                         for uuid in applied.iter().take(probe_n) {
-                            match propose(&incumbent.creature, &activation, uuid) {
-                                Ok((kind, creature)) => probe.push(SampledWinner {
+                            match propose(&incumbent.creature, &activation, &merges, uuid) {
+                                Ok(proposed) => probe.push(SampledWinner {
                                     candidate: SweepCandidate {
                                         members: vec![uuid.clone()],
                                         uuid: uuid.clone(),
                                         permutation_index: 0,
-                                        kind,
+                                        kind: proposed.kind,
+                                        merged_with: proposed.merged_with,
                                         stem: "r000".into(),
-                                        creature,
+                                        creature: proposed.creature,
                                     },
                                     score: 0.0,
                                     baseline_score: 0.0,
@@ -1244,6 +1307,7 @@ fn ockham_loop(
                                 max_individuals: None,
                                 pool: &[],
                                 max_entries: None,
+                                merges: &merges,
                             },
                         ) {
                             Ok(probe_full) => {
@@ -1264,6 +1328,7 @@ fn ockham_loop(
                                         &mut meta,
                                         &mut incumbent,
                                         &mut activation,
+                                        &mut merges,
                                         &mut accepts,
                                         experiments,
                                         opening_score,
@@ -1277,6 +1342,7 @@ fn ockham_loop(
                                     if !open_coverage_tail(
                                         &incumbent,
                                         &activation,
+                                        &merges,
                                         seed.wrapping_add(accepts).wrapping_add(restarts),
                                         ordering,
                                         unchecked_first,
@@ -1316,6 +1382,7 @@ fn ockham_loop(
                             &mut meta,
                             &mut incumbent,
                             &mut activation,
+                            &mut merges,
                             &mut accepts,
                             experiments,
                             opening_score,
@@ -1329,6 +1396,7 @@ fn ockham_loop(
                         if !open_coverage_tail(
                             &incumbent,
                             &activation,
+                            &merges,
                             seed.wrapping_add(accepts).wrapping_add(restarts),
                             ordering,
                             unchecked_first,
@@ -1427,8 +1495,13 @@ fn ockham_loop(
         }
         // Tagged neurons are candidates like any other (#63); `meta.neuron_tags`
         // is still read below for the informational coverage count.
-        let (mut candidates, skips) =
-            sweep.fill_batch_avoiding(&incumbent.creature, &activation, config.candidates, &avoid);
+        let (mut candidates, skips) = sweep.fill_batch_avoiding(
+            &incumbent.creature,
+            &activation,
+            &merges,
+            config.candidates,
+            &avoid,
+        );
         pass_candidates += candidates.len();
         // Structural neighbourhood proposals ride the same batch (Issue #108):
         // a chain or a low-fan-out branch that no single-neuron cut can expose,
@@ -1748,7 +1821,7 @@ fn ockham_loop(
         // scored *individually* and never which combinations are tried
         // (Issue #54). Confirmed winners from earlier batches join for bundle
         // membership only — they already have a verdict (Issue #56).
-        pool = standing_pool(&pool, &incumbent.creature, &activation);
+        pool = standing_pool(&pool, &incumbent.creature, &activation, &merges);
         log::detail(&full_scoring_line(
             config.max_full,
             sampled.len(),
@@ -1787,6 +1860,7 @@ fn ockham_loop(
                 max_individuals: config.max_full,
                 pool: &pool,
                 max_entries,
+                merges: &merges,
             },
         ) {
             Ok(full) => {
@@ -1845,6 +1919,7 @@ fn ockham_loop(
                         &mut meta,
                         &mut incumbent,
                         &mut activation,
+                        &mut merges,
                         &mut accepts,
                         experiments,
                         opening_score,
@@ -1857,6 +1932,7 @@ fn ockham_loop(
                     restart_after_accept(
                         &incumbent,
                         &activation,
+                        &merges,
                         seed.wrapping_add(accepts).wrapping_add(restarts),
                         ordering,
                         unchecked_first,
@@ -2081,6 +2157,7 @@ fn ockham_loop(
 fn open_coverage_tail(
     incumbent: &Incumbent,
     activation: &ActivationStats,
+    merges: &MergeIndex,
     seed: u64,
     ordering: crate::ordering::OrderingConfig<'_>,
     unchecked_first: bool,
@@ -2101,6 +2178,7 @@ fn open_coverage_tail(
     restart_after_accept(
         incumbent,
         activation,
+        merges,
         seed,
         ordering,
         unchecked_first,
@@ -2128,6 +2206,7 @@ fn open_coverage_tail(
 fn restart_after_accept(
     incumbent: &Incumbent,
     activation: &ActivationStats,
+    merges: &MergeIndex,
     seed: u64,
     ordering: crate::ordering::OrderingConfig<'_>,
     unchecked_first: bool,
@@ -2147,7 +2226,7 @@ fn restart_after_accept(
         prior,
     );
     *pass_candidates = 0;
-    *pool = standing_pool(pool, &incumbent.creature, activation);
+    *pool = standing_pool(pool, &incumbent.creature, activation, merges);
 }
 
 /// Build a sweep over the current incumbent, unchecked-first when enabled.
@@ -2560,6 +2639,7 @@ fn apply_local_win(
     meta: &mut CreatureMeta,
     incumbent: &mut Incumbent,
     activation: &mut ActivationStats,
+    merges: &mut MergeIndex,
     accepts: &mut u64,
     experiments: u64,
     opening_score: f64,
@@ -2652,6 +2732,10 @@ fn apply_local_win(
         crate::stats::DEFAULT_CHUNK_RECORDS,
         &config.stats_sample_spec(),
     )?;
+    // The creature moved, so the signatures measured against the old one no
+    // longer describe it. Rediscovering here is what stops a stale proposal
+    // naming a survivor the accept has already removed (#109).
+    *merges = build_merge_index(config, activation);
     Ok(stamped)
 }
 
@@ -5501,6 +5585,7 @@ mod tests {
             stopped_early: false,
             scan_ms: 0,
             from_cache: false,
+            probes: Vec::new(),
             neurons: creature
                 .neurons
                 .iter()
@@ -5530,13 +5615,13 @@ mod tests {
             member("gone", 9e-6),
             member("h_b", 1e-6),
         ];
-        let standing = standing_pool(&pool, &creature, &stats);
+        let standing = standing_pool(&pool, &creature, &stats, MergeIndex::empty());
         assert_eq!(
             standing.iter().map(|m| m.uuid.as_str()).collect::<Vec<_>>(),
             vec!["h_a", "h_b"],
             "a stale cut leaves rather than voiding every plan it joins"
         );
-        assert!(standing_pool(&[], &creature, &stats).is_empty());
+        assert!(standing_pool(&[], &creature, &stats, MergeIndex::empty()).is_empty());
     }
 
     /// Build a `FullOutcome` whose individuals carry the given deltas.

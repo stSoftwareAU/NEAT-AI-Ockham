@@ -18,6 +18,7 @@ use serde::Serialize;
 use crate::ablation::StructureSnapshot;
 use crate::incumbent::{sha256_hex, validate_creature};
 use crate::scorer::{DirectoryScorer, ScoreResult, ScorerMode};
+use crate::signature::MergeIndex;
 use crate::stats::ActivationStats;
 use crate::sweep::{CandidateKind, SampledWinner, SweepCandidate, propose, propose_group};
 
@@ -156,6 +157,11 @@ pub struct FullConfig<'a> {
     pub pool: &'a [BundleMember],
     /// Cap on entries actually scored, to fit the wall clock (Issue #58).
     pub max_entries: Option<usize>,
+    /// Merge proposals the bundles re-propose members with (Issue #109).
+    ///
+    /// Empty for a run with correlated-neuron merging off, which is exactly the
+    /// behaviour every earlier issue had.
+    pub merges: &'a MergeIndex,
 }
 
 impl<'a> FullConfig<'a> {
@@ -170,6 +176,7 @@ impl<'a> FullConfig<'a> {
             max_individuals: None,
             pool: &[],
             max_entries: None,
+            merges: MergeIndex::empty(),
         }
     }
 }
@@ -302,9 +309,15 @@ pub fn bundle_plans(members: &[BundleMember]) -> BundlePlans {
 }
 
 /// Apply `uuids` in order on a clone of `incumbent`, with cleanup after each.
+///
+/// `merges` is the run's own merge index (#109). It is threaded through rather
+/// than defaulted so a bundle re-proposes each cut the way the sweep proposed
+/// it: a member that won as a merge and is rebuilt here as an ablation would be
+/// a different cut wearing the winner's uuid.
 pub fn apply_bundle(
     incumbent: &CreatureExport,
     stats: &ActivationStats,
+    merges: &MergeIndex,
     uuids: &[String],
 ) -> Result<CreatureExport, String> {
     let mut current = incumbent.clone();
@@ -312,8 +325,9 @@ pub fn apply_bundle(
         if current.neurons.iter().all(|n| n.uuid != *uuid) {
             return Err(format!("bundle: `{uuid}` already gone after a prior step"));
         }
-        let (_, next) = propose(&current, stats, uuid).map_err(|blocked| blocked.to_string())?;
-        current = next;
+        let proposed =
+            propose(&current, stats, merges, uuid).map_err(|blocked| blocked.to_string())?;
+        current = proposed.creature;
     }
     validate_creature(&current).map_err(|e| e.to_string())?;
     Ok(current)
@@ -325,6 +339,7 @@ pub fn apply_bundle(
 pub fn apply_available(
     incumbent: &CreatureExport,
     stats: &ActivationStats,
+    merges: &MergeIndex,
     uuids: &[String],
 ) -> (Vec<String>, CreatureExport) {
     let mut current = incumbent.clone();
@@ -333,9 +348,9 @@ pub fn apply_available(
         if current.neurons.iter().all(|n| n.uuid != *uuid) {
             continue;
         }
-        match propose(&current, stats, uuid) {
-            Ok((_, next)) => {
-                current = next;
+        match propose(&current, stats, merges, uuid) {
+            Ok(proposed) => {
+                current = proposed.creature;
                 applied.push(uuid.clone());
             }
             Err(_) => continue,
@@ -498,7 +513,7 @@ pub fn evaluate_full(
         let (kind, plan, built) = match entry {
             Entry::Individual(_) => continue,
             Entry::Bundle(plan) => {
-                let built = apply_bundle(incumbent, stats, &plan);
+                let built = apply_bundle(incumbent, stats, cfg.merges, &plan);
                 ("bundle", plan, built)
             }
             // Rebuilt with the group transform the neighbourhood was cut by,
@@ -703,6 +718,7 @@ mod tests {
             stopped_early: false,
             scan_ms: 0,
             from_cache: false,
+            probes: Vec::new(),
             neurons: creature
                 .neurons
                 .iter()
@@ -971,8 +987,12 @@ mod tests {
             .iter()
             .filter(|n| n.neuron_type == "hidden")
             .count();
-        let (applied, creature) =
-            apply_available(&incumbent, &stats, &["nope".into(), "h1".into()]);
+        let (applied, creature) = apply_available(
+            &incumbent,
+            &stats,
+            MergeIndex::empty(),
+            &["nope".into(), "h1".into()],
+        );
         assert_eq!(applied, vec!["h1".to_string()]);
         let after = creature
             .neurons

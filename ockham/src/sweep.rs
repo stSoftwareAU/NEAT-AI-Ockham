@@ -2,10 +2,12 @@
 //!
 //! Hidden-neuron UUIDs are ordered once from a recorded seed and named
 //! [`crate::ordering::Ordering`] and visited **without replacement**. Each visit
-//! tries an exact IDENTITY collapse, then a mean-activation ablation, then a
-//! constant substitution ([`crate::substitute`], Issue #103) for the structure
-//! the ablation fails closed on. Attempts that produce nothing are skipped with
-//! a [`crate::blocked::BlockedReason`] and the batch is refilled while unvisited
+//! tries an exact IDENTITY collapse, then a correlated-neuron merge
+//! ([`crate::merge`], Issue #109) when discovery proposed a partner, then a
+//! mean-activation ablation, then a constant substitution
+//! ([`crate::substitute`], Issue #103) for the structure the ablation fails
+//! closed on. Attempts that produce nothing are skipped with a
+//! [`crate::blocked::BlockedReason`] and the batch is refilled while unvisited
 //! neurons remain.
 //!
 //! An ordering only changes *when* a neuron is tested (Issue #11). Every
@@ -17,6 +19,7 @@
 //! authoritative promotion; they never become `best.json` here.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -27,8 +30,10 @@ use crate::ablation::{GroupMember, ablate_group, ablate_mean};
 use crate::blocked::BlockedReason;
 use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
 use crate::incumbent::sha256_hex;
+use crate::merge::{MergeSkip, merge_correlated};
 use crate::ordering::{Ordering, OrderingConfig, hidden_order};
 use crate::scorer::{DirectoryScorer, ScorerMode};
+use crate::signature::MergeIndex;
 use crate::stats::ActivationStats;
 use crate::substitute::substitute_constant;
 
@@ -60,6 +65,11 @@ pub enum CandidateKind {
     /// structure is only removable as a group. Screened and scored exactly like
     /// any other candidate.
     Group,
+    /// Correlated-neuron merge (#109).
+    ///
+    /// Two hidden neurons behaved almost identically, so one of them goes and
+    /// the other absorbs its downstream contribution.
+    Merge,
 }
 
 /// One valid pruning candidate produced by the sweep.
@@ -79,6 +89,13 @@ pub struct SweepCandidate {
     pub permutation_index: usize,
     /// How the candidate was built.
     pub kind: CandidateKind,
+    /// Survivor that absorbed this neuron, for a [`CandidateKind::Merge`] (#109).
+    ///
+    /// Provenance, not decoration: a merge is the only candidate whose meaning
+    /// depends on a *second* neuron, so the pair is what a learnings entry, a
+    /// replay or a Rebase check-in has to carry to say what was tried.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_with: Option<String>,
     /// Cohort file stem (`c000`, …).
     pub stem: String,
     /// Candidate creature.
@@ -295,16 +312,20 @@ impl Sweep {
     }
 
     /// Build up to `size` valid candidates, refilling past skips.
+    ///
+    /// The merge-free control: correlated-neuron merging (#109) proposes
+    /// nothing here. Use [`Self::fill_batch_avoiding`] with a populated
+    /// [`MergeIndex`] to include it.
     pub fn fill_batch(
         &mut self,
         incumbent: &CreatureExport,
         stats: &ActivationStats,
         size: usize,
     ) -> (Vec<SweepCandidate>, Vec<SweepSkip>) {
-        self.fill_batch_avoiding(incumbent, stats, size, &HashSet::new())
+        self.fill_batch_avoiding(incumbent, stats, MergeIndex::empty(), size, &HashSet::new())
     }
 
-    /// [`Self::fill_batch`] that skips UUIDs in `avoid` (fresh known failures).
+    /// [`Self::fill_batch`] with merge proposals, skipping UUIDs in `avoid`.
     ///
     /// Tags confer no exemption (#63): every hidden neuron is a candidate,
     /// tagged or not, and the only skips are known failures plus the reasons
@@ -313,6 +334,7 @@ impl Sweep {
         &mut self,
         incumbent: &CreatureExport,
         stats: &ActivationStats,
+        merges: &MergeIndex,
         size: usize,
         avoid: &HashSet<String>,
     ) -> (Vec<SweepCandidate>, Vec<SweepSkip>) {
@@ -331,16 +353,17 @@ impl Sweep {
                 });
                 continue;
             }
-            match propose(incumbent, stats, &uuid) {
-                Ok((kind, creature)) => {
+            match propose(incumbent, stats, merges, &uuid) {
+                Ok(proposed) => {
                     let stem = format!("c{:03}", candidates.len());
                     candidates.push(SweepCandidate {
                         members: vec![uuid.clone()],
                         uuid,
                         permutation_index,
-                        kind,
+                        kind: proposed.kind,
+                        merged_with: proposed.merged_with,
                         stem,
-                        creature,
+                        creature: proposed.creature,
                     });
                 }
                 Err(blocked) => skips.push(SweepSkip {
@@ -367,17 +390,117 @@ pub(crate) fn is_identity(creature: &CreatureExport, uuid: &str) -> bool {
     })
 }
 
+/// One candidate the sweep built, and what built it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Proposed {
+    /// How the candidate was built.
+    pub kind: CandidateKind,
+    /// Survivor for a [`CandidateKind::Merge`]; `None` for every other kind.
+    pub merged_with: Option<String>,
+    /// Validated candidate creature.
+    pub creature: CreatureExport,
+}
+
+impl Proposed {
+    fn of(kind: CandidateKind, creature: CreatureExport) -> Self {
+        Self {
+            kind,
+            merged_with: None,
+            creature,
+        }
+    }
+}
+
+/// The first merge proposal for `uuid` that builds a valid candidate (#109).
+///
+/// Proposals arrive strongest-correlation first, and most of a forest-heavy
+/// creature's pairs are structurally unmergeable, so the strongest partner is
+/// tried first and the rest are fallbacks rather than a search.
+fn propose_merge(
+    incumbent: &CreatureExport,
+    merges: &MergeIndex,
+    uuid: &str,
+) -> Result<Proposed, Option<MergeRefusal>> {
+    let mut refusal: Option<MergeRefusal> = None;
+    for proposal in merges.for_removed(uuid) {
+        match merge_correlated(incumbent, &proposal.survivor_uuid, uuid, proposal.relation) {
+            Ok(merge) => {
+                return Ok(Proposed {
+                    kind: CandidateKind::Merge,
+                    merged_with: Some(proposal.survivor_uuid.clone()),
+                    creature: merge.creature,
+                });
+            }
+            // Kept, not dropped: a run where every merge proposal fails on the
+            // same structure must be able to say so rather than reporting only
+            // whatever the fallback path went on to complain about. The
+            // strongest partner's reason is the one named; the weaker partners
+            // are counted, so a reader can tell one refusal from twenty.
+            Err(skip) => match &mut refusal {
+                None => {
+                    refusal = Some(MergeRefusal {
+                        first: skip,
+                        others: 0,
+                    });
+                }
+                Some(seen) => seen.others += 1,
+            },
+        };
+    }
+    Err(refusal)
+}
+
+/// Why every merge proposal for one visited neuron was refused (#109).
+///
+/// `first` is the strongest-correlation partner's reason — the one an operator
+/// would act on — and `others` counts the weaker partners refused behind it, so
+/// the report distinguishes a single unmergeable pair from a neuron nothing
+/// will merge with.
+struct MergeRefusal {
+    first: MergeSkip,
+    others: usize,
+}
+
+impl fmt::Display for MergeRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.others {
+            0 => write!(f, "{}", self.first),
+            n => write!(f, "{} (and {n} weaker partner(s) refused)", self.first),
+        }
+    }
+}
+
+/// Append the merge refusal to `blocked`, when discovery proposed one at all.
+///
+/// The fallback path's own reason still classifies the visit — it is the one
+/// that actually stopped the razor — but the merge attempt is named beside it
+/// so a merge-enabled run can see why its proposals went nowhere.
+fn with_merge_detail(mut blocked: Blocked, merge: Option<MergeRefusal>) -> Blocked {
+    if let Some(refusal) = merge {
+        blocked.detail = format!("{}; merge: {refusal}", blocked.detail);
+    }
+    blocked
+}
+
 pub(crate) fn propose(
     incumbent: &CreatureExport,
     stats: &ActivationStats,
+    merges: &MergeIndex,
     uuid: &str,
-) -> Result<(CandidateKind, CreatureExport), Blocked> {
+) -> Result<Proposed, Blocked> {
     if is_identity(incumbent, uuid) {
         match collapse_identity(incumbent, uuid, CollapseOptions::default()) {
-            Ok(c) => return Ok((CandidateKind::Identity, c.creature)),
+            Ok(c) => return Ok(Proposed::of(CandidateKind::Identity, c.creature)),
             Err(e) => {
                 // Cost-increasing IDENTITY still has an approximate ablation path.
                 if stats.by_uuid(uuid).is_none() {
+                    // A near-duplicate partner is a path that needs no mean of
+                    // this neuron at all, so it is tried before the statistic
+                    // this branch is about to report missing.
+                    let merge = match propose_merge(incumbent, merges, uuid) {
+                        Ok(merged) => return Ok(merged),
+                        Err(skip) => skip,
+                    };
                     // Without a measured mean there is no fallback to take, so
                     // a collapse the razor could otherwise have retried is
                     // blocked on the missing statistic rather than on itself.
@@ -385,19 +508,32 @@ pub(crate) fn propose(
                         CollapseSkip::CostIncrease { .. } => BlockedReason::MissingActivation,
                         ref skip => skip.blocked_reason(),
                     };
-                    return Err(Blocked::new(reason, e.to_string()));
+                    return Err(with_merge_detail(
+                        Blocked::new(reason, e.to_string()),
+                        merge,
+                    ));
                 }
             }
         }
     }
-    let mean = stats.by_uuid(uuid).map(|s| s.mean).ok_or_else(|| {
-        Blocked::new(
-            BlockedReason::MissingActivation,
-            format!("no activation stats for `{uuid}`"),
-        )
-    })?;
+    // A merge removes a whole neuron and compensates through a partner that is
+    // already carrying the same behaviour, so it is tried ahead of folding this
+    // neuron's activation down to its own mean (#109).
+    let merge = match propose_merge(incumbent, merges, uuid) {
+        Ok(merged) => return Ok(merged),
+        Err(skip) => skip,
+    };
+    let Some(mean) = stats.by_uuid(uuid).map(|s| s.mean) else {
+        return Err(with_merge_detail(
+            Blocked::new(
+                BlockedReason::MissingActivation,
+                format!("no activation stats for `{uuid}`"),
+            ),
+            merge,
+        ));
+    };
     let ablation = match ablate_mean(incumbent, uuid, mean, stats.by_uuid(uuid)) {
-        Ok(a) => return Ok((CandidateKind::Ablation, a.creature)),
+        Ok(a) => return Ok(Proposed::of(CandidateKind::Ablation, a.creature)),
         Err(e) => e,
     };
     // The bias fold cannot express an aggregate target or a role-carrying edge,
@@ -405,16 +541,19 @@ pub(crate) fn propose(
     // constant-folding the source can (Issue #103) — and when it cannot either,
     // the reason reported is the one that actually stopped the razor.
     if !ablation.substitution_may_help() {
-        return Err(Blocked::new(
-            ablation.blocked_reason(),
-            ablation.to_string(),
+        return Err(with_merge_detail(
+            Blocked::new(ablation.blocked_reason(), ablation.to_string()),
+            merge,
         ));
     }
     match substitute_constant(incumbent, uuid, mean) {
-        Ok(s) => Ok((CandidateKind::Constant, s.creature)),
-        Err(substitution) => Err(Blocked::new(
-            substitution.blocked_reason(),
-            format!("{ablation}; constant substitution: {substitution}"),
+        Ok(s) => Ok(Proposed::of(CandidateKind::Constant, s.creature)),
+        Err(substitution) => Err(with_merge_detail(
+            Blocked::new(
+                substitution.blocked_reason(),
+                format!("{ablation}; constant substitution: {substitution}"),
+            ),
+            merge,
         )),
     }
 }
@@ -481,6 +620,9 @@ pub struct ScreenedLoser {
     pub uuid: String,
     /// How the candidate was built.
     pub kind: CandidateKind,
+    /// Survivor that absorbed it, for a [`CandidateKind::Merge`] (#109).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_with: Option<String>,
     /// Sampled Δ against the incumbent scored in the same call.
     pub delta: f64,
     /// Ladder stage that ended it; `0` for the fixed-rate control (#104).
@@ -614,6 +756,7 @@ pub fn screen_batch(
             losers.push(ScreenedLoser {
                 uuid: c.uuid,
                 kind: c.kind,
+                merged_with: c.merged_with,
                 delta,
                 stage: 0,
                 reason: ScreenRejection::BelowThreshold,
@@ -675,6 +818,7 @@ mod tests {
             stopped_early: false,
             scan_ms: 0,
             from_cache: false,
+            probes: Vec::new(),
             neurons: creature
                 .neurons
                 .iter()
@@ -1118,7 +1262,8 @@ mod tests {
         let mut sweep = Sweep::new(&creature, 9);
         let blocked = sweep.order[0].clone();
         let avoid = HashSet::from([blocked.clone()]);
-        let (batch, skips) = sweep.fill_batch_avoiding(&creature, &stats, 8, &avoid);
+        let (batch, skips) =
+            sweep.fill_batch_avoiding(&creature, &stats, MergeIndex::empty(), 8, &avoid);
         assert!(batch.iter().all(|c| c.uuid != blocked));
         assert!(
             skips
@@ -1126,6 +1271,134 @@ mod tests {
                 .any(|s| s.uuid == blocked && s.reason == "known-failure"),
             "{skips:?}"
         );
+    }
+
+    /// Two hidden TANH neurons computing exactly the same function, plus one
+    /// that does not. Only the twins are a merge candidate.
+    fn twins_and_a_stranger() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_a", 0.25, Some("TANH")),
+                neuron("hidden", "h_b", 0.25, Some("TANH")),
+                neuron("hidden", "h_odd", -1.0, Some("TANH")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_a", 1.5),
+                synapse("input-0", "h_b", 1.5),
+                synapse("input-0", "h_odd", -0.2),
+                synapse("h_a", "output-0", 2.0),
+                synapse("h_b", "output-0", -0.75),
+                synapse("h_odd", "output-0", 1.0),
+            ],
+        )
+    }
+
+    /// Statistics whose probe vectors make `h_a` and `h_b` exact duplicates.
+    fn twin_stats(creature: &CreatureExport) -> ActivationStats {
+        let twin: Vec<f32> = (0..32).map(|i| ((i % 11) as f32) - 5.0).collect();
+        let odd: Vec<f32> = (0..32).map(|i| ((i % 7) as f32) - 3.0).collect();
+        let mut stats = stats_for(creature);
+        stats.probes = vec![
+            crate::stats::NeuronProbes {
+                uuid: "h_a".into(),
+                values: twin.clone(),
+            },
+            crate::stats::NeuronProbes {
+                uuid: "h_b".into(),
+                values: twin,
+            },
+            crate::stats::NeuronProbes {
+                uuid: "h_odd".into(),
+                values: odd,
+            },
+        ];
+        stats
+    }
+
+    /// Issue #109: a duplicated neuron the activation rankings cannot tell
+    /// apart is proposed as a merge, and the candidate names its survivor.
+    #[test]
+    fn a_correlated_pair_is_proposed_as_a_merge_naming_its_survivor() {
+        let creature = twins_and_a_stranger();
+        validate_creature(&creature).unwrap();
+        let stats = twin_stats(&creature);
+        let merges =
+            crate::signature::discover(&stats, crate::signature::DiscoveryConfig::default());
+        assert!(!merges.is_empty(), "{:?}", merges.report());
+
+        let mut sweep = Sweep::new(&creature, 3);
+        let (batch, skips) =
+            sweep.fill_batch_avoiding(&creature, &stats, &merges, 8, &HashSet::new());
+        assert!(skips.is_empty(), "{skips:?}");
+        let merged: Vec<&SweepCandidate> = batch
+            .iter()
+            .filter(|c| c.kind == CandidateKind::Merge)
+            .collect();
+        assert!(!merged.is_empty(), "no merge proposed: {batch:?}");
+        for c in &merged {
+            let survivor = c
+                .merged_with
+                .as_deref()
+                .expect("a merge names its survivor");
+            assert_ne!(survivor, c.uuid);
+            assert!(["h_a", "h_b"].contains(&survivor), "{survivor}");
+            assert!(c.creature.neurons.iter().all(|n| n.uuid != c.uuid));
+            validate_creature(&c.creature).expect("a merge must not bypass validate()");
+        }
+        // The uncorrelated neuron takes the ordinary path and carries no pair.
+        let odd = batch.iter().find(|c| c.uuid == "h_odd").expect("h_odd");
+        assert_ne!(odd.kind, CandidateKind::Merge);
+        assert!(odd.merged_with.is_none());
+    }
+
+    /// Issue #109: replay rebuilds a recorded verdict as the transform it was
+    /// judged as. An index restricted to the uuids the cache recorded as merges
+    /// re-derives a merge for those and the ordinary transform for the rest,
+    /// so an accepted ablation cannot come back as a merge.
+    #[test]
+    fn a_restricted_index_re_derives_a_merge_only_for_the_uuids_it_names() {
+        let creature = twins_and_a_stranger();
+        let stats = twin_stats(&creature);
+        let merges =
+            crate::signature::discover(&stats, crate::signature::DiscoveryConfig::default());
+        assert!(
+            !merges.for_removed("h_a").is_empty() && !merges.for_removed("h_b").is_empty(),
+            "both directions are proposed before the restriction"
+        );
+
+        let only_b = merges.restricted_to(&HashSet::from(["h_b".to_string()]));
+        assert!(only_b.for_removed("h_a").is_empty());
+        assert_eq!(
+            only_b.report(),
+            merges.report(),
+            "the restriction re-runs no discovery, so its report is unchanged"
+        );
+
+        let as_merge = propose(&creature, &stats, &only_b, "h_b").unwrap();
+        assert_eq!(as_merge.kind, CandidateKind::Merge);
+        assert_eq!(as_merge.merged_with.as_deref(), Some("h_a"));
+
+        let as_before = propose(&creature, &stats, &only_b, "h_a").unwrap();
+        assert_ne!(
+            as_before.kind,
+            CandidateKind::Merge,
+            "a uuid the cache did not record as a merge must not re-derive one"
+        );
+        assert!(as_before.merged_with.is_none());
+    }
+
+    /// The same sweep with no merge index is the control it always was.
+    #[test]
+    fn without_a_merge_index_no_candidate_is_a_merge() {
+        let creature = twins_and_a_stranger();
+        let stats = twin_stats(&creature);
+        let mut sweep = Sweep::new(&creature, 3);
+        let (batch, _) = sweep.fill_batch(&creature, &stats, 8);
+        assert!(batch.iter().all(|c| c.kind != CandidateKind::Merge));
+        assert!(batch.iter().all(|c| c.merged_with.is_none()));
     }
 
     /// `creature` serialised with a GRQ-style tag on every hidden neuron.
@@ -1158,7 +1431,8 @@ mod tests {
         let creature = neat_core::parse_creature_json(&json).unwrap();
         let stats = stats_for(&creature);
         let mut sweep = Sweep::new(&creature, 9);
-        let (batch, skips) = sweep.fill_batch_avoiding(&creature, &stats, 8, &HashSet::new());
+        let (batch, skips) =
+            sweep.fill_batch_avoiding(&creature, &stats, MergeIndex::empty(), 8, &HashSet::new());
         assert!(skips.is_empty(), "a tag must not skip a neuron: {skips:?}");
         let mut proposed: Vec<&str> = batch.iter().map(|c| c.uuid.as_str()).collect();
         proposed.sort_unstable();

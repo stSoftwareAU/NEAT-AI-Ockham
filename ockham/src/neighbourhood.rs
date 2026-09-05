@@ -320,6 +320,7 @@ pub fn group_batch(
                         members: group.members,
                         permutation_index: 0,
                         kind: CandidateKind::Group,
+                        merged_with: None,
                         stem,
                         creature: built.creature,
                     },
@@ -675,6 +676,7 @@ mod tests {
             stopped_early: false,
             scan_ms: 0,
             from_cache: false,
+            probes: Vec::new(),
             neurons: creature
                 .neurons
                 .iter()

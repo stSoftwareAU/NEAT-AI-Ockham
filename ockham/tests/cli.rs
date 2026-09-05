@@ -7,6 +7,7 @@ use std::process::Command;
 use neat_ai_ockham::corpus::write_bin_file;
 use neat_ai_ockham::fixtures::{
     hidden_identity_creature, identity_creature_json, recurrent_flagged_creature_json,
+    wide_creature,
 };
 
 fn bin() -> Command {
@@ -151,6 +152,89 @@ fn stats_sample_records_bounds_the_activation_scan_and_zero_restores_the_full_on
     let full = activation("0");
     assert_eq!(full["recordCount"], 4_000);
     assert_eq!(full["sample"]["maxRecords"], 0);
+}
+
+/// Issue #109: merging is opt-in end to end. Without the flag the run retains
+/// no probe records at all; with it, the scan carries the signatures merge
+/// discovery needs.
+///
+/// The hidden neuron squashes with `TANH` so the exact cleanup pre-pass (#110)
+/// leaves it standing — an `IDENTITY` hidden neuron is collapsed before the
+/// scan runs, and a creature with nothing hidden left probes nothing.
+#[test]
+fn merge_correlation_turns_on_probe_capture_and_nothing_else_does() {
+    let tmp = tempfile::tempdir().unwrap();
+    let creature = tmp.path().join("creature.json");
+    std::fs::write(
+        &creature,
+        neat_core::creature_to_json_pretty(&wide_creature(1, 1, "TANH")).unwrap(),
+    )
+    .unwrap();
+    let train = tmp.path().join("train");
+    std::fs::create_dir(&train).unwrap();
+    write_training(&train, 2_000);
+    let scorer = fake_scorer(
+        tmp.path(),
+        r#"{"baseline":{"score":0.5,"error":0.5,"complexityPenalty":1e-8,"recordCount":2000,"costName":"MSE","timeTaken":0.01}}"#,
+    );
+
+    let activation = |label: &str, extra: &[&str]| -> serde_json::Value {
+        let out = bin()
+            .arg(&creature)
+            .arg(&train)
+            .arg("--output-dir")
+            .arg(tmp.path().join(format!("out-{label}")))
+            .arg("--scorer")
+            .arg(&scorer)
+            .arg("--stats-sample-records")
+            .arg("500")
+            .arg("--timeout-seconds")
+            .arg("1")
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        serde_json::from_str::<serde_json::Value>(&stdout(&out)).expect("json")["activation"]
+            .clone()
+    };
+
+    let control = activation("control", &[]);
+    assert_eq!(control["sample"]["probes"], 0);
+    assert_eq!(
+        control["probes"].as_array().map(Vec::len),
+        Some(0),
+        "a control run must retain no probe records: {control}"
+    );
+
+    let merging = activation(
+        "merging",
+        &["--merge-correlation", "0.99", "--merge-probes", "24"],
+    );
+    assert_eq!(merging["sample"]["probes"], 24);
+    let probes = merging["probes"].as_array().expect("probes array");
+    assert_eq!(probes.len(), 1, "one hidden neuron: {merging}");
+    assert_eq!(probes[0]["uuid"], "h0");
+    assert_eq!(probes[0]["values"].as_array().map(Vec::len), Some(24));
+}
+
+#[test]
+fn an_invalid_merge_correlation_names_the_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let creature = tmp.path().join("creature.json");
+    std::fs::write(&creature, identity_creature_json(1, 1)).unwrap();
+    let out = bin()
+        .arg(&creature)
+        .arg(tmp.path())
+        .arg("--merge-correlation")
+        .arg("1.5")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("--merge-correlation"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]

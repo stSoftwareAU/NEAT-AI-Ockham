@@ -719,6 +719,7 @@ pub fn kind_label(kind: CandidateKind) -> &'static str {
         CandidateKind::Identity => "identity",
         CandidateKind::Ablation => "ablation",
         CandidateKind::Constant => "constant",
+        CandidateKind::Merge => "merge",
         CandidateKind::Group => "group",
     }
 }
@@ -764,6 +765,23 @@ pub fn known_wins(known: &[Learning], creature: &CreatureExport, cfg: ReplayConf
     wins.sort_by_key(|a| std::cmp::Reverse(a.unix_secs));
     wins.into_iter()
         .take(replay_cap(cfg.max))
+        .map(|l| l.uuid.clone())
+        .collect()
+}
+
+/// UUIDs whose latest accepted verdict was a **merge** (#109).
+///
+/// Replay rebuilds a recorded win by re-proposing it from the current
+/// incumbent, and the sweep tries a merge before an ablation. Without this the
+/// merge index would re-derive an accepted `ablation` as a merge whenever the
+/// current signatures happen to offer a partner — a different cut wearing the
+/// winner's uuid. Restricting the index to these uuids keeps every replayed
+/// verdict the transform it was judged as.
+pub fn merge_wins(known: &[Learning], creature: &CreatureExport) -> HashSet<String> {
+    let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
+    latest_by_uuid(known, &present)
+        .into_values()
+        .filter(|l| l.outcome == Outcome::Accepted && l.kind == kind_label(CandidateKind::Merge))
         .map(|l| l.uuid.clone())
         .collect()
 }
@@ -1407,6 +1425,34 @@ mod tests {
         ];
         let wins = known_wins(&known, &c, ReplayConfig::default());
         assert_eq!(wins, vec!["h_a".to_string()]);
+    }
+
+    /// Issue #109: only a uuid the cache recorded as a merge may re-derive one
+    /// at replay. An accepted ablation rebuilt as a merge would be a different
+    /// cut wearing the winner's uuid.
+    #[test]
+    fn only_recorded_merges_are_replayed_as_merges() {
+        let c = two_hidden();
+        let merged = Learning {
+            kind: "merge".into(),
+            ..rec("h_a", Outcome::Accepted, 10)
+        };
+        let known = vec![
+            merged.clone(),
+            rec("h_b", Outcome::Accepted, 20),
+            // A rejected merge is no licence to rebuild one either.
+            Learning {
+                kind: "merge".into(),
+                ..rec("gone", Outcome::Rejected, 30)
+            },
+        ];
+        let merges = merge_wins(&known, &c);
+        assert_eq!(merges, HashSet::from(["h_a".to_string()]));
+
+        // A later ablation verdict supersedes the merge, as for every other
+        // reading of the cache.
+        let superseded = vec![merged, rec("h_a", Outcome::Accepted, 40)];
+        assert!(merge_wins(&superseded, &c).is_empty());
     }
 
     #[test]
