@@ -28,11 +28,9 @@ use crate::promote::{
     evaluate_full, replay_plans,
 };
 use crate::scorer::DirectoryScorer;
+use crate::screening::{ProgressiveConfig, screen_progressive};
 use crate::stats::{ActivationStats, ensure_activation_stats};
-use crate::sweep::{
-    CandidateKind, SampledWinner, ScreenConfig, Sweep, SweepCandidate, draw_seed, propose,
-    screen_batch, screen_dir,
-};
+use crate::sweep::{CandidateKind, SampledWinner, Sweep, SweepCandidate, draw_seed, propose};
 use crate::tags::{CreatureMeta, OckhamProgress};
 use crate::{crate_version, log};
 
@@ -281,12 +279,16 @@ struct CostModel {
     screen_per_creature_ms: Option<f64>,
     baseline_per_creature_ms: Option<f64>,
     sample_rate: Option<f64>,
+    /// What a whole screening batch costs relative to one pass at
+    /// [`Self::sample_rate`] — `1.0` for the fixed-rate control (#104).
+    batch_multiple: f64,
 }
 
 impl CostModel {
-    fn new(sample_rate: Option<f64>) -> Self {
+    fn new(sample_rate: Option<f64>, batch_multiple: f64) -> Self {
         Self {
             sample_rate,
+            batch_multiple,
             ..Self::default()
         }
     }
@@ -311,11 +313,19 @@ impl CostModel {
     /// fraction of the corpus. With screening disabled there is no cheap
     /// check — the batch *is* a full cohort — so the rate is 1. `None` while
     /// nothing at all has been measured.
+    ///
+    /// A progressive ladder runs several rungs per batch, so the estimate is
+    /// scaled by [`Self::batch_multiple`]; without it a ladder batch is priced
+    /// as though only the promotion stage ran, and the screening reserve of #77
+    /// is sized against the wrong number (#104). Both figures the model keeps
+    /// are per creature *at the promotion rate*, so the multiple applies either
+    /// way. It prices the worst case — nothing rejected early — because a
+    /// reserve that only covers the lucky batch is not a reserve.
     fn screen_batch_ms(&self, candidates: usize) -> Option<f64> {
         // The incumbent baseline is scored alongside every batch.
         let creatures = candidates as f64 + 1.0;
         if let Some(per_creature) = self.screen_per_creature_ms {
-            return Some(per_creature * creatures);
+            return Some(per_creature * creatures * self.batch_multiple);
         }
         let full = self
             .full_per_creature_ms
@@ -324,7 +334,7 @@ impl CostModel {
             Some(rate) if rate > 0.0 => rate,
             _ => 1.0,
         };
-        Some(full * rate * creatures)
+        Some(full * rate * creatures * self.batch_multiple)
     }
 
     /// Record one sampled screen: `creatures` includes the incumbent.
@@ -487,6 +497,47 @@ fn full_scoring_line(max_full: Option<usize>, sampled: usize, carried: usize) ->
     }
     format!(
         "full-scoring {sampled} sampled winners individually; bundling all {bundled} ({carried} carried)"
+    )
+}
+
+/// What a whole ladder batch costs relative to one promotion-stage pass (#104).
+///
+/// `1.0` for the fixed-rate control; `0.0025 + 0.01 + 0.05` over `0.05` — 1.25 —
+/// for the documented ladder, the price when nothing is rejected early.
+fn batch_cost_multiple(ladder: &crate::screening::ScreenLadder) -> f64 {
+    let promotion = ladder.promotion_rate();
+    ladder.stages().iter().map(|s| s.rate).sum::<f64>() / promotion
+}
+
+/// The per-stage ladder line for one progressive screen (Issue #104).
+///
+/// The saving is the point, so it is stated rather than left to be derived:
+/// what each rung cost in records and how many candidates it ended.
+fn screen_ladder_line(screen: &crate::screening::ProgressiveScreen, candidates: usize) -> String {
+    let rungs: Vec<String> = screen
+        .stages
+        .iter()
+        .map(|s| {
+            format!(
+                "{:.4}%: {} in, {} rejected, {}ms",
+                s.rate * 100.0,
+                s.entered,
+                s.rejected,
+                s.ms
+            )
+        })
+        .collect();
+    let per_candidate = if candidates == 0 {
+        0
+    } else {
+        screen.records_scored() / candidates as u64
+    };
+    let (clearly_worse, below_threshold) = screen.rejection_tally();
+    format!(
+        "ladder: {} | {} records over {candidates} candidate(s) ({per_candidate}/candidate); \
+         rejected {clearly_worse} clearly-worse, {below_threshold} below-threshold",
+        rungs.join(" -> "),
+        screen.records_scored()
     )
 }
 
@@ -774,7 +825,17 @@ fn ockham_loop(
     // In-run state, deliberately not seeded from the cache: cross-run memory is
     // the learnings store's job (Issues #56, #57).
     let mut pool: Vec<BundleMember> = Vec::new();
-    let mut cost = CostModel::new(config.screen_sample_rate);
+    // Resolved once: the ladder is the same every batch, and an unresolvable
+    // one must stop the run rather than quietly screen at some other rate.
+    let ladder = config.screen_ladder()?;
+    // The promotion stage is the screen's dominant rate, and the ladder's cost
+    // is converted to it, so the cost model has one rate to reason in. The
+    // multiple is what a whole batch costs relative to one promotion-stage
+    // pass, which is what sizes the pre-measurement screening reserve (#104).
+    let mut cost = CostModel::new(
+        ladder.as_ref().map(|l| l.promotion_rate()),
+        ladder.as_ref().map_or(1.0, batch_cost_multiple),
+    );
     // The opening baseline is a real full-corpus score of one creature, so the
     // screening reserve has a measurement to size itself from before the first
     // cohort has run (Issue #77).
@@ -1025,7 +1086,6 @@ fn ockham_loop(
                                     )?);
                                     stop_reason = "replay-accepts".into();
                                     if !open_coverage_tail(
-                                        config,
                                         &incumbent,
                                         &activation,
                                         seed.wrapping_add(accepts).wrapping_add(restarts),
@@ -1035,6 +1095,7 @@ fn ockham_loop(
                                         &prior,
                                         deadline,
                                         store.is_some(),
+                                        ladder.is_some(),
                                         &stop_reason,
                                         &mut sweep,
                                         &mut pool,
@@ -1077,7 +1138,6 @@ fn ockham_loop(
                         )?);
                         stop_reason = "replay-accepts".into();
                         if !open_coverage_tail(
-                            config,
                             &incumbent,
                             &activation,
                             seed.wrapping_add(accepts).wrapping_add(restarts),
@@ -1087,6 +1147,7 @@ fn ockham_loop(
                             &prior,
                             deadline,
                             store.is_some(),
+                            ladder.is_some(),
                             &stop_reason,
                             &mut sweep,
                             &mut pool,
@@ -1232,25 +1293,30 @@ fn ockham_loop(
         }
 
         let batch_size = candidates.len();
-        let sampled = match config.screen_sample_rate {
-            Some(rate) => {
-                match screen_batch(
+        let sampled = match &ladder {
+            Some(ladder) => {
+                match screen_progressive(
                     scorer,
                     &config.training_data,
                     &incumbent.creature,
                     candidates,
-                    ScreenConfig {
-                        sample_rate: rate,
-                        sample_phase: batch_idx,
+                    ProgressiveConfig {
+                        ladder,
                         threshold: config.screen_threshold,
+                        batch: batch_idx,
                         remaining_after: sweep.remaining(),
-                        dir: &screen_dir(workspace, batch_idx),
+                        workspace,
                     },
                 ) {
                     Ok(screen) => {
                         consecutive_fail = 0;
-                        // The incumbent is scored alongside the batch.
-                        cost.observe_screen(screen.screen_ms, batch_size + 1);
+                        // The incumbent is scored alongside every stage, and a
+                        // stage below the promotion rate is a fraction of a
+                        // promotion-rate creature-score (#104).
+                        cost.observe_screen(
+                            screen.screen_ms,
+                            screen.promotion_rate_creatures(ladder),
+                        );
                         log::detail(&format!(
                             "screen: {} winners / {} losers in {}ms",
                             screen.winners.len(),
@@ -1265,6 +1331,30 @@ fn ockham_loop(
                                 ms: screen.screen_ms,
                             },
                         )?;
+                        // The control is fully described by `screen` above; a
+                        // ladder is not, so each rung says what it cost and
+                        // what it ended (#104).
+                        if ladder.is_progressive() {
+                            log::detail(&screen_ladder_line(&screen, batch_size));
+                            for stage in &screen.stages {
+                                journal::append(
+                                    &journal_path,
+                                    &Event::ScreenStage {
+                                        batch: batch_idx,
+                                        stage: stage.stage,
+                                        rate: stage.rate,
+                                        phase: stage.phase,
+                                        entered: stage.entered,
+                                        rejected: stage.rejected,
+                                        promoted: stage.promoted,
+                                        records_scored: stage.records_scored,
+                                        mean_delta: stage.mean_delta,
+                                        ms: stage.ms,
+                                        outcome: stage.outcome.to_string(),
+                                    },
+                                )?;
+                            }
+                        }
                         let mut coverage = visits.clone();
                         // A sampled winner is a lead, and only full scoring
                         // settles it. In a coverage tail nothing will score it,
@@ -1701,7 +1791,6 @@ fn ockham_loop(
 /// because the records would not outlive the run.
 #[allow(clippy::too_many_arguments)]
 fn open_coverage_tail(
-    config: &OckhamConfig,
     incumbent: &Incumbent,
     activation: &ActivationStats,
     seed: u64,
@@ -1711,17 +1800,14 @@ fn open_coverage_tail(
     prior: &PriorHint<'_>,
     deadline: Instant,
     has_store: bool,
+    has_screen: bool,
     reason: &str,
     sweep: &mut Sweep,
     pool: &mut Vec<BundleMember>,
     pass_candidates: &mut usize,
 ) -> bool {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    if incumbent.hidden_neurons() == 0
-        || remaining.is_zero()
-        || !has_store
-        || config.screen_sample_rate.is_none()
-    {
+    if incumbent.hidden_neurons() == 0 || remaining.is_zero() || !has_store || !has_screen {
         return false;
     }
     restart_after_accept(
@@ -4877,7 +4963,7 @@ mod tests {
 
     #[test]
     fn the_cost_estimate_comes_from_observed_full_timings() {
-        let mut cost = CostModel::new(Some(0.01));
+        let mut cost = CostModel::new(Some(0.01), 1.0);
         assert_eq!(cost.per_creature_ms(), None, "nothing measured yet");
         assert_eq!(
             cost.cohort_budget(Duration::from_secs(600)),
@@ -4908,7 +4994,7 @@ mod tests {
 
     #[test]
     fn the_cohort_is_sized_to_the_budget_with_a_check_in_reserve() {
-        let mut cost = CostModel::new(Some(0.01));
+        let mut cost = CostModel::new(Some(0.01), 1.0);
         cost.observe_full(11_000, 10);
         assert_eq!(cost.per_creature_ms(), Some(1_000.0));
         // 100s left, a quarter reserved for applying the win: 75 creatures,
@@ -5334,7 +5420,7 @@ mod tests {
     /// fallback; screening disabled means the batch *is* a cohort.
     #[test]
     fn the_screening_reserve_is_sized_at_one_batch() {
-        let mut cost = CostModel::new(Some(0.05));
+        let mut cost = CostModel::new(Some(0.05), 1.0);
         assert_eq!(cost.screen_batch_ms(99), None, "nothing measured yet");
 
         // The opening baseline: one creature over the full corpus, 200ms.
@@ -5348,12 +5434,44 @@ mod tests {
         cost.observe_screen(1_000, 100);
         assert_eq!(cost.screen_batch_ms(99), Some(10.0 * 100.0));
 
-        let mut off = CostModel::new(None);
+        let mut off = CostModel::new(None, 1.0);
         off.observe_baseline(200);
         assert_eq!(
             off.screen_batch_ms(9),
             Some(200.0 * 10.0),
             "with screening disabled the check is the full cohort itself"
+        );
+    }
+
+    /// Issue #104: a ladder batch runs every rung, so the reserve must price
+    /// every rung — not just the promotion stage it is measured in.
+    #[test]
+    fn the_reserve_prices_every_rung_of_a_ladder() {
+        let ladder = crate::screening::ScreenLadder::parse("0.0025,0.01,0.05", 0.01).unwrap();
+        let multiple = batch_cost_multiple(&ladder);
+        assert!(
+            (multiple - (0.0025 + 0.01 + 0.05) / 0.05).abs() < 1e-12,
+            "multiple={multiple}"
+        );
+        assert_eq!(
+            batch_cost_multiple(&crate::screening::ScreenLadder::single(0.05).unwrap()),
+            1.0,
+            "the control is exactly one pass"
+        );
+
+        let control = {
+            let mut c = CostModel::new(Some(0.05), 1.0);
+            c.observe_baseline(200);
+            c.screen_batch_ms(99).unwrap()
+        };
+        let laddered = {
+            let mut c = CostModel::new(Some(0.05), multiple);
+            c.observe_baseline(200);
+            c.screen_batch_ms(99).unwrap()
+        };
+        assert!(
+            (laddered - control * multiple).abs() < 1e-9,
+            "control={control} laddered={laddered}"
         );
     }
 
@@ -5367,7 +5485,7 @@ mod tests {
             candidates: 99,
             ..config(tmp.path())
         };
-        let mut cost = CostModel::new(Some(0.05));
+        let mut cost = CostModel::new(Some(0.05), 1.0);
         assert!(
             !reserve_stands(&cost, &cfg, Duration::from_millis(10), 0),
             "an unmeasured reserve must never cost replay a cohort"
@@ -5550,5 +5668,144 @@ mod tests {
         let cov = coverage_json(&second.output_dir);
         assert_eq!(cov.checked, 3);
         assert_eq!(cov.unchecked(), 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #104: progressive adaptive screening.
+    // ---------------------------------------------------------------------
+
+    fn ladder_cfg(
+        creature: std::path::PathBuf,
+        train: std::path::PathBuf,
+        out: std::path::PathBuf,
+        stages: Option<&str>,
+    ) -> OckhamConfig {
+        OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: out,
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(4),
+            seed: Some(1),
+            candidates: 2,
+            screen_stages: stages.map(|s| crate::screening::ScreenLadder::parse(s, 0.01).unwrap()),
+            ..OckhamConfig::default()
+        }
+    }
+
+    /// The ladder may only change *when* a candidate is dropped, never what the
+    /// full scorer accepts: same scorer, same seed, same outcome.
+    #[test]
+    fn a_progressive_ladder_accepts_exactly_what_the_fixed_rate_control_accepts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let winning = || ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+
+        let control = ladder_cfg(
+            creature.clone(),
+            train.clone(),
+            tmp.path().join("control"),
+            None,
+        );
+        let control_run = establish_run(&control, &winning()).unwrap();
+
+        let ladder = ladder_cfg(
+            creature,
+            train,
+            tmp.path().join("ladder"),
+            Some("0.0025,0.01,0.05"),
+        );
+        let ladder_run = establish_run(&ladder, &winning()).unwrap();
+
+        assert_eq!(control_run.accepts, ladder_run.accepts);
+        assert_eq!(control_run.stop_reason, ladder_run.stop_reason);
+        assert_eq!(control_run.cumulative_delta, ladder_run.cumulative_delta);
+        assert_eq!(
+            control_run.baseline.score, ladder_run.baseline.score,
+            "the authoritative opening is untouched by how candidates are screened"
+        );
+        assert!(control_run.accepts > 0, "the fixture must accept something");
+    }
+
+    /// The whole claim of #104: an obvious loser is paid for at the smallest
+    /// sample and never reaches the larger ones.
+    #[test]
+    fn an_obvious_loser_stops_at_the_first_rung_of_the_ladder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = ladder_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some("0.0025,0.01,0.05"),
+        );
+        let run = establish_run(&cfg, &losing_scorer()).unwrap();
+        assert_eq!(run.stop_reason, "max-experiments");
+
+        let stages = journal_records(&cfg.output_dir, "screenStage");
+        assert!(!stages.is_empty(), "a progressive run journals its rungs");
+        for stage in &stages {
+            assert_eq!(
+                stage["stage"], 0,
+                "a candidate 70 points behind must never be re-tested at a larger sample: {stage}"
+            );
+            assert_eq!(stage["rate"], 0.0025);
+            assert_eq!(stage["promoted"], 0);
+            assert_eq!(stage["rejected"], stage["entered"]);
+            assert_eq!(stage["outcome"], "carried");
+        }
+        // The batch still counts as screened: coverage is unaffected by which
+        // rung ended the candidate.
+        assert_eq!(run.newly_screened, 2);
+    }
+
+    /// The control's journal must not grow a record per batch it cannot use.
+    #[test]
+    fn the_fixed_rate_control_journals_no_stage_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = ladder_cfg(creature, train, tmp.path().join("out"), None);
+        establish_run(&cfg, &losing_scorer()).unwrap();
+        assert!(journal_records(&cfg.output_dir, "screenStage").is_empty());
+        assert!(!journal_records(&cfg.output_dir, "screen").is_empty());
+    }
+
+    /// A borderline candidate climbs the ladder instead of dying at the bottom.
+    #[test]
+    fn a_borderline_candidate_is_carried_to_the_larger_samples() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = ladder_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some("0.0025,0.01,0.05"),
+        );
+        // A thousandth behind the incumbent — well inside the 0.01 margin.
+        let scorer = ScriptedScorer {
+            baseline_score: 0.80,
+            candidate_score: Some(0.799),
+            ..ScriptedScorer::ok(0.80, 0.20)
+        };
+        establish_run(&cfg, &scorer).unwrap();
+        let stages = journal_records(&cfg.output_dir, "screenStage");
+        let reached: Vec<i64> = stages.iter().filter_map(|s| s["stage"].as_i64()).collect();
+        assert!(
+            reached.contains(&2),
+            "an uncertain candidate must collect more evidence: {stages:?}"
+        );
+        let promotion = stages
+            .iter()
+            .find(|s| s["stage"] == 2)
+            .expect("promotion stage");
+        assert_eq!(promotion["outcome"], "promoted");
+        assert_eq!(
+            promotion["promoted"], 0,
+            "it still loses to `--screen-threshold`, which the ladder never relaxes"
+        );
     }
 }

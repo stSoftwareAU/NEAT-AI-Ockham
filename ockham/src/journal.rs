@@ -81,6 +81,39 @@ pub enum Event {
         /// Screen wall time (ms).
         ms: u64,
     },
+    /// One rung of the progressive screening ladder (Issue #104).
+    ///
+    /// Written per stage, and only when the ladder is progressive: the
+    /// fixed-rate control is fully described by [`Self::Screen`], and a second
+    /// record per batch saying the same thing would inflate every existing
+    /// journal for nothing. What the ladder costs and what it decided cannot be
+    /// read off `screen` alone — the whole claim is that a rejected candidate
+    /// stopped after a small fraction of the corpus, and only `recordsScored`
+    /// can settle that.
+    ScreenStage {
+        /// Batch index (0-based).
+        batch: u64,
+        /// Position in the ladder (0-based).
+        stage: usize,
+        /// Sample rate this stage scored at.
+        rate: f64,
+        /// Deterministic sample phase.
+        phase: u64,
+        /// Candidates that entered the stage.
+        entered: usize,
+        /// Candidates the stage rejected.
+        rejected: usize,
+        /// Candidates carried on, or promoted by the final stage.
+        promoted: usize,
+        /// Records read across the cohort, incumbent included.
+        records_scored: u64,
+        /// Mean sampled Δ over the candidates that entered.
+        mean_delta: f64,
+        /// Scorer wall time (ms).
+        ms: u64,
+        /// What survivors did: `carried` or `promoted`.
+        outcome: String,
+    },
     /// Screen-coverage records filed for one batch (Issue #36).
     ///
     /// A sibling of [`Self::Screen`] rather than a field on it: coverage is

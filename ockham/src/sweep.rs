@@ -405,6 +405,22 @@ pub struct ScreenedLoser {
     pub uuid: String,
     /// How the candidate was built.
     pub kind: CandidateKind,
+    /// Sampled Δ against the incumbent scored in the same call.
+    pub delta: f64,
+    /// Ladder stage that ended it; `0` for the fixed-rate control (#104).
+    pub stage: usize,
+    /// Why it ended (#104).
+    pub reason: ScreenRejection,
+}
+
+/// Why a screened candidate went no further (Issue #104).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScreenRejection {
+    /// The sampled Δ was at or below `-reject_margin` — clearly worse.
+    ClearlyWorse,
+    /// The promotion stage's sampled Δ did not clear `--screen-threshold`.
+    BelowThreshold,
 }
 
 /// Outcome of one sampled screen. Never writes `best.json`.
@@ -421,6 +437,12 @@ pub struct ScreenOutcome {
     pub winners: Vec<SampledWinner>,
     /// Candidates that did not.
     pub losers: Vec<ScreenedLoser>,
+    /// Records the scorer read, summed over the cohort including the incumbent.
+    ///
+    /// The scorer reports records per creature; the cohort cost is that figure
+    /// across every creature it scored, which is what a ladder stage's price
+    /// has to be measured in (#104).
+    pub records_scored: u64,
     /// Wall time of the scorer call (ms).
     pub screen_ms: u64,
     /// Candidates scored per second.
@@ -491,6 +513,11 @@ pub fn screen_batch(
 
     let mut winners = Vec::new();
     let mut losers = Vec::new();
+    // Summed from what each creature's result actually reports, never
+    // extrapolated from the incumbent's: the economics of a ladder rung rest on
+    // this figure, and an assumed record count would be a guess wearing the
+    // costume of a measurement (#104).
+    let mut records_scored = baseline.record_count;
     for c in candidates {
         let result = results.get(&c.stem).ok_or_else(|| {
             format!(
@@ -498,6 +525,7 @@ pub fn screen_batch(
                 c.stem
             )
         })?;
+        records_scored = records_scored.saturating_add(result.record_count);
         let delta = result.score - baseline.score;
         if delta > cfg.threshold {
             winners.push(SampledWinner {
@@ -510,6 +538,9 @@ pub fn screen_batch(
             losers.push(ScreenedLoser {
                 uuid: c.uuid,
                 kind: c.kind,
+                delta,
+                stage: 0,
+                reason: ScreenRejection::BelowThreshold,
             });
         }
     }
@@ -519,6 +550,7 @@ pub fn screen_batch(
         baseline_score: baseline.score,
         winners,
         losers,
+        records_scored,
         screen_ms,
         candidates_per_sec,
         estimated_full_sweep_ms,

@@ -335,3 +335,46 @@ fn a_run_that_screens_nothing_warns_that_it_advanced_no_coverage() {
     let summary: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
     assert_eq!(summary["newlyScreened"], 0, "{summary}");
 }
+
+/// Issue #104: a malformed or contradictory ladder is a configuration fault,
+/// refused with exit 2 before any scorer is spawned — never a silently ignored
+/// flag that leaves the run screening at some other rate.
+#[test]
+fn a_bad_screening_ladder_is_refused_with_exit_two() {
+    let tmp = tempfile::tempdir().unwrap();
+    let creature = tmp.path().join("creature.json");
+    std::fs::write(&creature, identity_creature_json(1, 1)).unwrap();
+    let train = tmp.path().join("train");
+    std::fs::create_dir(&train).unwrap();
+    write_training(&train, 4);
+
+    let refuse = |args: &[&str]| -> String {
+        let out = bin()
+            .arg(&creature)
+            .arg(&train)
+            .arg("--output-dir")
+            .arg(tmp.path().join("out"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        stderr(&out)
+    };
+
+    assert!(refuse(&["--screen-stages", "0.05,0.01"]).contains("ascend"));
+    assert!(refuse(&["--screen-stages", "0.0025:0,0.05"]).contains("more evidence"));
+    assert!(refuse(&["--screen-stages", "0.0025,2.0"]).contains("(0, 1)"));
+    assert!(
+        refuse(&[
+            "--screen-stages",
+            "0.0025,0.05",
+            "--screen-sample-rate",
+            "0"
+        ])
+        .contains("--screen-stages")
+    );
+    // A margin with no ladder to apply it to would otherwise be a silent no-op.
+    assert!(
+        refuse(&["--screen-reject-margin", "0.5"]).contains("--screen-reject-margin has no effect")
+    );
+}

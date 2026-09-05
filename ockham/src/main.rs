@@ -13,6 +13,7 @@ use neat_ai_ockham::config::{
     DEFAULT_ORDERING, DEFAULT_ORDERING_RANDOM_QUOTA, DEFAULT_SCREEN_SAMPLE_RATE,
     DEFAULT_SCREEN_THRESHOLD, DEFAULT_TIMEOUT_SECONDS, OckhamConfig,
 };
+use neat_ai_ockham::screening::{DEFAULT_SCREEN_REJECT_MARGIN, ScreenLadder};
 use neat_ai_ockham::stats::DEFAULT_SAMPLE_RECORDS;
 use neat_ai_ockham::{ExternalScorer, Ordering, establish_run, log};
 
@@ -53,6 +54,15 @@ struct Cli {
     /// Screen sample rate in (0,1); 0 disables the screen.
     #[arg(long, default_value_t = DEFAULT_SCREEN_SAMPLE_RATE)]
     screen_sample_rate: f64,
+    /// Progressive screening ladder: ascending `rate[:margin]` stages, e.g.
+    /// `0.0025:0.02,0.01,0.05`. Omitted: one stage at `--screen-sample-rate`.
+    #[arg(long)]
+    screen_stages: Option<String>,
+    /// Early-rejection margin for a ladder stage that names none: a sampled Δ
+    /// at or below its negation is rejected there instead of re-tested.
+    /// Default 0.01; only meaningful with `--screen-stages`.
+    #[arg(long)]
+    screen_reject_margin: Option<f64>,
     /// Sampled Δscore a candidate must exceed to be promoted.
     #[arg(long, default_value_t = DEFAULT_SCREEN_THRESHOLD)]
     screen_threshold: f64,
@@ -150,6 +160,30 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    // A malformed ladder is a configuration fault, not a quietly ignored flag —
+    // and neither is a margin given with no ladder to apply it to.
+    let screen_stages = match cli.screen_stages.as_deref() {
+        Some(spec) => {
+            let margin = cli
+                .screen_reject_margin
+                .unwrap_or(DEFAULT_SCREEN_REJECT_MARGIN);
+            match ScreenLadder::parse(spec, margin) {
+                Ok(ladder) => Some(ladder),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        None => {
+            if cli.screen_reject_margin.is_some() {
+                eprintln!("--screen-reject-margin has no effect without --screen-stages");
+                return ExitCode::from(2);
+            }
+            None
+        }
+    };
+
     let config = OckhamConfig {
         creature,
         training_data,
@@ -165,6 +199,7 @@ fn main() -> ExitCode {
         } else {
             Some(cli.screen_sample_rate)
         },
+        screen_stages,
         screen_threshold: cli.screen_threshold,
         min_improvement: cli.min_improvement,
         max_consecutive_scorer_failures: cli.max_consecutive_scorer_failures,
