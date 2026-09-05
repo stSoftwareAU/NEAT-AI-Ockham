@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ablation::growth_units;
 use crate::cascade::{CascadeEstimate, CascadeIndex};
+use crate::features::CandidateFeatures;
+use crate::priority::PriorityContext;
 use crate::stats::ActivationStats;
 
 /// Ranking strategy for the pruning sweep.
@@ -58,6 +60,18 @@ pub enum Ordering {
     /// the cascade saving, so a quiet neuron that takes a lot of structure with
     /// it is tried before a loud one that takes little.
     CascadeRiskRatio,
+    /// Highest hand-built expected pruning value first (Issue #107).
+    ///
+    /// Every signal above read together — quietness, downstream sensitivity,
+    /// fan-out, squash, depth, cascade saving and what earlier epochs learnt —
+    /// combined by [`crate::priority`] into
+    /// `P(scorer confirms) × expected saving ÷ expected cost`.
+    Composite,
+    /// [`Ordering::Composite`] with `P` from a fitted model (Issue #107).
+    ///
+    /// Requires `--ordering-model`; the model only ranks, and every candidate
+    /// it promotes still faces the sampled screen and the full-corpus scorer.
+    Learned,
 }
 
 impl Ordering {
@@ -73,6 +87,8 @@ impl Ordering {
         Ordering::IdentityFirst,
         Ordering::CascadeSaving,
         Ordering::CascadeRiskRatio,
+        Ordering::Composite,
+        Ordering::Learned,
     ];
 
     /// Kebab-case name used on the CLI and in the journal.
@@ -88,6 +104,8 @@ impl Ordering {
             Ordering::IdentityFirst => "identity-first",
             Ordering::CascadeSaving => "cascade-saving",
             Ordering::CascadeRiskRatio => "cascade-risk-ratio",
+            Ordering::Composite => "composite",
+            Ordering::Learned => "learned",
         }
     }
 
@@ -97,6 +115,14 @@ impl Ordering {
     /// the strategies that read them.
     fn needs_cascade(self) -> bool {
         matches!(self, Ordering::CascadeSaving | Ordering::CascadeRiskRatio)
+    }
+
+    /// Whether the strategy ranks by a full feature vector (Issue #107).
+    ///
+    /// Extraction indexes the creature once — the same cost the cascade
+    /// strategies pay — so it is done only for the strategies that read it.
+    fn needs_features(self) -> bool {
+        matches!(self, Ordering::Composite | Ordering::Learned)
     }
 
     /// Comma-separated list of every accepted name.
@@ -139,19 +165,35 @@ impl std::str::FromStr for Ordering {
 
 /// Strategy plus the fraction of slots reserved for random exploration.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct OrderingConfig {
+pub struct OrderingConfig<'a> {
     /// Ranking strategy.
     pub strategy: Ordering,
     /// Fraction of visitation slots drawn from the random control, in `[0, 1)`.
     pub random_quota: f64,
+    /// Feature weights, fleet history and the learned model (Issue #107).
+    ///
+    /// `None` is the state of every strategy that ranks on one signal, and of a
+    /// composite run with no learnings cache: the composite weights have
+    /// defaults and the historical terms are simply zero. A `learned` run
+    /// without one is a configuration fault [`Self::validate`] refuses.
+    pub priority: Option<&'a PriorityContext>,
 }
 
-impl OrderingConfig {
-    /// Config for `strategy` with no reserved random quota.
+impl<'a> OrderingConfig<'a> {
+    /// Config for `strategy` with no reserved random quota and no context.
     pub fn new(strategy: Ordering) -> Self {
         Self {
             strategy,
             random_quota: 0.0,
+            priority: None,
+        }
+    }
+
+    /// The same config reading `priority` (Issue #107).
+    pub fn with_priority(self, priority: &'a PriorityContext) -> Self {
+        Self {
+            priority: Some(priority),
+            ..self
         }
     }
 
@@ -159,6 +201,22 @@ impl OrderingConfig {
     pub fn validate(&self) -> Result<(), String> {
         if !(self.random_quota.is_finite() && (0.0..1.0).contains(&self.random_quota)) {
             return Err("--ordering-random-quota must be in [0, 1)".into());
+        }
+        Ok(())
+    }
+
+    /// Refuse a `learned` ranking with no model attached (Issue #107).
+    ///
+    /// Checked once the run has loaded the model, because a model is a file
+    /// rather than a flag value: a run that asked to be ranked by one must stop
+    /// when it is missing rather than quietly ranking by something else.
+    pub fn validate_ranker(&self) -> Result<(), String> {
+        if self.strategy == Ordering::Learned && !self.priority.is_some_and(|p| p.model.is_some()) {
+            return Err(
+                "--ordering learned requires a fitted model; pass --ordering-model <model.json> \
+                 (build one with `neat_ai_ockham train-ordering`)"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -203,12 +261,13 @@ pub fn random_order(creature: &CreatureExport, seed: u64) -> Vec<String> {
 fn rank_key(
     creature: &CreatureExport,
     stats: &ActivationStats,
-    strategy: Ordering,
+    cfg: OrderingConfig<'_>,
     cascade: Option<&HashMap<&str, CascadeEstimate>>,
+    features: Option<&HashMap<String, CandidateFeatures>>,
     uuid: &str,
 ) -> f64 {
     let neuron_stats = stats.by_uuid(uuid);
-    match strategy {
+    match cfg.strategy {
         Ordering::Random => 0.0,
         Ordering::LowVariance => neuron_stats.map_or(f64::INFINITY, |s| s.variance),
         Ordering::LowMeanAbs => neuron_stats.map_or(f64::INFINITY, |s| s.mean_abs),
@@ -250,6 +309,24 @@ fn rank_key(
             }
             _ => f64::INFINITY,
         },
+        // Negated so the largest expected pruning value sorts first. A neuron
+        // the feature pass does not cover ranks last rather than being dropped.
+        Ordering::Composite | Ordering::Learned => {
+            let default_context = PriorityContext::new();
+            let context = cfg.priority.unwrap_or(&default_context);
+            match features.and_then(|f| f.get(uuid)) {
+                Some(f) => {
+                    let value = match cfg.strategy {
+                        Ordering::Learned => context
+                            .learned_value(f)
+                            .unwrap_or_else(|| context.composite_value(f)),
+                        _ => context.composite_value(f),
+                    };
+                    -value
+                }
+                None => f64::INFINITY,
+            }
+        }
     }
 }
 
@@ -318,12 +395,22 @@ fn blend(ranked: Vec<String>, random: &[String], quota: f64) -> Vec<String> {
 pub fn hidden_order(
     creature: &CreatureExport,
     stats: &ActivationStats,
-    cfg: OrderingConfig,
+    cfg: OrderingConfig<'_>,
     seed: u64,
 ) -> Vec<String> {
     let random = random_order(creature, seed);
     if cfg.strategy == Ordering::Random {
         return random;
+    }
+    // A learned run without a model is refused by `OrderingConfig::validate`
+    // before the run starts. Reaching here means a caller skipped that gate, so
+    // say what happened rather than presenting the hand-built ranking as the
+    // learned one that was asked for.
+    if cfg.strategy == Ordering::Learned && !cfg.priority.is_some_and(|p| p.model.is_some()) {
+        crate::log::warn(
+            "ordering `learned` has no fitted model; ranking by `composite` instead — \
+             pass --ordering-model <model.json> to rank by the learned model (#107)",
+        );
     }
     // Topology does not change while the order is built, so the cascade
     // dry-runs are the creature's own index, walked once per hidden neuron
@@ -333,11 +420,28 @@ pub fn hidden_order(
         .needs_cascade()
         .then(|| CascadeIndex::new(creature));
     let cascade = index.as_ref().map(CascadeIndex::hidden_estimates);
+    // The same once-per-sweep contract for the composite feature vectors: one
+    // index of the creature, one entry per hidden neuron (Issue #107).
+    let default_context = PriorityContext::new();
+    let features = cfg.strategy.needs_features().then(|| {
+        crate::features::extract(
+            creature,
+            stats,
+            &cfg.priority.unwrap_or(&default_context).evidence,
+        )
+    });
     let mut keyed: Vec<(f64, String)> = random
         .iter()
         .map(|uuid| {
             (
-                rank_key(creature, stats, cfg.strategy, cascade.as_ref(), uuid),
+                rank_key(
+                    creature,
+                    stats,
+                    cfg,
+                    cascade.as_ref(),
+                    features.as_ref(),
+                    uuid,
+                ),
                 uuid.clone(),
             )
         })
@@ -435,6 +539,7 @@ mod tests {
                     OrderingConfig {
                         strategy: *strategy,
                         random_quota: quota,
+                        priority: None,
                     },
                     3,
                 );
@@ -451,6 +556,7 @@ mod tests {
             let cfg = OrderingConfig {
                 strategy: *strategy,
                 random_quota: 0.3,
+                priority: None,
             };
             let a = hidden_order(&wired(), &stats(), cfg, 99);
             let b = hidden_order(&wired(), &stats(), cfg, 99);
@@ -632,6 +738,172 @@ mod tests {
         }
     }
 
+    /// Composite context whose evidence records `wins` for `uuid`.
+    fn context_with_history(uuid: &str, wins: usize) -> PriorityContext {
+        let mut evidence = crate::features::PriorEvidence::new();
+        for _ in 0..wins {
+            evidence.add(
+                &crate::learnings::Learning {
+                    version: crate::learnings::LEARNINGS_FORMAT_VERSION,
+                    uuid: uuid.into(),
+                    kind: "ablation".into(),
+                    outcome: crate::learnings::Outcome::Accepted,
+                    unix_secs: 1,
+                    host: "h".into(),
+                    full_delta: None,
+                },
+                1e-6,
+            );
+        }
+        PriorityContext::with(evidence, None)
+    }
+
+    #[test]
+    fn composite_visits_the_quiet_cut_that_saves_the_most_structure_first() {
+        // `hub` is the quietest neuron on the largest cascade; `loud` is the
+        // noisiest on the smallest. No single signal says both.
+        let got = cascading_order(Ordering::Composite);
+        assert_eq!(got[0], "hub", "{got:?}");
+        assert_eq!(got[3], "loud", "{got:?}");
+    }
+
+    #[test]
+    fn composite_outranks_the_single_signal_it_replaces() {
+        // `high-growth-saving` reads only the edges touching the neuron, so it
+        // spends its first visit on the noisiest, most heavily weighted neuron
+        // on the creature. The composite reads the same edge count beside the
+        // quietness and the cascade, and leaves that candidate last.
+        let edges = cascading_order(Ordering::HighGrowthSaving);
+        assert_eq!(edges[0], "loud", "{edges:?}");
+        let composite = cascading_order(Ordering::Composite);
+        assert_eq!(composite[3], "loud", "{composite:?}");
+    }
+
+    #[test]
+    fn history_moves_a_candidate_forward_without_removing_any_other() {
+        let creature = cascading();
+        let stats = cascading_stats();
+        let plain = hidden_order(
+            &creature,
+            &stats,
+            OrderingConfig::new(Ordering::Composite),
+            7,
+        );
+        let history = context_with_history("f1", 4);
+        let hinted = hidden_order(
+            &creature,
+            &stats,
+            OrderingConfig::new(Ordering::Composite).with_priority(&history),
+            7,
+        );
+        let position = |order: &[String], uuid: &str| {
+            order.iter().position(|u| u == uuid).expect("still present")
+        };
+        // `f1` and `f2` sit on the same cascade and are equally quiet, so
+        // without history the ranking separates them by a hair — and the epochs
+        // that once removed `f1` are what puts it in front.
+        assert!(
+            position(&plain, "f1") > position(&plain, "f2"),
+            "the fixture must start with f2 ahead: {plain:?}"
+        );
+        assert!(
+            position(&hinted, "f1") < position(&hinted, "f2"),
+            "history must move the uuid earlier: {hinted:?} vs {plain:?}"
+        );
+        let mut sorted = hinted.clone();
+        sorted.sort();
+        assert_eq!(sorted, ["f1", "f2", "hub", "loud"], "{hinted:?}");
+    }
+
+    /// A model fitted to prefer exactly what the hand-built weights avoid.
+    ///
+    /// The rows say a **loud** neuron is the win, so a `learned` order that
+    /// still puts the quiet one first is not reading the model.
+    fn loud_preferring_model() -> crate::model::PriorityModel {
+        let mean_abs = crate::features::FEATURE_NAMES
+            .iter()
+            .position(|n| *n == "logMeanAbs")
+            .expect("schema carries logMeanAbs");
+        let rows: Vec<crate::model::TrainingRow> = (0..40)
+            .map(|i| {
+                let loud = i % 2 == 0;
+                let mut features = vec![0.0; crate::features::FEATURE_NAMES.len()];
+                features[0] = 1.0;
+                features[mean_abs] = if loud { 2.0 } else { 0.01 };
+                crate::model::TrainingRow {
+                    features,
+                    win: loud,
+                }
+            })
+            .collect();
+        crate::model::PriorityModel::fit(&rows, crate::model::TrainingConfig::default())
+            .expect("separable rows fit")
+    }
+
+    #[test]
+    fn a_learned_ordering_ranks_by_its_model_not_the_hand_built_weights() {
+        let context = PriorityContext::with(
+            crate::features::PriorEvidence::new(),
+            Some(loud_preferring_model()),
+        );
+        let learned = hidden_order(
+            &cascading(),
+            &cascading_stats(),
+            OrderingConfig::new(Ordering::Learned).with_priority(&context),
+            7,
+        );
+        assert_eq!(learned[0], "loud", "{learned:?}");
+        // The hand-built composite is unchanged by the model's presence: the
+        // two orderings are independent, which is what makes the comparison a
+        // comparison.
+        let composite = hidden_order(
+            &cascading(),
+            &cascading_stats(),
+            OrderingConfig::new(Ordering::Composite).with_priority(&context),
+            7,
+        );
+        assert_eq!(composite[0], "hub", "{composite:?}");
+    }
+
+    #[test]
+    fn a_learned_ordering_without_a_model_is_refused_before_the_run_starts() {
+        let err = OrderingConfig::new(Ordering::Learned)
+            .validate_ranker()
+            .unwrap_err();
+        assert!(err.contains("--ordering-model"), "{err}");
+        let empty = PriorityContext::new();
+        let err = OrderingConfig::new(Ordering::Learned)
+            .with_priority(&empty)
+            .validate_ranker()
+            .unwrap_err();
+        assert!(err.contains("--ordering-model"), "{err}");
+        let context = PriorityContext::with(
+            crate::features::PriorEvidence::new(),
+            Some(loud_preferring_model()),
+        );
+        assert!(
+            OrderingConfig::new(Ordering::Learned)
+                .with_priority(&context)
+                .validate_ranker()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_neuron_is_visited_last_under_the_composite_not_first() {
+        let creature = cascading();
+        let mut partial = cascading_stats();
+        partial.neurons.retain(|n| n.uuid != "hub");
+        let got = hidden_order(
+            &creature,
+            &partial,
+            OrderingConfig::new(Ordering::Composite),
+            7,
+        );
+        assert_eq!(got.len(), 4, "{got:?}");
+        assert_eq!(got[3], "hub", "{got:?}");
+    }
+
     #[test]
     fn a_neuron_without_statistics_ranks_last_under_the_risk_ratio() {
         let creature = cascading();
@@ -658,6 +930,7 @@ mod tests {
         let cfg = OrderingConfig {
             strategy: Ordering::LowVariance,
             random_quota: 0.9,
+            priority: None,
         };
         let creature = wired();
         let stats = stats();
@@ -701,6 +974,7 @@ mod tests {
         let bad = OrderingConfig {
             strategy: Ordering::LowVariance,
             random_quota: 1.0,
+            priority: None,
         };
         assert!(
             bad.validate()

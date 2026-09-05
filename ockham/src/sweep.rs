@@ -172,7 +172,7 @@ impl Sweep {
         creature: &CreatureExport,
         stats: &ActivationStats,
         seed: u64,
-        cfg: OrderingConfig,
+        cfg: OrderingConfig<'_>,
     ) -> Self {
         let order = hidden_order(creature, stats, cfg, seed);
         let mut ident = format!(
@@ -809,6 +809,7 @@ mod tests {
         let cfg = OrderingConfig {
             strategy: Ordering::LowMeanAbs,
             random_quota: 0.25,
+            priority: None,
         };
         let a = Sweep::with_ordering(&creature, &stats, 17, cfg);
         let b = Sweep::with_ordering(&creature, &stats, 17, cfg);
@@ -861,13 +862,14 @@ mod tests {
         uuids.iter().map(|u| (*u).to_string()).collect()
     }
 
-    fn every_ordering() -> Vec<OrderingConfig> {
+    fn every_ordering() -> Vec<OrderingConfig<'static>> {
         let mut cfgs = Vec::new();
         for strategy in Ordering::ALL {
             for random_quota in [0.0, 0.25, 0.5, 0.9] {
                 cfgs.push(OrderingConfig {
                     strategy: *strategy,
                     random_quota,
+                    priority: None,
                 });
             }
         }
@@ -954,6 +956,7 @@ mod tests {
         let cfg = OrderingConfig {
             strategy: Ordering::LowMeanAbs,
             random_quota: 0.3,
+            priority: None,
         };
         let mut a = Sweep::with_ordering(&creature, &stats, 17, cfg);
         let mut b = Sweep::with_ordering(&creature, &stats, 17, cfg);

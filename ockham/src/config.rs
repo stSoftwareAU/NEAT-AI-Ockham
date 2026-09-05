@@ -72,6 +72,15 @@ pub struct OckhamConfig {
     pub ordering: Ordering,
     /// Fraction of sweep slots reserved for the random control, in `[0, 1)`.
     pub ordering_random_quota: f64,
+    /// Fitted ranking model for `--ordering learned` (issue #107).
+    ///
+    /// Required by that ordering and ignored by every other: a model only ever
+    /// reorders the sweep, and the scorer still settles every candidate.
+    pub ordering_model: Option<PathBuf>,
+    /// Candidate feature/outcome log for offline training (issue #107).
+    ///
+    /// `None` writes nothing, which is what a control run does.
+    pub candidate_log: Option<PathBuf>,
     /// Screen never-checked neurons before re-screening stale ones (issue #38).
     ///
     /// `None` takes the default: on when [`Self::learnings_dir`] is set, off
@@ -110,6 +119,8 @@ impl Default for OckhamConfig {
             learnings_replay: 0,
             ordering: DEFAULT_ORDERING,
             ordering_random_quota: DEFAULT_ORDERING_RANDOM_QUOTA,
+            ordering_model: None,
+            candidate_log: None,
             unchecked_first: None,
             old_corpus_first: None,
             stats_sample_records: DEFAULT_SAMPLE_RECORDS,
@@ -155,6 +166,15 @@ impl OckhamConfig {
             return Err("--max-full must be > 0".into());
         }
         self.ordering_config().validate()?;
+        // The model is a file rather than a flag value, so the path is checked
+        // here and the loaded model is checked again at `--ordering learned`
+        // run start: a run that asked to be ranked by a model must stop when it
+        // is missing, never rank by something else and say nothing.
+        if self.ordering == Ordering::Learned && self.ordering_model.is_none() {
+            return Err("--ordering learned requires --ordering-model <model.json> \
+                 (build one with `neat_ai_ockham train-ordering`)"
+                .into());
+        }
         Ok(())
     }
 
@@ -180,10 +200,11 @@ impl OckhamConfig {
     }
 
     /// Strategy plus reserved random quota for the sweep (issue #11).
-    pub fn ordering_config(&self) -> OrderingConfig {
+    pub fn ordering_config(&self) -> OrderingConfig<'static> {
         OrderingConfig {
             strategy: self.ordering,
             random_quota: self.ordering_random_quota,
+            priority: None,
         }
     }
 
@@ -242,6 +263,8 @@ impl OckhamConfig {
             learnings_replay: self.learnings_replay,
             ordering: self.ordering,
             ordering_random_quota: self.ordering_random_quota,
+            ordering_model: self.ordering_model.clone(),
+            candidate_log: self.candidate_log.clone(),
             unchecked_first: self.unchecked_first_enabled(),
             old_corpus_first: self.old_corpus_first_enabled(),
             stats_sample_records: self.stats_sample_records,
@@ -301,6 +324,10 @@ pub struct ConfigReport {
     pub ordering: Ordering,
     /// Fraction of sweep slots reserved for the random control.
     pub ordering_random_quota: f64,
+    /// Fitted ranking model for `--ordering learned` (issue #107).
+    pub ordering_model: Option<PathBuf>,
+    /// Candidate feature/outcome log for offline training (issue #107).
+    pub candidate_log: Option<PathBuf>,
     /// Resolved unchecked-first selection (defaults to `learnings_dir.is_some()`).
     pub unchecked_first: bool,
     /// Resolved old-corpus-first priority (defaults to `learnings_dir.is_some()`).
@@ -331,6 +358,37 @@ mod tests {
         assert_eq!(c.ordering, Ordering::Random, "random stays the control");
         assert_eq!(c.ordering_random_quota, 0.0);
         assert_eq!(c.report().ordering, Ordering::Random);
+        // Telemetry and the learned ranker are opt-in: a control run writes no
+        // candidate log and loads no model (issue #107).
+        assert!(c.candidate_log.is_none());
+        assert!(c.ordering_model.is_none());
+        assert!(c.report().candidate_log.is_none());
+    }
+
+    #[test]
+    fn a_learned_ordering_without_a_model_names_the_flag() {
+        let bad = OckhamConfig {
+            ordering: Ordering::Learned,
+            ..OckhamConfig::default()
+        };
+        let err = bad.validate().unwrap_err();
+        assert!(err.contains("--ordering-model"), "{err}");
+        let good = OckhamConfig {
+            ordering: Ordering::Learned,
+            ordering_model: Some("model.json".into()),
+            ..OckhamConfig::default()
+        };
+        // The path is accepted here and the file is read at run start, where a
+        // model that will not load stops the run.
+        good.validate().unwrap();
+        assert_eq!(good.report().ordering_model, Some("model.json".into()));
+        // Every other ordering ignores the model entirely.
+        OckhamConfig {
+            ordering: Ordering::Composite,
+            ..OckhamConfig::default()
+        }
+        .validate()
+        .unwrap();
     }
 
     #[test]
