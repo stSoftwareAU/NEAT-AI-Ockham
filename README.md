@@ -364,6 +364,7 @@ Seconds of local work replace minutes of scorer work, and the saving is
 structure the sweep never has to propose. The pass costs roughly one creature
 clone and one validation per `IDENTITY` candidate, so it grows with the
 creature: budget for a few seconds on a large forest, once per run.
+
 ## Correlated-neuron merging
 
 A mature evolved creature accumulates hidden neurons that behave almost
@@ -395,9 +396,12 @@ flowchart LR
 
 1. The scan retains each hidden neuron's post-activation at `--merge-probes`
    deterministically-placed records. The slots are a function of the sampling
-   plan alone, so the same corpus and spec reproduce the same probes — and they
-   sit inside the records the scan is *guaranteed* to visit, so adaptive
-   stopping never shortens the probe set.
+   plan alone, so the same corpus and spec reproduce the same probes, and they
+   are spread over the **whole** sampled plan rather than its opening blocks —
+   a signature is a claim about the corpus, and probes crowded into the first
+   records would call two neurons duplicates on the evidence of the corpus's
+   beginning. A merging run pays for that by holding its adaptive stop until
+   the last slot is captured; a control run keeps the early stop it always had.
 2. Each probe vector reduces to one `u64`: bit `i` is set when the neuron sat at
    or above its own probe mean at probe `i`. Centring on the neuron's own mean
    is what makes the bit comparable across neurons on wildly different scales.
@@ -452,18 +456,22 @@ A merge candidate carries its survivor (`mergedWith`) through screening and into
 the candidate log written by `--candidate-log`, so the audit trail records
 **which pair** was tried rather than only which neuron went. The shared
 learnings cache stores the verdict by uuid and kind, as it does for every other
-transform; the survivor is re-derived from the current signatures at replay,
-which is why the run re-discovers the pairs after every accept — a proposal
+transform, and the survivor is re-derived from the current signatures at replay
+— which is why the run re-discovers the pairs after every accept: a proposal
 naming a survivor the accept already removed would be a stale cut wearing a
 winner's uuid.
 
-Two consequences a reader should know rather than discover. A replayed verdict
-is a **hypothesis** that is re-scored on the full corpus, so re-deriving the
-survivor cannot accept a cut the scorer did not confirm — but it can re-propose
-a *different* pair under the same uuid. And a merge is tried **before** the
-mean-activation ablation for a visited neuron, so a neuron with a valid merge
-candidate spends that visit on the merge; the ablation is offered on a later
-pass.
+Replay is restricted to the kind the verdict was recorded as. Only a uuid the
+cache recorded as a `merge` may re-derive a merge; an accepted `ablation` is
+rebuilt as the ablation it was judged as, even where the current signatures
+would happily offer it a partner. It can still re-propose a *different* pair
+under a uuid that did win as a merge — that is a hypothesis, and it is
+re-scored on the full corpus like every other replayed cut.
+
+One consequence a reader should know rather than discover: a merge is tried
+**before** the mean-activation ablation for a visited neuron, so a neuron with a
+valid merge candidate spends that visit on the merge; the ablation is offered on
+a later pass.
 
 The threshold only ever **generates** proposals. Every merge candidate faces
 `creature.validate()`, the sampled screen and the authoritative full scorer like
@@ -489,7 +497,11 @@ its outputs — screened on a subset of the probes, confirmed on all of them. On
 
 Every confirmed cut is a planted duplicate — all forty pairs — and the
 mean-activation control confirms none of them: the neurons are all busy, which
-is exactly the blind spot this transform exists to cover. `neurons` and
+is exactly the blind spot this transform exists to cover. On this synthetic
+corpus the 16-probe screen and the 64-probe judge agree exactly, so the survival
+rate is a floor rather than a measurement of what a screen throws away; a
+proposal the transform refuses is printed by reason under the table rather than
+left as an unexplained gap between `proposals` and `candidates`. `neurons` and
 `synapses` count each pair **once**: both survivor directions confirm, but only
 one neuron of the two was ever redundant. Nine per cent of the proposals
 surviving is the cost side of the same measurement — a `0.98` threshold on 64

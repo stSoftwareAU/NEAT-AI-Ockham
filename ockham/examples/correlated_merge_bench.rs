@@ -192,6 +192,8 @@ fn measured_stats(creature: &CreatureExport, probes: &[Vec<f32>]) -> ActivationS
 struct Tally {
     proposals: usize,
     candidates: usize,
+    /// Proposals the transform refused, by reason — never dropped in silence.
+    refused: std::collections::BTreeMap<String, usize>,
     screened: usize,
     confirmed: usize,
     neurons_removed: usize,
@@ -236,6 +238,17 @@ impl Tally {
             self.neurons_removed,
             self.synapses_removed,
         );
+        // A proposal the transform refused is why `candidates` is below
+        // `proposals`; printing the reasons is the difference between a
+        // measured gap and an unexplained one.
+        if !self.refused.is_empty() {
+            let by_reason: Vec<String> = self
+                .refused
+                .iter()
+                .map(|(reason, n)| format!("{reason} {n}"))
+                .collect();
+            println!("    {label} refused {}", by_reason.join(", "));
+        }
     }
 }
 
@@ -290,13 +303,20 @@ fn main() {
     let mut ablation = Tally::default();
     let judging = Instant::now();
     for proposal in index.proposals() {
-        let Ok(built) = merge_correlated(
+        let built = match merge_correlated(
             &incumbent,
             &proposal.survivor_uuid,
             &proposal.removed_uuid,
             proposal.relation,
-        ) else {
-            continue;
+        ) {
+            Ok(built) => built,
+            Err(skip) => {
+                *merge
+                    .refused
+                    .entry(skip.blocked_reason().code().into())
+                    .or_default() += 1;
+                continue;
+            }
         };
         merge.candidates += 1;
         let after = outputs(&built.creature, &probes);
@@ -329,8 +349,15 @@ fn main() {
             .probes_of(uuid)
             .map(|v| f64::from(v.iter().sum::<f32>()) / v.len() as f64)
             .unwrap_or(0.0);
-        let Ok(built) = ablate_mean(&incumbent, uuid, mean, None) else {
-            continue;
+        let built = match ablate_mean(&incumbent, uuid, mean, None) {
+            Ok(built) => built,
+            Err(blocked) => {
+                *ablation
+                    .refused
+                    .entry(blocked.blocked_reason().code().into())
+                    .or_default() += 1;
+                continue;
+            }
         };
         ablation.candidates += 1;
         let after = outputs(&built.creature, &probes);

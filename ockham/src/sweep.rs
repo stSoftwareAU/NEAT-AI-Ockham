@@ -19,6 +19,7 @@
 //! authoritative promotion; they never become `best.json` here.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -419,8 +420,8 @@ fn propose_merge(
     incumbent: &CreatureExport,
     merges: &MergeIndex,
     uuid: &str,
-) -> Result<Proposed, Option<MergeSkip>> {
-    let mut first: Option<MergeSkip> = None;
+) -> Result<Proposed, Option<MergeRefusal>> {
+    let mut refusal: Option<MergeRefusal> = None;
     for proposal in merges.for_removed(uuid) {
         match merge_correlated(incumbent, &proposal.survivor_uuid, uuid, proposal.relation) {
             Ok(merge) => {
@@ -432,21 +433,51 @@ fn propose_merge(
             }
             // Kept, not dropped: a run where every merge proposal fails on the
             // same structure must be able to say so rather than reporting only
-            // whatever the fallback path went on to complain about.
-            Err(skip) => first.get_or_insert(skip),
+            // whatever the fallback path went on to complain about. The
+            // strongest partner's reason is the one named; the weaker partners
+            // are counted, so a reader can tell one refusal from twenty.
+            Err(skip) => match &mut refusal {
+                None => {
+                    refusal = Some(MergeRefusal {
+                        first: skip,
+                        others: 0,
+                    });
+                }
+                Some(seen) => seen.others += 1,
+            },
         };
     }
-    Err(first)
+    Err(refusal)
 }
 
-/// Append the merge skip to `blocked`, when discovery proposed one at all.
+/// Why every merge proposal for one visited neuron was refused (#109).
+///
+/// `first` is the strongest-correlation partner's reason — the one an operator
+/// would act on — and `others` counts the weaker partners refused behind it, so
+/// the report distinguishes a single unmergeable pair from a neuron nothing
+/// will merge with.
+struct MergeRefusal {
+    first: MergeSkip,
+    others: usize,
+}
+
+impl fmt::Display for MergeRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.others {
+            0 => write!(f, "{}", self.first),
+            n => write!(f, "{} (and {n} weaker partner(s) refused)", self.first),
+        }
+    }
+}
+
+/// Append the merge refusal to `blocked`, when discovery proposed one at all.
 ///
 /// The fallback path's own reason still classifies the visit — it is the one
 /// that actually stopped the razor — but the merge attempt is named beside it
 /// so a merge-enabled run can see why its proposals went nowhere.
-fn with_merge_detail(mut blocked: Blocked, merge: Option<MergeSkip>) -> Blocked {
-    if let Some(skip) = merge {
-        blocked.detail = format!("{}; merge: {skip}", blocked.detail);
+fn with_merge_detail(mut blocked: Blocked, merge: Option<MergeRefusal>) -> Blocked {
+    if let Some(refusal) = merge {
+        blocked.detail = format!("{}; merge: {refusal}", blocked.detail);
     }
     blocked
 }
@@ -1321,6 +1352,42 @@ mod tests {
         let odd = batch.iter().find(|c| c.uuid == "h_odd").expect("h_odd");
         assert_ne!(odd.kind, CandidateKind::Merge);
         assert!(odd.merged_with.is_none());
+    }
+
+    /// Issue #109: replay rebuilds a recorded verdict as the transform it was
+    /// judged as. An index restricted to the uuids the cache recorded as merges
+    /// re-derives a merge for those and the ordinary transform for the rest,
+    /// so an accepted ablation cannot come back as a merge.
+    #[test]
+    fn a_restricted_index_re_derives_a_merge_only_for_the_uuids_it_names() {
+        let creature = twins_and_a_stranger();
+        let stats = twin_stats(&creature);
+        let merges =
+            crate::signature::discover(&stats, crate::signature::DiscoveryConfig::default());
+        assert!(
+            !merges.for_removed("h_a").is_empty() && !merges.for_removed("h_b").is_empty(),
+            "both directions are proposed before the restriction"
+        );
+
+        let only_b = merges.restricted_to(&HashSet::from(["h_b".to_string()]));
+        assert!(only_b.for_removed("h_a").is_empty());
+        assert_eq!(
+            only_b.report(),
+            merges.report(),
+            "the restriction re-runs no discovery, so its report is unchanged"
+        );
+
+        let as_merge = propose(&creature, &stats, &only_b, "h_b").unwrap();
+        assert_eq!(as_merge.kind, CandidateKind::Merge);
+        assert_eq!(as_merge.merged_with.as_deref(), Some("h_a"));
+
+        let as_before = propose(&creature, &stats, &only_b, "h_a").unwrap();
+        assert_ne!(
+            as_before.kind,
+            CandidateKind::Merge,
+            "a uuid the cache did not record as a merge must not re-derive one"
+        );
+        assert!(as_before.merged_with.is_none());
     }
 
     /// The same sweep with no merge index is the control it always was.

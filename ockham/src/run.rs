@@ -1162,7 +1162,14 @@ fn ockham_loop(
                 replay_done = true;
                 continue;
             }
-            let (applied, _) = apply_available(&incumbent.creature, &activation, &merges, &wins);
+            // A replayed verdict is rebuilt as the transform it was judged as
+            // (#109): only the uuids the cache recorded as merges may re-derive
+            // a merge here, or an accepted ablation would come back as a
+            // different cut wearing the winner's uuid.
+            let replay_merges =
+                merges.restricted_to(&crate::learnings::merge_wins(&known, &incumbent.creature));
+            let (applied, _) =
+                apply_available(&incumbent.creature, &activation, &replay_merges, &wins);
             for u in &wins {
                 if !applied.iter().any(|a| a == u) {
                     replay_skipped.insert(u.clone());
@@ -1186,7 +1193,12 @@ fn ockham_loop(
                 ));
             }
             let sampled: Vec<SampledWinner> = if plans.is_empty() && !applied.is_empty() {
-                match propose(&incumbent.creature, &activation, &merges, &applied[0]) {
+                match propose(
+                    &incumbent.creature,
+                    &activation,
+                    &replay_merges,
+                    &applied[0],
+                ) {
                     Ok(proposed) => vec![SampledWinner {
                         candidate: SweepCandidate {
                             members: vec![applied[0].clone()],

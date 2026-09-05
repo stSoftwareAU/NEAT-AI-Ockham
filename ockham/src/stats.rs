@@ -156,18 +156,23 @@ impl SampleSpec {
     /// Sampled-record indices at which a probe activation is retained (#109).
     ///
     /// Ascending, distinct, and a pure function of the spec and the plan, so a
-    /// cached scan is reproducible. The slots are spread over the records the
-    /// scan is *guaranteed* to visit — the adaptive-stopping floor when that is
-    /// armed, the whole plan when it is not — so a scan that converges early
-    /// still captures the full probe set rather than a prefix of it.
+    /// cached scan is reproducible. The slots are spread over the **whole**
+    /// sampled plan, not a prefix of it: a signature is a claim about how a
+    /// neuron behaves on the corpus, and probes crowded into the first blocks
+    /// would call two neurons duplicates on the evidence of the corpus's
+    /// opening records alone. The scan pays for that by holding its
+    /// adaptive stop until the last probe slot has been captured — a run that
+    /// asked for signatures asked for the records they are built from.
+    ///
+    /// Two structural bounds shorten the result, and neither is silent: a count
+    /// above [`MAX_PROBE_RECORDS`] is refused by the flag's own validation
+    /// before it reaches here, and a plan too short to hold one record per
+    /// probe is reported by the scan before it starts.
     pub fn probe_slots(&self, planned: u64) -> Vec<u64> {
-        let span = if self.target_rel_se > 0.0 {
-            self.min_records.min(planned)
-        } else {
-            planned
-        };
-        let probes = (self.probes.min(MAX_PROBE_RECORDS) as u64).min(span);
-        (0..probes).map(|p| p * span / probes).collect::<Vec<u64>>()
+        let probes = (self.probes.min(MAX_PROBE_RECORDS) as u64).min(planned);
+        (0..probes)
+            .map(|p| p * planned / probes)
+            .collect::<Vec<u64>>()
     }
 
     /// Ascending, non-overlapping record ranges to visit for `corpus`.
@@ -461,6 +466,18 @@ pub fn compute_activation_stats(
     let plan = sample.plan(corpus);
     let planned: u64 = plan.iter().map(|r| r.len.min(corpus.record_count)).sum();
     let probe_slots = sample.probe_slots(planned);
+    // A probe set the *plan* cannot hold is reported before the scan starts:
+    // one probe needs one guaranteed record, so a short corpus caps the
+    // signature length, and a run whose signatures are shorter than it asked
+    // for must be told rather than left to infer it (#109).
+    if probe_slots.len() < sample.probes {
+        crate::log::detail(&format!(
+            "activation plan holds {} of {} probe record(s) asked for; \
+             behavioural signatures are that much shorter",
+            probe_slots.len(),
+            sample.probes
+        ));
+    }
     let started = Instant::now();
     let mut seen = 0u64;
     let mut next_probe = 0usize;
@@ -492,8 +509,13 @@ pub fn compute_activation_stats(
                 ));
                 last_log = Instant::now();
             }
+            // Converged means the *means* have converged; the probe set is a
+            // separate promise. Stopping with slots still ahead would leave
+            // every signature describing a prefix of the corpus, so a probing
+            // scan runs on until the last slot is captured (#109).
             if sample.target_rel_se > 0.0
                 && seen >= sample.min_records
+                && next_probe >= probe_slots.len()
                 && acc
                     .iter()
                     .all(|a| a.relative_standard_error() <= sample.target_rel_se)
@@ -976,10 +998,11 @@ mod tests {
         );
     }
 
-    /// With adaptive stopping armed, the probe slots sit inside the records the
-    /// scan is guaranteed to visit, so an early stop still captures them all.
+    /// A converged scan waits for its probes: the slots are spread over the
+    /// whole sampled plan, so stopping at the adaptive floor would leave the
+    /// signatures describing the corpus's opening records only.
     #[test]
-    fn adaptive_stopping_does_not_shorten_the_probe_set() {
+    fn adaptive_stopping_waits_for_the_whole_probe_set() {
         let (tmp, inc, corpus) = setup(&vec![1.0f32; 20_000], 0.0, 1.0);
         let spec = SampleSpec {
             max_records: 10_000,
@@ -988,7 +1011,7 @@ mod tests {
             target_rel_se: 0.01,
             probes: 32,
         };
-        let stats = compute_activation_stats(
+        let probing = compute_activation_stats(
             &inc.creature,
             &inc.checksum,
             tmp.path(),
@@ -997,9 +1020,24 @@ mod tests {
             &spec,
         )
         .unwrap();
-        assert!(stats.stopped_early);
-        assert_eq!(stats.record_count, 1_000);
-        assert_eq!(stats.probes_of("h1").map(<[f32]>::len), Some(32));
+        // The last slot sits near the end of the plan, so the whole plan is
+        // scanned and the probe set is complete rather than truncated.
+        assert_eq!(probing.probes_of("h1").map(<[f32]>::len), Some(32));
+        assert_eq!(probing.record_count, 10_000);
+
+        // A control run keeps the early stop it always had: no probes are
+        // asked for, so nothing holds the scan open.
+        let control = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            500,
+            &SampleSpec { probes: 0, ..spec },
+        )
+        .unwrap();
+        assert!(control.stopped_early);
+        assert_eq!(control.record_count, 1_000);
     }
 
     #[test]

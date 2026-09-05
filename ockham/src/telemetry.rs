@@ -524,6 +524,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Issue #109: the pair is the provenance a merge needs, so it has to reach
+    /// the candidate log — a survivor recorded nowhere leaves the audit trail
+    /// naming which neuron went but not what it was merged into.
+    #[test]
+    fn a_screened_out_merge_writes_its_survivor_to_the_log() {
+        use crate::sweep::{CandidateKind, ScreenRejection, ScreenedLoser};
+
+        let dir = temp_dir("merge-provenance");
+        let path = dir.join("candidates.jsonl");
+        let creature = crate::fixtures::wide_creature(1, 2, "TANH");
+        let stats = crate::stats::ActivationStats {
+            neurons: creature
+                .neurons
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.neuron_type == "hidden")
+                .map(|(i, n)| crate::stats::NeuronStats {
+                    uuid: n.uuid.clone(),
+                    neuron_index: i,
+                    count: 10,
+                    mean: 0.0,
+                    variance: 1.0,
+                    std_dev: 1.0,
+                    mean_abs: 0.5,
+                    min: -1.0,
+                    max: 1.0,
+                })
+                .collect(),
+            ..crate::stats::ActivationStats::empty()
+        };
+        let evidence = crate::features::PriorEvidence::new();
+        let log = CandidateLog {
+            path: &path,
+            stamp: stamp(),
+            evidence: &evidence,
+        };
+        log.screened_out(
+            &creature,
+            &stats,
+            "checksum-1",
+            &[
+                ScreenedLoser {
+                    uuid: "h0".into(),
+                    kind: CandidateKind::Merge,
+                    merged_with: Some("h1".into()),
+                    delta: -0.4,
+                    stage: 1,
+                    reason: ScreenRejection::BelowThreshold,
+                },
+                ScreenedLoser {
+                    uuid: "h1".into(),
+                    kind: CandidateKind::Ablation,
+                    merged_with: None,
+                    delta: -0.5,
+                    stage: 1,
+                    reason: ScreenRejection::BelowThreshold,
+                },
+            ],
+            100,
+            2,
+        );
+
+        let rows = load(&path).unwrap();
+        let merged = rows.iter().find(|r| r.uuid == "h0").expect("merge row");
+        assert_eq!(merged.kind, "merge");
+        assert_eq!(
+            merged.merged_with.as_deref(),
+            Some("h1"),
+            "the survivor must survive the round trip: {merged:?}"
+        );
+        let ablated = rows.iter().find(|r| r.uuid == "h1").expect("ablation row");
+        assert_eq!(ablated.kind, "ablation");
+        assert!(
+            ablated.merged_with.is_none(),
+            "only a merge names a survivor"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_corrupt_line_fails_loud_rather_than_being_skipped() {
         let dir = temp_dir("corrupt");

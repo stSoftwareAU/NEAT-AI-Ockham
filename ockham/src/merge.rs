@@ -24,7 +24,9 @@
 //!
 //! The arithmetic is exact wherever the relation is: an exactly duplicated
 //! linear neuron has `scale = 1`, `offset = 0`, and the merged creature
-//! computes the same outputs to the last bit the forward pass can carry. It is
+//! computes the same function term for term. That is algebraic exactness, not
+//! bit-identical `f32` arithmetic — folding a bias and composing weights
+//! re-order floating-point operations, so outputs agree to rounding. It is
 //! still reported as [`TransformClass::Approximate`], because a relation fitted
 //! from sampled probes is evidence, never proof — the outputs are only known to
 //! match on records the razor actually measured.
@@ -191,9 +193,10 @@ impl fmt::Display for MergeSkip {
                 f,
                 "survivor `{survivor_uuid}` does not precede `{to_uuid}`; skipped"
             ),
-            Self::CostIncrease { before, after } => {
-                write!(f, "merge raises growth units {before} → {after}; skipped")
-            }
+            Self::CostIncrease { before, after } => write!(
+                f,
+                "merge does not lower growth units {before} → {after}; skipped"
+            ),
             Self::Invalid(m) => write!(f, "candidate failed creature.validate(): {m}"),
         }
     }
@@ -227,7 +230,10 @@ pub struct NeuronMerge {
     pub relation: LinearRelation,
     /// Always [`TransformClass::Approximate`] — a fitted relation is evidence.
     pub transform_class: TransformClass,
-    /// Downstream bias updates `bias_z += w * offset`, in application order.
+    /// Downstream bias updates, in application order.
+    ///
+    /// The compensation's own `bias_z += w * offset` first, then any bias the
+    /// cleanup cascade folded when the merge stranded a constant neuron.
     pub bias_updates: Vec<(String, f64, f64)>,
     /// Survivor edges written or merged.
     pub absorbed: Vec<AbsorbedSynapse>,
@@ -326,7 +332,7 @@ pub fn merge_correlated(
     working.memetic = None;
     let before = StructureSnapshot::of(&working);
 
-    let mut bias_updates = Vec::new();
+    let mut bias_updates: Vec<(String, f64, f64)> = Vec::new();
     let mut absorbed = Vec::new();
     for out in &outgoing {
         if relation.offset != 0.0 {
@@ -355,8 +361,17 @@ pub fn merge_correlated(
         reason: "merged",
     }];
     remove_neuron(&mut working, removed_uuid);
-    cleanup_cascade(&mut working, &mut Vec::new(), &mut removed_neurons)
+    // The cascade folds its own biases when it strands a constant neuron, and
+    // those edits are part of what this merge did to the creature: dropped here
+    // the record would under-report the transform it claims to describe.
+    let mut cascade_bias = Vec::new();
+    cleanup_cascade(&mut working, &mut cascade_bias, &mut removed_neurons)
         .map_err(|e| MergeSkip::Invalid(e.to_string()))?;
+    bias_updates.extend(
+        cascade_bias
+            .into_iter()
+            .map(|c| (c.to_uuid, c.bias_before, c.bias_after)),
+    );
     sort_synapses_canonically(&mut working);
 
     let after = StructureSnapshot::of(&working);
@@ -758,5 +773,39 @@ mod tests {
         let err = merge_correlated(&orphan, "h_a", "h_b", LinearRelation::IDENTICAL).unwrap_err();
         assert!(matches!(err, MergeSkip::NoOutgoing(_)), "{err}");
         assert_eq!(err.blocked_reason(), BlockedReason::NoOutputPath);
+    }
+
+    /// The two guard skips are reachable only when an invariant broke, so they
+    /// are pinned here rather than left to a run to discover: each must say
+    /// what happened and classify itself, because a skip that reports nothing
+    /// is a silent failure whatever raised it.
+    #[test]
+    fn a_guard_skip_says_what_broke_and_which_code_counts_it() {
+        let cost = MergeSkip::CostIncrease {
+            before: 12.0,
+            after: 12.0,
+        };
+        // The guard fires on "not lower", equality included, so the message may
+        // not claim the merge raised anything.
+        assert!(
+            cost.to_string().contains("does not lower growth units"),
+            "{cost}"
+        );
+        assert!(!cost.to_string().contains("raises"), "{cost}");
+        assert_eq!(cost.blocked_reason(), BlockedReason::Other);
+
+        let invalid = MergeSkip::Invalid("rule 18: dangling synapse".into());
+        assert!(
+            invalid.to_string().contains("rule 18: dangling synapse"),
+            "the validator's own words must survive: {invalid}"
+        );
+        assert_eq!(invalid.blocked_reason(), BlockedReason::ValidationFailed);
+
+        let unfit = MergeSkip::NonFiniteRelation(LinearRelation {
+            scale: f64::INFINITY,
+            offset: 0.0,
+        });
+        assert!(unfit.to_string().contains("non-finite relation"), "{unfit}");
+        assert_eq!(unfit.blocked_reason(), BlockedReason::MissingActivation);
     }
 }

@@ -36,7 +36,7 @@
 //! comparisons it declined to make instead of presenting a partial sweep as a
 //! complete one.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 use crate::merge::LinearRelation;
@@ -189,6 +189,26 @@ impl MergeIndex {
     /// Proposals that would remove `uuid`, strongest correlation first.
     pub fn for_removed(&self, uuid: &str) -> &[MergeProposal] {
         self.by_removed.get(uuid).map_or(&[], Vec::as_slice)
+    }
+
+    /// This index with proposals for `keep` only (#109).
+    ///
+    /// Replay uses it so a recorded verdict is rebuilt as the transform it was
+    /// judged as: a uuid the fleet accepted as an `ablation` must not come back
+    /// as a merge because the current signatures happen to offer a partner —
+    /// that is a different cut wearing the winner's uuid. The report is carried
+    /// through unchanged: it describes the discovery pass, which the
+    /// restriction does not re-run.
+    pub fn restricted_to(&self, keep: &HashSet<String>) -> Self {
+        Self {
+            by_removed: self
+                .by_removed
+                .iter()
+                .filter(|(uuid, _)| keep.contains(*uuid))
+                .map(|(uuid, proposals)| (uuid.clone(), proposals.clone()))
+                .collect(),
+            report: self.report,
+        }
     }
 
     /// `true` when nothing was proposed — the merge path is then inert.
