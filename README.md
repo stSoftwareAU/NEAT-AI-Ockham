@@ -288,6 +288,136 @@ when the resulting NEAT growth cost is lower.
 Every completed structural candidate must pass NEAT-AI-core
 `creature.validate()` before it reaches the scorer.
 
+## Correlated-neuron merging
+
+A mature evolved creature accumulates hidden neurons that behave almost
+identically. Neither is quiet, so mean-activation ablation never nominates
+either of them — yet between the two there is one neuron too many.
+
+**Two busy neurons can still be one neuron too many.** 🪒
+
+Merging is **off by default**. `--merge-correlation <r>` turns it on, and only
+then does the activation scan retain the probe records the signatures are built
+from. The probe count is part of the activation-statistics cache key, so a
+merge-enabled run can never be served a probe-free cached scan and silently
+propose nothing.
+
+### Finding the pairs without an N² matrix
+
+A full correlation matrix over several thousand hidden neurons is not
+affordable inside a forty-five-minute budget, so discovery runs in four cheap
+stages:
+
+```mermaid
+flowchart LR
+    A["probe records<br/>(activation scan)"] --> B["64-bit sign signature<br/>bit i = above own mean"]
+    B --> C["LSH bands<br/>bucket by band value"]
+    C --> D["Pearson correlation<br/>inside buckets only"]
+    D --> E["proposal<br/>removed ≈ scale × survivor + offset"]
+    E --> G["creature.validate()"] --> H[sampled screen] --> I[full scorer]
+```
+
+1. The scan retains each hidden neuron's post-activation at `--merge-probes`
+   deterministically-placed records. The slots are a function of the sampling
+   plan alone, so the same corpus and spec reproduce the same probes — and they
+   sit inside the records the scan is *guaranteed* to visit, so adaptive
+   stopping never shortens the probe set.
+2. Each probe vector reduces to one `u64`: bit `i` is set when the neuron sat at
+   or above its own probe mean at probe `i`. Centring on the neuron's own mean
+   is what makes the bit comparable across neurons on wildly different scales.
+3. Signatures are split into bands of `--merge-band-bits` and bucketed by band
+   value, so only neurons that already agree on a whole band are ever compared.
+   An anti-correlated pair agrees on the *complement* of every band, so the key
+   is canonicalised to the smaller of the band and its complement and the two
+   land in one bucket. **The band widens automatically with the creature** — a
+   fixed width would give every unrelated pair a `2^-bits` chance of sharing a
+   bucket, which grows with the *square* of the neuron count.
+4. Pearson correlation, the exact and expensive part, runs on the probe vectors
+   of bucket members only, and `--merge-max-bucket` bounds the worst case. A
+   bucket the sweep declines to finish is **counted and logged**, never dropped
+   quietly.
+
+### Spending the relation
+
+For a pair the correlation clears, a least-squares fit gives
+
+```text
+removed(t) ≈ scale * survivor(t) + offset
+```
+
+and for every ordinary outgoing synapse `removed → z` carrying weight `w`:
+
+```text
+bias_z       += w * offset
+survivor → z   weight += w * scale
+```
+
+Parallel synapses merge by adding weights, `removed` goes, and whatever is left
+feeding nothing cascades away with it. **Both survivor directions are
+proposed** — which of two near-duplicates is the cheaper one to lose is a
+structural question the signature pass cannot answer.
+
+For an exactly duplicated neuron the fit is `scale = 1`, `offset = 0` and the
+merged creature computes the same outputs. It is still recorded as an
+**approximate** transform: a relation fitted from sampled probes is evidence,
+never proof.
+
+Unsupported topology is skipped, never guessed — a **typed** outgoing synapse
+carries a role a plain weighted edge cannot stand in for; an **aggregate**
+target (`IF`, `MEAN`, `MINIMUM`, …) does not sum its inputs; and a survivor that
+does not already precede the target would make the rewritten edge run backwards
+through a forward-only creature.
+
+Unlike an `IDENTITY` collapse a merge cannot cost more than it saves: it deletes
+one hidden neuron and every synapse incident to it, and writes back at most one
+edge per *outgoing* synapse it deleted, so NEAT growth units always fall.
+
+A merge candidate carries its survivor (`mergedWith`) so a learnings entry, a
+replay or a GRQ check-in records **which pair** was tried, and the run
+re-discovers the pairs after every accept — a proposal naming a survivor the
+accept already removed would be a stale cut wearing a winner's uuid.
+
+The threshold only ever **generates** proposals. Every merge candidate faces
+`creature.validate()`, the sampled screen and the authoritative full scorer like
+any other proposal, and the scorer alone decides whether the neuron it removes
+was earning its keep.
+
+### Benchmark
+
+```bash
+cargo run --release --example correlated_merge_bench
+```
+
+The harness plants exact twin pairs, near-twin pairs and a crowd of unrelated
+neurons in one creature, measures every probe vector with the real NEAT-AI-core
+forward pass, then judges each proposal by compiling the candidate and comparing
+its outputs — screened on a subset of the probes, confirmed on all of them. On a
+560-hidden-neuron creature (40 exact twin pairs, 40 near pairs, 400 unrelated):
+
+| transform | proposals | candidates | screened | confirmed | confirmed/h | neurons | synapses |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| merge | 860 | 860 | 9% | 9% | 128354 | 80 | 560 |
+| ablation | 860 | 860 | 0% | 0% | 0 | 0 | 0 |
+
+Every one of the eighty confirmed cuts is a planted duplicate, and the
+mean-activation control confirms none of them: the neurons are all busy, which
+is exactly the blind spot this transform exists to cover. Nine per cent of the
+proposals surviving is the cost side of the same measurement — a `0.98`
+threshold on 64 sign bits proposes generously, and the screen is what pays for
+that.
+
+Discovery cost as the creature grows, on synthetic signatures:
+
+| hidden | band bits | buckets | pairs compared | ms |
+|---:|---:|---:|---:|---:|
+| 1000 | 10 | 2679 | 5739 | 1.1 |
+| 2000 | 11 | 4412 | 9733 | 2.1 |
+| 4000 | 12 | 8825 | 19657 | 4.5 |
+| 8000 | 13 | 14073 | 31678 | 7.8 |
+
+Eight times the creature costs about seven times the discovery, not sixty-four:
+the widening band is what holds the comparison count near linear.
+
 ## Sampling and authoritative promotion
 
 The current defaults are deliberately simple:
@@ -1036,8 +1166,16 @@ side by re-fitting the surviving weights to reproduce the next layer's response.
 Exact `IDENTITY` collapse and the removal of functionally redundant units is
 **data-free parameter pruning** (Srinivas & Babu, 2015), which merges neurons
 computing the same function and rewires their outgoing weights. That is the same
-algebraic move as [exact cleanup](#exact-cleanup), restricted here to the cases
+algebraic move as [exact cleanup](#exact-cleanup), restricted there to the cases
 Ockham can prove rather than estimate.
+
+[Correlated-neuron merging](#correlated-neuron-merging) is the *measured* half
+of the same idea: Srinivas & Babu identify duplicates from the weights alone,
+while Ockham identifies them from sampled behaviour and lets the full-corpus
+scorer settle whether the pair really was one neuron. The candidate generation
+borrows the locality-sensitive hashing of **Indyk & Motwani** (1998) — the sign
+signature and its bands are the SimHash construction of **Charikar** (2002) — so
+near-duplicates are found without ever building the `N × N` matrix.
 
 ### Iterating: the compounding hypothesis
 
@@ -1114,6 +1252,11 @@ Common options:
 | `--screen-reject-margin` | `0.01` | Early-rejection margin for a ladder stage that names none: a sampled Δ at or below its negation is rejected there instead of re-tested. Refused without `--screen-stages`, where it would do nothing. |
 | `--screen-threshold` | `0` | Sampled Δscore required for promotion. |
 | `--stats-sample-records` | `100000` | Records sampled for hidden-neuron activation statistics; `0` scans the whole corpus. See [Activation statistics](#activation-statistics). |
+| `--merge-correlation` | none | Propose removing one of two hidden neurons whose sampled behaviour correlates at least this strongly, compensating through the survivor; see [Correlated-neuron merging](#correlated-neuron-merging). Omitted: merging is off and no probes are retained. A threshold only proposes — the full scorer still decides. |
+| `--merge-probes` | `64` | Probe activations retained per hidden neuron for merge signatures. |
+| `--merge-band-bits` | `8` | Minimum signature bits a pair must share to be compared at all; widened automatically on a large creature so the comparison count stays linear in the neuron count. |
+| `--merge-max-bucket` | `48` | Neurons compared pairwise inside one signature bucket. Members beyond it are reported, never dropped quietly. |
+| `--merge-max-partners` | `3` | Merge proposals kept per removable neuron. |
 | `--max-full` | none | Cap sampled winners sent to full scoring (highest sample Δ first). |
 | `--learnings-dir` | none | Shared full-corpus prune-verdict cache. Omitted: do not read or write. |
 | `--learnings-host` | hostname | Per-host jsonl label (unqualified `$HOSTNAME` / `$HOST` / `hostname`). |
@@ -1690,6 +1833,8 @@ NEAT-AI-Ockham/
 │       ├── ablation.rs        # mean-activation ablation + cleanup
 │       ├── collapse.rs        # exact IDENTITY neuron collapse
 │       ├── substitute.rs      # mean-valued constant substitution
+│       ├── signature.rs       # behavioural signatures + correlated-pair discovery
+│       ├── merge.rs           # correlated-neuron merging
 │       ├── blocked.rs         # blocked-reason codes + per-epoch breakdown
 │       ├── sweep.rs           # seeded random sweep + 5% screen
 │       ├── screening.rs       # progressive adaptive screening ladder
@@ -1734,9 +1879,15 @@ check-in tags, learnings replay, and named candidate orderings
 issue #63 reversed that, so neuron tags no longer keep a hidden neuron out
 of the prune pool.
 
-The ordering experiment itself is now the work: run each named strategy against
-the seeded random control on a mature creature and let the report decide whether
-any of them earns the default.
+Correlated-neuron merging landed under #109: behavioural signatures, LSH
+bucketing and the survivor-compensated cut, off by default behind
+`--merge-correlation`.
+
+Two experiments are now the work. First, ordering: run each named strategy
+against the seeded random control on a mature creature and let the report decide
+whether any of them earns the default. Second, merging: run a mature creature
+with and without `--merge-correlation` and let the confirmed-removals-per-hour
+figures decide whether the extra screen slots it spends are earning their keep.
 
 ## What success looks like
 

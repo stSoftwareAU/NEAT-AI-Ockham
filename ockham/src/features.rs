@@ -325,6 +325,7 @@ mod tests {
             stopped_early: false,
             scan_ms: 0,
             from_cache: false,
+            probes: Vec::new(),
             neurons: vec![
                 NeuronStats {
                     uuid: "chain".into(),

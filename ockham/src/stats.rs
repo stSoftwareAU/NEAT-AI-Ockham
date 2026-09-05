@@ -16,6 +16,12 @@
 //! (deterministically placed from the corpus identity) and stops once every
 //! neuron mean's standard error is small against that neuron's activation
 //! scale. Set `max_records = 0` to restore the full-corpus scan.
+//!
+//! Set [`SampleSpec::probes`] to retain each neuron's post-activation at a
+//! handful of deterministically-placed probe records (Issue #109). Those short
+//! vectors are the behavioural signature [`crate::signature`] buckets and
+//! correlates to find near-duplicate neurons; they cost `probes` floats per
+//! hidden neuron and nothing at all when the count is zero.
 
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -29,7 +35,7 @@ use crate::corpus::{CorpusInfo, RecordRange, for_each_selected_chunk};
 use crate::incumbent::Incumbent;
 
 /// Cache / on-disk format version. Bump when the JSON shape changes.
-pub const STATS_FORMAT_VERSION: u32 = 2;
+pub const STATS_FORMAT_VERSION: u32 = 3;
 /// Default records per streaming chunk.
 pub const DEFAULT_CHUNK_RECORDS: usize = 4096;
 /// Default cap on records visited by the activation scan (issue #44).
@@ -41,6 +47,16 @@ pub const DEFAULT_MIN_SAMPLE_RECORDS: u64 = 20_000;
 /// Default standard error of a neuron mean, relative to that neuron's
 /// activation scale, at which the scan may stop early.
 pub const DEFAULT_TARGET_REL_SE: f64 = 0.01;
+/// Probe records retained per neuron when correlated-neuron merging is on (#109).
+///
+/// One `u64` sign signature is built from the first 64, so retaining more than
+/// that buys correlation precision, not bucket precision.
+pub const DEFAULT_PROBE_RECORDS: usize = 64;
+/// Most probe records a [`SampleSpec`] may retain per neuron (#109).
+///
+/// The signature is a `u64`, so a longer probe vector would leave bits of the
+/// behaviour outside the bucket key that selects pairs to correlate.
+pub const MAX_PROBE_RECORDS: usize = 64;
 
 /// How much of the corpus the activation scan visits (issue #44).
 ///
@@ -57,6 +73,9 @@ pub struct SampleSpec {
     pub min_records: u64,
     /// Relative standard-error target for adaptive stopping; `0` disables it.
     pub target_rel_se: f64,
+    /// Probe activations retained per neuron; `0` retains none (#109).
+    #[serde(default)]
+    pub probes: usize,
 }
 
 impl Default for SampleSpec {
@@ -66,6 +85,7 @@ impl Default for SampleSpec {
             block_records: DEFAULT_SAMPLE_BLOCK_RECORDS,
             min_records: DEFAULT_MIN_SAMPLE_RECORDS,
             target_rel_se: DEFAULT_TARGET_REL_SE,
+            probes: 0,
         }
     }
 }
@@ -100,18 +120,56 @@ impl SampleSpec {
         }
     }
 
-    /// Filename-safe tag identifying this spec in a cache key.
-    pub fn tag(&self) -> String {
-        if self.max_records == 0 {
-            return "full".into();
+    /// This spec with `probes` activations retained per neuron (Issue #109).
+    ///
+    /// Clamped to [`MAX_PROBE_RECORDS`] because the bucket key is a `u64`
+    /// signature: a longer probe vector would put part of the behaviour outside
+    /// the key that decides which pairs are correlated at all.
+    pub fn with_probes(self, probes: usize) -> Self {
+        Self {
+            probes: probes.min(MAX_PROBE_RECORDS),
+            ..self
         }
-        format!(
-            "n{}b{}m{}e{}",
-            self.max_records,
-            self.block_records.max(1),
-            self.min_records,
-            (self.target_rel_se.max(0.0) * 1e6).round() as u64
-        )
+    }
+
+    /// Filename-safe tag identifying this spec in a cache key.
+    ///
+    /// The probe count is part of the tag, so a scan that retained no probes is
+    /// never served to a run that asked for them — a merge-enabled run reading
+    /// a probe-free cache would find no signatures and silently propose nothing.
+    pub fn tag(&self) -> String {
+        let base = if self.max_records == 0 {
+            "full".to_string()
+        } else {
+            format!(
+                "n{}b{}m{}e{}",
+                self.max_records,
+                self.block_records.max(1),
+                self.min_records,
+                (self.target_rel_se.max(0.0) * 1e6).round() as u64
+            )
+        };
+        match self.probes {
+            0 => base,
+            p => format!("{base}p{p}"),
+        }
+    }
+
+    /// Sampled-record indices at which a probe activation is retained (#109).
+    ///
+    /// Ascending, distinct, and a pure function of the spec and the plan, so a
+    /// cached scan is reproducible. The slots are spread over the records the
+    /// scan is *guaranteed* to visit — the adaptive-stopping floor when that is
+    /// armed, the whole plan when it is not — so a scan that converges early
+    /// still captures the full probe set rather than a prefix of it.
+    pub fn probe_slots(&self, planned: u64) -> Vec<u64> {
+        let span = if self.target_rel_se > 0.0 {
+            self.min_records.min(planned)
+        } else {
+            planned
+        };
+        let probes = (self.probes.min(MAX_PROBE_RECORDS) as u64).min(span);
+        (0..probes).map(|p| p * span / probes).collect::<Vec<u64>>()
     }
 
     /// Ascending, non-overlapping record ranges to visit for `corpus`.
@@ -184,6 +242,21 @@ pub struct NeuronStats {
     pub max: f64,
 }
 
+/// One hidden neuron's retained probe activations (Issue #109).
+///
+/// The behavioural signature [`crate::signature`] works from: the neuron's
+/// post-activation at each probe record, in ascending record order. Every
+/// neuron in one [`ActivationStats`] is probed at the same records, so two
+/// vectors are directly comparable element by element.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NeuronProbes {
+    /// Neuron UUID.
+    pub uuid: String,
+    /// Post-activation at each probe record.
+    pub values: Vec<f32>,
+}
+
 /// Sampled hidden-neuron statistics for one incumbent + corpus.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -209,6 +282,11 @@ pub struct ActivationStats {
     pub scan_ms: u64,
     /// Per-hidden-neuron summaries.
     pub neurons: Vec<NeuronStats>,
+    /// Retained probe activations, one entry per measured neuron (Issue #109).
+    ///
+    /// Empty unless [`SampleSpec::probes`] asked for them.
+    #[serde(default)]
+    pub probes: Vec<NeuronProbes>,
     /// `true` when this object was loaded from the keyed cache.
     #[serde(default)]
     pub from_cache: bool,
@@ -225,10 +303,11 @@ struct Accumulator {
     abs_sum: f64,
     min: f64,
     max: f64,
+    probes: Vec<f32>,
 }
 
 impl Accumulator {
-    fn new(uuid: String, neuron_index: usize, activation_index: usize) -> Self {
+    fn new(uuid: String, neuron_index: usize, activation_index: usize, probes: usize) -> Self {
         Self {
             uuid,
             neuron_index,
@@ -239,6 +318,7 @@ impl Accumulator {
             abs_sum: 0.0,
             min: f64::INFINITY,
             max: f64::NEG_INFINITY,
+            probes: Vec::with_capacity(probes),
         }
     }
 
@@ -274,7 +354,7 @@ impl Accumulator {
         std_dev / (n.sqrt() * scale)
     }
 
-    fn finish(self) -> NeuronStats {
+    fn finish(&self) -> NeuronStats {
         let (variance, std_dev, min, max, mean_abs) = if self.count == 0 {
             (0.0, 0.0, 0.0, 0.0, 0.0)
         } else {
@@ -288,7 +368,7 @@ impl Accumulator {
             )
         };
         NeuronStats {
-            uuid: self.uuid,
+            uuid: self.uuid.clone(),
             neuron_index: self.neuron_index,
             count: self.count,
             mean: self.mean,
@@ -366,7 +446,7 @@ pub fn compute_activation_stats(
         .iter()
         .enumerate()
         .filter(|(_, n)| n.neuron_type == "hidden")
-        .map(|(i, n)| Accumulator::new(n.uuid.clone(), i, net.num_inputs + i))
+        .map(|(i, n)| Accumulator::new(n.uuid.clone(), i, net.num_inputs + i, sample.probes))
         .collect();
     if acc.is_empty() {
         // Nothing to measure: streaming the corpus could only produce an empty
@@ -382,8 +462,10 @@ pub fn compute_activation_stats(
     let cfg = TrainingDataConfig::new(creature.input, creature.output);
     let plan = sample.plan(corpus);
     let planned: u64 = plan.iter().map(|r| r.len.min(corpus.record_count)).sum();
+    let probe_slots = sample.probe_slots(planned);
     let started = Instant::now();
     let mut seen = 0u64;
+    let mut next_probe = 0usize;
     let mut stopped_early = false;
     let mut last_log = Instant::now();
     let streamed =
@@ -391,8 +473,16 @@ pub fn compute_activation_stats(
             for r in 0..chunk.records {
                 let inputs = &chunk.inputs[r * creature.input..(r + 1) * creature.input];
                 let _ = net.activate(inputs, creature.output);
+                let probe = probe_slots.get(next_probe) == Some(&(seen + r as u64));
                 for a in &mut acc {
-                    a.push(net.activations[a.activation_index]);
+                    let x = net.activations[a.activation_index];
+                    a.push(x);
+                    if probe {
+                        a.probes.push(x);
+                    }
+                }
+                if probe {
+                    next_probe += 1;
                 }
             }
             seen += chunk.records as u64;
@@ -429,6 +519,27 @@ pub fn compute_activation_stats(
             corpus.record_count
         ));
     }
+    // A probe set the scan never filled is reported, never quietly shortened:
+    // a signature built from fewer records than asked for is a weaker signature
+    // and the run that reads it has to be able to say so (#109).
+    if next_probe < probe_slots.len() {
+        crate::log::detail(&format!(
+            "activation scan captured {next_probe} of {} probe record(s); \
+             behavioural signatures are that much shorter",
+            probe_slots.len()
+        ));
+    }
+    let neurons: Vec<NeuronStats> = acc.iter().map(Accumulator::finish).collect();
+    let probes = if sample.probes == 0 {
+        Vec::new()
+    } else {
+        acc.into_iter()
+            .map(|a| NeuronProbes {
+                uuid: a.uuid,
+                values: a.probes,
+            })
+            .collect()
+    };
     Ok(ActivationStats {
         format_version: STATS_FORMAT_VERSION,
         creature_checksum: creature_checksum.to_string(),
@@ -438,7 +549,8 @@ pub fn compute_activation_stats(
         sample: *sample,
         stopped_early,
         scan_ms,
-        neurons: acc.into_iter().map(Accumulator::finish).collect(),
+        neurons,
+        probes,
         from_cache: false,
     })
 }
@@ -490,6 +602,7 @@ impl ActivationStats {
             stopped_early: false,
             scan_ms: 0,
             neurons: Vec::new(),
+            probes: Vec::new(),
             from_cache: false,
         }
     }
@@ -497,6 +610,14 @@ impl ActivationStats {
     /// `true` when the scan visited fewer records than the corpus holds.
     pub fn is_sampled(&self) -> bool {
         self.record_count < self.corpus_record_count
+    }
+
+    /// Retained probe activations for `uuid`, if any were captured (#109).
+    pub fn probes_of(&self, uuid: &str) -> Option<&[f32]> {
+        self.probes
+            .iter()
+            .find(|p| p.uuid == uuid)
+            .map(|p| p.values.as_slice())
     }
 }
 
@@ -609,6 +730,7 @@ mod tests {
             block_records: 100,
             min_records: u64::MAX, // adaptive stopping cannot fire
             target_rel_se: 0.0,
+            probes: 0,
         };
         let a = ensure_activation_stats(&inc, tmp.path(), &corpus, &cache, 64, &full).unwrap();
         assert_eq!(a.record_count, 2_000);
@@ -638,6 +760,7 @@ mod tests {
             block_records: 200,
             min_records: u64::MAX,
             target_rel_se: 0.0,
+            probes: 0,
         };
         let sampled =
             compute_activation_stats(&inc.creature, &inc.checksum, tmp.path(), &corpus, 64, &spec)
@@ -741,6 +864,7 @@ mod tests {
             block_records: 500,
             min_records: 1_000,
             target_rel_se: 0.01,
+            probes: 0,
         };
         let stats = compute_activation_stats(
             &inc.creature,
@@ -771,6 +895,113 @@ mod tests {
             stats.record_count > 1_000,
             "noisy neuron needs more records"
         );
+    }
+
+    /// Issue #109: probe records are retained only when asked for, land at the
+    /// same records for every neuron, and are reproducible for a fixed spec.
+    #[test]
+    fn probe_records_are_retained_only_when_asked_for_and_are_reproducible() {
+        let values: Vec<f32> = (0..2_000).map(|i| ((i % 37) as f32) - 18.0).collect();
+        let (tmp, inc, corpus) = setup(&values, 0.0, 1.0);
+        let bare = SampleSpec {
+            max_records: 1_000,
+            block_records: 100,
+            min_records: u64::MAX,
+            target_rel_se: 0.0,
+            probes: 0,
+        };
+        let probed = bare.with_probes(16);
+        assert_eq!(probed.probes, 16);
+        assert_ne!(bare.tag(), probed.tag(), "the probe count keys the cache");
+
+        let plain =
+            compute_activation_stats(&inc.creature, &inc.checksum, tmp.path(), &corpus, 64, &bare)
+                .unwrap();
+        assert!(plain.probes.is_empty(), "a control run retains nothing");
+        assert!(plain.probes_of("h1").is_none());
+
+        let a = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            64,
+            &probed,
+        )
+        .unwrap();
+        let captured = a.probes_of("h1").expect("h1 must be probed");
+        assert_eq!(captured.len(), 16);
+        // The summary statistics are untouched by the probing.
+        assert_eq!(a.record_count, plain.record_count);
+        assert_eq!(a.neurons, plain.neurons);
+
+        // A different chunk size must not move the probe records: the slots are
+        // a function of the plan, not of how the reader happened to batch it.
+        let b = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            7,
+            &probed,
+        )
+        .unwrap();
+        assert_eq!(a.probes, b.probes);
+        assert_eq!(probed.probe_slots(1_000).len(), 16);
+        assert!(
+            probed.probe_slots(1_000).windows(2).all(|w| w[0] < w[1]),
+            "probe slots must be ascending and distinct"
+        );
+    }
+
+    /// A cache written without probes must never be served to a run that needs
+    /// them: silently signature-free statistics would propose no merge at all
+    /// and read as "there were no near-duplicates".
+    #[test]
+    fn a_probe_free_cache_entry_is_never_served_to_a_probing_scan() {
+        let values: Vec<f32> = (0..600).map(|i| ((i % 13) as f32) - 6.0).collect();
+        let (tmp, inc, corpus) = setup(&values, 0.0, 1.0);
+        let cache = tmp.path().join("cache");
+        let bare = SampleSpec::full();
+        let probed = bare.with_probes(16);
+        let a = ensure_activation_stats(&inc, tmp.path(), &corpus, &cache, 64, &bare).unwrap();
+        assert!(a.probes.is_empty());
+        let b = ensure_activation_stats(&inc, tmp.path(), &corpus, &cache, 64, &probed).unwrap();
+        assert!(!b.from_cache, "a different probe count is a different key");
+        assert_eq!(b.probes_of("h1").map(<[f32]>::len), Some(16));
+        let again =
+            ensure_activation_stats(&inc, tmp.path(), &corpus, &cache, 64, &probed).unwrap();
+        assert!(again.from_cache);
+        assert_eq!(
+            again.probes, b.probes,
+            "probes survive the cache round trip"
+        );
+    }
+
+    /// With adaptive stopping armed, the probe slots sit inside the records the
+    /// scan is guaranteed to visit, so an early stop still captures them all.
+    #[test]
+    fn adaptive_stopping_does_not_shorten_the_probe_set() {
+        let (tmp, inc, corpus) = setup(&vec![1.0f32; 20_000], 0.0, 1.0);
+        let spec = SampleSpec {
+            max_records: 10_000,
+            block_records: 500,
+            min_records: 1_000,
+            target_rel_se: 0.01,
+            probes: 32,
+        };
+        let stats = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            500,
+            &spec,
+        )
+        .unwrap();
+        assert!(stats.stopped_early);
+        assert_eq!(stats.record_count, 1_000);
+        assert_eq!(stats.probes_of("h1").map(<[f32]>::len), Some(32));
     }
 
     #[test]

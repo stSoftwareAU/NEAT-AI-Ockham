@@ -486,6 +486,7 @@ mod tests {
 
     fn candidate(stem: &str, uuid: &str) -> SweepCandidate {
         SweepCandidate {
+            merged_with: None,
             uuid: uuid.to_string(),
             permutation_index: 0,
             kind: CandidateKind::Ablation,

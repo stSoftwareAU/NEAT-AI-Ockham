@@ -17,7 +17,8 @@ use neat_ai_ockham::model::{
     DEFAULT_EPOCHS, DEFAULT_L2, DEFAULT_LEARNING_RATE, PriorityModel, TrainingConfig,
 };
 use neat_ai_ockham::screening::{DEFAULT_SCREEN_REJECT_MARGIN, ScreenLadder};
-use neat_ai_ockham::stats::DEFAULT_SAMPLE_RECORDS;
+use neat_ai_ockham::signature::{DEFAULT_BAND_BITS, DEFAULT_MAX_BUCKET, DEFAULT_MAX_PARTNERS};
+use neat_ai_ockham::stats::{DEFAULT_PROBE_RECORDS, DEFAULT_SAMPLE_RECORDS};
 use neat_ai_ockham::telemetry;
 use neat_ai_ockham::{ExternalScorer, Ordering, establish_run, log};
 
@@ -112,6 +113,26 @@ struct Cli {
     /// Records sampled for hidden-neuron activation statistics; 0 scans the whole corpus.
     #[arg(long, default_value_t = DEFAULT_SAMPLE_RECORDS)]
     stats_sample_records: u64,
+    /// Propose removing one of two hidden neurons whose sampled behaviour
+    /// correlates at least this strongly, compensating through the survivor.
+    /// Omitted: correlated-neuron merging is off and no probes are retained.
+    /// A threshold only proposes — the full scorer still decides.
+    #[arg(long)]
+    merge_correlation: Option<f64>,
+    /// Probe activations retained per hidden neuron for merge signatures.
+    #[arg(long, default_value_t = DEFAULT_PROBE_RECORDS)]
+    merge_probes: usize,
+    /// Minimum signature bits a pair must share to be compared at all.
+    /// Widened automatically on a large creature so the comparison count
+    /// stays linear in the neuron count.
+    #[arg(long, default_value_t = DEFAULT_BAND_BITS)]
+    merge_band_bits: u32,
+    /// Neurons compared pairwise inside one signature bucket.
+    #[arg(long, default_value_t = DEFAULT_MAX_BUCKET)]
+    merge_max_bucket: usize,
+    /// Merge proposals kept per removable neuron.
+    #[arg(long, default_value_t = DEFAULT_MAX_PARTNERS)]
+    merge_max_partners: usize,
     /// Screen never-checked neurons before re-screening the stalest ones.
     /// Defaults to on with `--learnings-dir` and off without it.
     #[arg(
@@ -293,6 +314,11 @@ fn main() -> ExitCode {
         unchecked_first: cli.unchecked_first,
         old_corpus_first: cli.old_corpus_first,
         stats_sample_records: cli.stats_sample_records,
+        merge_correlation: cli.merge_correlation,
+        merge_probes: cli.merge_probes,
+        merge_band_bits: cli.merge_band_bits,
+        merge_max_bucket: cli.merge_max_bucket,
+        merge_max_partners: cli.merge_max_partners,
     };
     if let Err(e) = config.validate() {
         eprintln!("{e}");

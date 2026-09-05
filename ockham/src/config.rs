@@ -7,7 +7,10 @@ use serde::Serialize;
 
 use crate::ordering::{Ordering, OrderingConfig};
 use crate::screening::{ScreenLadder, ScreenStage};
-use crate::stats::{DEFAULT_SAMPLE_RECORDS, SampleSpec};
+use crate::signature::{
+    DEFAULT_BAND_BITS, DEFAULT_MAX_BUCKET, DEFAULT_MAX_PARTNERS, DiscoveryConfig,
+};
+use crate::stats::{DEFAULT_PROBE_RECORDS, DEFAULT_SAMPLE_RECORDS, SampleSpec};
 
 /// Default wall-clock budget (45 minutes).
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 45 * 60;
@@ -105,6 +108,21 @@ pub struct OckhamConfig {
     pub old_corpus_first: Option<bool>,
     /// Cap on records visited by the activation scan; `0` = full corpus (#44).
     pub stats_sample_records: u64,
+    /// `|Pearson r|` at which correlated-neuron merging proposes a pair (#109).
+    ///
+    /// `None` — the default — turns the whole feature off: no probe records are
+    /// retained, no signatures are built, and no merge is ever proposed. A
+    /// threshold only ever *generates* proposals; the sampled screen and the
+    /// authoritative full scorer still decide what survives.
+    pub merge_correlation: Option<f64>,
+    /// Probe activations retained per hidden neuron for signatures (#109).
+    pub merge_probes: usize,
+    /// Minimum bits per locality-sensitive band (#109).
+    pub merge_band_bits: u32,
+    /// Neurons compared pairwise inside one signature bucket (#109).
+    pub merge_max_bucket: usize,
+    /// Merge proposals kept per removable neuron (#109).
+    pub merge_max_partners: usize,
 }
 
 impl Default for OckhamConfig {
@@ -136,6 +154,11 @@ impl Default for OckhamConfig {
             unchecked_first: None,
             old_corpus_first: None,
             stats_sample_records: DEFAULT_SAMPLE_RECORDS,
+            merge_correlation: None,
+            merge_probes: DEFAULT_PROBE_RECORDS,
+            merge_band_bits: DEFAULT_BAND_BITS,
+            merge_max_bucket: DEFAULT_MAX_BUCKET,
+            merge_max_partners: DEFAULT_MAX_PARTNERS,
         }
     }
 }
@@ -182,6 +205,18 @@ impl OckhamConfig {
         // here and the loaded model is checked again at `--ordering learned`
         // run start: a run that asked to be ranked by a model must stop when it
         // is missing, never rank by something else and say nothing.
+        // Only checked when merging is on: the other knobs keep their defaults
+        // on a control run, and refusing a run for a knob it never reads would
+        // be a fault report about nothing.
+        if let Some(cfg) = self.merge_discovery() {
+            cfg.validate()?;
+            if self.merge_probes < crate::signature::MIN_PROBE_RECORDS {
+                return Err(format!(
+                    "--merge-probes must be >= {} for a usable signature",
+                    crate::signature::MIN_PROBE_RECORDS
+                ));
+            }
+        }
         if self.ordering == Ordering::Learned && self.ordering_model.is_none() {
             return Err("--ordering learned requires --ordering-model <model.json> \
                  (build one with `neat_ai_ockham train-ordering`)"
@@ -235,8 +270,28 @@ impl OckhamConfig {
     }
 
     /// Sampling policy for the hidden-neuron activation scan (issue #44).
+    ///
+    /// The scan retains probe activations only when correlated-neuron merging
+    /// is on (#109), so a control run pays neither the memory nor the cache
+    /// size — and, because the probe count is part of the cache key, a
+    /// merge-enabled run can never be served a probe-free cached scan.
     pub fn stats_sample_spec(&self) -> SampleSpec {
-        SampleSpec::with_max_records(self.stats_sample_records)
+        let spec = SampleSpec::with_max_records(self.stats_sample_records);
+        match self.merge_correlation {
+            Some(_) => spec.with_probes(self.merge_probes),
+            None => spec,
+        }
+    }
+
+    /// Correlated-neuron discovery settings, or `None` when merging is off (#109).
+    pub fn merge_discovery(&self) -> Option<DiscoveryConfig> {
+        self.merge_correlation
+            .map(|min_correlation| DiscoveryConfig {
+                min_correlation,
+                band_bits: self.merge_band_bits,
+                max_bucket: self.merge_max_bucket,
+                max_partners: self.merge_max_partners,
+            })
     }
 
     /// Whether the sweep prefers never-screened neurons (issue #38).
@@ -294,6 +349,13 @@ impl OckhamConfig {
             unchecked_first: self.unchecked_first_enabled(),
             old_corpus_first: self.old_corpus_first_enabled(),
             stats_sample_records: self.stats_sample_records,
+            merge_correlation: self.merge_correlation,
+            // Reported resolved: the probe count a control run retains is zero,
+            // whatever `--merge-probes` was typed as.
+            merge_probes: self.stats_sample_spec().probes,
+            merge_band_bits: self.merge_band_bits,
+            merge_max_bucket: self.merge_max_bucket,
+            merge_max_partners: self.merge_max_partners,
             optimisation: "loop",
         }
     }
@@ -360,6 +422,16 @@ pub struct ConfigReport {
     pub old_corpus_first: bool,
     /// Cap on records visited by the activation scan (`0` = full corpus).
     pub stats_sample_records: u64,
+    /// Correlated-neuron merge threshold (`None` = merging disabled).
+    pub merge_correlation: Option<f64>,
+    /// Probe activations actually retained per neuron (`0` = merging disabled).
+    pub merge_probes: usize,
+    /// Minimum bits per locality-sensitive band.
+    pub merge_band_bits: u32,
+    /// Neurons compared pairwise inside one signature bucket.
+    pub merge_max_bucket: usize,
+    /// Merge proposals kept per removable neuron.
+    pub merge_max_partners: usize,
     /// Optimisation status for this bootstrap issue (`deferred`).
     pub optimisation: &'static str,
 }
@@ -575,6 +647,98 @@ mod tests {
         full.validate().unwrap();
         assert_eq!(full.stats_sample_spec(), SampleSpec::full());
         assert_eq!(full.stats_sample_spec().target_rel_se, 0.0);
+    }
+
+    /// Issue #109: merging is opt-in, and a control run pays nothing for it —
+    /// no probes retained, no discovery config, no proposals.
+    #[test]
+    fn correlated_neuron_merging_is_off_until_a_threshold_is_named() {
+        let control = OckhamConfig::default();
+        control.validate().unwrap();
+        assert!(control.merge_correlation.is_none());
+        assert!(control.merge_discovery().is_none());
+        assert_eq!(control.stats_sample_spec().probes, 0);
+        assert_eq!(control.report().merge_probes, 0);
+        assert!(control.report().merge_correlation.is_none());
+
+        let merging = OckhamConfig {
+            merge_correlation: Some(0.99),
+            ..OckhamConfig::default()
+        };
+        merging.validate().unwrap();
+        let discovery = merging.merge_discovery().expect("discovery is on");
+        assert_eq!(discovery.min_correlation, 0.99);
+        assert_eq!(discovery.band_bits, merging.merge_band_bits);
+        assert_eq!(
+            merging.stats_sample_spec().probes,
+            merging.merge_probes,
+            "a merging run must retain the probes its signatures need"
+        );
+        assert_eq!(merging.report().merge_probes, merging.merge_probes);
+        // The probe count keys the activation cache, so the two runs can never
+        // be served each other's scan.
+        assert_ne!(
+            control.stats_sample_spec().tag(),
+            merging.stats_sample_spec().tag()
+        );
+    }
+
+    #[test]
+    fn bad_merge_values_name_the_flag() {
+        for (bad, flag) in [
+            (
+                OckhamConfig {
+                    merge_correlation: Some(1.5),
+                    ..OckhamConfig::default()
+                },
+                "--merge-correlation",
+            ),
+            (
+                OckhamConfig {
+                    merge_correlation: Some(0.99),
+                    merge_band_bits: 0,
+                    ..OckhamConfig::default()
+                },
+                "--merge-band-bits",
+            ),
+            (
+                OckhamConfig {
+                    merge_correlation: Some(0.99),
+                    merge_max_bucket: 1,
+                    ..OckhamConfig::default()
+                },
+                "--merge-max-bucket",
+            ),
+            (
+                OckhamConfig {
+                    merge_correlation: Some(0.99),
+                    merge_max_partners: 0,
+                    ..OckhamConfig::default()
+                },
+                "--merge-max-partners",
+            ),
+            (
+                OckhamConfig {
+                    merge_correlation: Some(0.99),
+                    merge_probes: 4,
+                    ..OckhamConfig::default()
+                },
+                "--merge-probes",
+            ),
+        ] {
+            let err = bad.validate().unwrap_err();
+            assert!(err.contains(flag), "{err}");
+        }
+        // The same knobs are never checked on a control run, because it never
+        // reads them: refusing a run over a flag it ignores is a fault report
+        // about nothing.
+        OckhamConfig {
+            merge_band_bits: 0,
+            merge_probes: 0,
+            ..OckhamConfig::default()
+        }
+        .validate()
+        .unwrap();
     }
 
     #[test]
