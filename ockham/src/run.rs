@@ -43,6 +43,10 @@ pub struct BaselineRun {
     /// Isolated workspace directory.
     pub workspace: PathBuf,
     /// Incumbent metadata written beside the byte-for-byte copy.
+    ///
+    /// Describes the creature **as supplied**. When the exact cleanup pre-pass
+    /// canonicalised it, the creature the baseline was scored over is the one
+    /// `exactCleanup.after` describes (Issue #110).
     pub incumbent: IncumbentMeta,
     /// Authoritative full-corpus scorer baseline. Larger `score` is better.
     pub baseline: AuthoritativeBaseline,
@@ -59,6 +63,10 @@ pub struct BaselineRun {
     /// Distinct hidden UUIDs this run screened for the first time (Issue #77).
     pub newly_screened: usize,
     /// Cumulative score gain from the opening parent.
+    ///
+    /// The opening parent is the canonicalised incumbent when the exact
+    /// cleanup pre-pass fired, so this counts what *screening* bought; what the
+    /// pre-pass removed is reported by `exactCleanup` (Issue #110).
     pub cumulative_delta: f64,
     /// Exact structural cleanup pre-pass, when it ran (Issue #110).
     ///
@@ -119,7 +127,6 @@ pub fn establish_run(
             config,
             &mut incumbent,
             &mut creature_meta,
-            &workspace,
         )?)
     } else {
         log::detail("exact cleanup pre-pass disabled (--no-exact-cleanup)");
@@ -268,14 +275,14 @@ pub const EXACT_CLEANUP_FILE: &str = "exact-cleanup.json";
 /// creature, which is the one scorer sanity check the pass gets.
 ///
 /// Provenance is carried, not dropped: per-neuron tags for surviving neurons
-/// are kept and tags for removed neurons go with them ([`CreatureMeta::retain_neurons`]),
-/// and the byte-for-byte workspace copy of the source creature is untouched —
-/// the canonicalised creature is written beside it as `canonical.json`.
+/// are kept and tags for removed neurons go with them
+/// ([`CreatureMeta::retain_neurons`]), the byte-for-byte workspace copy of the
+/// source creature is untouched, and the canonicalised creature is what
+/// `best.json` opens on.
 fn exact_cleanup_pre_pass(
     config: &OckhamConfig,
     incumbent: &mut Incumbent,
     meta: &mut CreatureMeta,
-    workspace: &std::path::Path,
 ) -> Result<crate::canonical::CleanupReport, String> {
     let started = Instant::now();
     let done = crate::canonical::canonicalise(&incumbent.creature).map_err(|e| e.to_string())?;
@@ -295,6 +302,11 @@ fn exact_cleanup_pre_pass(
     for note in &report.rejected {
         log::warn(&format!("exact cleanup: {note}"));
     }
+    std::fs::create_dir_all(&config.output_dir)
+        .map_err(|e| format!("{}: {e}", config.output_dir.display()))?;
+    let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    std::fs::write(config.output_dir.join(EXACT_CLEANUP_FILE), json)
+        .map_err(|e| format!("{EXACT_CLEANUP_FILE}: {e}"))?;
     if !report.changed {
         return Ok(report);
     }
@@ -302,14 +314,6 @@ fn exact_cleanup_pre_pass(
     meta.retain_neurons(&done.creature);
     *incumbent =
         Incumbent::from_creature(done.creature, "ockham-canonical").map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&config.output_dir)
-        .map_err(|e| format!("{}: {e}", config.output_dir.display()))?;
-    let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
-    std::fs::write(config.output_dir.join(EXACT_CLEANUP_FILE), json)
-        .map_err(|e| format!("{EXACT_CLEANUP_FILE}: {e}"))?;
-    std::fs::create_dir_all(workspace).map_err(|e| format!("{}: {e}", workspace.display()))?;
-    std::fs::write(workspace.join("canonical.json"), &incumbent.text)
-        .map_err(|e| format!("canonical.json: {e}"))?;
     journal::append(
         &config.output_dir.join("experiments.jsonl"),
         &Event::ExactCleanup {
@@ -2946,7 +2950,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(filed, report);
-        assert!(run.workspace.join("canonical.json").exists());
 
         // Journalled before anything statistical: it is the first record.
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
@@ -3038,7 +3041,17 @@ mod tests {
         let report = run.exact_cleanup.expect("the pre-pass still reports");
         assert!(!report.changed);
         assert_eq!(report.growth_units_saved, 0.0);
-        assert!(!cfg.output_dir.join(EXACT_CLEANUP_FILE).exists());
+        // "Already canonical" is a finding, so the report is still filed.
+        let filed: crate::canonical::CleanupReport = serde_json::from_str(
+            &std::fs::read_to_string(cfg.output_dir.join(EXACT_CLEANUP_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(filed, report);
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            !journal.contains("exactCleanup"),
+            "a pass that removed nothing journals nothing: {journal}"
+        );
         assert_eq!(
             std::fs::read(cfg.output_dir.join("best.json")).unwrap(),
             source,
@@ -6262,6 +6275,70 @@ mod tests {
             learnings_host: Some("t".into()),
             ..test_defaults()
         }
+    }
+
+    /// Issue #110: the pre-pass runs before coverage and the learnings store,
+    /// so both must describe the canonicalised creature — never a neuron the
+    /// exact rewrite already removed.
+    #[test]
+    fn coverage_and_learnings_describe_the_canonicalised_creature() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creature = tmp.path().join("creature.json");
+        let c = crate::fixtures::creature(
+            1,
+            1,
+            vec![
+                // Collapsible: an IDENTITY passthrough the pre-pass removes.
+                crate::fixtures::neuron("hidden", "h_pass", 0.0, Some("IDENTITY")),
+                // Not collapsible: only the scorer may decide about this one.
+                crate::fixtures::neuron("hidden", "h_live", 0.1, Some("TANH")),
+                crate::fixtures::neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                crate::fixtures::synapse("input-0", "h_pass", 1.0),
+                crate::fixtures::synapse("input-0", "h_live", 0.5),
+                crate::fixtures::synapse("h_pass", "output-0", 1.0),
+                crate::fixtures::synapse("h_live", "output-0", 0.7),
+            ],
+        );
+        std::fs::write(&creature, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let train = tmp.path().join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
+        )
+        .unwrap();
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = OckhamConfig {
+            exact_cleanup: true,
+            ..restart_cfg(
+                creature,
+                train.clone(),
+                tmp.path().join("out"),
+                Some(learnings_dir.clone()),
+                Some(1),
+            )
+        };
+        let run = establish_run(&cfg, &losing_scorer()).unwrap();
+
+        let report = run.exact_cleanup.expect("the pre-pass reports");
+        assert!(report.changed);
+        assert!(
+            report.removed_neurons.iter().any(|n| n.uuid == "h_pass"),
+            "{:?}",
+            report.removed_neurons
+        );
+
+        // Coverage counts what is left to screen, not what was proven away.
+        let cov = coverage_json(&cfg.output_dir);
+        assert_eq!(cov.hidden, 1, "{cov:?}");
+        assert_eq!(cov.checked, 1, "{cov:?}");
+
+        // Screen records name the surviving neuron only: a verdict about a
+        // neuron the creature no longer has would poison the fleet cache.
+        let uuids = screened_uuids(&screens_store(&learnings_dir, &train));
+        assert_eq!(uuids, vec!["h_live".to_string()], "{uuids:?}");
     }
 
     /// What #77 removes: before this an exhausted sweep ended the run outright,

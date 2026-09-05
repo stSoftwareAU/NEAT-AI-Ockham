@@ -5,10 +5,14 @@
 //! anything, so this pass runs first and removes it — if we can prove the wood
 //! is dead, we do not buy an experiment to find out. 🪒
 //!
-//! Every rule here is **exact**: the canonicalised creature computes the same
-//! outputs as the incumbent for every finite input. Nothing in this module
-//! reads an activation statistic, a sampled score, or a threshold — an
-//! approximate cut belongs in [`crate::ablation`], where the scorer decides.
+//! Every rule here is **algebraically exact**: the canonicalised creature
+//! computes the same function as the incumbent, term for term, rather than an
+//! approximation of it. What it does not promise is bit-identical `f32`
+//! arithmetic — folding `bias_z += bias_y * b` and composing weights re-order
+//! floating-point operations, so outputs agree to rounding, not to the last
+//! bit. Nothing in this module reads an activation statistic, a sampled score,
+//! or a threshold — an approximate cut belongs in [`crate::ablation`], where
+//! the scorer decides.
 //!
 //! # The rules and their invariants
 //!
@@ -52,7 +56,7 @@ use std::fmt;
 use neat_core::{CreatureExport, parse_squash_name};
 use serde::{Deserialize, Serialize};
 
-use crate::ablation::{StructureSnapshot, cleanup_cascade};
+use crate::ablation::{StructureSnapshot, cleanup_cascade, growth_units};
 use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
 use crate::fixtures::sort_synapses_canonically;
 use crate::incumbent::validate_creature;
@@ -274,8 +278,13 @@ impl CleanupReport {
 
 /// Growth units saved by removing `hidden` hidden neurons and `synapses`
 /// synapses, signed so an added synapse subtracts.
+///
+/// Composed from [`crate::ablation::growth_units`] rather than restating its
+/// formula: it is linear in both terms, so a signed synapse delta is the
+/// difference of two calls and the cost model stays in one place.
 fn rule_growth_units(hidden: usize, synapses: i64) -> f64 {
-    hidden as f64 + synapses as f64 / 10.0
+    growth_units(hidden, synapses.max(0) as usize)
+        - growth_units(0, synapses.min(0).unsigned_abs() as usize)
 }
 
 /// The canonicalised creature and the report that explains it.
@@ -373,16 +382,28 @@ fn drop_zero_weight_synapses(working: &mut CreatureExport, report: &mut CleanupR
     if keys.is_empty() {
         return false;
     }
-    if let Some(step) = try_drop(working, &keys, report) {
+    // The batch attempt records nothing: a refusal here is only a finding if
+    // the per-synapse retry below refuses too, and a note for a drop that then
+    // succeeded would be a failure marker over a healthy run.
+    if let Some(step) = try_drop(working, &keys, &mut Vec::new()) {
         commit_drop(working, step, report);
         return true;
     }
     // The batch was refused as a whole; every drop still gets its own hearing.
     let mut applied = false;
     for key in keys {
-        if let Some(step) = try_drop(working, std::slice::from_ref(&key), report) {
+        let mut refusal = Vec::new();
+        if let Some(step) = try_drop(working, std::slice::from_ref(&key), &mut refusal) {
             commit_drop(working, step, report);
             applied = true;
+        } else {
+            // Deduplicated: the same undroppable synapse is re-offered on every
+            // pass, and one finding must not become a page of them.
+            for note in refusal {
+                if !report.rejected.contains(&note) {
+                    report.rejected.push(note);
+                }
+            }
         }
     }
     applied
@@ -405,25 +426,32 @@ fn zero_weight_keys(working: &CreatureExport) -> Vec<(String, String)> {
         .filter(|n| n.neuron_type == "output")
         .map(|n| n.uuid.as_str())
         .collect();
-    let mut incoming: HashMap<&str, usize> = HashMap::new();
+    // Counted down as the batch is selected, not read off the creature: two
+    // zero-weight synapses into the same output are each "not the last one"
+    // against the untouched count, and dropping both would leave that output
+    // with no feed at all.
+    let mut remaining: HashMap<&str, usize> = HashMap::new();
     for syn in &working.synapses {
-        *incoming.entry(syn.to_uuid.as_str()).or_default() += 1;
+        *remaining.entry(syn.to_uuid.as_str()).or_default() += 1;
     }
-    working
-        .synapses
-        .iter()
-        .filter(|syn| {
-            // An output left with no feed at all is structure this pass has no
-            // exact rewrite for; the scorer-verified path may still cut it.
-            let last_feed_of_output = outputs.contains(syn.to_uuid.as_str())
-                && incoming.get(syn.to_uuid.as_str()).copied().unwrap_or(0) <= 1;
-            syn.weight == 0.0
-                && syn.synapse_type.is_none()
-                && !aggregate.contains(syn.to_uuid.as_str())
-                && !last_feed_of_output
-        })
-        .map(|syn| (syn.from_uuid.clone(), syn.to_uuid.clone()))
-        .collect()
+    let mut keys = Vec::new();
+    for syn in &working.synapses {
+        if syn.weight != 0.0
+            || syn.synapse_type.is_some()
+            || aggregate.contains(syn.to_uuid.as_str())
+        {
+            continue;
+        }
+        let left = remaining.get(syn.to_uuid.as_str()).copied().unwrap_or(0);
+        // An output left with no feed at all is structure this pass has no
+        // exact rewrite for; the scorer-verified path may still cut it.
+        if outputs.contains(syn.to_uuid.as_str()) && left <= 1 {
+            continue;
+        }
+        remaining.insert(syn.to_uuid.as_str(), left.saturating_sub(1));
+        keys.push((syn.from_uuid.clone(), syn.to_uuid.clone()));
+    }
+    keys
 }
 
 /// One accepted zero-weight step: the creature it produced and what it removed.
@@ -435,12 +463,13 @@ struct DropStep {
 
 /// Build the creature that drops `keys`, cleans up after them, and validates.
 ///
-/// `None` — with the reason recorded — when the cascade refuses the topology or
-/// the result fails validation. The caller keeps the creature it had.
+/// `None` — with the reason pushed to `refusals` — when the cascade refuses the
+/// topology or the result fails validation. The caller keeps the creature it
+/// had, and decides whether that refusal is a finding worth reporting.
 fn try_drop(
     working: &CreatureExport,
     keys: &[(String, String)],
-    report: &mut CleanupReport,
+    refusals: &mut Vec<String>,
 ) -> Option<DropStep> {
     let wanted: HashSet<(&str, &str)> =
         keys.iter().map(|(f, t)| (f.as_str(), t.as_str())).collect();
@@ -461,14 +490,14 @@ fn try_drop(
     candidate.synapses.retain(|syn| !is_dropped(syn));
     let mut cascade = Vec::new();
     if let Err(skip) = cleanup_cascade(&mut candidate, &mut Vec::new(), &mut cascade) {
-        report.rejected.push(format!(
+        refusals.push(format!(
             "zero-weight removal of {} synapse(s) not applied: {skip}",
             dropped.len()
         ));
         return None;
     }
     if let Err(e) = validate_creature(&candidate) {
-        report.rejected.push(format!(
+        refusals.push(format!(
             "zero-weight removal of {} synapse(s) rolled back: {e}",
             dropped.len()
         ));
@@ -1092,6 +1121,30 @@ mod tests {
                 .sum::<usize>(),
             report.removed_neurons.len()
         );
+    }
+
+    #[test]
+    fn two_zero_weight_feeds_of_one_output_never_both_go() {
+        // Against the untouched incoming count neither synapse is "the last
+        // one", so a batch that does not count down as it selects would strand
+        // the output with no feed at all.
+        let incumbent = creature(
+            2,
+            1,
+            vec![neuron("output", "output-0", 0.4, Some("IDENTITY"))],
+            vec![
+                synapse("input-0", "output-0", 0.0),
+                synapse("input-1", "output-0", 0.0),
+            ],
+        );
+        let done = canonicalise(&incumbent).unwrap();
+        assert_eq!(
+            done.creature.synapses.len(),
+            1,
+            "one feed must survive: {:?}",
+            done.creature.synapses
+        );
+        assert_same_outputs(&incumbent, &done.creature, &grid(2));
     }
 
     #[test]
