@@ -75,6 +75,12 @@ The current Rust implementation includes:
 - every hidden neuron is a prune candidate: neuron tags are informational
   metadata that record where a neuron came from, and they confer no exemption
   from the razor (#63, #87);
+- blocked visits broken down by **reason code** and attacked rather than
+  counted (#103): the reason rides on the screen record, `coverage.txt`,
+  `coverage.json`, the journal and `report` all count by it — `report` per
+  screening epoch — and the dominant category, aggregate/typed structure the
+  bias fold cannot express, is now proposable through
+  [constant substitution](docs/blocked-reasons.md);
 - named, reproducible candidate orderings with random as the measured control,
   plus the report measures needed to compare their discovery economics;
 - normal Rust CI, security and quality gates.
@@ -112,6 +118,7 @@ seeded ordering of hidden neurons (random control by default)
 ~100 pruning candidates
         │
         ├── mean-activation bias compensation
+        ├── mean-valued constant substitution where the fold cannot reach
         ├── exact deterministic cleanup where possible
         ├── cascading dead-structure removal
         └── NEAT-AI-core creature.validate()
@@ -431,8 +438,8 @@ against:
 
 | Visit | Record `kind` | Version | Counted as |
 |---|---|---|---|
-| Candidate the scorer screened, winner or loser | `identity` / `ablation` | 2 | checked |
-| Nothing could be proposed — an aggregate squash downstream, a typed synapse | `skipped` | 3 | checked **and** blocked |
+| Candidate the scorer screened, winner or loser | `identity` / `ablation` / `constant` | 2 | checked |
+| Nothing could be proposed — no finite activation statistic, a candidate that would not validate | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
 | A standing full-corpus verdict suppressed the try | `known-failure` | 3 | checked |
 
 A record for a visit that scored nothing is written at **version 3**, which a
@@ -451,15 +458,28 @@ is reconstructable from `experiments.jsonl` alone.
 
 Filing the unproposable visits is what fixed `checked` going *backwards*
 (#93). On a forest-heavy creature roughly four hidden neurons in five feed an
-aggregate squash and can never be ablated; while those visits filed nothing the
+aggregate squash and could not be ablated; while those visits filed nothing the
 numerator was pinned to the prunable minority, fell by one on every accepted cut
 and reported `1417/6969` one run, `1416/7005` the next. A visit is coverage even
 when there was nothing to try — and `blocked` says how much of `checked` was
 reached that way, so the percentage never claims a screen that never happened.
-Each batch also logs its skips by class (`aggregate target: 41, typed synapse:
-6`), because the two record kinds are coarser than the reasons behind them: an
-ablation can also fail on a non-finite measured mean, and that neuron may well
-propose a candidate on a later pass.
+
+Since #103 a blocked visit also records **why**, as a reason code on the record
+(`blockedReason`), and each batch logs its skips by the same codes
+(`missing-activation: 6, known-failure: 3`). One number could not be attacked; a
+breakdown can be, and the dominant category — aggregate and typed structure the
+bias fold cannot express — is now *proposed* as a
+[constant substitution](docs/blocked-reasons.md) rather than blocked, which is
+why `aggregate-squash` is a category the codes can still name but the sweep
+rarely reaches. `blocked` never meant *not pruneable forever*: it means the
+current proposal mechanism does not know how to test this neuron safely, and the
+code says which mechanism is missing.
+
+A substituted candidate is a third scored kind, `constant`, in `screens/` and in
+the journal. It leaves a `constant` neuron where the hidden one was, so `cut:`
+counts it — the hidden neuron is gone and the structure that fed it with it —
+while the creature keeps one node emitting a fixed value. As always, the
+full-corpus scorer decides whether that trade was worth making.
 
 Coverage is still a statement about the creature in front of us, not a score
 that only ever rises: a cut removes a checked neuron, so the count still steps
@@ -473,7 +493,7 @@ rather than failing the run.
 ```mermaid
 flowchart LR
     V[sweep visit] --> Q{"candidate proposed?"}
-    Q -->|"no — aggregate or typed"| K["kind: skipped<br/>(checked, blocked)"]
+    Q -->|"no — with a reason code"| K["kind: skipped<br/>(checked, blocked)"]
     Q -->|"no — known failure"| F["kind: known-failure<br/>(checked)"]
     Q -->|yes| S{"--screen-sample-rate"}
     S -->|"rate > 0"| C[sampled screen]
@@ -710,7 +730,9 @@ The denominator is every hidden neuron of the **current** incumbent:
   as `blocked` beside the percentage (#93), never deducted from it — the neuron
   is on the creature and the sweep has been to it. `blocked` says no cut *was*
   proposed on the visits so far, not that none ever could be: one real screen
-  anywhere in fleet history clears it;
+  anywhere in fleet history clears it, and since #103 the reason on the record
+  says which mechanism was missing, split by code in `blockedByReason` and on
+  the `reasons:` line of the description;
 - only records measured against the **corpus in hand** are counted (#100): a
   changed corpus opens a new screening epoch at `0 / hidden`, and `100%` means
   100% of that epoch. See
@@ -735,7 +757,7 @@ flowchart LR
     S -->|yes| D["checked"]
     S -->|no| U["unchecked"]
     D --> B{"every record a<br/>skipped visit?"}
-    B -->|yes| K["also counted as blocked —<br/>reported beside the percentage"]
+    B -->|yes| K["also counted as blocked —<br/>reported beside the percentage,<br/>split by reason code"]
     B -->|no| Q["the scorer screened it"]
     D --> P["percent = checked / checkable"]
 ```
@@ -763,6 +785,7 @@ epoch:     corpus 6fc028da — coverage counts this corpus only
 cut:       7 this run
 unchecked: 3809 remaining this epoch (~39 runs at 100/run)
 blocked:   412 checked with no cut proposed
+reasons:   missing-activation 380 (92.2%) · validation-failed 32 (7.8%)
 tagged:    42 carry tags, screened like any other
 progress:  100 newly checked this run
 history:   4802 of 5013 ever checked across 3 corpus epochs
@@ -780,6 +803,11 @@ dropped:   12 entries over budget (est 18s/creature)
 - the `blocked:` line is omitted when nothing is blocked, and says how many of
   the `checked` were reached by a visit that proposed no cut (#93) — they stay
   inside the percentage, because the sweep has been to them;
+- the `reasons:` line follows it (#103) and splits that total by reason code,
+  commonest first with each category's share of the blocked total. The counts
+  are over UUIDs and sum to `blocked` exactly, so the line is a work list: the
+  head of it is the category a new proposal path would pay for. Omitted with
+  the `blocked:` line it qualifies;
 - the `tagged:` line is omitted when no neuron is tagged, and says only how many
   hidden neurons carry tags — a tagged neuron the run cut is counted by `cut:`
   like any other (#87);
@@ -1121,6 +1149,8 @@ scoring exactly as it does under the random control.
 | `low-fan-out` | Fewest outgoing synapses (smallest structural blast radius). |
 | `high-growth-saving` | Largest growth-unit saving per removed structure. |
 | `identity-first` | `IDENTITY` neurons — exact-fold opportunities. |
+| `cascade-saving` | Largest **cascade-aware** growth-unit saving; see [Cascade-aware structural saving](#cascade-aware-structural-saving). |
+| `cascade-risk-ratio` | Least `mean_abs_activation × Σ abs(outgoing weight)` per cascade growth unit. |
 
 Every strategy starts from the seeded random permutation and then applies a
 **stable** sort by its ranking key, so ties keep an unbiased random order and
@@ -1153,6 +1183,91 @@ flowchart LR
 The default ordering changes only if benchmark evidence shows better
 scorer-verified improvement economics. Until then `random` stays the default and
 remains available as the control for every comparison.
+
+## Cascade-aware structural saving
+
+Cutting one hidden neuron strands structure on both sides of it. A neuron that
+fed only the cut neuron now feeds nothing; a neuron the cut neuron was the only
+source for now folds to a constant. The ablation already removes that structure
+recursively **after** a candidate is built — `cascade-saving` asks how much it
+would remove **before** any scorer time is spent on the candidate.
+
+The dry run is topology only and never touches the incumbent: it indexes the
+creature once, then applies the same two exact rules the cleanup applies until
+nothing more is strandable.
+
+```mermaid
+flowchart LR
+    C[incumbent] --> I[index once per creature]
+    I --> D["dry-run cut of neuron N"]
+    D --> R1{"non-output with<br/>no outgoing?"}
+    D --> R2{"hidden with<br/>no incoming?"}
+    R1 -->|remove| D
+    R2 -->|"fold to constant,<br/>remove"| D
+    D --> E["estimate: hidden, folded,<br/>synapses, growth_units"]
+    E --> O[ordering key]
+```
+
+Both rules only ever remove structure, so the fixpoint does not depend on the
+order they are applied in: the estimate for a creature and a cut is the same on
+every run and under any listing order. Estimates are built once per creature and
+reused for every candidate, so ranking a whole sweep costs one index and no
+clone of the creature.
+
+Structure the transform would refuse is predicted too. An aggregate or unknown
+squash, an aggregate fold target and a typed edge each make the ablation fail
+closed, so a cut the razor could never build is reported as saving nothing and
+ranks last — it keeps its place in the sweep, because the constant substitution
+may still propose a candidate for it.
+
+`high-growth-saving` counts only the neuron and the synapses touching it, so a
+neuron with many edges outranks a chain head with two — even when cutting the
+chain head takes five neurons with it. `cascade-saving` sees the chain.
+`cascade-risk-ratio` divides the downstream sensitivity
+`mean_abs_activation × Σ abs(outgoing weight)` by the cascade saving, so a quiet
+cut that removes a lot of structure is tried before a loud one that removes
+little.
+
+```bash
+cargo run --release --example cascade_ordering_bench
+```
+
+On a synthetic creature of 2,000 lone hidden neurons and 200 five-neuron chains,
+the first 200 visits are worth — scored by putting every visited neuron through
+the real ablation and its recursive cleanup, not by the ranking key:
+
+| `--ordering` | Growth units in 200 visits | Per visit |
+|---|---|---|
+| `random` | 543.8 | 2.72 |
+| `high-growth-saving` | 260.0 | 1.30 |
+| `cascade-saving` | 1120.0 | 5.60 |
+| `cascade-risk-ratio` | 1120.0 | 5.60 |
+
+Building the order is a once-per-sweep cost, and the dry run pays for itself
+against the ranking it replaces: at 7,000 hidden neurons and 19,200 synapses,
+`cascade-saving` builds its order in 184 ms against `high-growth-saving`'s
+232 ms.
+
+The estimate is a **prioritisation signal only**. It reasons about topology and
+knows nothing of aggregate squashes, typed synapses or behaviour: a candidate it
+ranks first can still be blocked when it is proposed, and can still lose. Only
+the full-corpus scorer accepts a cut — so every accept journals what the dry-run
+predicted beside what the accepted creature actually removed:
+
+```json
+{"record":"cascade","kind":"individual","cuts":1,"estimated_hidden":3,
+ "estimated_synapses":4,"estimated_growth_units":3.4,"actual_hidden":3,
+ "actual_synapses":4,"actual_growth_units":3.4}
+```
+
+`report` folds those records into `cascadeAccepts`,
+`cascadeEstimatedGrowthUnits`, `cascadeActualGrowthUnits` and
+`cascadeEstimateRatio`. A ratio below `1.0` means the accept removed less than
+the dry run predicted — an exact IDENTITY collapse rewires an edge the topology
+said would go, and a constant substitution keeps one — and a signal that drifts
+from what the razor really removes is a signal to stop paying for. The record is
+written on every accept, whatever ordering the run used, so the control runs
+measure the predictor too.
 
 ## Outputs
 
@@ -1189,6 +1304,11 @@ Useful measures include:
 - time to the first authoritative local winner (`firstWinMs`);
 - candidates screened before that first win (`candidatesBeforeFirstWin`);
 - authoritative local accepts per hour (`acceptsPerHour`);
+- confirmed cuts and growth units removed per hour (`cutsPerHour`,
+  `growthUnitsSavedPerHour`) — the two economics an ordering is judged on;
+- estimated versus actual cascade saving across accepted cuts
+  (`cascadeAccepts`, `cascadeEstimatedGrowthUnits`,
+  `cascadeActualGrowthUnits`, `cascadeEstimateRatio`);
 - sample and full scorer calls consumed (`screenCalls`, `fullCalls`);
 - progressive screening economics (`screenStageCalls`, `screenStageRecords`,
   `screenStageRejected`) — all `0` on a fixed-rate control run, which journals
@@ -1214,6 +1334,17 @@ neat_ai_ockham creature.json training/ --seed 42 --ordering low-variance \
   --output-dir runs/low-variance
 neat_ai_ockham report runs/control/experiments.jsonl
 neat_ai_ockham report runs/low-variance/experiments.jsonl
+```
+
+The same recipe benchmarks the cascade orderings against the edge-count ranking
+they replace. `cutsPerHour` and `growthUnitsSavedPerHour` are what to compare:
+
+```bash
+for o in random high-growth-saving cascade-saving cascade-risk-ratio; do
+  neat_ai_ockham creature.json training/ --seed 42 --ordering "$o" \
+    --output-dir "runs/$o"
+  neat_ai_ockham report "runs/$o/experiments.jsonl"
+done
 ```
 
 ## Safety invariants
@@ -1282,6 +1413,8 @@ NEAT-AI-Ockham/
 │       ├── stats.rs           # hidden-neuron activation statistics
 │       ├── ablation.rs        # mean-activation ablation + cleanup
 │       ├── collapse.rs        # exact IDENTITY neuron collapse
+│       ├── substitute.rs      # mean-valued constant substitution
+│       ├── blocked.rs         # blocked-reason codes + per-epoch breakdown
 │       ├── sweep.rs           # seeded random sweep + 5% screen
 │       ├── screening.rs       # progressive adaptive screening ladder
 │       ├── promote.rs         # full-score winners + bundles
@@ -1292,12 +1425,14 @@ NEAT-AI-Ockham/
 │       ├── learnings.rs       # fleet prune-verdict cache + screen coverage
 │       ├── coverage.rs       # checked/total/percent + coverage.txt / coverage.json
 │       ├── ordering.rs        # named candidate ordering strategies
+│       ├── cascade.rs         # topology-only cascade dry-run for ordering
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs
 │       └── cancel.rs
 ├── docs/
 │   ├── grq-integration.md   # audit: how GRQ invokes Ockham and reads it back
+│   ├── blocked-reasons.md   # blocked codes, and the path built for the largest
 │   └── population-entry.md  # how cuts actually enter the live population
 ├── quality.sh
 ├── rust-toolchain.toml

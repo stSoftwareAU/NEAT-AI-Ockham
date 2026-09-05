@@ -28,6 +28,7 @@
 //! | fleet learnings store + replay | [`learnings`] | #27 |
 //! | named candidate orderings | [`ordering`] | #11 |
 //! | progressive adaptive screening ladder | [`screening`] | #104 |
+//! | cascade-aware structural saving | [`cascade`] | #106 |
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
 //! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
 
@@ -35,7 +36,9 @@
 
 pub mod ablation;
 pub mod baseline;
+pub mod blocked;
 pub mod cancel;
+pub mod cascade;
 pub mod collapse;
 pub mod config;
 pub mod corpus;
@@ -53,12 +56,15 @@ pub mod run;
 pub mod scorer;
 pub mod screening;
 pub mod stats;
+pub mod substitute;
 pub mod sweep;
 pub mod tags;
 
 pub use ablation::{Ablation, AblationSkip, TransformClass, ablate_mean};
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
+pub use blocked::{BlockedBreakdown, BlockedReason};
 pub use cancel::CancelToken;
+pub use cascade::{CascadeEstimate, CascadeIndex, estimate_cut};
 pub use collapse::{CollapseOptions, CollapseSkip, IdentityCollapse, collapse_identity};
 pub use config::{
     ConfigReport, DEFAULT_CANDIDATE_COUNT, DEFAULT_MIN_IMPROVEMENT, DEFAULT_SCREEN_SAMPLE_RATE,
@@ -79,6 +85,7 @@ pub use screening::{
     StageRecord, screen_progressive,
 };
 pub use stats::{ActivationStats, NeuronStats, SampleSpec, ensure_activation_stats};
+pub use substitute::{ConstantSubstitution, SubstitutionSkip, substitute_constant};
 pub use sweep::{
     ScreenConfig, ScreenOutcome, ScreenRejection, ScreenedLoser, Sweep, SweepCandidate, draw_seed,
     screen_batch,

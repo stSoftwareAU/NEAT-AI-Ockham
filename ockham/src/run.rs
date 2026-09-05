@@ -1274,7 +1274,7 @@ fn ockham_loop(
         let visits: Vec<ScreenTry<'_>> = skips
             .iter()
             .filter(|s| !progress.seen(&s.uuid))
-            .map(|s| ScreenTry::visited(&s.uuid, skip_kind(&s.reason)))
+            .map(skip_try)
             .collect();
         if candidates.is_empty() {
             if !visits.is_empty() {
@@ -1702,6 +1702,7 @@ fn ockham_loop(
                 checkable: cov.checkable,
                 checked: cov.checked,
                 blocked: cov.blocked,
+                blocked_by_reason: cov.blocked_by_reason,
                 cut: cov.cut,
                 corpus_identity: Some(corpus.identity.clone()),
             },
@@ -1950,20 +1951,29 @@ fn prefer_prior_corpus(
     ));
 }
 
-/// Screen-record kind for a sweep skip, from the reason it carries (Issue #93).
+/// The screen record one sweep skip files (Issues #93, #103).
 ///
 /// A standing full-corpus verdict is the strongest check there is — the cut was
-/// proposed, scored and judged — so it is never filed as a skip; everything the
-/// sweep could not propose is.
-fn skip_kind(reason: &str) -> &'static str {
-    if reason == crate::sweep::KNOWN_FAILURE_REASON {
-        crate::learnings::SCREEN_KIND_KNOWN_FAILURE
-    } else {
-        crate::learnings::SCREEN_KIND_SKIPPED
+/// proposed, scored and judged — so it is filed as a known failure and carries
+/// no blocked reason. Everything else is filed as a blocked visit.
+///
+/// The known-failure claim is made only for the skip that actually carries
+/// [`crate::sweep::KNOWN_FAILURE_REASON`], never as a default: `SweepSkip` has
+/// public fields, and a skip that named no reason code would otherwise be
+/// upgraded to "the fleet scored and judged this cut" — a claim nothing made.
+/// A skip with neither is blocked for an explicit-but-unknown reason, which is
+/// what [`crate::blocked::BlockedReason::Other`] is for.
+fn skip_try(skip: &crate::sweep::SweepSkip) -> ScreenTry<'_> {
+    if skip.reason == crate::sweep::KNOWN_FAILURE_REASON && skip.blocked.is_none() {
+        return ScreenTry::visited(&skip.uuid, crate::learnings::SCREEN_KIND_KNOWN_FAILURE);
     }
+    ScreenTry::blocked(
+        &skip.uuid,
+        skip.blocked.unwrap_or(crate::blocked::BlockedReason::Other),
+    )
 }
 
-/// `aggregate target: 41, known-failure: 3` — one batch's skips, by reason.
+/// `aggregate-squash: 41, known-failure: 3` — one batch's skips, by reason.
 ///
 /// The kind filed against a skipped visit is only two buckets wide, so the
 /// reason itself would otherwise be discarded: an unexpected skip — a
@@ -1971,53 +1981,30 @@ fn skip_kind(reason: &str) -> &'static str {
 /// indistinguishable in the audit trail from the aggregate structure that
 /// accounts for most of them, and a neuron the razor could prune on a later
 /// pass would be silently filed alongside one it never can (Issue #93).
+///
+/// Counted by [`crate::blocked::BlockedReason`] code since #103, so the line
+/// here, the record on disk and the coverage breakdown are the same categories
+/// — the old word-prefix classifier could not be reconciled with either.
 /// Commonest first, so the head of the line answers "why is this creature not
 /// being pruned?".
 fn skip_reason_tally(skips: &[crate::sweep::SweepSkip]) -> String {
-    let mut counts: Vec<(String, usize)> = Vec::new();
+    let mut counts: Vec<(&str, usize)> = Vec::new();
     for skip in skips {
-        let class = skip_reason_class(&skip.reason);
+        let class = skip
+            .blocked
+            .map(crate::blocked::BlockedReason::code)
+            .unwrap_or(crate::sweep::KNOWN_FAILURE_REASON);
         match counts.iter_mut().find(|(seen, _)| *seen == class) {
             Some((_, n)) => *n += 1,
             None => counts.push((class, 1)),
         }
     }
-    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     counts
         .iter()
         .map(|(class, n)| format!("{class}: {n}"))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-/// The bounded class of one skip reason: no uuids, no squash names, no numbers.
-///
-/// Reasons name the neuron they are about, so tallying them verbatim would
-/// produce one class per neuron. Everything inside backticks is dropped, the
-/// remainder is cut at the first `(` or `;`, and the first three surviving
-/// words are kept — leaving a handful of stable classes (`squash is aggregate`,
-/// `aggregate target`, `typed synapse`, `non-finite mean`, …).
-fn skip_reason_class(reason: &str) -> String {
-    let mut out = String::new();
-    let mut quoted = false;
-    for part in reason.split('`') {
-        if !quoted {
-            out.push_str(part);
-            out.push(' ');
-        }
-        quoted = !quoted;
-    }
-    let head = out.split(['(', ';']).next().unwrap_or_default();
-    let words: Vec<&str> = head
-        .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-'))
-        .filter(|w| !w.is_empty())
-        .take(3)
-        .collect();
-    if words.is_empty() {
-        return "unclassified".into();
-    }
-    words.join(" ")
 }
 
 /// Reorder the sweep's unvisited tail unchecked-first, stalest-first (Issue #38).
@@ -2169,6 +2156,47 @@ struct StampedAccept {
     checksum: String,
 }
 
+/// Journal what the cascade dry-run predicted beside what the accept removed.
+///
+/// The prediction is topology-only and the accepted creature is whatever the
+/// scorer actually preferred — an IDENTITY collapse, a constant substitution
+/// that keeps the edge, or a bundle — so the two legitimately differ. Recording
+/// both is what makes the ranking signal auditable rather than assumed
+/// (Issue #106).
+fn journal_cascade(
+    path: &std::path::Path,
+    before: &CreatureExport,
+    after: &CreatureExport,
+    uuids: &[String],
+    kind: &str,
+) -> Result<(), String> {
+    let estimate = crate::cascade::estimate_cut(before, uuids);
+    let opening = crate::ablation::StructureSnapshot::of(before);
+    let closing = crate::ablation::StructureSnapshot::of(after);
+    let actual_growth_units = opening.growth_units - closing.growth_units;
+    // Signed, so a transform that adds structure on one axis while its growth
+    // units still fall is recorded as the addition it is (a collapse rewiring
+    // a fan-in × fan-out neuron can do exactly that).
+    let removed = |before: usize, after: usize| before as i64 - after as i64;
+    log::detail(&format!(
+        "cascade: {kind} estimated {:.1} growth units, removed {actual_growth_units:.1}",
+        estimate.growth_units
+    ));
+    journal::append(
+        path,
+        &Event::Cascade {
+            kind: kind.to_string(),
+            cuts: uuids.len(),
+            estimated_hidden: estimate.hidden_neurons(),
+            estimated_synapses: estimate.synapses,
+            estimated_growth_units: estimate.growth_units,
+            actual_hidden: removed(opening.hidden_neurons, closing.hidden_neurons),
+            actual_synapses: removed(opening.synapses, closing.synapses),
+            actual_growth_units,
+        },
+    )
+}
+
 /// Write the tagged creature to `best.json` and to the winners archive.
 fn publish_best(
     config: &OckhamConfig,
@@ -2218,6 +2246,16 @@ fn apply_local_win(
     };
     *current_score = win.candidate.score;
     *accepts += 1;
+    // Before the incumbent is replaced: the estimate that ranked this cut was
+    // made against the creature being cut, so it is checked against the same
+    // one (Issue #106).
+    journal_cascade(
+        &config.output_dir.join("experiments.jsonl"),
+        &incumbent.creature,
+        &win.creature,
+        &win.candidate.uuids,
+        last,
+    )?;
     meta.retain_neurons(&win.creature);
     // Coverage over the creature we are about to publish, so the tag agrees
     // with the run's end-of-loop coverage journal. Absent without a screen
@@ -2664,6 +2702,54 @@ mod tests {
         );
     }
 
+    /// Issue #106: a cut is ranked on a topology-only prediction, so the run
+    /// has to record what that prediction was worth once the scorer accepted
+    /// it. Without the record the ranking signal can drift from the structure
+    /// the razor really removes and nothing says so.
+    #[test]
+    fn an_accepted_cut_journals_the_estimated_cascade_beside_the_actual_saving() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(2),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            ordering: crate::ordering::Ordering::CascadeSaving,
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert!(run.accepts >= 1, "stop={}", run.stop_reason);
+        let journal_path = cfg.output_dir.join("experiments.jsonl");
+        let journal = std::fs::read_to_string(&journal_path).unwrap();
+        assert!(journal.contains(r#""record":"cascade""#), "{journal}");
+        assert!(journal.contains("estimated_growth_units"), "{journal}");
+        let report = crate::report::summarise(&[&journal_path]).unwrap();
+        let estimated = report
+            .cascade_estimated_growth_units
+            .expect("an accept must record its estimate");
+        let actual = report
+            .cascade_actual_growth_units
+            .expect("an accept must record what it removed");
+        assert!(estimated > 0.0 && actual > 0.0, "{estimated} vs {actual}");
+        // Under `1.0` because the winner was an exact IDENTITY collapse: it
+        // rewires `input-0 → output-0` where the topology dry-run predicted
+        // both synapses would go. Recording the difference is the point — the
+        // estimate ranks candidates, it does not describe the transform the
+        // scorer ends up accepting.
+        let ratio = report.cascade_estimate_ratio.expect("estimate and actual");
+        assert!(ratio > 0.5 && ratio <= 1.0, "{ratio}: {journal}");
+    }
+
     #[test]
     fn the_named_ordering_reaches_the_journal_and_the_report() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2762,6 +2848,7 @@ mod tests {
         for (uuid, unix_secs) in uuids {
             store
                 .append_screen(&Screened {
+                    blocked_reason: Default::default(),
                     version: crate::learnings::SCREENS_FORMAT_VERSION,
                     uuid: (*uuid).into(),
                     kind: "identity".into(),
@@ -3566,6 +3653,7 @@ mod tests {
             ("h_b", crate::learnings::SCREEN_KIND_KNOWN_FAILURE),
         ] {
             old.append_screen(&Screened {
+                blocked_reason: Default::default(),
                 version: crate::learnings::SCREENS_VISIT_FORMAT_VERSION,
                 uuid: uuid.into(),
                 kind: kind.into(),
@@ -3778,8 +3866,15 @@ mod tests {
     /// prunable minority and fell by one on every accepted cut, so the fleet
     /// reported `1417/6969` one run and `1416/7005` the next while the sweep
     /// walked the same neurons over and over.
+    ///
+    /// The invariant that fixed it — every visit is coverage — is asserted here
+    /// on the visit a standing verdict suppresses
+    /// (`a_known_failure_skip_is_checked_without_being_called_unprunable`) and
+    /// on a blocked visit in `coverage::tests`. What changed in #103 is that
+    /// this creature's aggregate structure is no longer blocked at all, so the
+    /// run-level assertion below is that it is *proposed*.
     #[test]
-    fn a_visit_the_razor_cannot_propose_for_is_still_recorded_as_checked() {
+    fn every_hidden_neuron_of_an_aggregate_creature_is_checked() {
         let tmp = tempfile::tempdir().unwrap();
         let (creature, train) = aggregate_blocked_paths(tmp.path());
         let learnings_dir = tmp.path().join("learnings");
@@ -3805,56 +3900,82 @@ mod tests {
             vec!["h_agg", "h_cut", "h_fed"],
             "one batch visited every hidden neuron, so every one is checked"
         );
+        let cov = coverage_json(&cfg.output_dir);
+        assert_eq!(cov.hidden, 3);
+        assert_eq!(cov.checked, 3, "coverage must count the visits");
+        assert_eq!(cov.percent(), 100.0);
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(
+            text.contains("progress:  3 newly checked this run"),
+            "{text}"
+        );
+
+        // A second run re-visits the same neurons and files nothing new for the
+        // ones it cannot advance: the record already says the sweep has been
+        // there, and repeating it every pass would grow the fleet's shared log
+        // without adding a fact.
+        let again = OckhamConfig {
+            output_dir: tmp.path().join("out-2"),
+            ..cfg.clone()
+        };
+        establish_run(&again, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let second = coverage_json(&again.output_dir);
+        assert_eq!(second.checked, 3, "coverage held, it did not go backwards");
+    }
+
+    /// Issue #103: the category that blocked most of a forest-heavy creature is
+    /// testable now. Every neuron of the fixture that used to file a `skipped`
+    /// visit is proposed as a constant substitution, screened like any other
+    /// candidate, and nothing is left blocked.
+    #[test]
+    fn aggregate_structure_that_was_blocked_is_proposed_as_a_constant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = aggregate_blocked_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train.clone(),
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 8,
+            learnings_dir: Some(learnings_dir.clone()),
+            learnings_host: Some("t".into()),
+            ..OckhamConfig::default()
+        };
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+
+        let store = screens_store(&learnings_dir, &train);
         let kinds: std::collections::HashMap<String, String> = store
             .load_screens()
             .unwrap()
             .into_iter()
             .map(|s| (s.uuid, s.kind))
             .collect();
-        assert_eq!(kinds["h_cut"], "identity", "the one proposable neuron");
-        assert_eq!(kinds["h_fed"], crate::learnings::SCREEN_KIND_SKIPPED);
-        assert_eq!(kinds["h_agg"], crate::learnings::SCREEN_KIND_SKIPPED);
+        assert_eq!(kinds["h_cut"], "identity", "the exact path is unchanged");
+        assert_eq!(
+            kinds["h_fed"], "constant",
+            "a neuron feeding an aggregate is proposable now, not blocked"
+        );
+        assert_eq!(
+            kinds["h_agg"], "constant",
+            "the aggregate neuron itself is proposable now, not blocked"
+        );
 
         let cov = coverage_json(&cfg.output_dir);
-        assert_eq!(cov.hidden, 3);
-        assert_eq!(cov.checked, 3, "coverage must count the visits");
-        assert_eq!(cov.percent(), 100.0);
-        assert_eq!(
-            cov.blocked, 2,
-            "the two unprunable neurons are reported, never counted as screened"
-        );
+        assert_eq!(cov.checked, 3);
+        assert_eq!(cov.blocked, 0, "nothing is blocked on this creature now");
+        assert_eq!(cov.blocked_by_reason.total(), 0);
         let text =
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            text.contains("blocked:   2 checked with no cut proposed"),
-            "{text}"
+            !text.contains("blocked:") && !text.contains("reasons:"),
+            "nothing blocked renders neither line: {text}"
         );
-        assert!(
-            text.contains("progress:  3 newly checked this run"),
-            "{text}"
-        );
-
-        // A second run re-visits the same blocked neurons and files nothing:
-        // the record already says the sweep has been there, and repeating it
-        // every pass would grow the fleet's shared log without adding a fact.
-        let again = OckhamConfig {
-            output_dir: tmp.path().join("out-2"),
-            ..cfg.clone()
-        };
-        establish_run(&again, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
-        let records = store.load_screens().unwrap();
-        assert_eq!(
-            records
-                .iter()
-                .filter(|r| r.uuid == "h_agg" || r.uuid == "h_fed")
-                .count(),
-            2,
-            "one visit record per blocked uuid, however many passes see it: {records:?}"
-        );
-        let second = coverage_json(&again.output_dir);
-        assert_eq!(second.checked, 3, "coverage held, it did not go backwards");
-        assert_eq!(second.blocked, 2);
     }
 
     /// A standing full-corpus verdict is the strongest check there is, so the
@@ -3907,6 +4028,29 @@ mod tests {
         assert_eq!(
             cov.blocked, 0,
             "a fully scored uuid is checked, not structurally unprunable"
+        );
+
+        // A visit that scored nothing files **one** record however many passes
+        // see it (#93): the record already says the sweep has been there, and
+        // repeating it every run would grow the fleet's shared append-only log
+        // without adding a fact.
+        let again = OckhamConfig {
+            output_dir: tmp.path().join("out-2"),
+            ..cfg.clone()
+        };
+        establish_run(&again, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let screens = screens_store(&learnings_dir, &train)
+            .load_screens()
+            .unwrap();
+        assert_eq!(
+            screens.iter().filter(|s| s.uuid == "h_a").count(),
+            1,
+            "one visit record per suppressed uuid: {screens:?}"
+        );
+        assert_eq!(
+            coverage_json(&again.output_dir).checked,
+            2,
+            "coverage held, it did not go backwards"
         );
     }
 
@@ -5043,6 +5187,7 @@ mod tests {
         let screens: Vec<Screened> = [("h_a", 30u64), ("h_b", 20), ("h_c", 10)]
             .into_iter()
             .map(|(uuid, unix_secs)| Screened {
+                blocked_reason: Default::default(),
                 version: crate::learnings::SCREENS_FORMAT_VERSION,
                 uuid: uuid.into(),
                 kind: "identity".into(),
@@ -5091,6 +5236,7 @@ mod tests {
         for (uuid, unix_secs) in [("h_a", 200u64), ("h_b", 100)] {
             store
                 .append_screen(&Screened {
+                    blocked_reason: Default::default(),
                     version: crate::learnings::SCREENS_FORMAT_VERSION,
                     uuid: uuid.into(),
                     kind: "identity".into(),
@@ -5181,20 +5327,25 @@ mod tests {
     }
 
     /// Issue #93: the kind filed against a skip is two buckets wide, so the
-    /// reason is logged. It must classify by *what happened*, never by which
-    /// neuron it happened to, or the tally is one class per neuron.
+    /// reason is logged. Issue #103 counts it by reason **code**, so the log
+    /// line, the screen record and the coverage breakdown all say the same
+    /// thing — and a class can never be one-per-neuron again, because it no
+    /// longer comes from the message text.
     #[test]
-    fn skip_reasons_are_tallied_by_class_not_by_neuron() {
+    fn skip_reasons_are_tallied_by_code_not_by_neuron() {
+        use crate::blocked::BlockedReason;
         use crate::sweep::SweepSkip;
-        let skip = |uuid: &str, reason: String| SweepSkip {
+        let skip = |uuid: &str, reason: String, blocked: Option<BlockedReason>| SweepSkip {
             uuid: uuid.into(),
             permutation_index: 0,
             reason,
+            blocked,
         };
         let aggregate = |uuid: &str| {
             skip(
                 uuid,
                 format!("aggregate target `{uuid}-target` (`MEAN`); skipped"),
+                Some(BlockedReason::AggregateSquash),
             )
         };
         let skips = vec![
@@ -5204,22 +5355,64 @@ mod tests {
             skip(
                 "h_d",
                 "typed synapse `h_d`→`h_if` (condition); skipped".into(),
+                Some(BlockedReason::UnsafeTopology),
             ),
-            skip("h_e", crate::sweep::KNOWN_FAILURE_REASON.into()),
-            skip("h_f", "non-finite mean NaN".into()),
+            skip("h_e", crate::sweep::KNOWN_FAILURE_REASON.into(), None),
+            skip(
+                "h_f",
+                "non-finite mean NaN".into(),
+                Some(BlockedReason::MissingActivation),
+            ),
         ];
         assert_eq!(
             skip_reason_tally(&skips),
-            "aggregate target: 3, known-failure: 1, non-finite mean NaN: 1, typed synapse: 1",
+            "aggregate-squash: 3, known-failure: 1, missing-activation: 1, unsafe-topology: 1",
             "commonest first, then alphabetical, and no uuid in sight"
         );
-        // The uuid leads this message, so a naive word-prefix tally would make
-        // one class per neuron.
+    }
+
+    /// A standing full-corpus verdict is checked in the strongest sense — the
+    /// cut was proposed, scored and judged — so it is never counted as blocked,
+    /// whatever the message on it says.
+    #[test]
+    fn a_known_failure_files_no_blocked_reason() {
+        use crate::blocked::BlockedReason;
+        use crate::sweep::SweepSkip;
+        let known = SweepSkip {
+            uuid: "h_known".into(),
+            permutation_index: 0,
+            reason: crate::sweep::KNOWN_FAILURE_REASON.into(),
+            blocked: None,
+        };
+        let blocked = SweepSkip {
+            uuid: "h_blocked".into(),
+            permutation_index: 1,
+            reason: "aggregate target `t` (`MEAN`); skipped".into(),
+            blocked: Some(BlockedReason::AggregateSquash),
+        };
+        let known = skip_try(&known);
+        assert_eq!(known.kind, crate::learnings::SCREEN_KIND_KNOWN_FAILURE);
+        assert_eq!(known.blocked_reason, None);
+        let blocked = skip_try(&blocked);
+        assert_eq!(blocked.kind, crate::learnings::SCREEN_KIND_SKIPPED);
         assert_eq!(
-            skip_reason_class("`h_x` squash `MEAN` is aggregate; skipped"),
-            "squash is aggregate"
+            blocked.blocked_reason,
+            Some(BlockedReason::AggregateSquash),
+            "a blocked visit files the code that stopped it"
         );
-        assert_eq!(skip_reason_class("`only-a-uuid`"), "unclassified");
+
+        // Fail closed: a skip carrying neither the known-failure reason nor a
+        // code is blocked for an unknown reason, never upgraded to a verdict
+        // the fleet never reached.
+        let unexplained = SweepSkip {
+            uuid: "h_odd".into(),
+            permutation_index: 2,
+            reason: "something new".into(),
+            blocked: None,
+        };
+        let unexplained = skip_try(&unexplained);
+        assert_eq!(unexplained.kind, crate::learnings::SCREEN_KIND_SKIPPED);
+        assert_eq!(unexplained.blocked_reason, Some(BlockedReason::Other));
     }
 
     /// Issue #77 point 3, the sizing rules, unit by unit. A measured screen is

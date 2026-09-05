@@ -46,6 +46,7 @@ use std::path::Path;
 use neat_core::CreatureExport;
 use serde::{Deserialize, Serialize};
 
+use crate::blocked::{BlockedBreakdown, BlockedReason};
 use crate::learnings::Screened;
 
 /// Rendered commit-description block, written beside `best.json` (Issue #40).
@@ -99,6 +100,16 @@ pub struct Coverage {
     /// `#[serde(default)]` so a pre-#93 `coverage.json` still deserialises.
     #[serde(default)]
     pub blocked: usize,
+    /// [`Self::blocked`] split by reason code (Issue #103).
+    ///
+    /// One number cannot be attacked. This says *why* the razor could propose
+    /// nothing, so the dominant category is visible and can be worked on: the
+    /// counts are over UUIDs and sum to exactly [`Self::blocked`].
+    ///
+    /// `#[serde(default)]` so a pre-#103 `coverage.json` still deserialises,
+    /// reading as no reasons rather than as a failed parse.
+    #[serde(default)]
+    pub blocked_by_reason: BlockedBreakdown,
     /// Hidden neurons removed this run.
     pub cut: usize,
 }
@@ -177,8 +188,11 @@ impl Coverage {
     /// many neurons carry tags — cutting one needs no declaration (Issue #87).
     /// The `blocked:` line is likewise omitted when nothing is blocked, and
     /// says how much of `checked` was reached by a visit the razor could
-    /// propose nothing for (Issue #93). No trailing newline — [`write_files`]
-    /// adds one.
+    /// propose nothing for (Issue #93). It is followed by a `reasons:` line
+    /// breaking that total down by code (Issue #103) — commonest first, each
+    /// with its share of the blocked total — so the largest category to attack
+    /// is legible from the commit description itself. No trailing newline —
+    /// [`write_files`] adds one.
     pub fn description(&self, candidates: usize, epoch: Option<&str>) -> String {
         let unchecked = self.unchecked();
         let remaining = if self.sweep_complete() {
@@ -218,6 +232,9 @@ impl Coverage {
                 "\n{:<11}{} checked with no cut proposed",
                 "blocked:", self.blocked
             ));
+            if let Some(reasons) = self.blocked_by_reason.summary() {
+                out.push_str(&format!("\n{:<11}{reasons}", "reasons:"));
+            }
         }
         if self.tagged > 0 {
             out.push_str(&format!(
@@ -628,21 +645,87 @@ pub fn coverage(
     // or another — still counts once. The value is "every record so far was a
     // skipped visit": one real screen anywhere in the fleet's history clears it
     // permanently, so `blocked` never over-reports (Issue #93).
-    let mut checked: HashMap<&str, bool> = HashMap::new();
+    let mut checked: HashMap<&str, CheckedUuid<'_>> = HashMap::new();
     for s in screens
         .iter()
         .filter(|s| hidden_uuids.contains(s.uuid.as_str()))
     {
-        let only_skips = checked.entry(s.uuid.as_str()).or_insert(true);
-        *only_skips &= s.is_skipped();
+        checked.entry(s.uuid.as_str()).or_default().observe(s);
+    }
+    let mut blocked_by_reason = BlockedBreakdown::default();
+    for reason in checked.values().filter_map(CheckedUuid::blocked_reason) {
+        blocked_by_reason.add(reason);
     }
     Coverage {
         hidden,
         tagged: tagged_hidden,
         checkable: hidden,
         checked: checked.len(),
-        blocked: checked.values().filter(|only_skips| **only_skips).count(),
+        blocked: blocked_by_reason.total(),
+        blocked_by_reason,
         cut,
+    }
+}
+
+/// What one hidden uuid's screen records add up to.
+///
+/// A uuid is blocked only when **every** record for it is a skipped visit: one
+/// real screen anywhere in the fleet's history clears it permanently, so
+/// `blocked` never over-reports (Issue #93). The reason reported is the one on
+/// the **latest** such record — the razor's current answer for this neuron, not
+/// an answer from before the structure around it changed.
+#[derive(Debug)]
+struct CheckedUuid<'a> {
+    only_skips: bool,
+    latest: Option<&'a Screened>,
+}
+
+impl Default for CheckedUuid<'_> {
+    fn default() -> Self {
+        Self {
+            only_skips: true,
+            latest: None,
+        }
+    }
+}
+
+impl<'a> CheckedUuid<'a> {
+    fn observe(&mut self, record: &'a Screened) {
+        self.only_skips &= record.is_skipped();
+        if record.is_skipped()
+            && self
+                .latest
+                .is_none_or(|held| Self::supersedes(record, held))
+        {
+            self.latest = Some(record);
+        }
+    }
+
+    /// Whether `candidate` is the fresher record of the two.
+    ///
+    /// Ordered on the record's own fields — time, then host, then reason — so
+    /// two hosts filing in the same second still produce the same breakdown on
+    /// every machine that reads them, whatever order the files were read in.
+    fn supersedes(candidate: &Screened, held: &Screened) -> bool {
+        let key = |s: &Screened| {
+            (
+                s.unix_secs,
+                s.host.clone(),
+                s.blocked_category().map(BlockedReason::code).unwrap_or(""),
+            )
+        };
+        key(candidate) > key(held)
+    }
+
+    fn blocked_reason(&self) -> Option<BlockedReason> {
+        if !self.only_skips {
+            return None;
+        }
+        Some(
+            self.latest
+                .and_then(Screened::blocked_category)
+                .unwrap_or(BlockedReason::Unrecorded),
+        )
     }
 }
 
@@ -668,6 +751,7 @@ mod tests {
 
     fn screen(uuid: &str, unix_secs: u64) -> Screened {
         Screened {
+            blocked_reason: Default::default(),
             version: SCREENS_FORMAT_VERSION,
             uuid: uuid.into(),
             kind: "ablation".into(),
@@ -683,6 +767,14 @@ mod tests {
         Screened {
             kind: crate::learnings::SCREEN_KIND_SKIPPED.into(),
             ..screen(uuid, unix_secs)
+        }
+    }
+
+    /// A blocked visit carrying the reason that stopped it (Issue #103).
+    fn blocked(uuid: &str, unix_secs: u64, reason: BlockedReason) -> Screened {
+        Screened {
+            blocked_reason: Some(reason),
+            ..visit(uuid, unix_secs)
         }
     }
 
@@ -782,6 +874,96 @@ mod tests {
         assert_eq!(cov.blocked, 2, "two of them were never scored");
         assert_eq!(cov.percent(), 75.0);
         assert_eq!(cov.unchecked(), 1, "only h3 was never reached");
+    }
+
+    /// Issue #103: the acceptance criterion. Whatever the records say, the
+    /// reason counts add up to the blocked total — the breakdown is a partition
+    /// of the blocked population, never a sample of it.
+    #[test]
+    fn the_reason_counts_sum_to_the_blocked_total() {
+        let creature = hidden_creature(6);
+        let screens = [
+            screen("h0", 1),
+            blocked("h1", 2, BlockedReason::AggregateSquash),
+            blocked("h2", 3, BlockedReason::AggregateSquash),
+            blocked("h3", 4, BlockedReason::MissingActivation),
+            visit("h4", 5),
+        ];
+        let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+        assert_eq!(cov.blocked, 4);
+        assert_eq!(cov.blocked_by_reason.total(), cov.blocked);
+        assert_eq!(cov.blocked_by_reason.aggregate_squash, 2);
+        assert_eq!(cov.blocked_by_reason.missing_activation, 1);
+        assert_eq!(
+            cov.blocked_by_reason.unrecorded, 1,
+            "a visit filed before #103 is its own category, never dropped"
+        );
+        assert_eq!(
+            cov.blocked_by_reason.dominant(),
+            Some((BlockedReason::AggregateSquash, 2))
+        );
+    }
+
+    /// The reason reported for a uuid is the razor's *latest* answer for it:
+    /// the structure around a neuron changes, and last week's reason is not a
+    /// statement about the creature in hand.
+    #[test]
+    fn the_freshest_record_decides_the_reason_whatever_order_it_was_read_in() {
+        let creature = hidden_creature(1);
+        let old = blocked("h0", 1, BlockedReason::MissingActivation);
+        let new = blocked("h0", 9, BlockedReason::AggregateSquash);
+        for screens in [
+            vec![old.clone(), new.clone()],
+            vec![new.clone(), old.clone()],
+        ] {
+            let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+            assert_eq!(cov.blocked, 1);
+            assert_eq!(cov.blocked_by_reason.aggregate_squash, 1, "{screens:?}");
+            assert_eq!(cov.blocked_by_reason.missing_activation, 0, "{screens:?}");
+        }
+    }
+
+    /// A screened uuid is not blocked, so its records contribute no reason —
+    /// the breakdown can never exceed the blocked total it splits.
+    #[test]
+    fn a_uuid_with_one_real_screen_contributes_no_reason() {
+        let creature = hidden_creature(2);
+        let screens = [
+            blocked("h0", 1, BlockedReason::AggregateSquash),
+            screen("h0", 2),
+            blocked("h1", 3, BlockedReason::AggregateSquash),
+        ];
+        let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+        assert_eq!(cov.blocked, 1);
+        assert_eq!(cov.blocked_by_reason.aggregate_squash, 1);
+    }
+
+    /// The commit description carries the breakdown, so the largest category to
+    /// attack is legible without opening the JSON.
+    #[test]
+    fn the_description_breaks_the_blocked_line_down_by_reason() {
+        let creature = hidden_creature(4);
+        let screens = [
+            blocked("h0", 1, BlockedReason::AggregateSquash),
+            blocked("h1", 2, BlockedReason::AggregateSquash),
+            blocked("h2", 3, BlockedReason::UnsafeTopology),
+        ];
+        let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+        let text = cov.description(100, None);
+        assert!(
+            text.contains("blocked:   3 checked with no cut proposed"),
+            "{text}"
+        );
+        assert!(
+            text.contains("reasons:   aggregate-squash 2 (66.7%) · unsafe-topology 1 (33.3%)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_description_omits_the_reasons_line_when_nothing_is_blocked() {
+        let cov = coverage(&hidden_creature(4), &HashSet::new(), &[screen("h0", 1)], 0);
+        assert!(!cov.description(100, None).contains("reasons:"));
     }
 
     /// `blocked` is about the uuid, not the record: one real screen anywhere in
@@ -888,6 +1070,7 @@ mod tests {
     #[test]
     fn percent_never_exceeds_one_hundred() {
         let cov = Coverage {
+            blocked_by_reason: Default::default(),
             hidden: 3,
             tagged: 0,
             checkable: 3,
@@ -921,6 +1104,7 @@ mod tests {
     /// The fleet-scale example from Issue #40, rendered exactly.
     fn fleet_coverage() -> Coverage {
         Coverage {
+            blocked_by_reason: Default::default(),
             hidden: 5013,
             tagged: 42,
             checkable: 5013,
@@ -1012,6 +1196,7 @@ mod tests {
     #[test]
     fn the_last_remaining_run_is_singular() {
         let cov = Coverage {
+            blocked_by_reason: Default::default(),
             hidden: 4,
             tagged: 0,
             checkable: 4,
@@ -1041,6 +1226,7 @@ mod tests {
     #[test]
     fn complete_coverage_drops_the_runs_clause_because_nothing_is_left() {
         let cov = Coverage {
+            blocked_by_reason: Default::default(),
             hidden: 4,
             tagged: 0,
             checkable: 4,
@@ -1062,6 +1248,7 @@ mod tests {
     #[test]
     fn more_records_than_checkable_neurons_never_renders_a_negative_remainder() {
         let cov = Coverage {
+            blocked_by_reason: Default::default(),
             hidden: 3,
             tagged: 0,
             checkable: 3,
@@ -1119,6 +1306,25 @@ mod tests {
 
     /// Issue #93: the fleet runs mixed versions against one shared cache, so a
     /// `coverage.json` written before `blocked` existed must still read.
+    /// A `coverage.json` written before #103 still reads, as no reasons — an
+    /// older artefact must never fail the parse of a newer reader.
+    #[test]
+    fn a_pre_103_coverage_json_reads_as_no_blocked_reasons() {
+        let pre_103 =
+            r#"{"hidden":5013,"tagged":42,"checkable":5013,"checked":1204,"blocked":412,"cut":7}"#;
+        let old: Coverage = serde_json::from_str(pre_103).unwrap();
+        assert_eq!(old.blocked, 412);
+        assert_eq!(
+            old.blocked_by_reason,
+            crate::blocked::BlockedBreakdown::default()
+        );
+        assert_eq!(
+            old.blocked_by_reason.total(),
+            0,
+            "an unrecorded breakdown reports nothing rather than guessing"
+        );
+    }
+
     #[test]
     fn a_pre_93_coverage_json_reads_as_nothing_blocked() {
         let pre_93 = r#"{"hidden":5013,"tagged":42,"checkable":5013,"checked":1204,"cut":7}"#;

@@ -162,6 +162,14 @@ pub enum Event {
         /// Checked UUIDs the razor could never propose a cut for (#93).
         #[serde(default)]
         blocked: usize,
+        /// That total split by reason code (Issue #103).
+        ///
+        /// Journalled per run and per epoch, so the blocked population can be
+        /// inspected across epochs from the append-only journal alone rather
+        /// than only in the run that happened to be watched. `#[serde(default)]`
+        /// so a journal written before #103 still reads, as no reasons.
+        #[serde(default)]
+        blocked_by_reason: crate::blocked::BlockedBreakdown,
         /// Hidden neurons removed this run.
         #[serde(default)]
         cut: usize,
@@ -196,6 +204,40 @@ pub enum Event {
         /// Milliseconds from the first sweep batch to this cohort result.
         #[serde(default)]
         elapsed_ms: u64,
+    },
+    /// Estimated versus actual structural saving of an accepted cut (#106).
+    ///
+    /// The cascade dry-run predicts, from topology alone, what an ablation of
+    /// these neurons would remove; this is what the accepted creature actually
+    /// shed. Written on every accept, whatever ordering the run used, so the
+    /// prediction is audited against the outcome instead of being trusted — a
+    /// signal that drifts from what the razor really removes is a signal to
+    /// stop paying for.
+    Cascade {
+        /// Cohort kind of the accepted winner: `individual` or `bundle`.
+        ///
+        /// A bundle removes structure several cuts share, so its prediction and
+        /// its outcome compose differently from a single cut's; without the
+        /// kind the two could not be told apart in the same series.
+        kind: String,
+        /// Hidden neurons the accepted winner was asked to cut.
+        cuts: usize,
+        /// Hidden neurons the dry-run predicted, requested plus cascade.
+        estimated_hidden: usize,
+        /// Synapses the dry-run predicted.
+        estimated_synapses: usize,
+        /// Growth units the dry-run predicted.
+        estimated_growth_units: f64,
+        /// Hidden neurons the accepted creature actually removed.
+        ///
+        /// Signed: an accepted transform may add structure on one axis while
+        /// the growth units it is judged on still fall, and clamping that to
+        /// zero would report the addition as "removed nothing".
+        actual_hidden: i64,
+        /// Synapses the accepted creature actually removed; signed, as above.
+        actual_synapses: i64,
+        /// Growth units the accepted creature actually removed.
+        actual_growth_units: f64,
     },
     /// Cohort sizing against the wall clock (Issue #58).
     ///

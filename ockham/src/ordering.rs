@@ -14,13 +14,14 @@
 //! only promoted to the default when benchmark evidence shows better
 //! scorer-verified improvement economics.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use neat_core::{CreatureExport, SquashType, parse_squash_name};
 use serde::{Deserialize, Serialize};
 
 use crate::ablation::growth_units;
+use crate::cascade::{CascadeEstimate, CascadeIndex};
 use crate::stats::ActivationStats;
 
 /// Ranking strategy for the pruning sweep.
@@ -44,6 +45,19 @@ pub enum Ordering {
     HighGrowthSaving,
     /// `IDENTITY` neurons (exact-fold opportunities) first.
     IdentityFirst,
+    /// Largest cascade-aware growth-unit saving first (Issue #106).
+    ///
+    /// Unlike [`Ordering::HighGrowthSaving`], which counts only the neuron and
+    /// the synapses touching it, this counts the structure recursive cleanup
+    /// would strand behind the cut as well.
+    CascadeSaving,
+    /// Least estimated behavioural damage per cascade growth unit first (#106).
+    ///
+    /// `mean_abs_activation × Σ abs(outgoing weight)` — the downstream
+    /// sensitivity [`Ordering::LowOutgoingContribution`] ranks by — divided by
+    /// the cascade saving, so a quiet neuron that takes a lot of structure with
+    /// it is tried before a loud one that takes little.
+    CascadeRiskRatio,
 }
 
 impl Ordering {
@@ -57,6 +71,8 @@ impl Ordering {
         Ordering::LowFanOut,
         Ordering::HighGrowthSaving,
         Ordering::IdentityFirst,
+        Ordering::CascadeSaving,
+        Ordering::CascadeRiskRatio,
     ];
 
     /// Kebab-case name used on the CLI and in the journal.
@@ -70,7 +86,17 @@ impl Ordering {
             Ordering::LowFanOut => "low-fan-out",
             Ordering::HighGrowthSaving => "high-growth-saving",
             Ordering::IdentityFirst => "identity-first",
+            Ordering::CascadeSaving => "cascade-saving",
+            Ordering::CascadeRiskRatio => "cascade-risk-ratio",
         }
+    }
+
+    /// Whether the strategy ranks by a cascade dry-run (Issue #106).
+    ///
+    /// The estimates cost one index of the creature, so they are built only for
+    /// the strategies that read them.
+    fn needs_cascade(self) -> bool {
+        matches!(self, Ordering::CascadeSaving | Ordering::CascadeRiskRatio)
     }
 
     /// Comma-separated list of every accepted name.
@@ -178,6 +204,7 @@ fn rank_key(
     creature: &CreatureExport,
     stats: &ActivationStats,
     strategy: Ordering,
+    cascade: Option<&HashMap<&str, CascadeEstimate>>,
     uuid: &str,
 ) -> f64 {
     let neuron_stats = stats.by_uuid(uuid);
@@ -186,15 +213,9 @@ fn rank_key(
         Ordering::LowVariance => neuron_stats.map_or(f64::INFINITY, |s| s.variance),
         Ordering::LowMeanAbs => neuron_stats.map_or(f64::INFINITY, |s| s.mean_abs),
         Ordering::NarrowRange => neuron_stats.map_or(f64::INFINITY, |s| s.max - s.min),
-        Ordering::LowOutgoingContribution => {
-            let weight_sum: f64 = creature
-                .synapses
-                .iter()
-                .filter(|s| s.from_uuid == uuid)
-                .map(|s| s.weight.abs())
-                .sum();
-            neuron_stats.map_or(f64::INFINITY, |s| s.mean_abs * weight_sum)
-        }
+        Ordering::LowOutgoingContribution => neuron_stats.map_or(f64::INFINITY, |s| {
+            s.mean_abs * outgoing_weight_sum(creature, uuid)
+        }),
         Ordering::LowFanOut => creature
             .synapses
             .iter()
@@ -217,7 +238,34 @@ fn rank_key(
             });
             if identity { 0.0 } else { 1.0 }
         }
+        // Negated so the largest cascade saving sorts first. A neuron the
+        // estimate does not cover, and one whose cut the transform would
+        // refuse, sorts last rather than being dropped.
+        Ordering::CascadeSaving => -cascade_saving(cascade, uuid).unwrap_or(0.0),
+        Ordering::CascadeRiskRatio => match (neuron_stats, cascade_saving(cascade, uuid)) {
+            // No predicted saving is a refused cut, not a free one: it ranks
+            // last rather than dividing by zero.
+            (Some(s), Some(saving)) if saving > 0.0 => {
+                s.mean_abs * outgoing_weight_sum(creature, uuid) / saving
+            }
+            _ => f64::INFINITY,
+        },
     }
+}
+
+/// `Σ abs(weight)` over the synapses leaving `uuid` — the downstream reach.
+fn outgoing_weight_sum(creature: &CreatureExport, uuid: &str) -> f64 {
+    creature
+        .synapses
+        .iter()
+        .filter(|s| s.from_uuid == uuid)
+        .map(|s| s.weight.abs())
+        .sum()
+}
+
+/// Estimated cascade growth-unit saving for `uuid`, when one was computed.
+fn cascade_saving(cascade: Option<&HashMap<&str, CascadeEstimate>>, uuid: &str) -> Option<f64> {
+    cascade?.get(uuid).map(|e| e.growth_units)
 }
 
 /// Interleave `ranked` with the random control, reserving `quota` of the slots.
@@ -277,12 +325,26 @@ pub fn hidden_order(
     if cfg.strategy == Ordering::Random {
         return random;
     }
-    let mut ranked = random.clone();
-    ranked.sort_by(|a, b| {
-        let ka = rank_key(creature, stats, cfg.strategy, a);
-        let kb = rank_key(creature, stats, cfg.strategy, b);
-        ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Topology does not change while the order is built, so the cascade
+    // dry-runs are the creature's own index, walked once per hidden neuron
+    // (Issue #106) rather than once per comparison the sort makes.
+    let index = cfg
+        .strategy
+        .needs_cascade()
+        .then(|| CascadeIndex::new(creature));
+    let cascade = index.as_ref().map(CascadeIndex::hidden_estimates);
+    let mut keyed: Vec<(f64, String)> = random
+        .iter()
+        .map(|uuid| {
+            (
+                rank_key(creature, stats, cfg.strategy, cascade.as_ref(), uuid),
+                uuid.clone(),
+            )
+        })
+        .collect();
+    // Stable, so ties keep the unbiased random order behind them.
+    keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let ranked: Vec<String> = keyed.into_iter().map(|(_, uuid)| uuid).collect();
     blend(ranked, &random, cfg.random_quota)
 }
 
@@ -440,6 +502,149 @@ mod tests {
         // h_hub touches three synapses; h_flat and h_loud touch two each.
         let got = order(Ordering::HighGrowthSaving);
         assert_eq!(got[0], "h_hub", "{got:?}");
+    }
+
+    /// `input-0 → f1 → f2 → hub → output-0`, beside a two-output `loud`.
+    ///
+    /// Every chain member touches two synapses and `loud` touches three, so
+    /// `high-growth-saving` ranks `loud` first — yet cutting any chain member
+    /// strands the other two, which only a cascade dry-run sees. `loud` is also
+    /// the noisiest and most heavily weighted, so the risk ratio must leave it
+    /// behind the quiet chain.
+    fn cascading() -> CreatureExport {
+        creature(
+            1,
+            2,
+            vec![
+                neuron("hidden", "f1", 0.0, Some("TANH")),
+                neuron("hidden", "f2", 0.0, Some("TANH")),
+                neuron("hidden", "hub", 0.0, Some("TANH")),
+                neuron("hidden", "loud", 0.0, Some("TANH")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+                neuron("output", "output-1", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "f1", 1.0),
+                synapse("f1", "f2", 1.0),
+                synapse("f2", "hub", 1.0),
+                synapse("hub", "output-0", 1.0),
+                synapse("input-0", "loud", 1.0),
+                synapse("loud", "output-0", 4.0),
+                synapse("loud", "output-1", 3.0),
+            ],
+        )
+    }
+
+    /// Statistics for [`cascading`]: the chain is quiet, `loud` is not.
+    fn cascading_stats() -> ActivationStats {
+        let mut stats = stats();
+        stats.neurons.clear();
+        for (i, (uuid, mean_abs)) in [("f1", 0.02), ("f2", 0.03), ("hub", 0.01), ("loud", 3.0)]
+            .iter()
+            .enumerate()
+        {
+            stats.neurons.push(NeuronStats {
+                uuid: (*uuid).into(),
+                neuron_index: i,
+                count: 10,
+                mean: 0.0,
+                variance: *mean_abs,
+                std_dev: mean_abs.sqrt(),
+                mean_abs: *mean_abs,
+                min: -*mean_abs,
+                max: *mean_abs,
+            });
+        }
+        stats
+    }
+
+    fn cascading_order(strategy: Ordering) -> Vec<String> {
+        hidden_order(
+            &cascading(),
+            &cascading_stats(),
+            OrderingConfig::new(strategy),
+            7,
+        )
+    }
+
+    #[test]
+    fn cascade_saving_visits_the_cuts_that_strand_the_most_structure_first() {
+        // Cutting any chain member removes all three of them and four synapses
+        // (3.4 units); `loud` reaches no further than its own edges (1.3).
+        let got = cascading_order(Ordering::CascadeSaving);
+        assert_eq!(got[3], "loud", "{got:?}");
+        let mut chain = got[..3].to_vec();
+        chain.sort();
+        assert_eq!(chain, ["f1", "f2", "hub"], "{got:?}");
+    }
+
+    #[test]
+    fn cascade_saving_outranks_the_edge_count_high_growth_saving_reads() {
+        // `loud` touches three synapses to every chain member's two, so the
+        // edge-count ranking tries it first and the cascade ranking tries it
+        // last: the chain it cannot see is worth two and a half times more.
+        let touching = cascading_order(Ordering::HighGrowthSaving);
+        assert_eq!(touching[0], "loud", "{touching:?}");
+        let cascade = cascading_order(Ordering::CascadeSaving);
+        assert_eq!(cascade[3], "loud", "{cascade:?}");
+    }
+
+    #[test]
+    fn cascade_risk_ratio_prefers_quiet_cuts_that_save_the_most_structure() {
+        let got = cascading_order(Ordering::CascadeRiskRatio);
+        // hub: 0.01 × 1.0 / 3.4. loud: 3.0 × 6.0 / 1.3 — the loudest neuron
+        // with the smallest cascade is tried last however many edges it has.
+        assert_eq!(got[0], "hub", "{got:?}");
+        assert_eq!(got[3], "loud", "{got:?}");
+    }
+
+    /// Issue #106: the razor cannot build a cut whose fold hits an aggregate
+    /// squash, so ranking one first spends a visit on a certain refusal. Both
+    /// cascade strategies must leave it behind the cuts that can be built.
+    #[test]
+    fn a_cut_the_transform_would_refuse_ranks_behind_one_it_can_build() {
+        let mut creature = cascading();
+        // `hub` now feeds an aggregate, so cutting any chain member ends in a
+        // fold the ablation refuses — even though the chain is the largest
+        // topological cascade on the creature.
+        creature
+            .neurons
+            .push(neuron("hidden", "agg", 0.0, Some("MEAN")));
+        creature.synapses.push(synapse("hub", "agg", 1.0));
+        creature.synapses.push(synapse("agg", "output-1", 1.0));
+        crate::fixtures::sort_synapses_canonically(&mut creature);
+        let mut stats = cascading_stats();
+        stats.neurons.push(NeuronStats {
+            uuid: "agg".into(),
+            neuron_index: 4,
+            count: 10,
+            mean: 0.0,
+            variance: 0.1,
+            std_dev: 0.316,
+            mean_abs: 0.1,
+            min: -0.1,
+            max: 0.1,
+        });
+        for strategy in [Ordering::CascadeSaving, Ordering::CascadeRiskRatio] {
+            let got = hidden_order(&creature, &stats, OrderingConfig::new(strategy), 7);
+            assert_eq!(got[0], "loud", "{strategy}: {got:?}");
+            assert!(got[1..].contains(&"hub".to_string()), "{strategy}: {got:?}");
+        }
+    }
+
+    #[test]
+    fn a_neuron_without_statistics_ranks_last_under_the_risk_ratio() {
+        let creature = cascading();
+        let mut partial = cascading_stats();
+        partial.neurons.retain(|n| n.uuid != "hub");
+        let got = hidden_order(
+            &creature,
+            &partial,
+            OrderingConfig::new(Ordering::CascadeRiskRatio),
+            7,
+        );
+        assert_eq!(got.len(), 4, "{got:?}");
+        assert_eq!(got[3], "hub", "{got:?}");
     }
 
     #[test]

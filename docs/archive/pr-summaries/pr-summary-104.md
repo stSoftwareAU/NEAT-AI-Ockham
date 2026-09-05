@@ -136,7 +136,7 @@ control**, as the issue requires.
 - **unrequested** — per-rung workspace directories `screen-<batch>/s<n>` —
   reviewer: unrequested — reason: correctness, not scope — a candidate file left
   by an earlier rung would be scored again by the next
-- **unrequested** — crate version bump to 0.1.40 — reviewer: unrequested —
+- **unrequested** — crate version bump to 0.1.42 — reviewer: unrequested —
   reason: CONTRIBUTING requires it for binary-affecting changes
 
 ## Standards Review
@@ -145,7 +145,8 @@ control**, as the issue requires.
 
 - **violation** — `ockham/Cargo.toml:3` still at `0.1.39`; CONTRIBUTING requires
   a bump for binary-affecting changes — evidence: `ockham/Cargo.toml:3` —
-  reason: fixed here, bumped to `0.1.40` with `Cargo.lock`
+  reason: fixed here, bumped to `0.1.42` with `Cargo.lock` (0.1.41 landed on
+  Develop meanwhile, resolved in the merge)
 - **violation** — `screen_ladder()` swallowed a construction error with `.ok()`,
   and `None` means *screening disabled*, so a library caller that skipped
   `validate()` would get a silently un-screened run — evidence:
