@@ -10,10 +10,11 @@ This adds two modules and wires them into the existing sweep:
 
 - `ockham/src/signature.rs` — behavioural signatures and correlated-pair
   discovery. The activation scan retains a short probe vector per hidden neuron
-  at deterministically-placed records; each vector reduces to a 64-bit sign
-  signature; signatures are bucketed by locality-sensitive bands whose width
-  **widens with the creature**, so the comparison count stays near linear; and
-  Pearson correlation runs on bucket members only.
+  at deterministically-placed records spread over the whole sampled plan; each
+  vector reduces to a 64-bit sign signature; signatures are bucketed by
+  locality-sensitive bands whose width **widens with the creature**, so the
+  comparison count stays near linear; and Pearson correlation runs on bucket
+  members only.
 - `ockham/src/merge.rs` — the transform. For a fitted
   `removed ≈ scale * survivor + offset`, every ordinary outgoing synapse
   `removed → z` carrying `w` becomes `bias_z += w * offset` and
@@ -24,6 +25,10 @@ Off by default behind `--merge-correlation`. A control run retains no probe
 records at all, and the probe count is part of the activation-statistics cache
 key, so a merge-enabled run can never be served a probe-free cached scan and
 silently propose nothing.
+
+This branch also merges the current `Develop` (structural neighbourhood group
+cuts #108, exact cleanup pre-pass #110), which is why the previous PR could not
+be merged.
 
 Closes #109.
 
@@ -36,7 +41,7 @@ test suite, the benchmark and the full quality gate.
 
 ```mermaid
 flowchart LR
-    A["probe records<br/>(activation scan)"] --> B["64-bit sign signature<br/>bit i = above own mean"]
+    A["probe records<br/>(spread over the sampled plan)"] --> B["64-bit sign signature<br/>bit i = above own mean"]
     B --> C["LSH bands<br/>bucket by band value"]
     C --> D["Pearson correlation<br/>inside buckets only"]
     D --> E["proposal, both directions<br/>removed ≈ scale × survivor + offset"]
@@ -54,31 +59,36 @@ subset and confirmed on all 64.
 
 | transform | proposals | candidates | screened | confirmed | confirmed/h | neurons | synapses |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| merge | 860 | 860 | 9% | 9% | 134008 | 40 | 280 |
+| merge | 860 | 860 | 9% | 9% | 82420 | 40 | 280 |
 | ablation | 860 | 860 | 0% | 0% | 0 | 0 | 0 |
 
 Every confirmed cut is a planted duplicate — all forty pairs — and the
 mean-activation control confirms none of them, which is exactly the blind spot
 the issue describes. `neurons`/`synapses` count each pair once: both survivor
-directions confirm, but only one neuron of the two was ever redundant.
-`confirmed/h` is this harness's proxy judge, not scorer economics.
+directions confirm, but only one neuron of the two was ever redundant. On this
+synthetic corpus the screen and the judge agree exactly, so the survival rate is
+a floor rather than a measurement of what a screen discards, and `confirmed/h`
+is this harness's proxy judge, not scorer economics.
 
 Discovery cost on real compiled creatures, probe capture included:
 
 | hidden | synapses | probe capture (ms) | pairs compared | discovery (ms) |
 |---:|---:|---:|---:|---:|
-| 1100 | 7700 | 1.3 | 25157 | 5.4 |
-| 2750 | 19250 | 3.4 | 59834 | 12.6 |
-| 5500 | 38500 | 6.5 | 87516 | 18.0 |
+| 1100 | 7700 | 1.7 | 25157 | 6.3 |
+| 2750 | 19250 | 8.4 | 59834 | 17.2 |
+| 5500 | 38500 | 12.9 | 87516 | 26.8 |
 
-Five times the creature costs five times the probe capture and about three
-times the discovery — not twenty-five times either.
+Five times the creature multiplies the comparison count by three and a half, not
+twenty-five. `pairs compared` is deterministic and reproduces exactly on every
+run; the millisecond columns are one run on one shared host and move with the
+load.
 
 ### Quality gate
 
 `./quality.sh` passes in full: shellcheck, the neat-core version gate,
-codespell, `cargo deny`, `cargo fmt --check`, `cargo clippy -D warnings`,
-`cargo test --workspace --all-features` (503 tests) and `cargo doc -D warnings`.
+codespell, markdownlint, actionlint, `cargo deny`, `cargo fmt --check`,
+`cargo clippy -D warnings`, `cargo test --workspace --all-features` (593 tests)
+and `cargo doc -D warnings`.
 
 ## Acceptance Criteria
 
@@ -94,28 +104,27 @@ codespell, `cargo deny`, `cargo fmt --check`, `cargo clippy -D warnings`,
 - **met** — Candidate compensation preserves exact behaviour for an exactly
   duplicated linear/IDENTITY case — evidence:
   `ockham/src/merge.rs::an_exactly_duplicated_identity_neuron_merges_with_identical_outputs`
-  (survivor weight asserted to 1e-12; compiled-forward-pass outputs identical
-  within f32 tolerance), and
-  `::an_exactly_duplicated_tanh_neuron_merges_with_identical_outputs` — reviewer: met
+  and `::an_exactly_duplicated_tanh_neuron_merges_with_identical_outputs` —
+  reviewer: met — reason: the reviewer noted the assertion is a 1e-5 relative
+  tolerance, not bit-exact, and that the module doc overclaimed; the doc now
+  says algebraic exactness rather than bit-identical `f32` arithmetic
+  (`ockham/src/merge.rs:25`).
 - **met** — Approximate cases are scorer-tested rather than assumed safe —
-  evidence: `ockham/src/merge.rs:377` always records
+  evidence: `ockham/src/merge.rs` always records
   `TransformClass::Approximate`; merge candidates are ordinary `SweepCandidate`s
   and flow through `screen_progressive` and `evaluate_full` unchanged — reviewer: met
-- **met** — Benchmark reports proposal count, screening survival rate, confirmed
-  removals/hour and neurons/synapses removed — evidence:
-  `ockham/examples/correlated_merge_bench.rs` table above — reviewer: partial —
-  reason: the reviewer flagged that `neurons`/`synapses` double-counted both
-  survivor directions of one pair and that `confirmed/h` is proxy-judge time.
-  Both were fixed after the review: the tally now counts each unordered pair
-  once (80 → 40 neurons) and the README and this summary state plainly that
-  `confirmed/h` is the harness's proxy judge, not scorer economics.
+- **partial** — Benchmark reports proposal count, screening survival rate,
+  confirmed removals/hour and neurons/synapses removed — evidence:
+  `ockham/examples/correlated_merge_bench.rs` and the table above — reviewer:
+  partial — reason: all four figures are printed, but two are weak and now say
+  so in the README and above — the 16-probe screen and the 64-probe judge agree
+  exactly on this synthetic corpus, so the survival rate is a floor, and
+  `confirmed/h` is the harness's proxy judge rather than scorer economics.
 - **met** — Demonstrate that the discovery method scales reasonably on a
-  creature with several thousand hidden neurons — evidence: the real-compiled-
-  creature table above, up to 5,500 hidden neurons and 38,500 synapses, plus
-  `ockham/src/signature.rs::discovery_costs_the_creature_not_its_square` —
-  reviewer: partial — reason: the reviewer saw only synthetic `ActivationStats`
-  in the diff. Correct at the time; a real-creature scaling table with probe
-  capture included was added afterwards.
+  creature with several thousand hidden neurons — evidence: the
+  real-compiled-creature table above, up to 5,500 hidden neurons and 38,500
+  synapses, plus `ockham/src/signature.rs::discovery_costs_the_creature_not_its_square` —
+  reviewer: met
 - **met** — Avoid quadratic memory/time across thousands of hidden neurons —
   evidence: `ockham/src/signature.rs::effective_band_bits` widens the band with
   the neuron count, `DiscoveryConfig::max_bucket` bounds the worst case, and
@@ -127,126 +136,134 @@ codespell, `cargo deny`, `cargo fmt --check`, `cargo clippy -D warnings`,
   `ockham/src/stats.rs::probe_records_are_retained_only_when_asked_for_and_are_reproducible`
   and `ockham/src/signature.rs::discovery_is_deterministic_for_the_same_statistics` — reviewer: met
 - **met** — Threshold only generates proposals, never accepts — evidence:
-  `ockham/src/signature.rs:392` filters proposals only; acceptance stays in the
-  shared screen/full-scorer path — reviewer: met
+  `ockham/src/signature.rs` filters proposals only; acceptance stays in the
+  shared validate/screen/full-scorer path — reviewer: met
 - **met** — Try both survivor directions where structurally meaningful —
   evidence: `ockham/src/signature.rs` emits both directions per pair;
   `ockham/src/merge.rs::a_survivor_that_does_not_precede_the_target_is_refused`
   shows the meaningless direction being refused and the other accepted — reviewer: met
-- **met** — Preserve proposal provenance for learnings/replay/Rebase —
+- **partial** — Preserve proposal provenance for learnings/replay/Rebase —
   evidence: `SweepCandidate.merged_with` → `ScreenedLoser.merged_with` →
-  `CandidateRecord.merged_with` in the `--candidate-log` rows;
-  `learnings::kind_label` gains `merge` — reviewer: partial — reason: the
-  reviewer correctly found the survivor was persisted nowhere and the README
-  overclaimed it. Both fixed after the review: the survivor now rides into the
-  candidate log, and the README says exactly where the pair is recorded and
-  that the learnings cache stores uuid + kind with the survivor re-derived at
-  replay.
+  `CandidateRecord.merged_with`, now pinned by
+  `ockham/src/telemetry.rs::a_screened_out_merge_writes_its_survivor_to_the_log`;
+  replay restricted by recorded kind through `learnings::merge_wins` and
+  `MergeIndex::restricted_to` — reviewer: partial — reason: the reviewer found
+  the survivor persisted only in the candidate log and untested, and that replay
+  could rebuild an accepted `ablation` as a merge. The test and the
+  kind-restricted replay fix both halves; the shared learnings cache still
+  stores uuid + kind with the survivor re-derived at replay, which the README
+  now states plainly rather than overclaiming.
 - **met** — Normal validation, sample screening and authoritative full scoring
   remain mandatory — evidence: `merge_correlated` calls `validate_creature`
-  before returning `Ok`; `ockham/src/sweep.rs::a_correlated_pair_is_proposed_as_a_merge_naming_its_survivor`
-  re-asserts it on every emitted candidate — reviewer: met
+  before returning `Ok`;
+  `ockham/src/sweep.rs::a_correlated_pair_is_proposed_as_a_merge_naming_its_survivor`
+  re-asserts it on every emitted candidate — reviewer: met — reason: the
+  reviewer noted no end-to-end CLI test drives a merge candidate through screen
+  and full scoring; the path is the shared one every other kind uses, and
+  `ockham/tests/cli.rs::merge_correlation_turns_on_probe_capture_and_nothing_else_does`
+  covers the CLI wiring.
+- **unrequested** — A merge is tried before the mean-activation ablation for a
+  visited neuron — reviewer: unrequested — reason: the ladder has to order the
+  transforms somehow and a merge is the cheaper cut when it builds; a neuron
+  with a valid merge spends that visit on it and is offered an ablation on a
+  later pass, which the README states.
+- **unrequested** — `MergeSkip::CostIncrease` growth-unit guard — reviewer:
+  unrequested — reason: a merge deletes one hidden neuron and writes back at
+  most one edge per outgoing synapse it deleted, so growth units always fall.
+  The check is a fail-loud guard on that structural invariant, not an acceptance
+  policy, and it is documented as such in `merge.rs`.
+- **unrequested** — The merge refusal is appended to the blocked detail of a
+  visit that fell through to another transform — reviewer: unrequested —
+  reason: without it a run whose merge proposals all failed reported nothing at
+  all; the `BlockedReason` classification still comes from the transform that
+  actually stopped the razor.
 - **unrequested** — Four tuning knobs beyond the one threshold the issue names
   (`--merge-probes`, `--merge-band-bits`, `--merge-max-bucket`,
   `--merge-max-partners`) — reviewer: unrequested — reason: the issue asks for
   several discovery techniques to be *benchmarked*; the knobs are how the
-  benchmark and an operator vary the signature length, band width, bucket cap
-  and partner cap without a rebuild. All four keep working defaults and are
+  benchmark and an operator vary signature length, band width, bucket cap and
+  partner cap without a rebuild. All four keep working defaults and are
   validated by name.
-- **unrequested** — `MergeSkip::CostIncrease` growth-unit check — reviewer:
-  unrequested — reason: a merge deletes one hidden neuron and writes back at
-  most one edge per outgoing synapse it deleted, so growth units always fall.
-  The check is a fail-loud guard on that structural invariant, not an
-  acceptance policy; documented as such in `merge.rs`.
 - **unrequested** — Merge index threaded through `apply_bundle` /
   `apply_available` / `standing_pool` — reviewer: unrequested — reason: bundles
   re-propose their members from the incumbent, so without it a merge winner
-  would be silently rebuilt as an ablation inside its own bundle. The known
-  limitation in the other direction — a replayed historical `ablation` verdict
-  can now be re-derived as a merge — is stated in the README rather than left
-  for a reader to discover.
+  would be silently rebuilt as an ablation inside its own bundle.
+- **unrequested** — `docs/archive/pr-summaries/pr-summary-109.md`, the
+  `0.1.46 → 0.1.47` version bump, and a one-word README prior-art edit
+  (`restricted here` → `restricted there`) — reviewer: unrequested — reason:
+  the first two are repo convention (`CONTRIBUTING.md` principle 8 and the
+  archive directory); the third is required by the paragraph this diff adds
+  after it, which makes the original "here" ambiguous.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — `ockham/Cargo.toml` version not bumped for a binary-affecting
-  change (CONTRIBUTING.md principle 8) — evidence: `ockham/Cargo.toml:8` —
-  reason: fixed here, `0.1.44` → `0.1.45`.
-- **violation** — Silent cap on `--merge-probes`: `with_probes` clamped to 64
-  with no error or warning — evidence: `ockham/src/stats.rs:130` — reason:
-  fixed here. `with_probes` is a plain setter and `OckhamConfig::validate`
-  refuses a count outside `8..=64` by the flag's name.
-- **violation** — Every `MergeSkip` discarded silently in `propose_merge`, so a
-  run whose merge proposals all failed reported nothing — evidence:
-  `ockham/src/sweep.rs:393` — reason: fixed here. The first skip is kept and
-  appended to the blocked detail through `with_merge_detail`, so
-  `MergeSkip::blocked_reason` now has a production path to the report.
-- **violation** — Documented `kind` vocabulary not updated for the new `merge`
-  label — evidence: `README.md:571`, `README.md:1588`,
-  `ockham/src/telemetry.rs:94` — reason: fixed here; all three now list `merge`,
-  and the candidate-log section documents `mergedWith`.
-- **violation** — README claimed a learnings entry, a replay and a GRQ check-in
-  record which pair was tried, which no artefact carried — evidence:
-  `README.md` merging section — reason: fixed here by doing both halves —
-  `merged_with` now reaches the candidate log, and the README states the
-  learnings cache stores uuid + kind with the survivor re-derived at replay.
-- **violation** — Stale duplicated doc comment describing a timing test sitting
-  on a PRNG helper — evidence: `ockham/src/signature.rs:632` — reason: fixed
-  here; the duplicate was removed.
-- **violation** — New merge validation inserted between an existing comment and
-  the `--ordering learned` check it explains — evidence:
-  `ockham/src/config.rs:204` — reason: fixed here; the merge block moved above
-  it and the ordering comment sits back on its own check.
-- **violation** — Error-path/edge-case coverage gaps on new public functions
-  (`MergeSkip::SelfLoop`, the probe-count bound, `signature()`, `correlate()`)
-  — evidence: `ockham/src/merge.rs`, `ockham/src/signature.rs` — reason: fixed
-  here; four tests added
-  (`a_removed_neuron_that_feeds_the_survivor_is_refused`,
-  `a_signature_is_the_sign_of_each_probe_against_its_own_mean`,
-  `correlation_needs_two_moving_vectors_of_usable_length`, and the oversized
-  `--merge-probes` case in `bad_merge_values_name_the_flag`).
-- **violation** — Second silent floor: `cfg.max_bucket.max(2)` quietly corrected
-  an unvalidated config — evidence: `ockham/src/signature.rs:374` — reason:
-  fixed here; the cap is honoured literally and the members it declines to
-  compare are counted in `truncated_buckets` / `dropped_members`.
-- **violation** — `fill_batch` allocated a fresh `MergeIndex::default()` where
-  the shared `MergeIndex::empty()` exists for exactly that — evidence:
-  `ockham/src/sweep.rs:295` — reason: fixed here.
-- **violation** — `signature()` took its mean over the whole vector but set bits
-  only from the first 64 — evidence: `ockham/src/signature.rs:224` — reason:
-  fixed here; the mean is taken over the probes the bits come from, and the
-  behaviour is pinned by a test.
-- **violation** — A pair counted in `correlated_pairs` could emit no proposals
-  when the backward fit failed — evidence: `ockham/src/signature.rs:395` —
-  reason: fixed here; the counter moved after both fits exist.
-- **violation** — No `docs/archive/pr-summaries/pr-summary-109.md` — evidence:
-  `docs/archive/pr-summaries/` — reason: this file.
-- **violation** — `STATS_FORMAT_VERSION` bumped 2 → 3, discarding every existing
-  activation-stats cache including control runs, although `probes` is
-  `#[serde(default)]` and the probe count is already in `SampleSpec::tag()` —
-  evidence: `ockham/src/stats.rs:38` — reason: reverted to `2` here.
-- **violation** — DRY: the PRNG and synthetic-stats helpers are duplicated
-  between `ockham/examples/correlated_merge_bench.rs:601` and
-  `ockham/src/signature.rs:637` — evidence: those two lines — reason: stands.
-  They live in different compilation units (an example and a `#[cfg(test)]`
-  module) and are six lines each; exporting a fixture to share them would be
-  the premature abstraction the standards warn against.
-- **clean** — Australian English throughout (`behaviour`, `behavioural`,
-  `optimised`, `artefact`; no US spellings in the diff); workspace lints
-  (`unused`, `collapsible_if`, `filter_next`) and `#![warn(missing_docs)]` all
-  satisfied; no wall-clock thresholds in tests — the one timing test is a
-  same-machine 4× ratio; every test calls real functions (compiled forward
-  passes, a real temp corpus, the real binary) with no source-text grepping; no
-  hidden paths or secrets staged; incumbent immutability asserted after every
-  transform; `creature.validate()` on every emitted candidate; the README-as-
-  contract tests cover all five new flags in both directions and the repository
-  layout lists both new modules; `merge.rs` and `signature.rs` are ~740 lines
-  each with a single responsibility.
+- **violation** — Silent clamping: `probe_slots` shortened the probe set when
+  the plan could not hold it, with no report, while the doc claimed "not
+  clamped" — evidence: `ockham/src/stats.rs:171` — reason: fixed here; the scan
+  reports the shortfall before it starts and the doc names both structural
+  bounds.
+- **violation** — Swallowed errors: only the first merge refusal was kept, while
+  the comment claimed none were dropped — evidence: `ockham/src/sweep.rs:436` —
+  reason: fixed here; `MergeRefusal` names the strongest partner's reason and
+  counts the weaker partners refused behind it.
+- **violation** — Swallowed errors in the benchmark: `let Ok(built) = … else
+  { continue }` dropped both merge and ablation refusals, in a file whose doc
+  says a fault is never swallowed — evidence:
+  `ockham/examples/correlated_merge_bench.rs:299` — reason: fixed here; refusals
+  are counted by reason code and printed under the table.
+- **violation** — `MergeSkip::CostIncrease` fires on "not lower" but its message
+  said "raises", misdescribing the equal case; neither it nor
+  `MergeSkip::Invalid` had a test — evidence: `ockham/src/merge.rs:196` —
+  reason: fixed here; the message reads "does not lower growth units" and
+  `a_guard_skip_says_what_broke_and_which_code_counts_it` pins both variants and
+  their reason codes.
+- **violation** — Untested documented surface: no test asserted `mergedWith`
+  reaches the candidate log — evidence: `ockham/src/telemetry.rs:326` — reason:
+  fixed here by `a_screened_out_merge_writes_its_survivor_to_the_log`, which
+  drives `screened_out` and reads the row back off disk.
+- **violation** — Docs not updated for a changed surface: merging adds
+  `unsafe-topology` cases and the first `other` case, and the reason-code doc
+  #103/#108 both updated was untouched — evidence: `docs/blocked-reasons.md:16`
+  — reason: fixed here; both rows name the merge cases.
+- **violation** — `## Correlated-neuron merging` sat directly under the
+  preceding paragraph with no blank line — evidence: `README.md:367` — reason:
+  fixed here; an artefact of the `Develop` merge resolution.
+- **clean** — Australian English throughout the added prose and identifiers;
+  `CONTRIBUTING.md` principles (incumbent never mutated, forward-only guard,
+  approximate generation with acceptance still `creature.validate()` + sampled
+  screen + full scorer, merging off by default, no TypeScript);
+  `ockham/Cargo.toml` bumped with `Cargo.lock` in step and no changelog; 🪒
+  commit prefix; the README-as-contract test covers all five new flags and both
+  new modules; `cargo fmt`, clippy `-D warnings` and the whole test suite pass;
+  tests call real functions on real data with no source-text grepping, and the
+  one timing test is a same-machine ratio rather than a wall-clock threshold; no
+  secrets, no hidden paths staged, no external-input injection surface.
 
 ## Test Plan
 
-New tests:
+New in this run:
+
+- `ockham/src/merge.rs::a_guard_skip_says_what_broke_and_which_code_counts_it` —
+  the two guard skips name what broke and map to `other` / `validation-failed` /
+  `missing-activation`.
+- `ockham/src/sweep.rs::a_restricted_index_re_derives_a_merge_only_for_the_uuids_it_names`
+  — replay rebuilds a recorded verdict as the transform it was judged as.
+- `ockham/src/learnings.rs::only_recorded_merges_are_replayed_as_merges` —
+  `merge_wins` reads the latest accepted verdict and its kind.
+- `ockham/src/telemetry.rs::a_screened_out_merge_writes_its_survivor_to_the_log`
+  — the survivor round-trips through the candidate log; an ablation names none.
+- `ockham/src/stats.rs::adaptive_stopping_waits_for_the_whole_probe_set`
+  (replaces `adaptive_stopping_does_not_shorten_the_probe_set`, whose name
+  described the old prefix placement) — a probing scan runs to the last slot; a
+  control run keeps its early stop.
+- `ockham/tests/cli.rs::merge_correlation_turns_on_probe_capture_and_nothing_else_does`
+  now uses a `TANH` hidden neuron: the exact cleanup pre-pass (#110) collapses
+  an `IDENTITY` hidden neuron before the scan, so the old fixture had nothing
+  left to probe. Same assertions, live fixture.
+
+From the first pass, unchanged:
 
 - `ockham/src/merge.rs` — `an_exactly_duplicated_identity_neuron_merges_with_identical_outputs`,
   `an_exactly_duplicated_tanh_neuron_merges_with_identical_outputs`,
@@ -273,14 +290,15 @@ New tests:
   `discovery_costs_the_creature_not_its_square`,
   `a_duplicate_is_found_among_several_thousand_unrelated_neurons`.
 - `ockham/src/stats.rs` — `probe_records_are_retained_only_when_asked_for_and_are_reproducible`,
-  `a_probe_free_cache_entry_is_never_served_to_a_probing_scan`,
-  `adaptive_stopping_does_not_shorten_the_probe_set`.
+  `a_probe_free_cache_entry_is_never_served_to_a_probing_scan`.
 - `ockham/src/sweep.rs` — `a_correlated_pair_is_proposed_as_a_merge_naming_its_survivor`,
   `without_a_merge_index_no_candidate_is_a_merge`.
 - `ockham/src/config.rs` — `correlated_neuron_merging_is_off_until_a_threshold_is_named`,
   `bad_merge_values_name_the_flag`.
-- `ockham/tests/cli.rs` — `merge_correlation_turns_on_probe_capture_and_nothing_else_does`,
-  `an_invalid_merge_correlation_names_the_flag`.
+- `ockham/tests/cli.rs` — `an_invalid_merge_correlation_names_the_flag`.
 
-No existing test was removed or weakened. `ockham/tests/readme_contract.rs`
-enforces the five new flags and the two new modules without modification.
+No existing test was removed or weakened. One was renamed and extended:
+`adaptive_stopping_does_not_shorten_the_probe_set` became
+`adaptive_stopping_waits_for_the_whole_probe_set`, because the probe placement
+it pinned was the corpus-prefix behaviour this run replaced; the new test
+asserts both the probing and the control path.
