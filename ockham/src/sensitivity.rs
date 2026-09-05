@@ -19,11 +19,13 @@
 //! already resolved behind it.
 //!
 //! Recurrent and otherwise cyclic topology is handled **conservatively**. A
-//! cycle has no first-order fixpoint that a single backward pass can read, so
-//! every member of a cyclic component takes the largest importance any member
-//! of that component sends out of it. The loop is therefore never ranked as
-//! dead wood merely because it could not be resolved, and the answer does not
-//! depend on which member the walk happened to enter by.
+//! cycle has no first-order fixpoint that a single backward pass can read — the
+//! series diverges as soon as the loop gain reaches one — so the component is
+//! relaxed once against the largest importance any member sends out of it.
+//! Every member keeps at least that exit, and a member that amplifies into it
+//! is credited for that hop. The loop is therefore never ranked as dead wood
+//! merely because it could not be resolved, and the answer does not depend on
+//! which member the walk happened to enter by.
 //!
 //! Outputs anchor the recursion at `1` and are never propagated through: an
 //! output's own outgoing structure, if the creature carries any, cannot make it
@@ -102,6 +104,7 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
+    /// Slot every listed neuron of `creature`. The creature is read, never written.
     fn new(creature: &'a CreatureExport) -> Self {
         let capacity = creature.neurons.len() + creature.input;
         let mut builder = Self {
@@ -155,6 +158,29 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// `Σ abs(weight) × value(child)` over the edges of `slot` that `keep` takes.
+    ///
+    /// A zero weight contributes nothing even when the child's importance
+    /// overflowed: a muted edge passes nothing downstream, and `0 × ∞` must not
+    /// turn the muted neuron this ranking exists to find into an undefined one.
+    fn contribution<K, V>(&self, slot: usize, keep: K, value: V) -> f64
+    where
+        K: Fn(usize) -> bool,
+        V: Fn(usize) -> f64,
+    {
+        self.out[slot]
+            .iter()
+            .filter(|(to, _)| keep(*to))
+            .map(|&(to, weight)| {
+                if weight == 0.0 {
+                    0.0
+                } else {
+                    weight * value(to)
+                }
+            })
+            .sum()
+    }
+
     /// Resolve every slot's importance and freeze the index.
     fn solve(self) -> SensitivityIndex<'a> {
         let components = strongly_connected_components(&self.out);
@@ -177,11 +203,7 @@ impl<'a> Builder<'a> {
                 let value = if self.kind[slot] == Kind::Output {
                     1.0
                 } else {
-                    self.out[slot]
-                        .iter()
-                        .filter(|(to, _)| component_of[*to] != id)
-                        .map(|&(to, weight)| weight * importance[to])
-                        .sum()
+                    self.contribution(slot, |to| component_of[to] != id, |to| importance[to])
                 };
                 let value = finite(value);
                 importance[slot] = value;
@@ -190,11 +212,21 @@ impl<'a> Builder<'a> {
                 }
             }
             if cyclic {
-                // No first-order fixpoint to read: every member takes the
-                // largest importance the loop sends out of itself, so a
-                // recurrent neuron is never mistaken for dead wood.
-                for &slot in component {
-                    importance[slot] = largest_exit;
+                // No first-order fixpoint to read, so the loop is relaxed once
+                // against the largest importance it sends out of itself: every
+                // member keeps at least that exit — a recurrent neuron is never
+                // mistaken for dead wood — and a member that amplifies into the
+                // exit is credited for that hop rather than rounded down to it.
+                let relaxed: Vec<f64> = component
+                    .iter()
+                    .map(|&slot| {
+                        let inside =
+                            self.contribution(slot, |to| component_of[to] == id, |_| largest_exit);
+                        finite(importance[slot] + inside).max(largest_exit)
+                    })
+                    .collect();
+                for (&slot, value) in component.iter().zip(relaxed) {
+                    importance[slot] = value;
                 }
             }
         }
@@ -370,9 +402,10 @@ mod tests {
     }
 
     #[test]
-    fn a_cycle_takes_the_largest_importance_it_sends_out_of_itself() {
-        // r1 ⇄ r2, and r2 → output-0 with weight 7; the loop cannot be
-        // resolved first-order, so both members take that exit.
+    fn a_cycle_keeps_the_exit_it_sends_out_and_credits_one_hop_into_it() {
+        // r1 ⇄ r2, and r2 → output-0 with weight 7. The loop gain is 2 × 0.5,
+        // so the first-order series diverges and no fixpoint can be read: the
+        // component is relaxed once against its largest exit instead.
         let fixture = creature(
             1,
             1,
@@ -385,16 +418,43 @@ mod tests {
             ],
         );
         let index = SensitivityIndex::new(&fixture);
-        assert_eq!(index.importance("r2"), Some(7.0));
+        assert_eq!(index.importance("r2"), Some(10.5), "7 + 0.5 × 7");
         assert_eq!(
             index.importance("r1"),
-            Some(7.0),
-            "a loop member is never ranked as dead wood for being in a loop"
+            Some(14.0),
+            "2 × 7: a member that amplifies into the exit is not rounded down to it"
         );
     }
 
     #[test]
-    fn a_self_loop_is_treated_as_a_cycle_rather_than_summed_into_itself() {
+    fn a_loop_that_reaches_no_output_is_still_dead_wood() {
+        // r1 ⇄ r2 with nothing downstream: conservative handling must not
+        // invent importance for a loop the outputs cannot see.
+        let fixture = creature(
+            1,
+            1,
+            vec![
+                hidden("r1"),
+                hidden("r2"),
+                hidden("live"),
+                output("output-0"),
+            ],
+            vec![
+                synapse("input-0", "r1", 1.0),
+                synapse("r1", "r2", 2.0),
+                synapse("r2", "r1", 0.5),
+                synapse("input-0", "live", 1.0),
+                synapse("live", "output-0", 1.0),
+            ],
+        );
+        let index = SensitivityIndex::new(&fixture);
+        assert_eq!(index.importance("r1"), Some(0.0));
+        assert_eq!(index.importance("r2"), Some(0.0));
+        assert_eq!(index.importance("live"), Some(1.0));
+    }
+
+    #[test]
+    fn a_self_loop_is_relaxed_as_a_cycle_rather_than_summed_into_itself() {
         let fixture = creature(
             1,
             1,
@@ -406,7 +466,34 @@ mod tests {
             ],
         );
         let index = SensitivityIndex::new(&fixture);
-        assert_eq!(index.importance("s"), Some(2.0));
+        // Exit 2, plus one relaxed hop of the self edge: 2 + 3 × 2. The
+        // recursion terminates instead of summing the neuron into itself.
+        assert_eq!(index.importance("s"), Some(8.0));
+    }
+
+    #[test]
+    fn a_muted_edge_behind_an_overflowed_path_is_still_dead_wood() {
+        // The tail overflows to infinity; `muted` reaches it through a zero
+        // weight, so it passes nothing on. Reading that as `0 × ∞ = NaN` would
+        // rank the muted neuron last — the exact opposite of the truth.
+        let mut neurons = vec![output("output-0"), hidden("muted")];
+        let mut synapses = vec![synapse("input-0", "n0", 1.0)];
+        const DEPTH: usize = 400;
+        for step in 0..DEPTH {
+            neurons.push(hidden(&format!("n{step}")));
+            let target = if step + 1 == DEPTH {
+                "output-0".to_string()
+            } else {
+                format!("n{}", step + 1)
+            };
+            synapses.push(synapse(&format!("n{step}"), &target, 1e6));
+        }
+        synapses.push(synapse("input-0", "muted", 1.0));
+        synapses.push(synapse("muted", "n0", 0.0));
+        let fixture = creature(1, 1, neurons, synapses);
+        let index = SensitivityIndex::new(&fixture);
+        assert_eq!(index.importance("n0"), Some(f64::INFINITY));
+        assert_eq!(index.importance("muted"), Some(0.0));
     }
 
     #[test]

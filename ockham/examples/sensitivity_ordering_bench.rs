@@ -127,15 +127,17 @@ fn probes(inputs: usize) -> Vec<Vec<f32>> {
         .collect()
 }
 
-/// Outputs of `creature` over every probe, or `None` when it will not compile.
-fn outputs(creature: &CreatureExport, probes: &[Vec<f32>]) -> Option<Vec<Vec<f32>>> {
-    let mut net = compile_creature(creature).ok()?;
-    Some(
-        probes
-            .iter()
-            .map(|input| net.activate(input, creature.output))
-            .collect(),
-    )
+/// Outputs of `creature` over every probe; the compile error is not swallowed.
+///
+/// `ablate_mean` only returns a candidate it has validated, so a candidate that
+/// will not compile is a fault to surface — never a quiet "not confirmed" that
+/// reads in the table exactly like a judge rejecting the cut on behaviour.
+fn outputs(creature: &CreatureExport, probes: &[Vec<f32>]) -> Result<Vec<Vec<f32>>, String> {
+    let mut net = compile_creature(creature).map_err(|e| e.to_string())?;
+    Ok(probes
+        .iter()
+        .map(|input| net.activate(input, creature.output))
+        .collect())
 }
 
 /// Whether the candidate leaves every probe output within [`TOLERANCE`].
@@ -176,8 +178,8 @@ fn main() {
          (not by the ranking key):"
     );
     println!(
-        "  {:<26} {:>9} {:>9} {:>10} {:>12} {:>10}",
-        "ordering", "first(ms)", "cuts/h", "units/h", "calls/cut", "build(ms)"
+        "  {:<26} {:>9} {:>9} {:>10} {:>12} {:>8} {:>10}",
+        "ordering", "first(ms)", "cuts/h", "units/h", "calls/cut", "blocked", "build(ms)"
     );
 
     for strategy in [
@@ -195,17 +197,18 @@ fn main() {
         let build_ms = started.elapsed().as_secs_f64() * 1000.0;
 
         let judging = Instant::now();
-        let (mut calls, mut cuts, mut units) = (0u64, 0u64, 0.0f64);
+        let (mut calls, mut cuts, mut units, mut blocked) = (0u64, 0u64, 0.0f64, 0u64);
         let mut first_ms: Option<f64> = None;
         for uuid in order.iter().take(VISITS) {
             let Ok(ablation) = ablate_mean(&creature, uuid, 0.1, None) else {
-                // A visit the razor cannot propose for never reaches a judge.
+                // A visit the razor cannot propose for buys nothing and never
+                // reaches a judge, so it is reported rather than dropped.
+                blocked += 1;
                 continue;
             };
+            let after = outputs(&ablation.creature, &probe_set)
+                .unwrap_or_else(|e| panic!("the candidate cutting {uuid} must compile: {e}"));
             calls += 1;
-            let Some(after) = outputs(&ablation.creature, &probe_set) else {
-                continue;
-            };
             if !confirmed(&baseline, &after) {
                 continue;
             }
@@ -223,7 +226,7 @@ fn main() {
             "none".to_string()
         };
         println!(
-            "  {:<26} {:>9} {:>9.0} {:>10.0} {:>12} {:>10.1}",
+            "  {:<26} {:>9} {:>9.0} {:>10.0} {:>12} {blocked:>8} {:>10.1}",
             strategy.name(),
             first_ms.map_or("none".to_string(), |ms| format!("{ms:.1}")),
             per_hour(cuts as f64),
@@ -234,7 +237,9 @@ fn main() {
     }
     println!(
         "first(ms) is time to the first confirmed cut; cuts/h and units/h are confirmed cuts \
-         and growth units per hour of this harness; calls/cut is proxy scorer calls per \
-         confirmed cut. Only a full-corpus scorer accepts a cut."
+         and growth units per hour of this harness; calls/cut is proxy judge calls per \
+         confirmed cut; blocked counts visits the razor could propose nothing for. The \
+         fixture is a designed best case for this failure mode, and the judge is a forward \
+         pass — only a full-corpus scorer accepts a cut."
     );
 }

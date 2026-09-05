@@ -1331,22 +1331,30 @@ is *confirmed* when the outputs are unchanged within `1e-6`.
 
 | `--ordering` | Time to first confirmed cut | Confirmed cuts/hour | Growth units/hour | Calls per confirmed cut |
 |---|---|---|---|---|
-| `random` | 60.2 ms | 191,760 | 862,919 | 7.1 |
+| `random` | 59.9 ms | 193,217 | 869,478 | 7.1 |
 | `low-variance` | none in 150 visits | 0 | 0 | none |
 | `low-mean-abs` | none in 150 visits | 0 | 0 | none |
-| `low-outgoing-contribution` | 2.7 ms | 544,434 | 2,449,952 | 2.5 |
-| `low-fan-out` | 59.4 ms | 192,260 | 865,168 | 7.1 |
-| `high-growth-saving` | 60.2 ms | 191,285 | 860,782 | 7.1 |
-| `low-output-sensitivity` | 2.7 ms | 1,305,309 | 5,873,889 | 1.0 |
-| `low-estimated-effect` | 2.6 ms | 1,309,357 | 5,892,106 | 1.0 |
+| `low-outgoing-contribution` | 2.6 ms | 548,245 | 2,467,101 | 2.5 |
+| `low-fan-out` | 59.1 ms | 193,526 | 870,869 | 7.1 |
+| `high-growth-saving` | 59.7 ms | 192,526 | 866,369 | 7.1 |
+| `low-output-sensitivity` | 2.6 ms | 1,319,931 | 5,939,688 | 1.0 |
+| `low-estimated-effect` | 2.6 ms | 1,312,038 | 5,904,173 | 1.0 |
 
 The per-hour figures are the rate of this harness, whose judge is a forward pass
 rather than a full corpus; the number that carries across to a real run is
 **calls per confirmed cut**, which is the scorer time an ordering spends per cut
 it earns. The activation-only rankings screen the quiet neurons that matter and
 confirm nothing at all in 150 visits. Building the order costs 1.2 ms against
-`high-growth-saving`'s 8.1 ms on the same creature, so the ranking pays for
-itself several times over before the first candidate is scored.
+`high-growth-saving`'s 8.0 ms on the same creature, so the ranking pays for
+itself several times over before the first candidate is scored. Visits the razor
+could propose nothing for are counted and printed as `blocked` — a ranking that
+spends its budget on refusals must not read as one that spends nothing.
+
+The fixture is a **designed best case** for this failure mode: its dead wood is
+also its loudest structure, and there is more of it than the 150-visit budget,
+so `1.0` calls per confirmed cut is what the ordering achieves when the creature
+really does carry attenuated structure — not a figure to expect from an
+arbitrary creature.
 
 This is a **prioritisation heuristic only**. It is first-order and knows nothing
 of squash saturation or behaviour, so every candidate it ranks first still faces
@@ -1524,7 +1532,7 @@ NEAT-AI-Ockham/
 │       ├── coverage.rs       # checked/total/percent + coverage.txt / coverage.json
 │       ├── ordering.rs        # named candidate ordering strategies
 │       ├── cascade.rs         # topology-only cascade dry-run for ordering
-│       ├── sensitivity.rs    # backward output-sensitivity estimate for ordering
+│       ├── sensitivity.rs     # backward output-sensitivity estimate for ordering
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs

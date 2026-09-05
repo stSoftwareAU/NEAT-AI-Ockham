@@ -229,7 +229,7 @@ pub fn random_order(creature: &CreatureExport, seed: u64) -> Vec<String> {
 ///
 /// Topology does not change while an order is built, so each signal is walked
 /// once per hidden neuron rather than once per comparison the sort makes.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Signals<'a> {
     /// Cascade dry-run per hidden neuron (Issue #106).
     cascade: Option<HashMap<&'a str, CascadeEstimate>>,
@@ -835,7 +835,7 @@ mod tests {
                 synapse("hard", "output-0", 0.1),
             ],
         );
-        let mut stats = attenuated_stats();
+        let mut stats = stats();
         stats.neurons.clear();
         for (i, (uuid, mean_abs)) in [("soft", 0.01), ("hard", 2.0)].iter().enumerate() {
             stats.neurons.push(NeuronStats {
@@ -912,7 +912,7 @@ mod tests {
                 synapse("muted", "output-0", 0.0),
             ],
         );
-        let mut stats = attenuated_stats();
+        let mut stats = stats();
         stats.neurons.clear();
         for (i, uuid) in ["r1", "r2", "muted"].iter().enumerate() {
             stats.neurons.push(NeuronStats {
