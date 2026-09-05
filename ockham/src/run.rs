@@ -1006,6 +1006,7 @@ fn ockham_loop(
                 match propose(&incumbent.creature, &activation, &applied[0]) {
                     Ok((kind, creature)) => vec![SampledWinner {
                         candidate: SweepCandidate {
+                            members: vec![applied[0].clone()],
                             uuid: applied[0].clone(),
                             permutation_index: 0,
                             kind,
@@ -1064,6 +1065,7 @@ fn ockham_loop(
                             match propose(&incumbent.creature, &activation, uuid) {
                                 Ok((kind, creature)) => probe.push(SampledWinner {
                                     candidate: SweepCandidate {
+                                        members: vec![uuid.clone()],
                                         uuid: uuid.clone(),
                                         permutation_index: 0,
                                         kind,
@@ -2175,20 +2177,32 @@ fn file_full_outcome(
                 Outcome::Rejected
             },
             full_delta: Some(scored.delta),
+            group: None,
         });
     }
     if let Some(winner) = &full.winner {
+        // A group cut is filed as the neighbourhood it was: every member
+        // carries the whole membership so replay can rebuild it (Issue #108).
+        // Without that, N members each look like a lone win that loses when it
+        // is retried alone — which is exactly what the group was proposed to
+        // get past.
+        let group = (winner.candidate.kind == "group").then_some(&winner.candidate.uuids[..]);
         for uuid in &winner.candidate.uuids {
             if seen.contains(uuid.as_str()) {
                 continue;
             }
             verdicts.push(Verdict {
                 uuid: uuid.as_str(),
-                kind: crate::sweep::CandidateKind::Ablation,
+                kind: if group.is_some() {
+                    crate::sweep::CandidateKind::Group
+                } else {
+                    crate::sweep::CandidateKind::Ablation
+                },
                 outcome: Outcome::Accepted,
-                // Measured only inside the winning bundle, so its individual
-                // contribution is unknown — never guess it from the bundle.
+                // Measured only inside the winning bundle or group, so its
+                // individual contribution is unknown — never guess it.
                 full_delta: None,
+                group,
             });
         }
     }
@@ -2616,6 +2630,7 @@ mod tests {
                     unix_secs: secs,
                     host: "t".into(),
                     full_delta: None,
+                    group: None,
                 })
                 .unwrap();
         }
@@ -2682,6 +2697,7 @@ mod tests {
                 unix_secs: 10,
                 host: "t".into(),
                 full_delta: None,
+                group: None,
             })
             .unwrap();
         let cfg = OckhamConfig {
@@ -3187,6 +3203,7 @@ mod tests {
                 unix_secs,
                 host: "GRQ-23".into(),
                 full_delta: None,
+                group: None,
             })
             .unwrap();
     }
@@ -4224,6 +4241,7 @@ mod tests {
                 unix_secs: crate::incumbent::now_unix(),
                 host: "t".into(),
                 full_delta: Some(-1.0),
+                group: None,
             })
             .unwrap();
         let cfg = OckhamConfig {
@@ -4709,6 +4727,7 @@ mod tests {
                 .map(|(uuid, delta)| candidate(uuid, *delta))
                 .collect(),
             bundles: Vec::new(),
+            groups: Vec::new(),
             sample_false_positives: Vec::new(),
             winner: winner.map(|uuid| LocalWinner {
                 candidate: candidate(uuid, 0.3),
@@ -4881,6 +4900,7 @@ mod tests {
                     unix_secs: *unix_secs,
                     host: "t".into(),
                     full_delta: *full_delta,
+                    group: None,
                 })
                 .unwrap();
         }

@@ -453,6 +453,7 @@ mod tests {
             unix_secs: 1,
             host: "h".into(),
             full_delta,
+            group: None,
         }
     }
 

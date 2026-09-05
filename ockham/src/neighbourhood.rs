@@ -42,6 +42,7 @@ use serde::Serialize;
 use crate::cascade::{CascadeEstimate, CascadeIndex};
 use crate::sensitivity::SensitivityIndex;
 use crate::stats::ActivationStats;
+use crate::sweep::{CandidateKind, SweepCandidate};
 
 /// Smallest group worth proposing — one neuron is an ordinary candidate.
 pub const MIN_NEIGHBOURHOOD_SIZE: usize = 2;
@@ -202,6 +203,60 @@ pub fn propose_neighbourhoods(
     });
     out.truncate(cfg.max_proposals);
     out
+}
+
+/// Group candidates built for one batch, and what stopped the rest.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct GroupBatch {
+    /// Buildable, validated group candidates, best-ranked first.
+    pub candidates: Vec<SweepCandidate>,
+    /// One message per ranked proposal the transform refused.
+    ///
+    /// Reported rather than dropped: a generator whose proposals are all
+    /// refused looks exactly like a creature with no neighbourhoods in it, and
+    /// those are very different facts about a run.
+    pub blocked: Vec<String>,
+}
+
+impl GroupBatch {
+    /// Proposals considered — built plus refused.
+    pub fn considered(&self) -> usize {
+        self.candidates.len() + self.blocked.len()
+    }
+}
+
+/// Rank neighbourhoods of `incumbent` and build a candidate for each (#108).
+///
+/// The batch companion of [`propose_neighbourhoods`]: every proposal is put
+/// through [`crate::ablation::ablate_group`], so what comes back is already
+/// validated by `creature.validate()` and ready for the ordinary sampled
+/// screen. Stems are `g000`, `g001`, … so a group candidate never collides with
+/// the sweep's own `c000` cohort files.
+pub fn group_batch(
+    incumbent: &CreatureExport,
+    stats: &ActivationStats,
+    cfg: NeighbourhoodConfig,
+) -> GroupBatch {
+    let mut batch = GroupBatch::default();
+    for group in propose_neighbourhoods(incumbent, stats, cfg) {
+        match crate::sweep::propose_group(incumbent, stats, &group.members) {
+            Ok(creature) => {
+                let stem = format!("g{:03}", batch.candidates.len());
+                batch.candidates.push(SweepCandidate {
+                    uuid: group.members[0].clone(),
+                    members: group.members,
+                    permutation_index: 0,
+                    kind: CandidateKind::Group,
+                    stem,
+                    creature,
+                });
+            }
+            Err(blocked) => batch
+                .blocked
+                .push(format!("{} [{}]", blocked, group.kind.name())),
+        }
+    }
+    batch
 }
 
 /// Loudest `mean_abs × downstream importance` in the group, or `None` when a
@@ -511,6 +566,43 @@ mod tests {
             "`keep` feeds the output directly: {:?}",
             names(&groups)
         );
+    }
+
+    #[test]
+    fn a_group_batch_builds_a_validated_candidate_per_proposal() {
+        let creature = chain_creature();
+        let stats = stats_for(&creature, 0.1);
+        let batch = group_batch(&creature, &stats, NeighbourhoodConfig::default());
+        assert!(!batch.candidates.is_empty());
+        assert!(batch.blocked.is_empty(), "{:?}", batch.blocked);
+        assert_eq!(batch.considered(), batch.candidates.len());
+        let first = &batch.candidates[0];
+        assert_eq!(first.kind, CandidateKind::Group);
+        assert!(first.is_group());
+        assert_eq!(first.uuid, first.members[0]);
+        assert_eq!(first.cuts(), first.members);
+        assert_eq!(first.stem, "g000");
+        crate::incumbent::validate_creature(&first.creature).unwrap();
+        for member in &first.members {
+            assert!(
+                first.creature.neurons.iter().all(|n| &n.uuid != member),
+                "{member} must be gone from the candidate"
+            );
+        }
+        // Stems must not collide with the sweep's own `c000` cohort files.
+        assert!(batch.candidates.iter().all(|c| c.stem.starts_with('g')));
+    }
+
+    #[test]
+    fn a_batch_without_statistics_builds_nothing_and_says_so() {
+        let creature = chain_creature();
+        let batch = group_batch(
+            &creature,
+            &ActivationStats::empty(),
+            NeighbourhoodConfig::default(),
+        );
+        assert_eq!(batch, GroupBatch::default());
+        assert_eq!(batch.considered(), 0);
     }
 
     #[test]

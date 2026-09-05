@@ -138,6 +138,18 @@ pub struct Learning {
     /// the old binary the moment one upgraded host wrote a record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_delta: Option<f64>,
+    /// The group cut this verdict came from, when it came from one (#108).
+    ///
+    /// Every hidden neuron the neighbourhood removed, upstream-first, repeated
+    /// on each member's record. Additive and optional for the same reason
+    /// [`Self::full_delta`] is: one cache is shared across a mixed-version
+    /// fleet, and serde ignores a field an older binary does not know.
+    ///
+    /// Replay reads it so an accepted neighbourhood is reconstructed as the
+    /// group it was, rather than as members that each lose on their own — which
+    /// is the whole reason the group was proposed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<Vec<String>>,
 }
 
 /// Current screen-record format version.
@@ -707,6 +719,7 @@ pub fn kind_label(kind: CandidateKind) -> &'static str {
         CandidateKind::Identity => "identity",
         CandidateKind::Ablation => "ablation",
         CandidateKind::Constant => "constant",
+        CandidateKind::Group => "group",
     }
 }
 
@@ -848,6 +861,44 @@ pub fn ranked_confirmed(
     out
 }
 
+/// Group cuts the full corpus confirmed, still whole on `creature` (#108).
+///
+/// The membership half of replay. A neighbourhood is accepted as one proposal,
+/// so its members carry no individual verdict — replaying them one at a time
+/// re-asks the question the group was invented to get past, and each member
+/// loses it. This returns the plans as they were cut, so the replay cohort can
+/// offer the whole group again.
+///
+/// A group is only returned while **every** member is still on the creature: a
+/// partly-applied neighbourhood is a different cut from the one that was
+/// judged, and reconstructing it from the survivors would replay a plan no
+/// scorer ever saw. Newest first, then by membership, so every host builds the
+/// same queue.
+pub fn confirmed_groups(
+    known: &[Learning],
+    creature: &CreatureExport,
+    min_improvement: f64,
+) -> Vec<Vec<String>> {
+    let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
+    let mut ranked: Vec<&Learning> = known
+        .iter()
+        .filter(|l| l.outcome == Outcome::Accepted || confirmed_positive(l, min_improvement))
+        .filter(|l| {
+            l.group
+                .as_ref()
+                .is_some_and(|g| g.len() > 1 && g.iter().all(|u| present.contains(u.as_str())))
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.unix_secs.cmp(&a.unix_secs).then_with(|| a.group.cmp(&b.group)));
+    let mut seen: HashSet<Vec<String>> = HashSet::new();
+    ranked
+        .into_iter()
+        .filter_map(|l| l.group.clone())
+        // One plan per membership: every member of a group files the same list.
+        .filter(|group| seen.insert(group.clone()))
+        .collect()
+}
+
 /// Still-present uuids an **older** corpus once spoke well of (Issue #88).
 ///
 /// The set the sweep checks first: a hidden neuron the fleet removed — or
@@ -974,6 +1025,8 @@ pub struct Verdict<'a> {
     pub outcome: Outcome,
     /// Individual full-corpus delta when this uuid was scored alone.
     pub full_delta: Option<f64>,
+    /// Every member of the group cut this verdict came from (Issue #108).
+    pub group: Option<&'a [String]>,
 }
 
 /// File verdicts onto `known` and the store. Returns how many were written.
@@ -994,6 +1047,7 @@ pub fn file_verdicts(
             unix_secs,
             host: host.clone(),
             full_delta: v.full_delta,
+            group: v.group.map(<[String]>::to_vec),
         };
         if let Some(store) = store
             && let Err(e) = store.append(&learning)
@@ -1191,6 +1245,7 @@ mod tests {
             unix_secs: secs,
             host: "t".into(),
             full_delta: None,
+            group: None,
         }
     }
 
@@ -1200,6 +1255,66 @@ mod tests {
             full_delta: Some(delta),
             ..rec(uuid, Outcome::Rejected, secs)
         }
+    }
+
+    /// One member's record of an accepted group cut (Issue #108).
+    fn group_rec(uuid: &str, members: &[&str], secs: u64) -> Learning {
+        Learning {
+            kind: "group".into(),
+            group: Some(members.iter().map(|m| (*m).to_string()).collect()),
+            ..rec(uuid, Outcome::Accepted, secs)
+        }
+    }
+
+    #[test]
+    fn an_accepted_group_is_replayed_as_one_plan_not_as_its_members() {
+        let c = two_hidden();
+        let known = vec![
+            group_rec("h_a", &["h_a", "h_b"], 10),
+            group_rec("h_b", &["h_a", "h_b"], 10),
+        ];
+        assert_eq!(
+            confirmed_groups(&known, &c, 1e-6),
+            vec![vec!["h_a".to_string(), "h_b".to_string()]],
+            "every member files the same membership; the plan is offered once"
+        );
+    }
+
+    #[test]
+    fn a_group_missing_a_member_is_not_reconstructed() {
+        let c = two_hidden();
+        // `h_c` has already gone from the creature, so the neighbourhood that
+        // was judged no longer exists and must not be rebuilt from what is left.
+        let known = vec![group_rec("h_a", &["h_a", "h_c"], 10)];
+        assert!(confirmed_groups(&known, &c, 1e-6).is_empty());
+        // A rejected group is not replayed either.
+        let rejected = vec![Learning {
+            outcome: Outcome::Rejected,
+            ..group_rec("h_a", &["h_a", "h_b"], 10)
+        }];
+        assert!(confirmed_groups(&rejected, &c, 1e-6).is_empty());
+        // Nor is a single-neuron verdict, which replay already covers.
+        let single = vec![group_rec("h_a", &["h_a"], 10)];
+        assert!(confirmed_groups(&single, &c, 1e-6).is_empty());
+    }
+
+    #[test]
+    fn a_group_record_round_trips_through_the_store_and_older_readers_ignore_it() {
+        let learning = group_rec("h_a", &["h_a", "h_b"], 10);
+        let json = serde_json::to_string(&learning).unwrap();
+        assert!(json.contains(r#""group":["h_a","h_b"]"#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<Learning>(&json).unwrap(),
+            learning,
+            "a filed group must read back as the group it was"
+        );
+        // A record written before #108 carries no membership and still reads.
+        let older = serde_json::to_string(&rec("h_a", Outcome::Accepted, 10)).unwrap();
+        assert!(!older.contains("group"), "{older}");
+        assert_eq!(
+            serde_json::from_str::<Learning>(&older).unwrap().group,
+            None
+        );
     }
 
     #[test]
