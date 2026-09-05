@@ -74,8 +74,11 @@ pub struct OckhamConfig {
     pub ordering_random_quota: f64,
     /// Fitted ranking model for `--ordering learned` (issue #107).
     ///
-    /// Required by that ordering and ignored by every other: a model only ever
-    /// reorders the sweep, and the scorer still settles every candidate.
+    /// Required by that ordering; only that ordering ranks with it. Supplying
+    /// one to another ordering is not an error, but the file is still read and
+    /// an unreadable model still stops the run — a path that was typed and
+    /// silently ignored is how a `learned` run comes to rank by something else.
+    /// A model only ever reorders the sweep; the scorer settles every candidate.
     pub ordering_model: Option<PathBuf>,
     /// Candidate feature/outcome log for offline training (issue #107).
     ///

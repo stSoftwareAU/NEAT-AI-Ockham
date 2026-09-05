@@ -121,8 +121,12 @@ Notes that matter to anyone changing Ockham's CLI:
 - **`--global-champion` is never passed** — deliberate. Ockham checks in a local
   prune of this run's own source even when Forests is ahead, because breeding
   reads every `samples/*.json`.
-- **`--ordering`, `--ordering-random-quota`, `--unchecked-first` and
-  `--old-corpus-first` are never passed today.** `grq_ockham_run` builds no such
+- **`--ordering`, `--ordering-random-quota`, `--ordering-model`,
+  `--candidate-log`, `--unchecked-first` and `--old-corpus-first` are never
+  passed today.** `--ordering-model` and `--candidate-log` are the Issue #107
+  ranking model and its training log: with neither passed, production ranks by
+  the `random` control and writes no candidate log, so nothing about the run
+  changes until a human opts in. `grq_ockham_run` builds no such
   arguments, so Ockham's own defaults apply. For unchecked-first that means
   `OckhamConfig::unchecked_first_enabled` (`ockham/src/config.rs`) decides, and
   it follows `--learnings-dir` — so in production the flag is **on** whenever

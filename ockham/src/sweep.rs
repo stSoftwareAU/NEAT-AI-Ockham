@@ -175,9 +175,12 @@ impl Sweep {
         cfg: OrderingConfig<'_>,
     ) -> Self {
         let order = hidden_order(creature, stats, cfg, seed);
+        // The strategy that actually ranked, so a permutation identity always
+        // names the ranking behind it (#107).
+        let strategy = cfg.effective_strategy();
         let mut ident = format!(
             "seed={seed}\nordering={}\nrandomQuota={}\n",
-            cfg.strategy.name(),
+            strategy.name(),
             cfg.random_quota
         );
         for uuid in &order {
@@ -186,7 +189,7 @@ impl Sweep {
         }
         Self {
             seed,
-            ordering: cfg.strategy,
+            ordering: strategy,
             permutation_identity: sha256_hex(ident.as_bytes()),
             order,
             next: 0,

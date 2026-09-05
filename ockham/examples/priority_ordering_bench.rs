@@ -11,10 +11,14 @@
 //!
 //! The scorer is **simulated**, and deliberately so: a real one needs a corpus
 //! and a binary, and the question here is only which order reaches the winners
-//! first. The simulation declares its ground truth up front — a neuron is
-//! confirmable exactly when it is quiet (`mean_abs < QUIET`) — and every
-//! strategy is scored against the same truth, the same costs and the same
-//! creature. What it can show is a ranking's discovery rate; what it cannot
+//! first. The simulation declares its ground truth up front — a quiet neuron
+//! (`mean_abs < QUIET`) is confirmable, except that one in ten is not, and one
+//! loud neuron in twenty is confirmable anyway. The disagreement matters: a
+//! ground truth that *is* one of the ranking signals would score that signal
+//! against itself, and a real scorer is never that obliging.
+//!
+//! Every strategy is scored against the same truth, the same costs and the same
+//! creature. What this can show is a ranking's discovery rate; what it cannot
 //! show is whether a real scorer agrees, which is why `random` stays the
 //! default until real runs say otherwise.
 //!
@@ -157,9 +161,21 @@ fn stats_for(creature: &CreatureExport) -> ActivationStats {
     stats
 }
 
-/// The simulated ground truth: a quiet neuron is a confirmable cut.
+/// The simulated ground truth: a quiet neuron is usually a confirmable cut.
+///
+/// One quiet neuron in ten is not, and one loud neuron in twenty is — no signal
+/// the ranking reads separates the winners perfectly, which is the only
+/// condition under which a ranking benchmark says anything.
 fn confirmable(stats: &ActivationStats, uuid: &str) -> bool {
-    stats.by_uuid(uuid).is_some_and(|s| s.mean_abs < QUIET)
+    let Some(measured) = stats.by_uuid(uuid) else {
+        return false;
+    };
+    let noise = unit(fnv(uuid) ^ 97);
+    if measured.mean_abs < QUIET {
+        noise >= 0.1
+    } else {
+        noise < 0.05
+    }
 }
 
 /// Whether the sampled screen promotes this candidate to full scoring.
@@ -177,7 +193,10 @@ struct Economics {
     cuts: usize,
     growth_units: f64,
     first_cut_ms: Option<f64>,
+    /// Confirmable neurons the budget never turned into a cut.
     missed: usize,
+    /// Visits the razor could propose nothing for.
+    refused: usize,
 }
 
 impl Economics {
@@ -196,15 +215,14 @@ fn simulate(creature: &CreatureExport, stats: &ActivationStats, order: &[String]
         growth_units: 0.0,
         first_cut_ms: None,
         missed: 0,
+        refused: 0,
     };
-    let mut visited = 0usize;
     for (index, uuid) in order.iter().enumerate() {
         if spent + SCREEN_MS > BUDGET_MS {
             break;
         }
         spent += SCREEN_MS;
         economics.visits += 1;
-        visited = index + 1;
         if !promoted(stats, uuid, index) {
             continue;
         }
@@ -216,16 +234,22 @@ fn simulate(creature: &CreatureExport, stats: &ActivationStats, order: &[String]
             continue;
         }
         // A confirmed cut: what the razor really removes is what it is worth.
-        if let Ok(ablation) = ablate_mean(creature, uuid, 0.1, None) {
-            economics.cuts += 1;
-            economics.growth_units += ablation.before.growth_units - ablation.after.growth_units;
-            economics.first_cut_ms.get_or_insert(spent);
+        // A refusal is counted, never swallowed: a visit the razor can propose
+        // nothing for is a cost the ranking paid and bought nothing with.
+        match ablate_mean(creature, uuid, 0.1, None) {
+            Ok(ablation) => {
+                economics.cuts += 1;
+                economics.growth_units +=
+                    ablation.before.growth_units - ablation.after.growth_units;
+                economics.first_cut_ms.get_or_insert(spent);
+            }
+            Err(_) => economics.refused += 1,
         }
     }
-    economics.missed = order[visited.min(order.len())..]
-        .iter()
-        .filter(|uuid| confirmable(stats, uuid))
-        .count();
+    // Every confirmable neuron the budget did not turn into a cut is missed,
+    // whether it was never reached or reached too late to be scored.
+    let winners = order.iter().filter(|uuid| confirmable(stats, uuid)).count();
+    economics.missed = winners.saturating_sub(economics.cuts);
     economics
 }
 
@@ -284,17 +308,12 @@ fn main() {
     let learned = PriorityContext::with(PriorEvidence::new(), Some(model));
 
     println!(
-        "\n{:<26} {:>10} {:>12} {:>14} {:>9} {:>10}",
-        "--ordering", "first cut", "cuts/hour", "units/hour", "missed", "order ms"
+        "\n{:<26} {:>10} {:>12} {:>14} {:>9} {:>8} {:>9}",
+        "--ordering", "first cut", "cuts/hour", "units/hour", "missed", "refused", "order ms"
     );
-    for strategy in [
-        Ordering::Random,
-        Ordering::LowMeanAbs,
-        Ordering::CascadeSaving,
-        Ordering::CascadeRiskRatio,
-        Ordering::Composite,
-        Ordering::Learned,
-    ] {
+    // Every named ordering, so the comparison is against each existing strategy
+    // individually rather than a chosen few.
+    for strategy in Ordering::ALL.iter().copied() {
         let cfg = OrderingConfig::new(strategy).with_priority(&learned);
         let started = Instant::now();
         let order = hidden_order(&creature, &stats, cfg, 42);
@@ -306,11 +325,12 @@ fn main() {
             .map(|ms| format!("{:.1}s", ms / 1000.0))
             .unwrap_or_else(|| "none".into());
         println!(
-            "{:<26} {first:>10} {:>12.1} {:>14.1} {:>8.1}% {:>9.1}",
+            "{:<26} {first:>10} {:>12.1} {:>14.1} {:>8.1}% {:>8} {:>9.1}",
             strategy.name(),
             economics.per_hour(economics.cuts as f64),
             economics.per_hour(economics.growth_units),
             100.0 * economics.missed as f64 / winners.max(1) as f64,
+            economics.refused,
             economics.order_ms,
         );
     }

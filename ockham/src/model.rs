@@ -541,6 +541,18 @@ mod tests {
     }
 
     #[test]
+    fn an_unwritable_model_path_names_the_file() {
+        let dir = std::env::temp_dir().join(format!("ockham-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("blocked");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let model = PriorityModel::fit(&separable_rows(), TrainingConfig::default()).unwrap();
+        let err = model.save(&blocker.join("model.json")).unwrap_err();
+        assert!(err.contains("blocked"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn an_unreadable_model_path_names_the_file() {
         let err = PriorityModel::load(Path::new("/nonexistent/ockham-model.json")).unwrap_err();
         assert!(err.contains("ockham-model.json"), "{err}");

@@ -159,7 +159,8 @@ enum Command {
         #[arg(long, default_value_t = DEFAULT_L2)]
         l2: f64,
         /// Hold every Nth row out of training to evaluate the fit; 0 evaluates
-        /// on the training rows and says so.
+        /// on the training rows and says so. 1 is refused — it would hold out
+        /// every row and leave nothing to fit.
         #[arg(long, default_value_t = 5)]
         holdout_every: usize,
         /// Confirmed-win threshold on the full-corpus delta.
@@ -334,6 +335,15 @@ fn train_ordering(
                 .into(),
         );
     }
+    // Holding out every row leaves nothing to fit. Refused by name rather than
+    // quietly reinterpreted as "no holdout", which would report a training-set
+    // number under the holdout heading.
+    if holdout_every == 1 {
+        return Err(
+            "--holdout-every 1 would hold out every row; use 0 to evaluate on the training rows"
+                .into(),
+        );
+    }
     let mut records = Vec::new();
     for log in logs {
         records.extend(telemetry::load(log)?);
@@ -343,7 +353,7 @@ fn train_ordering(
         eprintln!("train-ordering: {skipped} row(s) do not carry the current feature schema");
     }
     config.corpora = telemetry::corpora(&records);
-    let (train, holdout): (Vec<_>, Vec<_>) = if holdout_every > 1 {
+    let (train, holdout): (Vec<_>, Vec<_>) = if holdout_every > 0 {
         let (a, b): (Vec<_>, Vec<_>) = rows
             .iter()
             .cloned()

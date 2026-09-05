@@ -1,12 +1,18 @@
 //! Candidate feature/outcome telemetry — the learned model's training set (#107).
 //!
-//! One append-only JSON line per candidate the run actually spent scorer time
-//! on: the feature vector the ranking saw, the sampled Δ, the full-corpus Δ
-//! when one was measured, what the scorer decided, the structure the accept
-//! removed and the scorer milliseconds it cost. That is everything
-//! [`crate::model`] needs to fit a ranker offline, and nothing a run needs to
-//! make a decision — the log is written after the verdict, never read during
-//! one.
+//! One append-only JSON line per **sweep** candidate the scorer judged: the
+//! feature vector the ranking saw, the sampled Δ, the full-corpus Δ when one was
+//! measured, what the scorer decided, the structure the accept removed and the
+//! scorer milliseconds it cost. That is everything [`crate::model`] needs to fit
+//! a ranker offline, and nothing a run needs to make a decision — the log is
+//! written after the verdict, never read during one.
+//!
+//! The **replay** stages are deliberately not logged. A replayed candidate is a
+//! uuid the learnings cache already called a winner (Issues #52, #101), so its
+//! outcomes are drawn from a population the ranking did not choose and would
+//! teach a ranker that its own past wins predict future ones. The rows here are
+//! exactly the candidates an ordering picked out of the sweep, which is the
+//! decision the model is being fitted to make.
 //!
 //! Opt-in (`--candidate-log`), so a control run keeps its exact behaviour and
 //! pays nothing for the feature extraction.
@@ -23,9 +29,12 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use neat_core::CreatureExport;
+
 use crate::features::{CandidateFeatures, FEATURE_NAMES};
 use crate::incumbent::now_unix;
 use crate::model::TrainingRow;
+use crate::stats::ActivationStats;
 
 /// Current candidate-log format version.
 pub const CANDIDATE_LOG_FORMAT_VERSION: u32 = 1;
@@ -236,6 +245,177 @@ pub fn corpora(records: &[CandidateRecord]) -> Vec<String> {
     seen
 }
 
+/// Opt-in candidate feature/outcome telemetry (Issue #107).
+///
+/// Written **after** a verdict and never read during one: this is the training
+/// set the learned ranker is fitted from offline, and nothing here can promote,
+/// suppress or accept a cut. A store fault warns rather than ending the run —
+/// the log is evidence about the search, not part of it — but it warns loudly,
+/// because a training set that silently stopped growing is worse than no log.
+pub struct CandidateLog<'a> {
+    /// File the rows are appended to.
+    pub path: &'a Path,
+    /// Per-run stamp every row carries.
+    pub stamp: RunStamp,
+    /// Historical evidence the ranking read, so the logged features are the
+    /// ones the ordering actually saw.
+    pub evidence: &'a crate::features::PriorEvidence,
+}
+
+impl CandidateLog<'_> {
+    /// Rows for the candidates the sampled screen did not promote.
+    ///
+    /// `checksum` is the incumbent the features are read from, not the one the
+    /// run opened with: an accept moves the incumbent, and a row stamped with a
+    /// checksum for a creature it was never extracted from cannot be traced
+    /// back to the topology that produced it.
+    ///
+    /// The screen time is the cohort's, so it is shared evenly across the
+    /// candidates it judged rather than charged in full to each of them.
+    pub fn screened_out(
+        &self,
+        creature: &CreatureExport,
+        stats: &ActivationStats,
+        checksum: &str,
+        losers: &[crate::sweep::ScreenedLoser],
+        screen_ms: u64,
+    ) {
+        if losers.is_empty() {
+            return;
+        }
+        let features = crate::features::extract(creature, stats, self.evidence);
+        let each_ms = screen_ms / losers.len().max(1) as u64;
+        let mut records = Vec::with_capacity(losers.len());
+        let mut unknown = 0usize;
+        for loser in losers {
+            let Some(f) = features.get(&loser.uuid) else {
+                unknown += 1;
+                continue;
+            };
+            let mut record = CandidateRecord::new(
+                &self.stamp,
+                &loser.uuid,
+                crate::learnings::kind_label(loser.kind),
+                f,
+                CandidateOutcome::ScreenedOut,
+            );
+            record.creature_checksum = checksum.to_string();
+            record.sample_delta = Some(loser.delta);
+            record.scorer_ms = each_ms;
+            records.push(record);
+        }
+        self.write(&records, unknown);
+    }
+
+    /// Rows for the candidates the full corpus judged individually.
+    ///
+    /// Only individually scored uuids the sweep proposed are logged: a uuid that
+    /// appeared solely inside a bundle had no contribution of its own measured,
+    /// and a row carrying the bundle's delta as if it were the neuron's would
+    /// teach the ranker something the scorer never said (the reasoning
+    /// `file_full_outcome` applies to `full_delta`).
+    pub fn judged(
+        &self,
+        creature: &CreatureExport,
+        stats: &ActivationStats,
+        checksum: &str,
+        sampled: &[crate::sweep::SampledWinner],
+        full: &crate::promote::FullOutcome,
+    ) {
+        if full.individuals.is_empty() {
+            return;
+        }
+        let features = crate::features::extract(creature, stats, self.evidence);
+        let before = crate::ablation::StructureSnapshot::of(creature);
+        // The uuids of an accepted **individual** — a bundle's saving is shared
+        // structure no member removed on its own, so it is attributed to none of
+        // them rather than to each of them.
+        let solo_win: Option<&crate::promote::FullCandidate> = full
+            .winner
+            .as_ref()
+            .map(|w| &w.candidate)
+            .filter(|c| c.uuids.len() == 1);
+        let winner: std::collections::HashSet<&str> = full
+            .winner
+            .as_ref()
+            .map(|w| w.candidate.uuids.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        let each_ms = full.full_ms / full.entries().max(1) as u64;
+        let mut records = Vec::with_capacity(full.individuals.len());
+        let mut unknown = 0usize;
+        for scored in &full.individuals {
+            let Some(uuid) = scored.uuids.first() else {
+                continue;
+            };
+            // The kind is the sweep's — `identity`, `ablation` or `constant` —
+            // never the cohort's `individual`, so one column carries one
+            // vocabulary. A uuid this run's sweep did not propose (a carried
+            // winner from an earlier batch) has no candidate kind to record and
+            // is left for the batch that did propose it.
+            let (Some(f), Some(candidate)) = (
+                features.get(uuid),
+                sampled.iter().find(|w| &w.candidate.uuid == uuid),
+            ) else {
+                unknown += 1;
+                continue;
+            };
+            let accepted = winner.contains(uuid.as_str());
+            let mut record = CandidateRecord::new(
+                &self.stamp,
+                uuid,
+                crate::learnings::kind_label(candidate.candidate.kind),
+                f,
+                if accepted {
+                    CandidateOutcome::Accepted
+                } else {
+                    CandidateOutcome::Rejected
+                },
+            );
+            record.creature_checksum = checksum.to_string();
+            record.sample_delta = Some(candidate.delta);
+            record.full_delta = Some(scored.delta);
+            // Nothing is removed by a candidate that was not applied, so a
+            // rejected row records the zero it actually saved; the saving it
+            // *would* have made is already in its features.
+            record.growth_units_removed = match solo_win {
+                Some(win) if win.uuids.first() == Some(uuid) => {
+                    before.growth_units - win.after.growth_units
+                }
+                _ => 0.0,
+            };
+            record.scorer_ms = each_ms;
+            records.push(record);
+        }
+        self.write(&records, unknown);
+    }
+
+    /// Append `records`, saying what was written and what could not be.
+    ///
+    /// `unknown` counts candidates with no feature vector or no sweep candidate
+    /// to name their kind. It is reported rather than dropped quietly: a
+    /// training set that silently shrank fits a model nobody can account for.
+    fn write(&self, records: &[CandidateRecord], unknown: usize) {
+        if unknown > 0 {
+            crate::log::warn(&format!(
+                "candidate log: {unknown} judged candidate(s) carried no feature vector; \
+                 their outcomes are not in the training set"
+            ));
+        }
+        match append(self.path, records) {
+            Ok(()) if !records.is_empty() => crate::log::detail(&format!(
+                "candidate log: {} row(s) appended to {}",
+                records.len(),
+                self.path.display()
+            )),
+            Ok(()) => {}
+            Err(e) => crate::log::warn(&format!(
+                "candidate log unwritable ({e}); {} training row(s) lost",
+                records.len()
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,6 +542,29 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(skipped, 2);
         assert!(rows[0].win);
+    }
+
+    #[test]
+    fn an_unwritable_log_path_fails_loud_rather_than_dropping_rows() {
+        let dir = temp_dir("unwritable");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A file where the parent directory should be: appending cannot work,
+        // and the error must name the path rather than lose the rows quietly.
+        let blocker = dir.join("blocked");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let err = append(
+            &blocker.join("candidates.jsonl"),
+            &[record(CandidateOutcome::Rejected)],
+        )
+        .unwrap_err();
+        assert!(err.contains("blocked"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_log_names_the_file_it_could_not_read() {
+        let err = load(Path::new("/nonexistent/ockham-candidates.jsonl")).unwrap_err();
+        assert!(err.contains("ockham-candidates.jsonl"), "{err}");
     }
 
     #[test]

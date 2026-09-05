@@ -761,11 +761,12 @@ fn ockham_loop(
     // What the composite and learned rankings read beyond the creature (#107):
     // the fleet's own history as a prior, and a fitted model when one was
     // configured. Built once, borrowed by every sweep this run rebuilds.
-    let mut evidence =
+    // Historical epochs only (#88, #101): a verdict this corpus has already
+    // returned is current truth the sweep acts on elsewhere, not a prior, and
+    // folding the two into one counter would leave neither the ranking nor the
+    // training rows able to tell them apart.
+    let evidence =
         crate::features::PriorEvidence::from_history(&prior_records, config.min_improvement);
-    for learning in &known {
-        evidence.add(learning, config.min_improvement);
-    }
     let model = match &config.ordering_model {
         Some(path) => Some(crate::model::PriorityModel::load(path)?),
         None => None,
@@ -783,17 +784,23 @@ fn ockham_loop(
     // by something it was not asked for.
     let ordering = ordering.with_priority(&priority);
     ordering.validate_ranker()?;
-    let candidate_log = config.candidate_log.as_deref().map(|path| CandidateLog {
-        path,
-        stamp: crate::telemetry::RunStamp {
-            host: config.learnings_host.clone().unwrap_or_else(default_host),
-            corpus_identity: corpus.identity.clone(),
-            creature_checksum: incumbent.checksum.clone(),
-            ordering: ordering.strategy.name().to_string(),
-            seed,
-        },
-        evidence: &priority.evidence,
-    });
+    let candidate_log =
+        config
+            .candidate_log
+            .as_deref()
+            .map(|path| crate::telemetry::CandidateLog {
+                path,
+                stamp: crate::telemetry::RunStamp {
+                    host: config.learnings_host.clone().unwrap_or_else(default_host),
+                    corpus_identity: corpus.identity.clone(),
+                    // Stamped per row from the incumbent the features were read
+                    // from; an accept moves the incumbent mid-run.
+                    creature_checksum: incumbent.checksum.clone(),
+                    ordering: ordering.effective_strategy().name().to_string(),
+                    seed,
+                },
+                evidence: &priority.evidence,
+            });
 
     // Coverage is fleet state, so it reprioritises the sweep one layer above
     // the ordering strategies — after the identity above is already fixed.
@@ -1429,6 +1436,7 @@ fn ockham_loop(
                             log.screened_out(
                                 &incumbent.creature,
                                 &activation,
+                                &incumbent.checksum,
                                 &screen.losers,
                                 screen.screen_ms,
                             );
@@ -1597,7 +1605,13 @@ fn ockham_loop(
                 )?;
                 tally.observe(&full, config.min_improvement);
                 if let Some(log) = &candidate_log {
-                    log.judged(&incumbent.creature, &activation, &sampled, &full);
+                    log.judged(
+                        &incumbent.creature,
+                        &activation,
+                        &incumbent.checksum,
+                        &sampled,
+                        &full,
+                    );
                 }
                 file_full_outcome(store, &mut known, &sampled, &full);
                 update_pool(&mut pool, &sampled, &full, config.min_improvement);
@@ -2118,134 +2132,6 @@ fn file_batch_screens(
         log::detail(&format!("screens: filed {n} screen record(s)"));
     }
     journal::append(journal_path, &Event::Screened { batch, screened: n })
-}
-
-/// Opt-in candidate feature/outcome telemetry (Issue #107).
-///
-/// Written **after** a verdict and never read during one: this is the training
-/// set the learned ranker is fitted from offline, and nothing here can promote,
-/// suppress or accept a cut. A store fault warns rather than ending the run —
-/// the log is evidence about the search, not part of it — but it warns loudly,
-/// because a training set that silently stopped growing is worse than no log.
-struct CandidateLog<'a> {
-    path: &'a std::path::Path,
-    stamp: crate::telemetry::RunStamp,
-    evidence: &'a crate::features::PriorEvidence,
-}
-
-impl CandidateLog<'_> {
-    /// Rows for the candidates the sampled screen did not promote.
-    ///
-    /// The screen time is the cohort's, so it is shared evenly across the
-    /// candidates it judged rather than charged in full to each of them.
-    fn screened_out(
-        &self,
-        creature: &CreatureExport,
-        stats: &ActivationStats,
-        losers: &[crate::sweep::ScreenedLoser],
-        screen_ms: u64,
-    ) {
-        if losers.is_empty() {
-            return;
-        }
-        let features = crate::features::extract(creature, stats, self.evidence);
-        let each_ms = screen_ms / losers.len().max(1) as u64;
-        let records: Vec<_> = losers
-            .iter()
-            .filter_map(|loser| {
-                let f = features.get(&loser.uuid)?;
-                let mut record = crate::telemetry::CandidateRecord::new(
-                    &self.stamp,
-                    &loser.uuid,
-                    crate::learnings::kind_label(loser.kind),
-                    f,
-                    crate::telemetry::CandidateOutcome::ScreenedOut,
-                );
-                record.sample_delta = Some(loser.delta);
-                record.scorer_ms = each_ms;
-                Some(record)
-            })
-            .collect();
-        self.write(&records);
-    }
-
-    /// Rows for the candidates the full corpus judged individually.
-    ///
-    /// Only individually scored uuids are logged: a uuid that appeared solely
-    /// inside a bundle had no contribution of its own measured, and a row
-    /// carrying the bundle's delta as if it were the neuron's would teach the
-    /// ranker something the scorer never said (the reasoning
-    /// [`file_full_outcome`] applies to `full_delta`).
-    fn judged(
-        &self,
-        creature: &CreatureExport,
-        stats: &ActivationStats,
-        sampled: &[SampledWinner],
-        full: &FullOutcome,
-    ) {
-        if full.individuals.is_empty() {
-            return;
-        }
-        let features = crate::features::extract(creature, stats, self.evidence);
-        let before = crate::ablation::StructureSnapshot::of(creature);
-        let winner: HashSet<&str> = full
-            .winner
-            .as_ref()
-            .map(|w| w.candidate.uuids.iter().map(String::as_str).collect())
-            .unwrap_or_default();
-        let each_ms = full.full_ms / full.entries().max(1) as u64;
-        let records: Vec<_> = full
-            .individuals
-            .iter()
-            .filter_map(|scored| {
-                let uuid = scored.uuids.first()?;
-                let f = features.get(uuid)?;
-                let accepted = winner.contains(uuid.as_str());
-                let mut record = crate::telemetry::CandidateRecord::new(
-                    &self.stamp,
-                    uuid,
-                    scored.kind,
-                    f,
-                    if accepted {
-                        crate::telemetry::CandidateOutcome::Accepted
-                    } else {
-                        crate::telemetry::CandidateOutcome::Rejected
-                    },
-                );
-                record.sample_delta = sampled
-                    .iter()
-                    .find(|w| &w.candidate.uuid == uuid)
-                    .map(|w| w.delta);
-                record.full_delta = Some(scored.delta);
-                // Nothing is removed by a candidate that was not applied, so a
-                // rejected row records the zero it actually saved; the saving it
-                // *would* have made is already in its features.
-                record.growth_units_removed = if accepted {
-                    before.growth_units - scored.after.growth_units
-                } else {
-                    0.0
-                };
-                record.scorer_ms = each_ms;
-                Some(record)
-            })
-            .collect();
-        self.write(&records);
-    }
-
-    fn write(&self, records: &[crate::telemetry::CandidateRecord]) {
-        match crate::telemetry::append(self.path, records) {
-            Ok(()) if !records.is_empty() => log::detail(&format!(
-                "candidate log: {} row(s) appended to {}",
-                records.len(),
-                self.path.display()
-            )),
-            Ok(()) => {}
-            Err(e) => log::warn(&format!(
-                "candidate log unwritable ({e}); {} training row(s) lost",
-                records.len()
-            )),
-        }
-    }
 }
 
 /// File one verdict per individually scored uuid, plus the winner's cuts.
@@ -3030,6 +2916,40 @@ mod tests {
         );
         assert_eq!(row.growth_units_removed, 0.0);
         assert!(!row.is_win(cfg.min_improvement));
+    }
+
+    /// The candidate log is evidence about the search, not part of it: a log
+    /// that cannot be written warns and the run keeps pruning (#107).
+    #[test]
+    fn an_unwritable_candidate_log_warns_without_stopping_the_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        // A file where the log's parent directory should be.
+        let blocker = tmp.path().join("blocked");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(2),
+            seed: Some(1),
+            candidates: 8,
+            screen_sample_rate: None,
+            candidate_log: Some(blocker.join("candidates.jsonl")),
+            ..OckhamConfig::default()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert!(run.accepts >= 1, "stop={}", run.stop_reason);
+        assert!(
+            !blocker.is_dir(),
+            "the run must not have created the log directory"
+        );
     }
 
     /// A run that asked to be ranked by a model must stop when the model is

@@ -205,6 +205,24 @@ impl<'a> OrderingConfig<'a> {
         Ok(())
     }
 
+    /// The strategy that will actually rank the sweep (Issue #107).
+    ///
+    /// [`Ordering::Learned`] with no model loaded ranks by
+    /// [`Ordering::Composite`], and says so: the sweep identity, the journal,
+    /// the report and the candidate log all record the strategy that did the
+    /// ranking, so composite output is never filed under the learned name. The
+    /// configuration itself is refused before a run starts —
+    /// [`Self::validate_ranker`] and `OckhamConfig::validate` — so this is what
+    /// a library caller that skipped both gets, not a run's normal path.
+    pub fn effective_strategy(&self) -> Ordering {
+        match self.strategy {
+            Ordering::Learned if !self.priority.is_some_and(|p| p.model.is_some()) => {
+                Ordering::Composite
+            }
+            other => other,
+        }
+    }
+
     /// Refuse a `learned` ranking with no model attached (Issue #107).
     ///
     /// Checked once the run has loaded the model, because a model is a file
@@ -406,12 +424,16 @@ pub fn hidden_order(
     // before the run starts. Reaching here means a caller skipped that gate, so
     // say what happened rather than presenting the hand-built ranking as the
     // learned one that was asked for.
-    if cfg.strategy == Ordering::Learned && !cfg.priority.is_some_and(|p| p.model.is_some()) {
-        crate::log::warn(
-            "ordering `learned` has no fitted model; ranking by `composite` instead — \
+    let strategy = cfg.effective_strategy();
+    if strategy != cfg.strategy {
+        crate::log::warn(&format!(
+            "ordering `{}` has no fitted model; ranking by `{}` and recording it as such — \
              pass --ordering-model <model.json> to rank by the learned model (#107)",
-        );
+            cfg.strategy.name(),
+            strategy.name()
+        ));
     }
+    let cfg = OrderingConfig { strategy, ..cfg };
     // Topology does not change while the order is built, so the cascade
     // dry-runs are the creature's own index, walked once per hidden neuron
     // (Issue #106) rather than once per comparison the sort makes.
@@ -887,6 +909,33 @@ mod tests {
                 .validate_ranker()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn a_learned_config_with_no_model_ranks_as_composite_and_says_so() {
+        let modelless = OrderingConfig::new(Ordering::Learned);
+        // The output is composite, so it is recorded as composite: nothing
+        // downstream may file a hand-built order under the learned name.
+        assert_eq!(modelless.effective_strategy(), Ordering::Composite);
+        assert_eq!(
+            hidden_order(&cascading(), &cascading_stats(), modelless, 7),
+            cascading_order(Ordering::Composite)
+        );
+        let context = PriorityContext::with(
+            crate::features::PriorEvidence::new(),
+            Some(loud_preferring_model()),
+        );
+        let with_model = OrderingConfig::new(Ordering::Learned).with_priority(&context);
+        assert_eq!(with_model.effective_strategy(), Ordering::Learned);
+        for strategy in Ordering::ALL {
+            assert_eq!(
+                OrderingConfig::new(*strategy)
+                    .with_priority(&context)
+                    .effective_strategy(),
+                *strategy,
+                "{strategy} must rank as itself"
+            );
+        }
     }
 
     #[test]

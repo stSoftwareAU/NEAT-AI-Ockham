@@ -1328,17 +1328,27 @@ scorer made of it:
 ```json
 {"version":1,"unixSecs":1770000000,"host":"GRQ-23","corpusIdentity":"9f3c…",
  "creatureChecksum":"a3d4…","ordering":"composite","seed":42,"uuid":"h_a",
- "kind":"individual","features":{"measured":1.0,"logMeanAbs":0.916,"…":0.0},
+ "kind":"ablation","features":{"measured":1.0,"logMeanAbs":0.916,"…":0.0},
  "sampleDelta":0.31,"fullDelta":0.002,"outcome":"accepted",
  "growthUnitsRemoved":1.1,"scorerMs":804}
 ```
 
 Written **after** a verdict and never read during one. A candidate the screen
 threw out is logged too, with its sampled Δ and no full Δ: it is the only
-evidence the ranker gets about what does *not* work. Only individually scored
-uuids carry a `fullDelta` — a uuid measured solely inside a bundle had no
-contribution of its own measured, and inventing one would teach the ranker
-something the scorer never said.
+evidence the ranker gets about what does *not* work. `kind` is always the
+sweep's — `identity`, `ablation` or `constant`.
+
+Three exclusions, each for the same reason — a row must carry only what the
+scorer actually said about that neuron:
+
+- **replayed candidates are not logged.** A replay candidate is a uuid the
+  learnings cache already called a winner, so its outcomes come from a
+  population the ranking did not choose;
+- **only individually scored uuids carry a `fullDelta`.** A uuid measured solely
+  inside a bundle had no contribution of its own measured;
+- **`growthUnitsRemoved` is non-zero only for an accepted individual.** A
+  bundle's saving is shared structure no member removed alone, so it is
+  attributed to none of them rather than counted once per member.
 
 ### Training
 
@@ -1375,33 +1385,42 @@ every strategy still visits every eligible neuron eventually.
 cargo run --release --example priority_ordering_bench
 ```
 
-The benchmark simulates one budget per strategy against a declared ground truth
-(a quiet neuron is confirmable), the same screen and full-score costs, and the
-same creature — 2,250 hidden neurons as 1,500 lone neurons and 150 five-neuron
-chains, with the loud neurons carrying the heavy outgoing weights they earned.
-Growth units are what the real `ablate_mean` and its recursive cleanup remove,
-not the ranking key. The budget is deliberately smaller than the sweep, because
-an ordering only matters when the budget cannot reach everything:
+The benchmark simulates one budget per strategy against a declared ground truth,
+the same screen and full-score costs, and the same creature — 2,250 hidden
+neurons as 1,500 lone neurons and 150 five-neuron chains, with the loud neurons
+carrying the heavy outgoing weights they earned. A quiet neuron is confirmable,
+except that one in ten is not and one loud neuron in twenty is anyway: a ground
+truth that *is* one of the ranking signals would score that signal against
+itself. Growth units are what the real `ablate_mean` and its recursive cleanup
+remove, not the ranking key. The budget is deliberately smaller than the sweep,
+because an ordering only matters when the budget cannot reach everything:
 
 | `--ordering` | Time to first cut | Confirmed cuts/hour | Growth units/hour | Missed winners |
 |---|---:|---:|---:|---:|
-| `random` | 1.1s | 2832 | 7758 | 48.1% |
-| `low-mean-abs` | 0.8s | 4284 | 11452 | 21.3% |
-| `cascade-saving` | 0.8s | 2784 | 11359 | 48.8% |
-| `cascade-risk-ratio` | 0.8s | 4284 | 13309 | 21.3% |
-| `composite` | 0.8s | 4068 | 13028 | 25.3% |
-| `learned` | 0.8s | 4284 | 13309 | 21.3% |
+| `random` | 0.9s | 3012 | 8044 | 59.6% |
+| `low-variance` | 0.8s | 4212 | 11461 | 37.6% |
+| `low-mean-abs` | 0.8s | 4212 | 11461 | 37.6% |
+| `narrow-range` | 0.8s | 4212 | 11461 | 37.6% |
+| `low-outgoing-contribution` | 0.8s | 4224 | 12612 | 37.4% |
+| `low-fan-out` | 0.8s | 2928 | 12578 | 61.1% |
+| `high-growth-saving` | 0.9s | 3000 | 3900 | 59.8% |
+| `identity-first` | 0.9s | 3012 | 8044 | 59.6% |
+| `cascade-saving` | 0.8s | 2928 | 12578 | 61.1% |
+| `cascade-risk-ratio` | 0.8s | 4224 | 12612 | 37.4% |
+| `composite` | 0.8s | 4128 | 12642 | 39.1% |
+| `learned` | 0.8s | 4236 | 12628 | 37.1% |
 
-Both new strategies beat the random control on every measure — `composite` finds
-44% more confirmed cuts per hour and removes 68% more growth units, and `learned`
-matches the best hand-written control exactly. Order-building cost is a
-once-per-sweep 23ms at this size, against `cascade-risk-ratio`'s 32ms.
+Both new strategies beat the random control on every measure. `learned` — fitted
+from 400 rows of a previous run's outcomes, held-out AUC 0.905 — finds the most
+confirmed cuts per hour and misses the fewest winners of any strategy;
+`composite` removes the most growth units per hour, marginally ahead of
+`cascade-risk-ratio`, while trailing it slightly on cuts. Order-building is a
+once-per-sweep 23ms at this size, against `cascade-risk-ratio`'s 30ms.
 
-That is **not** a promotion. The simulated scorer's ground truth is quietness by
-construction, which is precisely the signal `low-mean-abs` and the composite's
-own `P` term read, so the harness can show a ranking's discovery rate and cannot
-show whether a real scorer agrees. `random` stays the default until real runs on
-a mature creature say otherwise:
+That is **not** a promotion. The simulated scorer's ground truth is quietness
+plus noise, and quietness is a signal both new strategies read, so the harness
+can show a ranking's discovery rate and cannot show whether a real scorer agrees.
+`random` stays the default until real runs on a mature creature say otherwise:
 
 ```bash
 for o in random cascade-risk-ratio composite; do

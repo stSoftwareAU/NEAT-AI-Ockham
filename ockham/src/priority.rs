@@ -38,6 +38,10 @@ pub struct CompositeWeights {
     pub sensitivity: f64,
     /// Coefficient on `ln(1 + activation variance)`.
     pub variance: f64,
+    /// Coefficient on `ln(1 + activation range)` — `max - min`.
+    pub range: f64,
+    /// Coefficient on `ln(1 + fan_in)` — how much feeds the neuron.
+    pub fan_in: f64,
     /// Bonus for an `IDENTITY` squash — an exact fold rather than an estimate.
     pub identity: f64,
     /// Coefficient on `ln(1 + fan_out)` — the structural blast radius.
@@ -77,15 +81,23 @@ impl Default for CompositeWeights {
     /// The benchmarked starting point (`priority_ordering_bench`).
     ///
     /// Quietness dominates, because a neuron the network barely uses is the one
-    /// the scorer is likeliest to let go; the structural terms break ties among
-    /// equally quiet neurons; and the historical terms are deliberately the
-    /// smallest, because evidence from an older corpus is a prior and not the
-    /// current truth.
+    /// the scorer is likeliest to let go; the structural terms — range, fan-in,
+    /// fan-out, depth and the `IDENTITY` squash — break ties among equally quiet
+    /// neurons; and the historical terms are deliberately the smallest, because
+    /// evidence from an older corpus is a prior and not the current truth.
+    ///
+    /// The direct growth saving is not a separate term: the cascade saving in
+    /// [`expected_pruning_value`] already counts the neuron and its own edges,
+    /// so adding the direct figure beside it would weight the same structure
+    /// twice. A cut the transform would refuse needs no term either — it saves
+    /// nothing, so its expected value is zero whatever `P` says.
     fn default() -> Self {
         Self {
             bias: -1.0,
             sensitivity: -1.2,
             variance: -0.6,
+            range: -0.3,
+            fan_in: -0.2,
             identity: 1.0,
             fan_out: -0.35,
             depth: 0.2,
@@ -107,6 +119,8 @@ impl CompositeWeights {
         let z = self.bias
             + self.sensitivity * (1.0 + f.downstream_sensitivity().max(0.0)).ln()
             + self.variance * (1.0 + f.variance.max(0.0)).ln()
+            + self.range * (1.0 + f.range.max(0.0)).ln()
+            + self.fan_in * (1.0 + f.fan_in as f64).ln()
             + self.identity * if f.identity { 1.0 } else { 0.0 }
             + self.fan_out * (1.0 + f.fan_out as f64).ln()
             + self.depth * f.depth_fraction
