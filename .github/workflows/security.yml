@@ -34,14 +34,12 @@ jobs:
           # the GITHUB_TOKEN need not be written to .git/config (Issue #388).
           persist-credentials: false
 
-      # NEAT-AI-core checkout + sibling symlink (Issue #18) via the shared
-      # composite action (Issue #401); the composite sets persist-credentials:
-      # false, so this read-only job keeps the token off disk (Issue #388).
-      - name: Set up NEAT-AI-core sibling (path dependency for neat-core)
-        uses: ./.github/actions/setup-neat-core
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+      # NEAT-AI-core checkout + sibling symlink (Issue #18) and toolchain pin
+      # (Issue #126) via the shared composite action (Issue #401); the composite
+      # sets persist-credentials: false, so this read-only job keeps the token
+      # off disk (Issue #388).
+      - name: Set up Rust workspace (neat-core sibling + toolchain)
+        uses: ./.github/actions/setup-rust-workspace
 
       # Official RustSec GitHub Action — wraps cargo-audit and annotates the PR /
       # check run with any RUSTSEC advisories found in Cargo.lock.

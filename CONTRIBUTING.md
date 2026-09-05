@@ -9,10 +9,11 @@ parent/
 └── NEAT-AI-Ockham/
 ```
 
-CI checks NEAT-AI-core out beside the workspace via
-`.github/actions/setup-neat-core`. `neat-core.expected-version` records the
-last handled neat-core version; `scripts/check-neat-core-version.sh` fails on
-an unhandled breaking bump.
+CI checks NEAT-AI-core out beside the workspace and installs the pinned Rust
+toolchain via `.github/actions/setup-rust-workspace` — the shared preamble
+every Cargo job runs after its own checkout, so a toolchain bump is one edit.
+`neat-core.expected-version` records the last handled neat-core version;
+`scripts/check-neat-core-version.sh` fails on an unhandled breaking bump.
 
 ## Prerequisites
 

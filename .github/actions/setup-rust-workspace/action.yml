@@ -1,0 +1,50 @@
+name: Set up Rust workspace
+description: >-
+  Check out stSoftwareAU/NEAT-AI-core into the workspace, symlink it to the
+  sibling path Cargo expects so the `ockham/Cargo.toml`
+  `../../NEAT-AI-core/neat-core` path dependency resolves on the runner, and
+  install the pinned Rust toolchain. Single source of truth for the preamble
+  every Cargo job in this repository repeats (Issue #126).
+
+  The workflow's own `actions/checkout` cannot move in here: a local composite
+  action is resolved from the checked-out tree, so the repository must already
+  be on disk before this action exists to be run.
+
+inputs:
+  ref:
+    description: Git ref of stSoftwareAU/NEAT-AI-core to check out.
+    required: false
+    default: Develop
+  components:
+    description: >-
+      Comma-separated rustup components to install alongside the toolchain
+      (e.g. "rustfmt, clippy"). Empty installs the toolchain on its own.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout NEAT-AI-core (path dependency for neat-core)
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+      with:
+        repository: stSoftwareAU/NEAT-AI-core
+        ref: ${{ inputs.ref }}
+        path: NEAT-AI-core
+        persist-credentials: false
+
+    - name: Link NEAT-AI-core sibling path expected by Cargo
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ ! -e "$GITHUB_WORKSPACE/../NEAT-AI-core" ]; then
+          ln -s "$GITHUB_WORKSPACE/NEAT-AI-core" "$GITHUB_WORKSPACE/../NEAT-AI-core"
+        fi
+
+    # An empty `components` is exactly what an omitted `components:` produced
+    # before, so a caller needing no extra component keeps its toolchain-only
+    # install.
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, frozen 2026-05-18
+      with:
+        components: ${{ inputs.components }}
