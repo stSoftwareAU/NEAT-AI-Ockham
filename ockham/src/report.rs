@@ -665,6 +665,48 @@ mod tests {
     }
 
     #[test]
+    fn the_exact_cleanup_record_is_counted_apart_from_the_accepts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(
+            &path,
+            &Event::ExactCleanup {
+                hidden_before: 12,
+                hidden_after: 7,
+                synapses_before: 40,
+                synapses_after: 22,
+                growth_units_saved: 6.8,
+                passes: 3,
+                rules: vec![
+                    ("zero-weight-synapse".into(), 4),
+                    ("identity-collapse".into(), 5),
+                ],
+                ms: 120,
+            },
+        )
+        .unwrap();
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.exact_cleanup_hidden_removed, 5);
+        assert_eq!(report.exact_cleanup_synapses_removed, 18);
+        assert!((report.exact_cleanup_growth_units_saved - 6.8).abs() <= 1e-12);
+        assert_eq!(report.exact_cleanup_ms, 120);
+        // Proven structure is not an accept: it cost no scorer call.
+        assert_eq!(report.accepts, 0);
+        assert_eq!(report.full_calls, 0);
+    }
+
+    #[test]
+    fn a_journal_without_a_cleanup_record_reports_no_pre_pass_saving() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.exact_cleanup_hidden_removed, 0);
+        assert_eq!(report.exact_cleanup_growth_units_saved, 0.0);
+    }
+
+    #[test]
     fn report_compounds_tiny_accepts_rather_than_only_the_final_score() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("experiments.jsonl");
