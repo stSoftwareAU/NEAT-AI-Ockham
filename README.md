@@ -2129,7 +2129,8 @@ NEAT-AI-Ockham/
 ├── docs/
 │   ├── grq-integration.md   # audit: how GRQ invokes Ockham and reads it back
 │   ├── blocked-reasons.md   # blocked codes, and the path built for the largest
-│   └── population-entry.md  # how cuts actually enter the live population
+│   ├── population-entry.md  # how cuts actually enter the live population
+│   └── incident-response.md # emergency dependency fast lane (SECURITY.md)
 ├── quality.sh
 ├── rust-toolchain.toml
 └── neat-core.expected-version

@@ -48,6 +48,20 @@ We will keep you informed of progress and coordinate the timing of any public
 disclosure with you. Please give us a reasonable opportunity to remediate
 before disclosing publicly.
 
+## Expediting a fix
+
+The targets above cover *disclosure*. Landing the fix normally follows the
+ordinary cadence — the weekly `cargo-upgrade.yml` cron, or a pull request that
+clears the `ci-required` gate.
+
+When an advisory against a pinned dependency is being **actively exploited**,
+that cadence is too slow, and the emergency override is documented rather than
+improvised: see [docs/incident-response.md](docs/incident-response.md). It
+names the manually dispatchable workflows (`cargo-audit.yml`,
+`cargo-upgrade.yml`), the direct-bump steps, and how to request expedited
+review from `@stSoftwareAU/developers`. The override shortens the wait, not the
+gate: `ci-required` and code-owner review still apply.
+
 ## Supported versions
 
 NEAT-AI-Ockham is developed as a single-consumer internal experiment and is
