@@ -28,21 +28,84 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
+
           p = Path('ockham/src/coverage.rs')
           text = p.read_text()
+
           old = '#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]\n#[serde(rename_all = "camelCase")]\npub struct Passes {'
           new = '#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]\n#[serde(rename_all = "camelCase")]\npub struct Passes {'
           if text.count(old) != 1:
               raise SystemExit(f'expected one Passes derive, found {text.count(old)}')
           text = text.replace(old, new, 1)
+
           for old in ('    visited: HashSet<String>,\n', '            visited: HashSet::new(),\n', '        self.visited.insert(uuid.to_string());\n'):
               if text.count(old) != 1:
                   raise SystemExit(f'expected one obsolete fragment, found {text.count(old)}: {old!r}')
               text = text.replace(old, '', 1)
+
           pattern = r'    /// Distinct visit keys the sweep reached this run, retained for coverage\n.*?(?=    /// Every visit attempt this run, including repeats after sweep rebuilds\.)'
           text, n = re.subn(pattern, '', text, count=1, flags=re.S)
           if n != 1:
               raise SystemExit(f'expected one obsolete distinct-helper block, found {n}')
+
+          # Passes::new is retained for old artefact/report fixtures. It cannot
+          # know a population denominator, so leave the additive measured fields
+          # empty instead of fabricating a 0.00 equivalent-pass measurement.
+          old = '''            visits_run: visited_run,
+            neuron_visits_run: visited_run,
+            synapse_visits_run: 0,
+            revisit_attempts_run: revisited_run,
+            neuron_revisits_run: revisited_run,
+            synapse_revisits_run: 0,
+            equivalent_passes_run: 0.0,
+'''
+          new = '''            visits_run: 0,
+            neuron_visits_run: 0,
+            synapse_visits_run: 0,
+            revisit_attempts_run: 0,
+            neuron_revisits_run: 0,
+            synapse_revisits_run: 0,
+            equivalent_passes_run: 0.0,
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected compatibility constructor fields once, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          # Measured runs render the new attempt/per-kind lines. Legacy
+          # constructors still render their old visit line, but the pass line is
+          # explicitly named strict in both paths.
+          needle = '''        if self.visits_run > 0 {
+            out.push(format!(
+                "{:<11}{:.2} creature-equivalent this run · {} visit attempts",
+                "rescan:", self.equivalent_passes_run, self.visits_run
+            ));
+            if self.synapse_visits_run > 0 {
+                out.push(format!(
+                    "{:<11}neurons {} ({} revisits) · synapses {} ({} revisits)",
+                    "visits:",
+                    self.neuron_visits_run,
+                    self.neuron_revisits_run,
+                    self.synapse_visits_run,
+                    self.synapse_revisits_run
+                ));
+            } else {
+                out.push(format!(
+                    "{:<11}neurons {} ({} revisits)",
+                    "visits:", self.neuron_visits_run, self.neuron_revisits_run
+                ));
+            }
+        }
+'''
+          replacement = needle[:-2] + ''' else if self.visited_run > 0 {
+            out.push(format!(
+                "{:<11}{} hidden neurons visited this run · {} revisited",
+                "visits:", self.visited_run, self.revisited_run
+            ));
+        }
+'''
+          if text.count(needle) != 1:
+              raise SystemExit(f'expected measured rendering block once, found {text.count(needle)}')
+          text = text.replace(needle, replacement, 1)
 
           replacements = {
               '    fn visits_count_every_uuid_reached_while_progress_counts_only_new_ones() {':
@@ -61,6 +124,32 @@ jobs:
                   raise SystemExit(f'expected one test fragment, found {text.count(old)}: {old!r}')
               text = text.replace(old, new, 1)
 
+          # Existing exact-text tests now name the strict metric explicitly.
+          for old, new in (
+              ('passes:    7 complete this epoch · 1 this run · pass 8 in progress', 'passes:    7 strict complete this epoch · 1 strict this run · pass 8 in progress'),
+              ('passes:    4 complete this epoch · 2 this run · pass 5 in progress', 'passes:    4 strict complete this epoch · 2 strict this run · pass 5 in progress'),
+              ('passes:    0 complete this epoch · 0 this run · pass 1 in progress', 'passes:    0 strict complete this epoch · 0 strict this run · pass 1 in progress'),
+          ):
+              if old not in text:
+                  raise SystemExit(f'missing expected pass fixture: {old}')
+              text = text.replace(old, new)
+
+          p.write_text(text)
+
+          p = Path('ockham/src/run.rs')
+          text = p.read_text()
+          old = 'passes:    3 complete this epoch · 3 this run · pass 4 in progress'
+          new = 'passes:    3 strict complete this epoch · 3 strict this run · pass 4 in progress'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected run pass fixture once, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+          marker = '        assert!(text.contains("visits:"), "{text}");\n'
+          addition = '''        assert!(text.contains("rescan:    3.33 creature-equivalent this run · 20 visit attempts"), "{text}");
+        assert!(text.contains("visits:    neurons 8 (0 revisits) · synapses 12 (0 revisits)"), "{text}");
+'''
+          if text.count(marker) != 1:
+              raise SystemExit(f'expected run visits assertion once, found {text.count(marker)}')
+          text = text.replace(marker, addition, 1)
           p.write_text(text)
           PY
 
