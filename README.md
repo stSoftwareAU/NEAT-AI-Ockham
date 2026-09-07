@@ -1173,14 +1173,12 @@ neuron and every synapse (#137):
 
 With `--learnings-dir` set, the run journals one `coverage` record at the end,
 so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`,
-`cut`, `coveragePercent`, `synapses`, `synapsesChecked` and — since #102 — the
-`corpusIdentity` those figures
+`cut`, `coveragePercent` and — since #102 — the `corpusIdentity` those figures
 were measured against with `sweepComplete` beside it, and — since #140 — the
 `passes` object holding the same pass counters `coverage.json` carries, so the
 two surfaces cannot disagree about which pass a run was on, across runs. `checkable` keeps its key so `coverage.json`
-stays readable by anything already parsing it; since #74 it means "everything
-Ockham may try" rather than "the untagged hidden neurons", and since #137 that
-is every hidden neuron **and** every synapse. Without a learnings dir there is
+stays readable by anything already parsing it; since #74 it means "hidden
+neurons Ockham may try", which is all of them. Without a learnings dir there is
 no coverage state, and nothing is journalled — absent rather than a misleading
 0%.
 
@@ -1207,7 +1205,7 @@ questions and are reported side by side, never merged (#140):
 
 | Figure | Question it answers | Where |
 |---|---|---|
-| `sweep X/Y checked (Z% of epoch)` | How many **unique** visits — hidden neurons and synapses — has this epoch reached at least once? | `checked` / `checkable` |
+| `sweep X/Y checked (Z% of epoch)` | How many **unique** hidden neurons has this epoch visited at least once? | `checked` / `checkable` |
 | `progress: N newly checked this run` | How many uuids did this run visit for the **first** time? | `newlyScreened` |
 | `passes: N complete this epoch · M this run · pass K in progress` | How many times has the razor been all the way **round** the creature? | `passes` |
 | `visits: N hidden neurons visited this run · K revisited` | How many did this run's sweep reach, and how many of those had the fleet already checked? | `passes.visitedRun` / `revisitedRun` |
@@ -1237,7 +1235,7 @@ What resets what, stated rather than left to be discovered:
   filed when the rebuilt sweep is itself exhausted. Nothing already counted is
   lost;
 - **a corpus change opens a new epoch at pass 1**, exactly as it opens coverage
-  at `0 / visits` (#100). The earlier epochs' markers stay on disk and stay
+  at `0 / hidden` (#100). The earlier epochs' markers stay on disk and stay
   readable — history is scoped, never cleared.
 
 **The limitation, stated plainly:** for an epoch that was already running when
