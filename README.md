@@ -58,7 +58,8 @@ The current Rust implementation includes:
   that genuinely changed starts a fresh screening epoch (#100) that inherits
   every previous epoch's learnings as evidence — old winners replayed and
   re-scored, old failures eligible again (#101);
-- a single coverage calculation over the **current** incumbent — `sweep X/Y
+- a single coverage calculation over the **current** incumbent, counting every
+  hidden neuron **and** every synapse visit (#137) — `sweep X/Y
   checked (Z% of epoch), N cut` — journalled at the end of each run and
   surfaced by `report`, and carried into the `ockham` check-in tag (the
   GRQ-sampler commit subject) in the compact `sweep X/Y (Z% of epoch <id>)`
@@ -326,9 +327,11 @@ serialises those fields — and its `uuid` is the visit key, headed as always by
 The pool is built, and the **records** are ready for it: a screen record and a
 full-corpus verdict may both be keyed by a visit key, and every still-present
 filter in the learnings cache matches a synapse key against the creature's
-synapses (#136). Epoch coverage and accepting a pure synapse win land with their
-own work, and the sweep the run builds drops the edge half until they do — a
-visit a run cannot count is one it would make again every batch forever.
+synapses (#136), and epoch coverage counts one (#137): a synapse visit is in
+the denominator, so an edge the run has not reached reads as honestly unchecked.
+Accepting a pure synapse win lands with its own work, and the sweep the run
+builds drops the edge half until it does — a visit a run cannot *act on* is one
+it would make again every batch forever.
 
 That drop happens *after* `permutationIdentity` is hashed, so it is stated
 rather than silent: `Event::Start` carries `synapse_visits_deferred`, beside the
@@ -818,9 +821,11 @@ sitting unchecked forever. The shape is unchanged, so no format version bump is
 needed and an older host reads a `synapse` record and ignores it rather than
 failing its load. The learnings cache reads those keys the same way: a standing
 rejection of an edge cut suppresses it, and a confirmed one replays. The run
-does not write them **yet** — it walks neuron visits only until the coverage
-denominator counts them, and states in `experiments.jsonl` how many edge visits
-it deferred (`synapse_visits_deferred`).
+does not write them **yet** — it walks neuron visits only until accepting a pure
+synapse win lands (#138), and states in `experiments.jsonl` how many edge visits
+it deferred (`synapse_visits_deferred`). Coverage counts them from #137
+regardless, so the epoch stays honestly open rather than reporting a sweep that
+never reached the edges.
 
 A record for a visit that scored nothing is written at **version 3**, which a
 pre-#93 binary does not accept. The fleet runs mixed versions against one shared
@@ -927,8 +932,10 @@ against.
 Every run therefore reads the whole screen history and counts the records filed
 under the corpus in front of it. When the corpus identity changes:
 
-- coverage opens at `0 / current_hidden_count` before the run records a visit;
-- every hidden neuron is eligible to be visited again, `blocked`,
+- coverage opens at `0 / current_visit_count` before the run records a visit —
+  hidden neurons and synapses alike (#137);
+- every hidden neuron and every synapse visit is eligible to be visited again,
+  `blocked`,
   `known-failure`, screened-loser and screened-winner alike — none of them is
   current-epoch coverage;
 - the previous epoch's records are **kept, read and still named** by the corpus
@@ -952,7 +959,7 @@ wiping anything. Nothing is ever cleared, so no coverage is lost, only scoped.
 
 Say plainly what the **authority** half costs, because it is a deliberate
 reversal of #76 and not a free win: on a host whose corpus genuinely changes
-between runs, every run now opens at `0 / hidden` and re-screens the creature.
+between runs, every run now opens at `0 / visits` and re-screens the creature.
 That is the intended reading of `100%` — the sweep finished *that* corpus — but
 it is only affordable because the corpus turns over in days rather than runs.
 The evidence in #100 is four corpus identities across six days, one of them
@@ -1094,13 +1101,22 @@ flowchart TD
 one place so the tag, the commit description and `report` can never disagree:
 
 ```text
-sweep 1204/5013 checked (24.0% of epoch), 7 cut, 42 tagged
+sweep 1204/5013 checked (24.0% of epoch), 7 cut, 330/2000 synapses, 42 tagged
 ```
 
-The denominator is every hidden neuron of the **current** incumbent:
+The denominator is every **visit** on the **current** incumbent — every hidden
+neuron and every synapse (#137):
 
-- a screen record for a uuid no longer on the creature is ignored — it raises
+- a screen record for a visit no longer on the creature is ignored — it raises
   neither `checked` nor `hidden`;
+- every synapse the incumbent carries is one visit, keyed by its ordered
+  endpoint pair, and sits in the denominator beside the hidden neurons (#137).
+  Typed edges are counted too: the razor refuses to cut one, the sweep visits it
+  all the same, and the blocked record that visit files is what makes it
+  *checked* — so a creature full of typed edges reaches a complete sweep instead
+  of standing permanently short of one. `synapses` and `synapsesChecked` report
+  that half beside the total, and `checkable` stays the whole visit population,
+  so `percent` and `sweepComplete` keep their arithmetic;
 - duplicate records for one uuid count once;
 - tagged neurons stay in the denominator and a screened one
   counts as checked (#74). Selection stopped exempting them in #63, so
@@ -1117,24 +1133,27 @@ The denominator is every hidden neuron of the **current** incumbent:
   says which mechanism was missing, split by code in `blockedByReason` and on
   the `reasons:` line of the description;
 - only records measured against the **corpus in hand** are counted (#100): a
-  changed corpus opens a new screening epoch at `0 / hidden`, and `100%` means
+  changed corpus opens a new screening epoch at `0 / visits`, and `100%` means
   100% of that epoch. See
   [A sweep can finish; Ockham never finishes](#a-sweep-can-finish-ockham-never-finishes).
 
 With `--learnings-dir` set, the run journals one `coverage` record at the end,
 so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`,
-`cut`, `coveragePercent` and — since #102 — the `corpusIdentity` those figures
+`cut`, `coveragePercent`, `synapses`, `synapsesChecked` and — since #102 — the
+`corpusIdentity` those figures
 were measured against with `sweepComplete` beside it, and — since #140 — the
 `passes` object holding the same pass counters `coverage.json` carries, so the
 two surfaces cannot disagree about which pass a run was on, across runs. `checkable` keeps its key so `coverage.json`
-stays readable by anything already parsing it; since #74 it means "hidden
-neurons Ockham may try", which is all of them. Without a learnings dir there is
+stays readable by anything already parsing it; since #74 it means "everything
+Ockham may try" rather than "the untagged hidden neurons", and since #137 that
+is every hidden neuron **and** every synapse. Without a learnings dir there is
 no coverage state, and nothing is journalled — absent rather than a misleading
 0%.
 
 ```mermaid
 flowchart LR
-    H["hidden on current incumbent"] --> C["checkable = every hidden neuron"]
+    H["hidden on current incumbent"] --> C["checkable = every hidden neuron<br/>+ every synapse visit"]
+    E["synapses on current incumbent<br/>(one per ordered pair)"] --> C
     C --> T{"tagged?"}
     T -->|yes| G["also counted as tagged —<br/>reported beside the percentage"]
     T -->|no| N["counted in the denominator only"]
@@ -1154,7 +1173,7 @@ questions and are reported side by side, never merged (#140):
 
 | Figure | Question it answers | Where |
 |---|---|---|
-| `sweep X/Y checked (Z% of epoch)` | How many **unique** hidden neurons has this epoch visited at least once? | `checked` / `checkable` |
+| `sweep X/Y checked (Z% of epoch)` | How many **unique** visits — hidden neurons and synapses — has this epoch reached at least once? | `checked` / `checkable` |
 | `progress: N newly checked this run` | How many uuids did this run visit for the **first** time? | `newlyScreened` |
 | `passes: N complete this epoch · M this run · pass K in progress` | How many times has the razor been all the way **round** the creature? | `passes` |
 | `visits: N hidden neurons visited this run · K revisited` | How many did this run's sweep reach, and how many of those had the fleet already checked? | `passes.visitedRun` / `revisitedRun` |
@@ -1184,7 +1203,7 @@ What resets what, stated rather than left to be discovered:
   filed when the rebuilt sweep is itself exhausted. Nothing already counted is
   lost;
 - **a corpus change opens a new epoch at pass 1**, exactly as it opens coverage
-  at `0 / hidden` (#100). The earlier epochs' markers stay on disk and stay
+  at `0 / visits` (#100). The earlier epochs' markers stay on disk and stay
   readable — history is scoped, never cleared.
 
 **The limitation, stated plainly:** for an epoch that was already running when
@@ -1235,7 +1254,8 @@ into `--output-dir`, beside `best.json`:
 
 ```text
 🪒 Ockham neuron screening coverage
-sweep:     1204 of 5013 hidden (24.0% of epoch)
+sweep:     1204 of 5013 visits (24.0% of epoch)
+synapses:  330 of 2000 edges checked this epoch
 epoch:     corpus 6fc028da — coverage counts this corpus only
 cut:       7 this run
 unchecked: 3809 remaining this epoch (~39 runs at 100/run)
@@ -1257,6 +1277,15 @@ dropped:   12 entries over budget (est 18s/creature)
   zero. A finished sweep reads `0 remaining — sweep complete for this epoch`
   instead (#102), and a creature with no hidden neurons reads
   `0 remaining — no hidden neurons to sweep`: there was nothing to finish;
+- the `synapses:` line is omitted when the creature carries no synapse visits,
+  and says how much of the edge half of the `sweep:` denominator has been
+  reached (#137). It carries **no percentage of its own**: the only percentage
+  in the block is `sweep:`, over the whole visit population, so two
+  identically-suffixed percentages with different denominators can never sit one
+  above the other. The `sweep:` noun follows the same rule — `hidden` while the
+  population is hidden neurons alone, `visits` once edges are in it — so an
+  older `coverage.json`, which carries no synapse figures, still renders the
+  block exactly as it did;
 - the `blocked:` line is omitted when nothing is blocked, and says how many of
   the `checked` were reached by a visit that proposed no cut (#93) — they stay
   inside the percentage, because the sweep has been to them;
@@ -2219,8 +2248,8 @@ Useful measures include:
 - screen-coverage records filed (`screened`);
 - sweeps rebuilt after reaching 100% of the hidden neurons (`sweepRestarts`);
 - screening coverage of the incumbent — every figure of the commit-description
-  block (`hidden`, `tagged`, `checkable`, `checked`, `unchecked`, `cut`,
-  `coveragePercent`);
+  block (`hidden`, `tagged`, `checkable`, `checked`, `synapses`,
+  `synapsesChecked`, `unchecked`, `cut`, `coveragePercent`);
 - growth-cost reduction (`growthUnitsSaved`);
 - structure the exact pre-pass removed before the first statistical screen
   (`exactCleanupHiddenRemoved`, `exactCleanupSynapsesRemoved`,

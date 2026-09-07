@@ -164,10 +164,19 @@ pub enum Event {
         /// Hidden neurons carrying tags, screened like any other (#87).
         #[serde(default)]
         tagged: usize,
-        /// Hidden neurons Ockham may try — all of them, tagged included (#74).
+        /// Visits Ockham may try — hidden neurons plus synapses (#74, #137).
         checkable: usize,
-        /// Hidden UUIDs with at least one screen record.
+        /// Visit keys with at least one screen record.
         checked: usize,
+        /// Synapse visits on the final incumbent, one per ordered pair (#137).
+        ///
+        /// `#[serde(default)]` so a journal written before #137 still reads, as
+        /// no synapse visits — which is the population those runs counted.
+        #[serde(default)]
+        synapses: usize,
+        /// Synapse visits with at least one screen record (Issue #137).
+        #[serde(default)]
+        synapses_checked: usize,
         /// Checked UUIDs the razor could never propose a cut for (#93).
         #[serde(default)]
         blocked: usize,

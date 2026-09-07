@@ -2165,6 +2165,8 @@ fn ockham_loop(
                 tagged: cov.tagged,
                 checkable: cov.checkable,
                 checked: cov.checked,
+                synapses: cov.synapses,
+                synapses_checked: cov.synapses_checked,
                 blocked: cov.blocked,
                 blocked_by_reason: cov.blocked_by_reason,
                 cut: cov.cut,
@@ -2355,8 +2357,8 @@ fn fresh_sweep(
     let deferred = sweep.retain_neuron_visits();
     if deferred > 0 {
         log::info(&format!(
-            "sweep: {deferred} synapse visit(s) deferred — records and learnings are ready \
-             (#136); coverage and accept parity land with #137/#138 (#135)"
+            "sweep: {deferred} synapse visit(s) deferred — records, learnings and epoch \
+             coverage are ready (#136, #137); accept parity lands with #138 (#135)"
         ));
     }
     if unchecked_first {
@@ -4436,7 +4438,9 @@ mod tests {
         assert_eq!(run.newly_screened, 4);
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
         assert!(
-            best.contains("sweep 4/4"),
+            // 4 hidden neurons and the 9 ordered synapse pairs left after the
+            // cut are one visit population since Issue #137.
+            best.contains("sweep 4/13"),
             "the check-in tag must report the coverage the run finished on, not the \
              coverage at the cut: {best}"
         );
@@ -4680,7 +4684,14 @@ mod tests {
         let report = crate::report::summarise(&[&journal_path]).unwrap();
         assert_eq!(report.hidden, Some(4));
         assert_eq!(report.checked, Some(2), "one batch of two candidates");
-        assert_eq!(report.coverage_percent, Some(50.0));
+        assert_eq!(report.synapses, Some(8), "the edge half of the population");
+        assert_eq!(report.synapses_checked, Some(0));
+        assert_eq!(
+            report.checkable,
+            Some(12),
+            "hidden neurons plus synapse visits (#137)"
+        );
+        assert_eq!(report.coverage_percent, Some(2.0f64 / 12.0 * 100.0));
     }
 
     /// A **repacked** corpus: the same records written to a fresh directory,
@@ -4814,7 +4825,10 @@ mod tests {
             second_cov.checked, 2,
             "the new epoch counts its own batch alone, not the old corpus's"
         );
-        assert_eq!(second_cov.checkable, 4, "every hidden neuron is checkable");
+        assert_eq!(
+            second_cov.checkable, 12,
+            "every hidden neuron and every synapse visit is checkable (#137)"
+        );
         assert_eq!(
             second_run.newly_screened, 2,
             "a uuid checked under the old corpus is new coverage under the new one"
@@ -4861,12 +4875,21 @@ mod tests {
                 Some(learnings_dir.clone()),
             )
         };
+        // The sweep does not walk synapse visits yet (they are deferred until
+        // #138), so the edge half of the population is filed here as the fleet
+        // host that reached them would file it (#136): a *complete* epoch is
+        // what this test is about, and since #137 that means every visit.
+        file_blocked_synapse_screens(&learnings_dir, &train, &["h_a", "h_b", "h_c", "h_d"]);
         establish_run(&first, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         let complete =
             std::fs::read_to_string(first.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            complete.contains("sweep:     4 of 4 hidden (100.0% of epoch)"),
+            complete.contains("sweep:     12 of 12 visits (100.0% of epoch)"),
+            "{complete}"
+        );
+        assert!(
+            complete.contains("synapses:  8 of 8 edges checked this epoch"),
             "{complete}"
         );
         assert!(
@@ -4886,7 +4909,7 @@ mod tests {
             std::fs::read_to_string(second.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            fresh.contains("sweep:     2 of 4 hidden (50.0% of epoch)"),
+            fresh.contains("sweep:     2 of 12 visits (16.7% of epoch)"),
             "the new epoch reports its own coverage: {fresh}"
         );
         assert!(
@@ -4901,17 +4924,17 @@ mod tests {
             "{fresh}"
         );
         assert!(
-            fresh.contains("history:   4 of 4 ever checked across 2 corpus epochs"),
+            fresh.contains("history:   12 of 12 ever checked across 2 corpus epochs"),
             "the previous epoch's work stays available, beside the percentage \
              rather than inside it: {fresh}"
         );
 
         let report = coverage_report_json(&second.output_dir);
-        assert_eq!(report.coverage.percent(), 50.0);
+        assert_eq!(report.coverage.percent(), 2.0f64 / 12.0 * 100.0);
         assert_eq!(
             report.history.expect("cumulative figures").checked_ever,
-            4,
-            "history is cumulative across epochs"
+            12,
+            "history is cumulative across epochs, synapse visits included (#137)"
         );
     }
 
@@ -4957,8 +4980,8 @@ mod tests {
         assert_eq!(after.blocked, 0);
         assert_eq!(
             after.unchecked(),
-            2,
-            "both are eligible to be visited again"
+            after.checkable,
+            "both are eligible to be visited again — and so is every synapse visit"
         );
         assert_eq!(
             new.load_screens().unwrap().len(),
@@ -4971,6 +4994,57 @@ mod tests {
         crate::corpus::corpus_info(train, &TrainingDataConfig::new(1, 1))
             .unwrap()
             .identity
+    }
+
+    /// Ordered synapse pairs on a written `best.json` — the edge half of the
+    /// coverage denominator since Issue #137.
+    fn synapse_pairs(best: &std::path::Path) -> usize {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(best).unwrap()).unwrap();
+        v["synapses"]
+            .as_array()
+            .expect("synapses")
+            .iter()
+            .map(|s| {
+                // Named keys, so a rename fails the test loudly rather than
+                // collapsing every edge onto one empty pair.
+                (
+                    s["fromUUID"].as_str().expect("fromUUID").to_string(),
+                    s["toUUID"].as_str().expect("toUUID").to_string(),
+                )
+            })
+            .collect::<HashSet<(String, String)>>()
+            .len()
+    }
+
+    /// File a blocked screen record for every synapse visit `uuids`' creature
+    /// carries, under `train`'s corpus identity.
+    ///
+    /// The sweep defers synapse visits until Issue #138, so a test that needs a
+    /// genuinely complete epoch stands in for the fleet host that reached them.
+    /// A blocked record is the honest shape: the razor visited the edge and
+    /// could propose nothing, which is coverage all the same (#93).
+    fn file_blocked_synapse_screens(
+        learnings_dir: &std::path::Path,
+        train: &std::path::Path,
+        uuids: &[&str],
+    ) {
+        let store = screens_store(learnings_dir, train);
+        let identity = store.corpus_identity().to_string();
+        for syn in &hidden_creature(uuids).synapses {
+            store
+                .append_screen(&crate::learnings::Screened {
+                    version: crate::learnings::SCREENS_FORMAT_VERSION,
+                    uuid: crate::sweep::synapse_key(&syn.from_uuid, &syn.to_uuid),
+                    kind: crate::learnings::SCREEN_KIND_SKIPPED.into(),
+                    outcome: crate::learnings::ScreenOutcomeKind::Loser,
+                    unix_secs: 1,
+                    host: "t".into(),
+                    corpus_identity: Some(identity.clone()),
+                    blocked_reason: Some(crate::blocked::BlockedReason::UnsafeTopology),
+                })
+                .unwrap();
+        }
     }
 
     fn coverage_json(output_dir: &std::path::Path) -> Coverage {
@@ -5029,7 +5103,11 @@ mod tests {
         let cov: Coverage = serde_json::from_str(&json).unwrap();
         assert_eq!(cov.hidden, 4);
         assert_eq!(cov.checked, 2, "one batch of two candidates");
-        assert_eq!(cov.checkable, 4);
+        assert_eq!(cov.synapses, 8);
+        assert_eq!(
+            cov.checkable, 12,
+            "hidden neurons plus synapse visits (#137)"
+        );
         let report: crate::coverage::CoverageReport = serde_json::from_str(&json).unwrap();
         assert_eq!(report.newly_screened, 2, "the run's own progress (#77)");
         assert_eq!(
@@ -5042,7 +5120,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("unchecked: 2 remaining this epoch (~1 run at 2/run)"),
+            text.contains("unchecked: 10 remaining this epoch (~5 runs at 2/run)"),
             "{text}"
         );
         // Issue #102: the run names the epoch its percentage belongs to, in
@@ -5056,7 +5134,7 @@ mod tests {
             )),
             "{text}"
         );
-        assert!(text.contains("(50.0% of epoch)"), "{text}");
+        assert!(text.contains("(16.7% of epoch)"), "{text}");
     }
 
     /// End-to-end detector for Issue #74: a fully tagged creature must report
@@ -5083,9 +5161,14 @@ mod tests {
         let cov: Coverage = serde_json::from_str(&json).unwrap();
         assert_eq!(cov.hidden, 4);
         assert_eq!(cov.tagged, 4, "every hidden neuron carries a tag");
-        assert_eq!(cov.checkable, 4, "tagged neurons stay in the denominator");
+        assert_eq!(
+            cov.checkable,
+            cov.hidden + cov.synapses,
+            "tagged neurons stay in the denominator, beside the synapse visits"
+        );
+        assert_eq!(cov.checkable, 12);
         assert_eq!(cov.checked, 2, "screened tagged UUIDs count as checked");
-        assert_eq!(cov.percent(), 50.0);
+        assert_eq!(cov.percent(), 2.0f64 / 12.0 * 100.0);
 
         let text =
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
@@ -5179,7 +5262,11 @@ mod tests {
         let cov = coverage_json(&cfg.output_dir);
         assert_eq!(cov.hidden, 3);
         assert_eq!(cov.checked, 3, "coverage must count the visits");
-        assert_eq!(cov.percent(), 100.0);
+        assert_eq!(
+            cov.checked, cov.hidden,
+            "every hidden neuron was reached; the synapse visits the sweep does \
+             not walk yet keep the epoch percentage below 100 (#137)"
+        );
         let text =
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
@@ -5489,8 +5576,12 @@ mod tests {
             "the subject must scope its percentage to the epoch (#102): {tag}"
         );
         assert!(
-            tag.contains(&format!("/{} (", hidden_neurons(&best))),
-            "denominator must be every hidden neuron, tagged included (#74): {tag}"
+            tag.contains(&format!(
+                "/{} (",
+                hidden_neurons(&best) + synapse_pairs(&best)
+            )),
+            "denominator must be every hidden neuron, tagged included (#74), plus \
+             every synapse visit (#137): {tag}"
         );
     }
 
@@ -6737,9 +6828,15 @@ mod tests {
             passes.visited_run >= 2,
             "the run visited both neurons repeatedly: {passes:?}"
         );
+        assert_eq!(
+            report.coverage.checked, report.coverage.hidden,
+            "the unique neuron sweep finished: {:?}",
+            report.coverage
+        );
         assert!(
-            report.coverage.sweep_complete(),
-            "the unique sweep finished: {:?}",
+            !report.coverage.sweep_complete(),
+            "the synapse visits are in the denominator since #137 and the sweep \
+             does not walk them yet, so the epoch is honestly still open: {:?}",
             report.coverage
         );
 
@@ -7371,7 +7468,11 @@ mod tests {
         assert_eq!(run.stop_reason, "max-experiments");
         assert_eq!(run.newly_screened, 0);
         let cov = coverage_json(&cfg.output_dir);
-        assert_eq!(cov.unchecked(), 2, "the figures the warning names");
+        assert_eq!(
+            cov.unchecked(),
+            6,
+            "the figures the warning names: 2 hidden neurons and 4 synapse visits"
+        );
         let text =
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
@@ -7414,7 +7515,11 @@ mod tests {
         );
         let cov = coverage_json(&second.output_dir);
         assert_eq!(cov.checked, 3);
-        assert_eq!(cov.unchecked(), 0);
+        assert_eq!(
+            cov.unchecked(),
+            cov.synapses,
+            "every hidden neuron is checked; the synapse visits are what is left"
+        );
     }
 
     // ---------------------------------------------------------------------
