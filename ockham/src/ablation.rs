@@ -11,6 +11,19 @@
 //! (dead hidden/constant neurons, constant folding of known squashes) is exact.
 //! Neither distinction grants acceptance: the full-corpus scorer still decides.
 //!
+//! [`ablate_synapse`] is the same family one step finer (Issue #133): the unit
+//! removed is the **edge**, not the neuron. The removed synapse's contribution
+//! is folded into the target's bias,
+//!
+//! ```text
+//! bias_j' = bias_j + source_value * w_ij
+//! ```
+//!
+//! which is the same approximate step, and the same exact cleanup cascade then
+//! removes whatever that edge stranded. No weight or contribution threshold
+//! decides which edges are eligible — every ordinary synapse is, and the
+//! full-corpus scorer remains the only acceptance authority.
+//!
 //! Unsupported aggregate/typed-synapse cases are skipped, never guessed. The
 //! final candidate must pass NEAT-AI-core `creature.validate()`.
 
@@ -142,6 +155,13 @@ pub enum AblationSkip {
         /// Role name.
         synapse_type: String,
     },
+    /// No synapse joins this ordered pair on the incumbent (Issue #133).
+    UnknownSynapse {
+        /// Source UUID.
+        from_uuid: String,
+        /// Destination UUID.
+        to_uuid: String,
+    },
     /// Downstream target is an aggregate squash (bias fold is not a sum).
     AggregateTarget {
         /// Target UUID.
@@ -180,6 +200,7 @@ impl AblationSkip {
             Self::UnknownNeuron(_)
             | Self::NotHidden { .. }
             | Self::TypedSynapse { .. }
+            | Self::UnknownSynapse { .. }
             | Self::EmptyGroup => BlockedReason::UnsafeTopology,
             Self::Invalid(_) => BlockedReason::ValidationFailed,
         }
@@ -190,8 +211,8 @@ impl AblationSkip {
     /// True for the structural blocks — an aggregate target, an aggregate
     /// source, a typed edge — where the fold is impossible but the *edge* can
     /// be preserved. False where there was nothing to substitute in the first
-    /// place (no neuron, no finite mean) or where a candidate was built and
-    /// rejected.
+    /// place (no neuron, no finite mean, no such edge) or where a candidate was
+    /// built and rejected.
     pub fn substitution_may_help(&self) -> bool {
         matches!(
             self,
@@ -222,6 +243,9 @@ impl fmt::Display for AblationSkip {
                 f,
                 "typed synapse `{from_uuid}`→`{to_uuid}` ({synapse_type}); skipped"
             ),
+            Self::UnknownSynapse { from_uuid, to_uuid } => {
+                write!(f, "no synapse `{from_uuid}`→`{to_uuid}`")
+            }
             Self::AggregateTarget { uuid, squash } => {
                 write!(f, "aggregate target `{uuid}` (`{squash}`); skipped")
             }
@@ -443,6 +467,125 @@ pub fn ablate_group(
         } else {
             TransformClass::Exact
         },
+        compensations,
+        removed_neurons,
+        before,
+        after,
+        creature: working,
+    })
+}
+
+/// Record of one emitted single-synapse ablation candidate (Issue #133).
+///
+/// The removed unit is one **edge**, so a candidate can leave every neuron in
+/// place: [`Self::removed_neurons`] is empty for a pure edge cut and lists what
+/// the cleanup cascade stranded otherwise.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SynapseAblation {
+    /// Source neuron UUID of the removed edge.
+    pub from_uuid: String,
+    /// Destination neuron UUID of the removed edge.
+    pub to_uuid: String,
+    /// Weight the removed edge carried.
+    pub weight: f64,
+    /// Scalar folded in place of the source's activation.
+    pub source_value: f64,
+    /// Approximate vs exact.
+    pub transform_class: TransformClass,
+    /// Bias updates, in application order: the fold first, then cleanup folds.
+    pub compensations: Vec<BiasCompensation>,
+    /// Neurons the cleanup cascade removed; empty for a pure edge cut.
+    pub removed_neurons: Vec<RemovedNeuron>,
+    /// Structure before the transform.
+    pub before: StructureSnapshot,
+    /// Structure after the transform.
+    pub after: StructureSnapshot,
+    /// Validated candidate creature.
+    pub creature: CreatureExport,
+}
+
+/// Remove the ordinary synapse `from_uuid`→`to_uuid` from a clone of `incumbent`.
+///
+/// `source_value` is what the source contributed on average — the full-corpus
+/// mean post-activation of the source neuron — and it is folded into the
+/// target's bias as `bias_j += source_value * w_ij` before the edge goes. The
+/// exact cleanup cascade then runs once, so a neuron the cut left feeding
+/// nothing (and the chain behind it) goes with the edge, and a hidden neuron
+/// the cut left with no incoming folds to its constant.
+///
+/// Fails closed exactly where the neuron transform does: a typed edge, an
+/// aggregate fold target, a non-finite `source_value`, an endpoint or an edge
+/// the incumbent does not carry, and any candidate `creature.validate()`
+/// rejects. Nothing here weighs the edge: no weight, magnitude or contribution
+/// threshold decides eligibility, because only the full-corpus scorer accepts.
+pub fn ablate_synapse(
+    incumbent: &CreatureExport,
+    from_uuid: &str,
+    to_uuid: &str,
+    source_value: f64,
+) -> Result<SynapseAblation, AblationSkip> {
+    if !source_value.is_finite() {
+        return Err(AblationSkip::NonFiniteMean(source_value));
+    }
+    // Every rejection is decided on the incumbent, before anything is copied
+    // (Issue #91): a sweep visiting edges it can never cut must not pay for a
+    // clone per visit.
+    if neuron_by_uuid(incumbent, from_uuid).is_none() {
+        return Err(AblationSkip::UnknownNeuron(from_uuid.to_string()));
+    }
+    let target = neuron_by_uuid(incumbent, to_uuid)
+        .ok_or_else(|| AblationSkip::UnknownNeuron(to_uuid.to_string()))?;
+    // NEAT-AI-core rule 26 allows a pair to repeat only with distinct roles, so
+    // every ordinary pair matches at most once — but the whole pair is checked,
+    // so a typed edge alongside is reported rather than stepped over.
+    let edges: Vec<SynapseExport> = incumbent
+        .synapses
+        .iter()
+        .filter(|s| s.from_uuid == from_uuid && s.to_uuid == to_uuid)
+        .cloned()
+        .collect();
+    let Some(removed) = edges.first() else {
+        return Err(AblationSkip::UnknownSynapse {
+            from_uuid: from_uuid.to_string(),
+            to_uuid: to_uuid.to_string(),
+        });
+    };
+    for syn in &edges {
+        require_ordinary(syn)?;
+    }
+    reject_aggregate_neuron(target)?;
+
+    let mut working = incumbent.clone();
+    working.memetic = None;
+    let before = StructureSnapshot::of(&working);
+
+    let mut compensations = Vec::new();
+    let mut removed_neurons = Vec::new();
+    apply_bias_fold(
+        &mut working,
+        removed,
+        source_value,
+        "mean",
+        &mut compensations,
+    )?;
+    working
+        .synapses
+        .retain(|s| !(s.from_uuid == from_uuid && s.to_uuid == to_uuid));
+
+    cleanup_cascade(&mut working, &mut compensations, &mut removed_neurons)?;
+    sort_synapses_canonically(&mut working);
+
+    validate_creature(&working).map_err(|e| AblationSkip::Invalid(e.to_string()))?;
+
+    let after = StructureSnapshot::of(&working);
+    Ok(SynapseAblation {
+        from_uuid: from_uuid.to_string(),
+        to_uuid: to_uuid.to_string(),
+        weight: removed.weight,
+        source_value,
+        // The fold always runs, so this transform is always the approximate
+        // one: the edge's varying contribution is replaced by one scalar.
+        transform_class: TransformClass::Approximate,
         compensations,
         removed_neurons,
         before,
@@ -1137,6 +1280,317 @@ mod tests {
         assert_eq!(grouped.removed_neurons, single.removed_neurons);
         assert_eq!(grouped.compensations, single.compensations);
         assert_eq!(grouped.transform_class, single.transform_class);
+    }
+
+    /// `h_a` feeds both outputs, `h_b` only the first, so cutting
+    /// `h_a`→`output-0` strands nothing: a pure edge removal.
+    fn shared_output_fan_out() -> CreatureExport {
+        creature(
+            1,
+            2,
+            vec![
+                neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_b", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.25, Some("IDENTITY")),
+                neuron("output", "output-1", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_a", 2.0),
+                synapse("input-0", "h_b", 1.0),
+                synapse("h_a", "output-0", 3.0),
+                synapse("h_a", "output-1", 1.0),
+                synapse("h_b", "output-0", 1.0),
+            ],
+        )
+    }
+
+    fn constant_leaf() -> CreatureExport {
+        // `c0` emits 0.5 into the output and feeds nothing else.
+        creature(
+            1,
+            1,
+            vec![
+                neuron("constant", "c0", 0.5, None),
+                neuron("hidden", "h_keep", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("c0", "output-0", 2.0),
+                synapse("input-0", "h_keep", 1.0),
+                synapse("h_keep", "output-0", 1.0),
+            ],
+        )
+    }
+
+    fn ordinary_edge_into_aggregate() -> CreatureExport {
+        // `h_mean` averages its inward synapses, so no bias can stand in for one.
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_src", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_mean", 0.0, Some("MEAN")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_src", 1.0),
+                synapse("input-0", "h_mean", 1.0),
+                synapse("h_src", "h_mean", 1.0),
+                synapse("h_mean", "output-0", 1.0),
+            ],
+        )
+    }
+
+    /// Mean of output `index` over `xs`, in f64.
+    ///
+    /// Every value in the fixtures below is a small dyadic rational, so the f32
+    /// activation is exact and the comparison is not a float-tolerance fudge.
+    fn mean_output(creature: &CreatureExport, xs: &[f32], index: usize) -> f64 {
+        let mut net = compile_creature(creature).unwrap();
+        let sum: f64 = xs
+            .iter()
+            .map(|&x| f64::from(net.activate(&[x], creature.output)[index]))
+            .sum();
+        sum / xs.len() as f64
+    }
+
+    /// Inputs whose mean is exactly 0.5, all exactly representable in f32.
+    const XS: [f32; 4] = [1.0, 2.0, -1.0, 0.0];
+
+    #[test]
+    fn folding_one_edge_leaves_the_mean_output_unchanged() {
+        let incumbent = shared_output_fan_out();
+        validate_creature(&incumbent).unwrap();
+        let original = incumbent.clone();
+        // `h_a` is IDENTITY(2 * x), so its mean over XS is exactly 1.0.
+        let result = ablate_synapse(&incumbent, "h_a", "output-0", 1.0).unwrap();
+        assert_eq!(incumbent, original, "incumbent must be untouched");
+        assert_eq!(result.transform_class, TransformClass::Approximate);
+
+        let before = mean_output(&incumbent, &XS, 0);
+        let after = mean_output(&result.creature, &XS, 0);
+        assert!(
+            (before - after).abs() <= 1e-9,
+            "mean output moved: {before} vs {after}"
+        );
+        let out = result
+            .creature
+            .neurons
+            .iter()
+            .find(|n| n.uuid == "output-0")
+            .unwrap();
+        assert!(close(out.bias, 0.25 + 1.0 * 3.0), "bias {}", out.bias);
+        assert_eq!(result.compensations.len(), 1);
+        assert_eq!(result.compensations[0].kind, "mean");
+        assert_eq!(result.compensations[0].weight, 3.0);
+        // `output-1` never saw the transform.
+        assert!(close(
+            mean_output(&incumbent, &XS, 1),
+            mean_output(&result.creature, &XS, 1)
+        ));
+        validate_creature(&result.creature).unwrap();
+    }
+
+    #[test]
+    fn a_pure_edge_cut_costs_one_tenth_of_a_growth_unit() {
+        let incumbent = shared_output_fan_out();
+        let result = ablate_synapse(&incumbent, "h_a", "output-0", 1.0).unwrap();
+        assert!(
+            result.removed_neurons.is_empty(),
+            "nothing was stranded: {:?}",
+            result.removed_neurons
+        );
+        assert_eq!(result.after.hidden_neurons, result.before.hidden_neurons);
+        assert_eq!(result.after.synapses, result.before.synapses - 1);
+        assert!(
+            close(result.after.growth_units, result.before.growth_units - 0.1),
+            "{} → {}",
+            result.before.growth_units,
+            result.after.growth_units
+        );
+        assert!(
+            !result
+                .creature
+                .synapses
+                .iter()
+                .any(|s| s.from_uuid == "h_a" && s.to_uuid == "output-0")
+        );
+    }
+
+    #[test]
+    fn cutting_the_last_outgoing_edge_cascades_the_chain() {
+        // input → h_up → h_leaf → output; cutting the leaf's only outgoing edge
+        // strands the leaf, and stranding the leaf strands `h_up` behind it.
+        let incumbent = chain_plus_keep();
+        let result = ablate_synapse(&incumbent, "h_leaf", "output-0", 1.0).unwrap();
+        let cascaded: Vec<(&str, &str)> = result
+            .removed_neurons
+            .iter()
+            .map(|n| (n.uuid.as_str(), n.reason))
+            .collect();
+        assert_eq!(
+            cascaded,
+            vec![("h_leaf", "no-outgoing"), ("h_up", "no-outgoing")],
+            "{cascaded:?}"
+        );
+        let left: Vec<&str> = result
+            .creature
+            .neurons
+            .iter()
+            .map(|n| n.uuid.as_str())
+            .collect();
+        assert_eq!(left, vec!["h_keep", "output-0"], "{left:?}");
+        let out = result
+            .creature
+            .neurons
+            .iter()
+            .find(|n| n.uuid == "output-0")
+            .unwrap();
+        assert!(close(out.bias, 1.0 * 2.0), "bias {}", out.bias);
+        validate_creature(&result.creature).unwrap();
+    }
+
+    #[test]
+    fn cutting_a_constants_only_edge_cascades_the_constant() {
+        let incumbent = constant_leaf();
+        validate_creature(&incumbent).unwrap();
+        let result = ablate_synapse(&incumbent, "c0", "output-0", 0.5).unwrap();
+        assert_eq!(result.removed_neurons.len(), 1);
+        let gone = &result.removed_neurons[0];
+        assert_eq!(gone.uuid, "c0");
+        assert_eq!(gone.neuron_type, "constant");
+        assert_eq!(gone.reason, "no-outgoing");
+        assert_eq!(result.after.constant_neurons, 0);
+        let out = result
+            .creature
+            .neurons
+            .iter()
+            .find(|n| n.uuid == "output-0")
+            .unwrap();
+        assert!(close(out.bias, 0.5 * 2.0), "bias {}", out.bias);
+        validate_creature(&result.creature).unwrap();
+    }
+
+    #[test]
+    fn a_typed_edge_and_an_aggregate_target_fail_closed() {
+        let typed = typed_if_fixture();
+        let err = ablate_synapse(&typed, "h_cond", "h_if", 0.0).unwrap_err();
+        assert!(matches!(err, AblationSkip::TypedSynapse { .. }), "{err}");
+        assert_eq!(
+            typed,
+            typed_if_fixture(),
+            "a skip must not mutate the source"
+        );
+
+        let aggregate = ordinary_edge_into_aggregate();
+        validate_creature(&aggregate).unwrap();
+        let err = ablate_synapse(&aggregate, "h_src", "h_mean", 0.0).unwrap_err();
+        assert!(matches!(err, AblationSkip::AggregateTarget { .. }), "{err}");
+        assert_eq!(
+            aggregate,
+            ordinary_edge_into_aggregate(),
+            "a skip must not mutate the source"
+        );
+    }
+
+    #[test]
+    fn unknown_endpoints_edges_and_source_values_fail_closed() {
+        let incumbent = shared_output_fan_out();
+        let err = ablate_synapse(&incumbent, "h_a", "output-0", f64::NAN).unwrap_err();
+        assert!(matches!(err, AblationSkip::NonFiniteMean(_)), "{err}");
+        let err = ablate_synapse(&incumbent, "h_a", "output-0", f64::INFINITY).unwrap_err();
+        assert!(matches!(err, AblationSkip::NonFiniteMean(_)), "{err}");
+        let err = ablate_synapse(&incumbent, "nope", "output-0", 1.0).unwrap_err();
+        assert!(matches!(err, AblationSkip::UnknownNeuron(_)), "{err}");
+        let err = ablate_synapse(&incumbent, "h_a", "nope", 1.0).unwrap_err();
+        assert!(matches!(err, AblationSkip::UnknownNeuron(_)), "{err}");
+        // An input is not a listed neuron, so an input edge is not this
+        // transform's to cut: it is reported, never guessed at.
+        let err = ablate_synapse(&incumbent, "input-0", "h_a", 1.0).unwrap_err();
+        assert!(matches!(err, AblationSkip::UnknownNeuron(_)), "{err}");
+        // Both endpoints exist; no edge joins them.
+        let err = ablate_synapse(&incumbent, "h_a", "h_b", 1.0).unwrap_err();
+        assert!(
+            matches!(&err, AblationSkip::UnknownSynapse { from_uuid, to_uuid }
+                if from_uuid == "h_a" && to_uuid == "h_b"),
+            "{err}"
+        );
+        assert_eq!(
+            incumbent,
+            shared_output_fan_out(),
+            "a skip must not mutate the source"
+        );
+    }
+
+    #[test]
+    fn an_unknown_synapse_is_unsafe_topology_with_no_substitution() {
+        let skip = AblationSkip::UnknownSynapse {
+            from_uuid: "h_a".into(),
+            to_uuid: "h_b".into(),
+        };
+        assert_eq!(skip.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert!(
+            !skip.substitution_may_help(),
+            "there is no constant to substitute for an edge that is not there"
+        );
+        assert_eq!(skip.to_string(), "no synapse `h_a`→`h_b`");
+    }
+
+    #[test]
+    fn a_candidate_creature_validate_rejects_is_not_emitted() {
+        // `c0` is a constant with an inward edge, which NEAT-AI-core rule 14
+        // forbids. Cutting `h_keep`→`output-0` leaves that violation in place,
+        // so the transform must report it rather than emit the candidate.
+        let invalid = creature(
+            1,
+            1,
+            vec![
+                neuron("constant", "c0", 0.5, None),
+                neuron("hidden", "h_keep", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "c0", 1.0),
+                synapse("c0", "output-0", 2.0),
+                synapse("input-0", "h_keep", 1.0),
+                synapse("h_keep", "output-0", 1.0),
+            ],
+        );
+        assert!(
+            validate_creature(&invalid).is_err(),
+            "fixture must be invalid"
+        );
+        let err = ablate_synapse(&invalid, "h_keep", "output-0", 1.0).unwrap_err();
+        assert!(matches!(err, AblationSkip::Invalid(_)), "{err}");
+        assert_eq!(err.blocked_reason(), BlockedReason::ValidationFailed);
+    }
+
+    #[test]
+    fn an_output_left_with_no_incoming_edge_is_still_a_candidate() {
+        // NEAT-AI-core has no rule that an output must be fed: the cut leaves
+        // `output-0` on its folded bias alone and `creature.validate()` accepts
+        // it, so the candidate is emitted and the full-corpus scorer — never the
+        // razor — decides whether an input-blind output is worse. The same
+        // choice `a_group_cut_that_disconnects_every_output_folds_it_to_a_constant`
+        // pins for the neuron transform.
+        let incumbent = hidden_identity_creature(0.0, 1.0);
+        let result = ablate_synapse(&incumbent, "h1", "output-0", 0.75).unwrap();
+        assert_eq!(result.after.synapses, 0);
+        assert_eq!(result.after.hidden_neurons, 0);
+        assert!(
+            result
+                .removed_neurons
+                .iter()
+                .any(|n| n.uuid == "h1" && n.reason == "no-outgoing")
+        );
+        let out = result
+            .creature
+            .neurons
+            .iter()
+            .find(|n| n.uuid == "output-0")
+            .unwrap();
+        assert!(close(out.bias, 0.75), "bias {}", out.bias);
+        validate_creature(&result.creature).unwrap();
     }
 
     #[test]

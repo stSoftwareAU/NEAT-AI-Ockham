@@ -18,6 +18,7 @@
 //! | corpus identity / streaming | [`corpus`] | #2 |
 //! | sampled activation statistics | [`stats`] | #3, #44 |
 //! | mean-activation ablation + cleanup | [`ablation`] | #4 |
+//! | single-synapse ablation + cleanup | [`ablation`] | #133 |
 //! | exact IDENTITY collapse | [`collapse`] | #5 |
 //! | exact canonicalisation pre-pass | [`canonical`] | #110 |
 //! | seeded sampled sweep | [`sweep`] | #6 |
