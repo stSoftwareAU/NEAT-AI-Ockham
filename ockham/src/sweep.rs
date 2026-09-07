@@ -116,8 +116,8 @@ pub fn present_visits(creature: &CreatureExport) -> HashSet<String> {
 ///
 /// The single-visit form of [`present_visits`], for a caller checking one key
 /// against a creature that moves under it. A listed neuron wins the tie exactly
-/// as it does in [`propose`]: a neuron whose UUID happens to be shaped like a
-/// synapse key is a neuron, not an edge.
+/// as it does when a visit is proposed: a neuron whose UUID happens to be
+/// shaped like a synapse key is a neuron, not an edge.
 pub fn visit_present(creature: &CreatureExport, visit: &str) -> bool {
     if creature.neurons.iter().any(|n| n.uuid == visit) {
         return true;
