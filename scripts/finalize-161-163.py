@@ -119,10 +119,6 @@ for old, new in (
         'passes:    7 strict complete this epoch · 1 strict this run · pass 8 in progress',
     ),
     (
-        'passes:    4 complete this epoch · 2 this run · pass 5 in progress',
-        'passes:    4 strict complete this epoch · 2 strict this run · pass 5 in progress',
-    ),
-    (
         'passes:    0 complete this epoch · 0 this run · pass 1 in progress',
         'passes:    0 strict complete this epoch · 0 strict this run · pass 1 in progress',
     ),
