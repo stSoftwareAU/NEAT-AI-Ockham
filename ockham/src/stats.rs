@@ -1,4 +1,5 @@
-//! Sampled hidden-neuron activation statistics (Issues #3, #44).
+//! Sampled activation statistics for the neurons a fold may read (Issues #3,
+//! #44, #134).
 //!
 //! Statistics **propose** candidates only. They are not a proxy acceptance
 //! score and must not be presented as proof that a neuron is unimportant.
@@ -6,8 +7,19 @@
 //! Accumulation uses the same NEAT-AI-core compiled forward pass as scoring
 //! (`CompiledNetwork::activate`), with `f64` running moments so a long corpus
 //! does not lose the mean to `f32` rounding. Per-record activations are not
-//! retained: memory is one compiled network plus one accumulator per hidden
-//! neuron.
+//! retained: memory is one compiled network plus one accumulator per measured
+//! neuron — the hidden neurons **and** the creature's inputs (#134).
+//!
+//! The two populations stay apart. [`ActivationStats::by_uuid`] answers for
+//! hidden neurons only, because ordering, feature vectors and merge discovery
+//! read it to decide which neurons the razor may act on, and an input is not
+//! one of those. Input means live in [`ActivationStats::inputs`] and are read
+//! through [`ActivationStats::input_by_uuid`] and [`source_value`].
+//!
+//! [`source_value`] is the one resolver for "what scalar does this synapse
+//! source contribute on average": a sampled mean for a hidden or input source,
+//! the exactly computed `squash(bias)` for a `constant` one, and `None` — fail
+//! closed — for an output, an unknown uuid, or a value that is not finite.
 //!
 //! Because the statistics only *propose*, they do not need full-corpus
 //! precision: a multi-million-record corpus costs minutes of the run budget
@@ -28,14 +40,18 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use neat_core::training_data::TrainingDataConfig;
-use neat_core::{CreatureExport, compile_creature};
+use neat_core::{CreatureExport, NeuronExport, apply_squash, compile_creature, parse_squash_name};
 use serde::{Deserialize, Serialize};
 
 use crate::corpus::{CorpusInfo, RecordRange, for_each_selected_chunk};
 use crate::incumbent::Incumbent;
 
 /// Cache / on-disk format version. Bump when the JSON shape changes.
-pub const STATS_FORMAT_VERSION: u32 = 2;
+///
+/// `3` added the per-input means (#134). A `2` entry deserialises without them,
+/// so serving one would leave every input-sourced synapse unresolvable while
+/// reading as a hit — the version keys the cache so it is refused instead.
+pub const STATS_FORMAT_VERSION: u32 = 3;
 /// Default records per streaming chunk.
 pub const DEFAULT_CHUNK_RECORDS: usize = 4096;
 /// Default cap on records visited by the activation scan (issue #44).
@@ -221,13 +237,17 @@ fn split_mix64(state: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// One hidden neuron's post-activation summary over the scanned records.
+/// One measured neuron's post-activation summary over the scanned records.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NeuronStats {
     /// Neuron UUID.
     pub uuid: String,
     /// Index into `creature.neurons`.
+    ///
+    /// An [`ActivationStats::inputs`] entry is **not** indexing that list —
+    /// the export form leaves inputs implicit — so it carries the input's own
+    /// index, which is the wire number in its `input-N` uuid (#134).
     pub neuron_index: usize,
     /// Records accumulated.
     pub count: u64,
@@ -260,7 +280,7 @@ pub struct NeuronProbes {
     pub values: Vec<f32>,
 }
 
-/// Sampled hidden-neuron statistics for one incumbent + corpus.
+/// Sampled activation statistics for one incumbent + corpus.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivationStats {
@@ -284,7 +304,19 @@ pub struct ActivationStats {
     /// Wall time of the scan (ms), excluding cache hits.
     pub scan_ms: u64,
     /// Per-hidden-neuron summaries.
+    ///
+    /// Hidden neurons only. Ordering, feature vectors and merge discovery read
+    /// this population to decide what the razor may act on, so an input must
+    /// never appear here (#134).
     pub neurons: Vec<NeuronStats>,
+    /// Per-input summaries, in `input-0`, `input-1`, … order (#134).
+    ///
+    /// Measured on the same pass as [`Self::neurons`], so a synapse whose
+    /// source is an input has a mean to fold. Empty on a creature the scan
+    /// skipped, and on a cache entry written before this field existed — which
+    /// [`STATS_FORMAT_VERSION`] refuses rather than serves.
+    #[serde(default)]
+    pub inputs: Vec<NeuronStats>,
     /// Retained probe activations, one entry per measured neuron (Issue #109).
     ///
     /// Empty unless [`SampleSpec::probes`] asked for them.
@@ -431,10 +463,15 @@ pub fn store_cached_stats(path: &Path, stats: &ActivationStats) -> Result<(), St
 }
 
 /// Stream the sampled corpus through NEAT-AI-core inference and accumulate
-/// hidden-neuron statistics.
+/// hidden-neuron and input statistics.
 ///
 /// `sample` decides how much of the corpus is visited; [`SampleSpec::full`]
 /// keeps the exhaustive scan.
+///
+/// Inputs ride along on the hidden neurons' pass (#134): they are accumulated
+/// from the same activation buffer, they are held to the same adaptive-stopping
+/// target so a folded input mean is as converged as a hidden one, and they cost
+/// one more accumulator each — never a second read of the corpus.
 pub fn compute_activation_stats(
     creature: &CreatureExport,
     creature_checksum: &str,
@@ -451,9 +488,17 @@ pub fn compute_activation_stats(
         .filter(|(_, n)| n.neuron_type == "hidden")
         .map(|(i, n)| Accumulator::new(n.uuid.clone(), i, net.num_inputs + i, sample.probes))
         .collect();
-    if acc.is_empty() {
+    // The export form leaves inputs implicit, so they are keyed by the wire
+    // uuid the synapses use and read from the head of the activation buffer.
+    // No probes: signatures select merge candidates, and an input is not one.
+    let mut input_acc: Vec<Accumulator> = (0..net.num_inputs)
+        .map(|i| Accumulator::new(input_uuid(i), i, i, 0))
+        .collect();
+    if acc.is_empty() && input_acc.is_empty() {
         // Nothing to measure: streaming the corpus could only produce an empty
-        // measurement more slowly.
+        // measurement more slowly. A creature with no hidden neuron is still
+        // scanned for its inputs (#134) — its `input -> output` edges are prune
+        // candidates, and a source with no mean is one the razor cannot cut.
         return Ok(ActivationStats {
             creature_checksum: creature_checksum.to_string(),
             corpus_identity: corpus.identity.clone(),
@@ -496,6 +541,9 @@ pub fn compute_activation_stats(
                         a.probes.push(x);
                     }
                 }
+                for a in &mut input_acc {
+                    a.push(net.activations[a.activation_index]);
+                }
                 if probe {
                     next_probe += 1;
                 }
@@ -518,6 +566,7 @@ pub fn compute_activation_stats(
                 && next_probe >= probe_slots.len()
                 && acc
                     .iter()
+                    .chain(input_acc.iter())
                     .all(|a| a.relative_standard_error() <= sample.target_rel_se)
             {
                 stopped_early = true;
@@ -550,6 +599,7 @@ pub fn compute_activation_stats(
         ));
     }
     let neurons: Vec<NeuronStats> = acc.iter().map(Accumulator::finish).collect();
+    let inputs: Vec<NeuronStats> = input_acc.iter().map(Accumulator::finish).collect();
     let probes = if sample.probes == 0 {
         Vec::new()
     } else {
@@ -570,6 +620,7 @@ pub fn compute_activation_stats(
         stopped_early,
         scan_ms,
         neurons,
+        inputs,
         probes,
         from_cache: false,
     })
@@ -600,11 +651,21 @@ pub fn ensure_activation_stats(
     Ok(stats)
 }
 
-/// Look up stats for a hidden neuron UUID.
+/// Look up stats for a measured neuron UUID.
 impl ActivationStats {
-    /// Stats for `uuid`, if that hidden neuron was measured.
+    /// Stats for `uuid`, if that **hidden** neuron was measured.
+    ///
+    /// Hidden only, deliberately: this is the population ordering, feature
+    /// vectors and merge discovery walk, so an input resolving here would make
+    /// one an ablation, ordering or merge candidate (#134). Inputs are
+    /// [`Self::input_by_uuid`].
     pub fn by_uuid(&self, uuid: &str) -> Option<&NeuronStats> {
         self.neurons.iter().find(|n| n.uuid == uuid)
+    }
+
+    /// Stats for input wire `uuid` (`input-0`, `input-1`, …), if measured (#134).
+    pub fn input_by_uuid(&self, uuid: &str) -> Option<&NeuronStats> {
+        self.inputs.iter().find(|n| n.uuid == uuid)
     }
 
     /// Measurement-free placeholder for callers that need no activation signal.
@@ -622,6 +683,7 @@ impl ActivationStats {
             stopped_early: false,
             scan_ms: 0,
             neurons: Vec::new(),
+            inputs: Vec::new(),
             probes: Vec::new(),
             from_cache: false,
         }
@@ -641,12 +703,127 @@ impl ActivationStats {
     }
 }
 
+/// How a synapse source's fold value was arrived at (#134).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceValueKind {
+    /// Sampled mean post-activation — a hidden or input source.
+    Mean,
+    /// Computed exactly from the neuron's own bias — a `constant` source.
+    Constant,
+}
+
+impl SourceValueKind {
+    /// The `kind` a [`crate::ablation::BiasCompensation`] records for this fold.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mean => "mean",
+            Self::Constant => "constant",
+        }
+    }
+}
+
+/// The scalar a synapse's source contributes, and how it was obtained (#134).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SourceValue {
+    /// Scalar to fold: `bias_j += value * w_ij` when the edge goes.
+    pub value: f64,
+    /// Sampled, or computed exactly.
+    pub kind: SourceValueKind,
+}
+
+/// The scalar to fold in place of `uuid`'s activation, or `None` (#134).
+///
+/// One resolver for every kind of source a synapse can have, so synapse pruning
+/// is not confined to the hidden-to-anything edges the sampled scan covers:
+///
+/// - **hidden** — the sampled mean from `stats`, [`SourceValueKind::Mean`];
+/// - **`constant`** — `squash(bias)`, computed exactly with no sampling at all,
+///   [`SourceValueKind::Constant`]. A constant carries no squash under
+///   NEAT-AI-core rule 15, so `IDENTITY` is the ordinary path;
+/// - **input** — the sampled mean of the `input-N` wire,
+///   [`SourceValueKind::Mean`];
+/// - **output**, an unknown uuid, an aggregate squash, an unmeasured neuron or
+///   a non-finite value — `None`.
+///
+/// It fails closed rather than guessing: every `None` is a fold this run cannot
+/// justify, so the caller proposes no cut for that edge instead of folding a
+/// scalar nothing measured. Which reason code the blocked visit is filed under
+/// is the caller's to decide — see `docs/blocked-reasons.md`.
+pub fn source_value(
+    creature: &CreatureExport,
+    stats: &ActivationStats,
+    uuid: &str,
+) -> Option<SourceValue> {
+    if let Some(neuron) = creature.neurons.iter().find(|n| n.uuid == uuid) {
+        return match neuron.neuron_type.as_str() {
+            "hidden" => sampled(stats.by_uuid(uuid)),
+            "constant" => constant_value(neuron).map(|value| SourceValue {
+                value,
+                kind: SourceValueKind::Constant,
+            }),
+            // An output feeds no synapse the razor may cut, and an unrecognised
+            // type is not one this resolver may guess a value for.
+            _ => None,
+        };
+    }
+    // Inputs are implicit in the export form: the wire uuid is the only place
+    // one is named, so it is what identifies the source here.
+    is_input_uuid(creature, uuid)
+        .then(|| sampled(stats.input_by_uuid(uuid)))
+        .flatten()
+}
+
+/// A measured mean, once it is finite — a mean that is not is no fold value.
+fn sampled(measured: Option<&NeuronStats>) -> Option<SourceValue> {
+    measured
+        .map(|s| s.mean)
+        .filter(|mean| mean.is_finite())
+        .map(|value| SourceValue {
+            value,
+            kind: SourceValueKind::Mean,
+        })
+}
+
+/// A `constant` neuron's exact activation: `squash(bias)`, no corpus involved.
+///
+/// NEAT-AI-core rule 15 gives a constant no squash — it emits its bias — so
+/// `IDENTITY` is the path every valid creature takes, and it is exactly what
+/// the compiled network activates the neuron to. Validation rejects a squashed
+/// constant before it can reach here; the squash is read rather than assumed so
+/// that an aggregate or unparsable one yields no value instead of a guess.
+fn constant_value(neuron: &NeuronExport) -> Option<f64> {
+    let squash = parse_squash_name(neuron.squash.as_deref().unwrap_or("IDENTITY")).ok()?;
+    // An aggregate is a function of the inputs it has, not of its bias, so
+    // there is no constant to compute — and this one has no inputs to read.
+    if squash.is_aggregate() {
+        return None;
+    }
+    let value = f64::from(apply_squash(squash, neuron.bias as f32));
+    value.is_finite().then_some(value)
+}
+
+/// `true` when `uuid` names one of `creature`'s implicit input wires.
+///
+/// The round trip through [`input_uuid`] is what rejects a label that merely
+/// parses — `input-007` is not the wire `compile_creature` would resolve.
+fn is_input_uuid(creature: &CreatureExport, uuid: &str) -> bool {
+    uuid.strip_prefix("input-")
+        .and_then(|index| index.parse::<usize>().ok())
+        .is_some_and(|index| index < creature.input && input_uuid(index) == uuid)
+}
+
+/// Wire uuid of input `index` — the label `compile_creature` resolves.
+fn input_uuid(index: usize) -> String {
+    format!("input-{index}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::corpus::{corpus_info, write_bin_file};
-    use crate::fixtures::hidden_identity_creature;
+    use crate::fixtures::{hidden_identity_creature, neuron, synapse};
     use crate::incumbent::Incumbent;
+    use neat_core::SquashType;
     use neat_core::training_data::TrainingDataConfig;
 
     fn close(a: f64, b: f64) -> bool {
@@ -856,8 +1033,12 @@ mod tests {
         assert!(stats.record_count > 0);
     }
 
+    /// Issue #134 changed what this creature costs: with no hidden neuron there
+    /// was nothing to measure and nothing was read, but its `input -> output`
+    /// edges are prune candidates and a cut folds the source's mean — so the
+    /// inputs are measured even though the hidden population is empty.
     #[test]
-    fn a_creature_without_hidden_neurons_is_not_scanned_at_all() {
+    fn a_creature_without_hidden_neurons_is_still_scanned_for_its_inputs() {
         let (tmp, _inc, corpus) = setup(&[1.0, 2.0, 3.0], 0.0, 1.0);
         let flat = crate::fixtures::identity_creature(1, 1);
         let stats = compute_activation_stats(
@@ -869,9 +1050,15 @@ mod tests {
             &SampleSpec::with_max_records(2),
         )
         .unwrap();
-        assert!(stats.neurons.is_empty());
-        assert_eq!(stats.record_count, 0, "nothing to measure, nothing to read");
+        assert!(stats.neurons.is_empty(), "no hidden neuron was measured");
+        assert_eq!(stats.record_count, 2, "the inputs are worth a read");
         assert_eq!(stats.corpus_record_count, 3);
+        let measured = stats.input_by_uuid("input-0").expect("input-0 is measured");
+        assert_eq!(measured.count, 2);
+        assert!(close(
+            source_value(&flat, &stats, "input-0").unwrap().value,
+            measured.mean
+        ));
     }
 
     #[test]
@@ -915,6 +1102,43 @@ mod tests {
             stats.record_count > 1_000,
             "noisy neuron needs more records"
         );
+    }
+
+    /// Issue #134: an input mean is folded like a hidden one, so it is held to
+    /// the same convergence target — a settled hidden neuron does not end a
+    /// scan whose inputs are still moving.
+    #[test]
+    fn a_moving_input_holds_the_scan_open_past_a_settled_hidden_neuron() {
+        // weight 0 makes h1 the constant `bias` whatever the record holds, so
+        // the hidden population converges at the adaptive floor while input-0
+        // sawtooths across a wide range.
+        let values: Vec<f32> = (0..20_000).map(|i| (i % 101) as f32).collect();
+        let (tmp, inc, corpus) = setup(&values, 0.25, 0.0);
+        let spec = SampleSpec {
+            max_records: 10_000,
+            block_records: 500,
+            min_records: 1_000,
+            target_rel_se: 0.01,
+            probes: 0,
+        };
+        let stats = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            500,
+            &spec,
+        )
+        .unwrap();
+        let hidden = stats.by_uuid("h1").expect("h1");
+        assert!(close(hidden.mean, 0.25), "h1 is constant: {}", hidden.mean);
+        assert_eq!(hidden.variance, 0.0, "h1 converged at the floor");
+        assert!(
+            stats.record_count > 1_000,
+            "a moving input needs more than the {} records the hidden neuron did",
+            stats.record_count
+        );
+        assert_eq!(stats.inputs[0].count, stats.record_count);
     }
 
     /// Issue #109: probe records are retained only when asked for, land at the
@@ -1040,8 +1264,9 @@ mod tests {
         assert_eq!(control.record_count, 1_000);
     }
 
+    /// Issue #134: one accumulator per measured neuron — hidden **and** input.
     #[test]
-    fn memory_is_bounded_by_hidden_neuron_count() {
+    fn memory_is_bounded_by_hidden_plus_input_neuron_count() {
         let (tmp, inc, corpus) =
             setup(&(0..10_000).map(|i| i as f32).collect::<Vec<_>>(), 0.0, 1.0);
         let stats = compute_activation_stats(
@@ -1054,7 +1279,198 @@ mod tests {
         )
         .unwrap();
         assert_eq!(stats.neurons.len(), 1);
+        assert_eq!(stats.inputs.len(), 1, "one accumulator per input as well");
         assert_eq!(stats.record_count, 10_000);
         assert_eq!(stats.neurons[0].count, 10_000);
+        assert_eq!(stats.inputs[0].count, 10_000);
+    }
+
+    /// Two inputs, a constant, two hidden neurons and an output — every kind of
+    /// source a synapse can have, in one creature (Issue #134).
+    fn mixed_source_creature() -> CreatureExport {
+        crate::fixtures::creature(
+            2,
+            1,
+            vec![
+                // Rule 15: a constant emits its bias, so it carries no squash.
+                neuron("constant", "c1", 0.75, None),
+                neuron("hidden", "h1", 0.5, Some("IDENTITY")),
+                neuron("hidden", "h2", -0.25, Some("TANH")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h1", 1.0),
+                synapse("input-1", "h2", 2.0),
+                synapse("c1", "h2", 0.5),
+                synapse("h1", "output-0", 1.0),
+                synapse("h2", "output-0", 1.0),
+            ],
+        )
+    }
+
+    /// Corpus of two-input records, and the stats a full scan of it produces.
+    fn scan_mixed(records: &[([f32; 2], f32)]) -> (tempfile::TempDir, ActivationStats) {
+        let tmp = tempfile::tempdir().unwrap();
+        let recs: Vec<(Vec<f32>, Vec<f32>)> = records
+            .iter()
+            .map(|(inputs, output)| (inputs.to_vec(), vec![*output]))
+            .collect();
+        write_bin_file(&tmp.path().join("0.bin"), &recs).unwrap();
+        let corpus = corpus_info(tmp.path(), &TrainingDataConfig::new(2, 1)).unwrap();
+        let stats = compute_activation_stats(
+            &mixed_source_creature(),
+            "mixed",
+            tmp.path(),
+            &corpus,
+            2,
+            &SampleSpec::full(),
+        )
+        .unwrap();
+        (tmp, stats)
+    }
+
+    /// Issue #134: a constant source needs no corpus at all — its activation is
+    /// `squash(bias)`, and rule 15 leaves a valid constant on `IDENTITY`.
+    #[test]
+    fn a_constant_source_resolves_exactly_without_any_corpus_scan() {
+        let creature = mixed_source_creature();
+        // Nothing was ever measured: `empty()` misses every lookup.
+        let unmeasured = ActivationStats::empty();
+        let resolved =
+            source_value(&creature, &unmeasured, "c1").expect("c1 is exactly computable");
+        assert_eq!(resolved.kind, SourceValueKind::Constant);
+        assert_eq!(resolved.kind.label(), "constant");
+        assert!(
+            close(
+                resolved.value,
+                f64::from(apply_squash(SquashType::Identity, 0.75))
+            ),
+            "value {} is not squash(bias)",
+            resolved.value
+        );
+
+        // The bias decides the value: a different constant resolves differently.
+        let mut other = creature.clone();
+        other.neurons[0].bias = -1.5;
+        let resolved = source_value(&other, &unmeasured, "c1").expect("c1 is exactly computable");
+        assert!(
+            close(
+                resolved.value,
+                f64::from(apply_squash(SquashType::Identity, -1.5))
+            ),
+            "value {} is not squash(bias)",
+            resolved.value
+        );
+    }
+
+    /// Issue #134: every source the razor cannot value fails closed.
+    #[test]
+    fn an_aggregate_constant_an_output_and_an_unknown_uuid_resolve_to_none() {
+        let creature = mixed_source_creature();
+        let unmeasured = ActivationStats::empty();
+
+        // An aggregate is a function of its inputs, not of its bias.
+        let mut aggregate = creature.clone();
+        aggregate.neurons[0].squash = Some("MINIMUM".into());
+        assert!(source_value(&aggregate, &unmeasured, "c1").is_none());
+
+        // A squash name nothing can parse is not guessed at either.
+        let mut unknown_squash = creature.clone();
+        unknown_squash.neurons[0].squash = Some("NOT-A-SQUASH".into());
+        assert!(source_value(&unknown_squash, &unmeasured, "c1").is_none());
+
+        assert!(source_value(&creature, &unmeasured, "output-0").is_none());
+        assert!(source_value(&creature, &unmeasured, "nope").is_none());
+        // A wire past the declared width is not an input of this creature.
+        assert!(source_value(&creature, &unmeasured, "input-2").is_none());
+        assert!(source_value(&creature, &unmeasured, "input-007").is_none());
+        // An unmeasured hidden neuron has no mean to fold.
+        assert!(source_value(&creature, &unmeasured, "h1").is_none());
+    }
+
+    /// Issue #134: the scan records an input's mean, and the resolver folds it.
+    #[test]
+    fn input_means_are_recorded_by_the_scan_and_match_a_hand_calculation() {
+        // input-0 mean: (1 + 2 + 3 + 4) / 4 = 2.5
+        // input-1 mean: (-1 + 0 + 1 + 4) / 4 = 1.0
+        let (_tmp, stats) = scan_mixed(&[
+            ([1.0, -1.0], 0.0),
+            ([2.0, 0.0], 0.0),
+            ([3.0, 1.0], 0.0),
+            ([4.0, 4.0], 0.0),
+        ]);
+        assert_eq!(stats.inputs.len(), 2);
+        let first = stats.input_by_uuid("input-0").expect("input-0 is measured");
+        assert_eq!(first.count, 4);
+        assert!(close(first.mean, 2.5), "mean {}", first.mean);
+        assert!(close(first.min, 1.0) && close(first.max, 4.0));
+        let second = stats.input_by_uuid("input-1").expect("input-1 is measured");
+        assert!(close(second.mean, 1.0), "mean {}", second.mean);
+        assert!(close(second.mean_abs, 1.5), "mean_abs {}", second.mean_abs);
+
+        let creature = mixed_source_creature();
+        let resolved = source_value(&creature, &stats, "input-0").expect("a measured input folds");
+        assert_eq!(resolved.kind, SourceValueKind::Mean);
+        assert_eq!(resolved.kind.label(), "mean");
+        assert!(close(resolved.value, 2.5));
+        // The wires are not interchangeable: each resolves to its own mean.
+        assert!(close(
+            source_value(&creature, &stats, "input-1").unwrap().value,
+            1.0
+        ));
+
+        // A hidden source still resolves to its sampled mean:
+        // h1 = IDENTITY(0.5 + input-0), so its mean is 0.5 + 2.5.
+        let hidden = source_value(&creature, &stats, "h1").expect("h1 is measured");
+        assert_eq!(hidden.kind, SourceValueKind::Mean);
+        assert!(close(hidden.value, 3.0), "value {}", hidden.value);
+        assert!(close(stats.by_uuid("h1").unwrap().mean, 3.0));
+    }
+
+    /// Issue #134 regression: the hidden-neuron population ordering, feature
+    /// vectors and merge discovery read must not gain an input or a constant.
+    #[test]
+    fn by_uuid_still_answers_for_hidden_neurons_alone() {
+        let (_tmp, stats) = scan_mixed(&[([1.0, -1.0], 0.0), ([3.0, 1.0], 0.0)]);
+        let measured: Vec<&str> = stats.neurons.iter().map(|n| n.uuid.as_str()).collect();
+        assert_eq!(
+            measured,
+            vec!["h1", "h2"],
+            "hidden neurons, in listed order"
+        );
+        for uuid in ["h1", "h2"] {
+            assert!(stats.by_uuid(uuid).is_some(), "{uuid} is a hidden neuron");
+        }
+        for uuid in ["input-0", "input-1", "c1", "output-0", "nope"] {
+            assert!(
+                stats.by_uuid(uuid).is_none(),
+                "{uuid} must not join the hidden population"
+            );
+        }
+        // The other direction holds too: hidden neurons are not inputs.
+        assert!(stats.input_by_uuid("h1").is_none());
+
+        // Signatures select merge candidates, so an input must not carry one.
+        let (_tmp, probed) = {
+            let tmp = tempfile::tempdir().unwrap();
+            let recs: Vec<(Vec<f32>, Vec<f32>)> = (0..64)
+                .map(|i| (vec![i as f32, -(i as f32)], vec![0.0f32]))
+                .collect();
+            write_bin_file(&tmp.path().join("0.bin"), &recs).unwrap();
+            let corpus = corpus_info(tmp.path(), &TrainingDataConfig::new(2, 1)).unwrap();
+            let stats = compute_activation_stats(
+                &mixed_source_creature(),
+                "mixed",
+                tmp.path(),
+                &corpus,
+                8,
+                &SampleSpec::full().with_probes(8),
+            )
+            .unwrap();
+            (tmp, stats)
+        };
+        assert_eq!(probed.probes.len(), 2, "one probe vector per hidden neuron");
+        assert!(probed.probes_of("h1").is_some());
+        assert!(probed.probes_of("input-0").is_none());
     }
 }

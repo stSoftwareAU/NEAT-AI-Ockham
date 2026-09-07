@@ -39,6 +39,16 @@ pub enum Event {
         /// with the priority off, no cache, or nothing left to prioritise.
         #[serde(default)]
         old_corpus_first: usize,
+        /// Synapse visits the run dropped before walking the sweep (Issue #135).
+        ///
+        /// Beside the two above for the same reason: the seeded pool holds a
+        /// visit per ordinary synapse and `permutation_identity` covers all of
+        /// them, so a run that walked only the neuron half is reconstructable
+        /// only if the journal says how many it put aside. `0` on every run
+        /// since #138, which walks the edge half of the pool like any other
+        /// visit; a non-zero figure names a journal written before it.
+        #[serde(default)]
+        synapse_visits_deferred: usize,
         /// Hidden neurons on the opening incumbent.
         hidden: usize,
         /// Synapses on the opening incumbent.
@@ -155,10 +165,19 @@ pub enum Event {
         /// Hidden neurons carrying tags, screened like any other (#87).
         #[serde(default)]
         tagged: usize,
-        /// Hidden neurons Ockham may try — all of them, tagged included (#74).
+        /// Visits Ockham may try — hidden neurons plus synapses (#74, #137).
         checkable: usize,
-        /// Hidden UUIDs with at least one screen record.
+        /// Visit keys with at least one screen record.
         checked: usize,
+        /// Synapse visits on the final incumbent, one per ordered pair (#137).
+        ///
+        /// `#[serde(default)]` so a journal written before #137 still reads, as
+        /// no synapse visits — which is the population those runs counted.
+        #[serde(default)]
+        synapses: usize,
+        /// Synapse visits with at least one screen record (Issue #137).
+        #[serde(default)]
+        synapses_checked: usize,
         /// Checked UUIDs the razor could never propose a cut for (#93).
         #[serde(default)]
         blocked: usize,
