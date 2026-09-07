@@ -72,6 +72,12 @@ The current Rust implementation includes:
   coverage block GRQ pastes into the sampler commit description, plus the same
   figures machine-readably, extended with what the run screened, confirmed,
   applied and carried forward;
+- repeated complete sweeps counted and reported (#140): `100% ever visited` is
+  not `finished`, so each exhausted-sweep restart files a marker in
+  `passes/<host>.jsonl` and the artefacts carry `passes:` / `visits:` lines and
+  a `passes` object saying how many times the razor has been round the creature
+  and which pass is in progress — beside the unique epoch percentage, never
+  folded into it;
 - every hidden neuron is a prune candidate: neuron tags are informational
   metadata that record where a neuron came from, and they confer no exemption
   from the razor (#63, #87);
@@ -865,7 +871,10 @@ stalest neurons. Four rules hold it up.
   every hidden neuron builds a fresh permutation, re-applies unchecked-first
   selection and carries on; the restart is logged and journalled as a
   `sweepRestart` record, because a creature screened end to end is fleet news,
-  not noise. Before this an exhausted sweep ended the run then and there with
+  not noise. Since #140 it also files a pass marker in `passes/<host>.jsonl`, so
+  the count of complete sweeps outlives the run that made them — see
+  [Unique coverage is not passes](#unique-coverage-is-not-passes). Before this
+  an exhausted sweep ended the run then and there with
   the stop reason `exhausted`: whatever budget was left went unused, and a
   creature the fleet had worked all the way through simply stopped being
   screened instead of recycling its stalest neurons.
@@ -991,7 +1000,9 @@ The denominator is every hidden neuron of the **current** incumbent:
 With `--learnings-dir` set, the run journals one `coverage` record at the end,
 so `report` shows `hidden`, `tagged`, `checkable`, `checked`, `unchecked`,
 `cut`, `coveragePercent` and — since #102 — the `corpusIdentity` those figures
-were measured against with `sweepComplete` beside it, across runs. `checkable` keeps its key so `coverage.json`
+were measured against with `sweepComplete` beside it, and — since #140 — the
+`passes` object holding the same pass counters `coverage.json` carries, so the
+two surfaces cannot disagree about which pass a run was on, across runs. `checkable` keeps its key so `coverage.json`
 stays readable by anything already parsing it; since #74 it means "hidden
 neurons Ockham may try", which is all of them. Without a learnings dir there is
 no coverage state, and nothing is journalled — absent rather than a misleading
@@ -1010,6 +1021,76 @@ flowchart LR
     B -->|yes| K["also counted as blocked —<br/>reported beside the percentage,<br/>split by reason code"]
     B -->|no| Q["the scorer screened it"]
     D --> P["percent = checked / checkable"]
+```
+
+### Unique coverage is not passes
+
+`100% ever visited` is not `finished`. The two figures answer different
+questions and are reported side by side, never merged (#140):
+
+| Figure | Question it answers | Where |
+|---|---|---|
+| `sweep X/Y checked (Z% of epoch)` | How many **unique** hidden neurons has this epoch visited at least once? | `checked` / `checkable` |
+| `progress: N newly checked this run` | How many uuids did this run visit for the **first** time? | `newlyScreened` |
+| `passes: N complete this epoch · M this run · pass K in progress` | How many times has the razor been all the way **round** the creature? | `passes` |
+| `visits: N hidden neurons visited this run · K revisited` | How many did this run's sweep reach, and how many of those had the fleet already checked? | `passes.visitedRun` / `revisitedRun` |
+
+A **pass** is one complete sweep: the run visited every hidden neuron on the
+incumbent, the sweep was exhausted, and it was rebuilt to re-screen the stalest
+neurons first (#77). That rebuild is the only event that means "round the
+creature once", so each one files a marker in `passes/<host>.jsonl` under the
+learnings root — a sibling of `screens/`, for the same reason that is a sibling
+of the verdict directories: a corrupt pass log must not break screen or verdict
+loading. `sweepsCompletedEpoch` counts the markers filed under the corpus in
+hand, so it is the **fleet's** count and not one host's, and
+`sweepRestartsRun` is what this invocation contributed.
+
+A revisit is **not** repackaged as "newly checked". `checked` keeps exactly the
+meaning every existing consumer relies on — unique current hidden UUIDs visited
+at least once this epoch — and re-screening shows up in the pass and visit
+counters instead.
+
+What resets what, stated rather than left to be discovered:
+
+- **an accepted cut or any other topology change resets no counter.** The
+  counters move only when a sweep is exhausted, and the epoch total is read back
+  from persisted markers rather than derived from the creature in hand. What an
+  accept does do is rebuild the sweep over the changed creature (#96), so the
+  *part-finished* pass it interrupts is not carried over — the next marker is
+  filed when the rebuilt sweep is itself exhausted. Nothing already counted is
+  lost;
+- **a corpus change opens a new epoch at pass 1**, exactly as it opens coverage
+  at `0 / hidden` (#100). The earlier epochs' markers stay on disk and stay
+  readable — history is scoped, never cleared.
+
+**The limitation, stated plainly:** for an epoch that was already running when
+the markers shipped, `sweepsCompletedEpoch` is a **floor**. A pass completed
+before markers were filed left nothing behind to count, and it is not guessed
+at. It cannot be reconstructed from the screen records either: a visit the razor
+can propose nothing for files one record per epoch by design (#93), so per-uuid
+record counts do not rise once per pass. The marker is persisted going forward
+instead, which makes every epoch opened after it exact.
+
+**Current-pass coverage is deliberately not reported**, for the same reason. A
+pass usually spans many runs and many hosts, and only a first-ever visit and a
+scored candidate leave a record — a revisit of a blocked neuron files nothing —
+so a `visited this pass / hidden` numerator could not be reconstructed across
+runs without over-reporting. `visits:` says what **this run** reached, which is
+measured rather than inferred; the fleet-wide question is answered by the pass
+number itself.
+
+```mermaid
+flowchart TD
+    B["batch: visit hidden neurons"] --> V["visits: every uuid reached<br/>(revisits included)"]
+    B --> F{"first-ever record<br/>for this uuid?"}
+    F -->|yes| P["progress: newly checked<br/>→ raises the unique percentage"]
+    F -->|no| R["revisit — work, but not<br/>new unique coverage"]
+    B --> E{"sweep exhausted?"}
+    E -->|no| B
+    E -->|yes| M["file pass marker<br/>passes/host.jsonl"]
+    M --> C["sweepsCompletedEpoch += 1<br/>currentPass += 1"]
+    M --> S["restart sweep, stalest first"]
+    S --> B
 ```
 
 ### The GRQ commit-description contract
@@ -1038,6 +1119,8 @@ blocked:   412 checked with no cut proposed
 reasons:   missing-activation 380 (92.2%) · validation-failed 32 (7.8%)
 tagged:    42 carry tags, screened like any other
 progress:  100 newly checked this run
+passes:    7 complete this epoch · 1 this run · pass 8 in progress
+visits:    120 hidden neurons visited this run · 118 revisited
 history:   4802 of 5013 ever checked across 3 corpus epochs
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
 bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped
@@ -1070,6 +1153,14 @@ dropped:   12 entries over budget (est 18s/creature)
   epoch. The identity is the first eight characters of the corpus fingerprint —
   `coverage.json` keeps it in full. Every run that writes these files names its
   corpus, so the line is absent only from an artefact written before #100;
+- the `passes:` line is **never** omitted either (#140): it says how many
+  complete sweeps this epoch has had, how many of them this run made, and which
+  pass is in progress. Once the percentage above it reaches 100% this is the
+  only line that still moves, which is what stops a run re-screening a finished
+  creature reading as one stuck at the tail of its first pass. The `visits:`
+  line beside it counts the hidden neurons the run's sweep actually reached and
+  how many of those were revisits — omitted when the run reached nothing. See
+  [Unique coverage is not passes](#unique-coverage-is-not-passes);
 - the `history:` line is the cumulative counterpart (#102): how many of the
   current hidden neurons the fleet has ever checked, under how many corpus
   epochs. It is reported beside the percentage and never inside it — mixing a
@@ -1081,7 +1172,9 @@ dropped:   12 entries over budget (est 18s/creature)
   alone, exactly as it did before they existed;
 - `coverage.json` carries the same per-run figure under `newlyScreened`, the
   epoch under `corpusIdentity` (in full), the cumulative figures under an
-  additive `history` key and the winner figures under an additive
+  additive `history` key, the pass counters under an additive `passes` key
+  (`sweepRestartsRun`, `sweepsCompletedEpoch`, `currentPass`, `visitedRun`,
+  `revisitedRun`) and the winner figures under an additive
   `winners` key, and
   still deserialises straight into `Coverage` for a consumer that ignores them,
   so nothing downstream needs to parse the prose.
