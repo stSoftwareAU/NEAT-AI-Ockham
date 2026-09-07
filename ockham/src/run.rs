@@ -2328,6 +2328,16 @@ fn fresh_sweep(
     prior: &PriorHint<'_>,
 ) -> Sweep {
     let mut sweep = Sweep::with_ordering(creature, activation, seed, ordering);
+    // The seeded pool holds every synapse visit (#135), but the run does not
+    // walk them yet: a visit the run cannot record, count or report is a visit
+    // that would be re-made every batch forever. Screen-record and
+    // learnings-cache parity is Issue #136, epoch coverage is Issue #137 and
+    // accepting a pure synapse win is Issue #138 — this one line goes when
+    // those land. Dropped here, in the one place a sweep is built, so the
+    // boundary is visible rather than scattered through the loop.
+    sweep
+        .order
+        .retain(|visit| crate::sweep::parse_synapse_key(visit).is_none());
     if unchecked_first {
         prefer_unchecked(&mut sweep, screens, creature);
     }
@@ -2512,18 +2522,8 @@ fn file_batch_screens(
     journal_path: &std::path::Path,
     batch: u64,
 ) -> Result<(), String> {
-    // Synapse visits (#135) enter the sweep pool but not the screen record yet:
-    // their coverage and learnings parity is Issue #136's, and filing them here
-    // would put edge keys in a store whose numerator counts hidden neurons.
-    // Dropped loudly rather than silently — the count logged below is what was
-    // filed, and the journal records the same figure.
-    let coverage: Vec<ScreenTry<'_>> = coverage
-        .iter()
-        .filter(|t| crate::sweep::parse_synapse_key(t.uuid).is_none())
-        .copied()
-        .collect();
     let before = screens.len();
-    let n = file_screens(store, &coverage, screens);
+    let n = file_screens(store, coverage, screens);
     for filed in &screens[before..] {
         progress.observe(&filed.uuid);
     }
@@ -5525,6 +5525,56 @@ mod tests {
         assert_eq!(
             report.coverage_percent, None,
             "no screen store means no coverage state, not 0%"
+        );
+    }
+
+    /// Issue #135 puts every synapse in the seeded pool; the run keeps walking
+    /// neuron visits only until the parity issues land. Pinned rather than
+    /// assumed: this assertion is what fails when #136/#137/#138 remove the
+    /// gate in `fresh_sweep` without the coverage and record work beside it.
+    #[test]
+    fn the_run_walks_neuron_visits_until_synapse_parity_lands() {
+        let creature = crate::fixtures::creature(
+            1,
+            1,
+            vec![
+                crate::fixtures::neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
+                crate::fixtures::neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                crate::fixtures::synapse("input-0", "h_a", 1.0),
+                crate::fixtures::synapse("h_a", "output-0", 1.0),
+            ],
+        );
+        let stats = crate::stats::ActivationStats::empty();
+        let pooled = Sweep::with_ordering(
+            &creature,
+            &stats,
+            5,
+            crate::ordering::OrderingConfig::default(),
+        );
+        assert!(
+            pooled
+                .order
+                .iter()
+                .any(|v| crate::sweep::parse_synapse_key(v).is_some()),
+            "the sweep pool holds synapse visits: {:?}",
+            pooled.order
+        );
+
+        let walked = fresh_sweep(
+            &creature,
+            &stats,
+            5,
+            crate::ordering::OrderingConfig::default(),
+            false,
+            &[],
+            &PriorHint::none(),
+        );
+        assert_eq!(
+            walked.order,
+            vec!["h_a".to_string()],
+            "the run walks neuron visits only until #136/#137/#138 land"
         );
     }
 

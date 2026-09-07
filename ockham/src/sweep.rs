@@ -477,8 +477,7 @@ fn interleave_visits(neurons: Vec<String>, synapses: Vec<String>) -> Vec<String>
     let (mut at_neuron, mut at_synapse) = (0usize, 0usize);
     while out.len() < total {
         let take_synapse = at_synapse < synapses.len()
-            && (at_neuron >= neurons.len()
-                || (at_synapse as f64) < quota * (out.len() + 1) as f64);
+            && (at_neuron >= neurons.len() || (at_synapse as f64) < quota * (out.len() + 1) as f64);
         if take_synapse {
             out.push(synapses[at_synapse].clone());
             at_synapse += 1;
@@ -1013,7 +1012,9 @@ mod tests {
     /// about the neuron visits themselves changed, which is what these
     /// unchanged assertions go on demonstrating.
     fn neuron_visits_only(sweep: &mut Sweep) {
-        sweep.order.retain(|visit| parse_synapse_key(visit).is_none());
+        sweep
+            .order
+            .retain(|visit| parse_synapse_key(visit).is_none());
     }
 
     /// Every distinct synapse pair on `creature`, as visit keys.
@@ -1847,7 +1848,9 @@ mod tests {
         let ident = sweep.permutation_identity.clone();
 
         let mut fewer = creature.clone();
-        fewer.synapses.retain(|s| s.to_uuid != "output-0" || s.from_uuid != "h_b");
+        fewer
+            .synapses
+            .retain(|s| s.to_uuid != "output-0" || s.from_uuid != "h_b");
         let dropped = Sweep::with_ordering(&fewer, &stats, 6, OrderingConfig::default());
         assert_ne!(
             ident, dropped.permutation_identity,
@@ -1864,8 +1867,13 @@ mod tests {
         let stats = stats_with_inputs(&creature);
         let mut sweep = Sweep::new(&creature, 4);
         let visits = sweep.order.len();
-        let (batch, skips) =
-            sweep.fill_batch_avoiding(&creature, &stats, MergeIndex::empty(), visits, &HashSet::new());
+        let (batch, skips) = sweep.fill_batch_avoiding(
+            &creature,
+            &stats,
+            MergeIndex::empty(),
+            visits,
+            &HashSet::new(),
+        );
         assert_eq!(batch.len() + skips.len(), visits, "every visit advances");
         assert!(
             batch.iter().any(|c| c.kind == CandidateKind::Synapse),
@@ -1890,8 +1898,13 @@ mod tests {
         let stats = stats_with_inputs(&creature);
         let mut sweep = Sweep::new(&creature, 4);
         let visits = sweep.order.len();
-        let (batch, _) =
-            sweep.fill_batch_avoiding(&creature, &stats, MergeIndex::empty(), visits, &HashSet::new());
+        let (batch, _) = sweep.fill_batch_avoiding(
+            &creature,
+            &stats,
+            MergeIndex::empty(),
+            visits,
+            &HashSet::new(),
+        );
         let mut saw_synapse = false;
         for c in &batch {
             let json: serde_json::Value = serde_json::to_value(c).unwrap();
@@ -1935,7 +1948,11 @@ mod tests {
             &synapse_key("input-0", "h_a"),
         )
         .unwrap_err();
-        assert_eq!(blocked.reason, BlockedReason::MissingActivation, "{blocked}");
+        assert_eq!(
+            blocked.reason,
+            BlockedReason::MissingActivation,
+            "{blocked}"
+        );
 
         let typed = typed_edge_creature();
         let typed_stats = stats_with_inputs(&typed);
@@ -2000,7 +2017,7 @@ mod tests {
         assert_eq!(sweep.order[sweep.next], key);
 
         let before = sweep.order.clone();
-        sweep.prefer_unchecked(&HashSet::from([key.clone()]), &[key.clone()]);
+        sweep.prefer_unchecked(&HashSet::from([key.clone()]), std::slice::from_ref(&key));
         assert_eq!(
             sweep.order.last(),
             Some(&key),
