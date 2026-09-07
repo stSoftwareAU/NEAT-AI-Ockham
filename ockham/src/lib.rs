@@ -107,7 +107,7 @@ pub use neighbourhood::{
     MIN_NEIGHBOURHOOD_SIZE, Neighbourhood, NeighbourhoodConfig, NeighbourhoodKind,
     propose_neighbourhoods,
 };
-pub use ordering::{Ordering, OrderingConfig, hidden_order};
+pub use ordering::{Ordering, OrderingConfig, hidden_order, synapse_order};
 pub use priority::{CompositeWeights, PriorityContext, expected_pruning_value};
 pub use promote::{FullOutcome, evaluate_full};
 pub use report::{Report, summarise};
@@ -127,8 +127,9 @@ pub use stats::{
 };
 pub use substitute::{ConstantSubstitution, SubstitutionSkip, substitute_constant};
 pub use sweep::{
-    ScreenConfig, ScreenOutcome, ScreenRejection, ScreenedLoser, Sweep, SweepCandidate, draw_seed,
-    screen_batch,
+    CandidateKind, SYNAPSE_KEY_SEPARATOR, SYNAPSE_KEY_TAG, ScreenConfig, ScreenOutcome,
+    ScreenRejection, ScreenedLoser, Sweep, SweepCandidate, draw_seed, parse_synapse_key,
+    screen_batch, synapse_key,
 };
 pub use tags::{CreatureMeta, OckhamProgress, ockham_progress_message};
 pub use telemetry::{CANDIDATE_LOG_FORMAT_VERSION, CandidateOutcome, CandidateRecord, RunStamp};

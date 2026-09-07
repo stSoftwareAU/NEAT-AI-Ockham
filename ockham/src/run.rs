@@ -1233,6 +1233,9 @@ fn ockham_loop(
                             permutation_index: 0,
                             kind: proposed.kind,
                             merged_with: proposed.merged_with,
+                            from_uuid: proposed.from_uuid,
+                            to_uuid: proposed.to_uuid,
+                            weight: proposed.weight,
                             stem: "r000".into(),
                             creature: proposed.creature,
                         },
@@ -1301,6 +1304,9 @@ fn ockham_loop(
                                         permutation_index: 0,
                                         kind: proposed.kind,
                                         merged_with: proposed.merged_with,
+                                        from_uuid: proposed.from_uuid,
+                                        to_uuid: proposed.to_uuid,
+                                        weight: proposed.weight,
                                         stem: "r000".into(),
                                         creature: proposed.creature,
                                     },
@@ -2506,8 +2512,18 @@ fn file_batch_screens(
     journal_path: &std::path::Path,
     batch: u64,
 ) -> Result<(), String> {
+    // Synapse visits (#135) enter the sweep pool but not the screen record yet:
+    // their coverage and learnings parity is Issue #136's, and filing them here
+    // would put edge keys in a store whose numerator counts hidden neurons.
+    // Dropped loudly rather than silently — the count logged below is what was
+    // filed, and the journal records the same figure.
+    let coverage: Vec<ScreenTry<'_>> = coverage
+        .iter()
+        .filter(|t| crate::sweep::parse_synapse_key(t.uuid).is_none())
+        .copied()
+        .collect();
     let before = screens.len();
-    let n = file_screens(store, coverage, screens);
+    let n = file_screens(store, &coverage, screens);
     for filed in &screens[before..] {
         progress.observe(&filed.uuid);
     }

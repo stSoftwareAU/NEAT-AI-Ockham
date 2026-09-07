@@ -301,6 +301,35 @@ pub fn random_order(creature: &CreatureExport, seed: u64) -> Vec<String> {
     order
 }
 
+/// Distinct synapse **visit keys**, shuffled with `seed` (Issue #135).
+///
+/// Every ordered pair the incumbent carries an edge on, once — typed pairs
+/// included, because a typed edge is visited and fails closed rather than being
+/// filtered out of the pool silently, and a blocked visit is still coverage.
+/// Nothing here weighs an edge: no weight, magnitude or contribution threshold
+/// decides membership, because only the full-corpus scorer accepts.
+///
+/// Ranked by no strategy — the orderings rank hidden neurons on feature vectors
+/// and keep doing exactly that (#107). A synapse's place in the walk comes from
+/// this shuffle and the deterministic interleave the sweep applies to it, so the
+/// same seed reproduces the same mixed order.
+pub fn synapse_order(creature: &CreatureExport, seed: u64) -> Vec<String> {
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+    let mut order: Vec<String> = Vec::new();
+    for syn in &creature.synapses {
+        if seen.insert((syn.from_uuid.as_str(), syn.to_uuid.as_str())) {
+            order.push(crate::sweep::synapse_key(&syn.from_uuid, &syn.to_uuid));
+        }
+    }
+    // A stream of its own, so adding an edge cannot reshuffle the neuron order
+    // the strategies produced for the same seed.
+    SplitMix64(seed ^ SYNAPSE_STREAM).shuffle(&mut order);
+    order
+}
+
+/// Stream separator between the neuron shuffle and the synapse shuffle (#135).
+const SYNAPSE_STREAM: u64 = 0x5359_4E41_5053_4553;
+
 /// Per-creature ranking signals, built once for the strategies that read them.
 ///
 /// Topology does not change while an order is built, so each signal is walked

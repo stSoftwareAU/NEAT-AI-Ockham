@@ -26,15 +26,15 @@ use std::time::Instant;
 use neat_core::{CreatureExport, SquashType, creature_to_json, parse_squash_name};
 use serde::Serialize;
 
-use crate::ablation::{GroupMember, ablate_group, ablate_mean};
+use crate::ablation::{GroupMember, ablate_group, ablate_mean, ablate_synapse};
 use crate::blocked::BlockedReason;
 use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
 use crate::incumbent::sha256_hex;
 use crate::merge::{MergeSkip, merge_correlated};
-use crate::ordering::{Ordering, OrderingConfig, hidden_order};
+use crate::ordering::{Ordering, OrderingConfig, hidden_order, synapse_order};
 use crate::scorer::{DirectoryScorer, ScorerMode};
 use crate::signature::MergeIndex;
-use crate::stats::ActivationStats;
+use crate::stats::{ActivationStats, source_value};
 use crate::substitute::substitute_constant;
 
 /// Draw a seed from the clock and process id when the user omitted `--seed`.
@@ -44,6 +44,42 @@ pub fn draw_seed() -> u64 {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
     nanos ^ u64::from(std::process::id()).wrapping_shl(32) ^ 0xA5A5_A5A5_A5A5_A5A5
+}
+
+/// Separator inside a synapse visit key — ASCII UNIT SEPARATOR, `U+001F`.
+///
+/// A control character precisely because a neuron UUID is a label: NEAT-AI-core
+/// creatures name neurons `input-N`, `output-N`, `h1` or a generated id, and
+/// none of those forms can carry an unprintable byte. So a synapse visit key
+/// can never be mistaken for — or collide with — a neuron UUID in any keyed
+/// store the sweep, the screen coverage or the verdict cache shares (#135).
+pub const SYNAPSE_KEY_SEPARATOR: char = '\u{1F}';
+
+/// Leading segment that marks a visit key as an edge rather than a neuron.
+pub const SYNAPSE_KEY_TAG: &str = "synapse";
+
+/// The canonical visit key for the edge `from_uuid`→`to_uuid` (Issue #135).
+///
+/// One key per ordered pair, because NEAT-AI-core rule 26 lets a pair repeat
+/// only with distinct roles and [`crate::ablation::ablate_synapse`] judges the
+/// whole pair at once. Round-trips through [`parse_synapse_key`].
+pub fn synapse_key(from_uuid: &str, to_uuid: &str) -> String {
+    format!("{SYNAPSE_KEY_TAG}{SYNAPSE_KEY_SEPARATOR}{from_uuid}{SYNAPSE_KEY_SEPARATOR}{to_uuid}")
+}
+
+/// The endpoints of a synapse visit key, or `None` when `key` is not one.
+///
+/// Fails closed on anything that is not exactly three separated segments headed
+/// by [`SYNAPSE_KEY_TAG`] with two non-empty endpoints, so a neuron UUID — or a
+/// truncated key — never parses as an edge.
+pub fn parse_synapse_key(key: &str) -> Option<(&str, &str)> {
+    let rest = key.strip_prefix(SYNAPSE_KEY_TAG)?;
+    let rest = rest.strip_prefix(SYNAPSE_KEY_SEPARATOR)?;
+    let (from_uuid, to_uuid) = rest.split_once(SYNAPSE_KEY_SEPARATOR)?;
+    if from_uuid.is_empty() || to_uuid.is_empty() || to_uuid.contains(SYNAPSE_KEY_SEPARATOR) {
+        return None;
+    }
+    Some((from_uuid, to_uuid))
 }
 
 /// Kind of pruning proposal.
@@ -70,6 +106,12 @@ pub enum CandidateKind {
     /// Two hidden neurons behaved almost identically, so one of them goes and
     /// the other absorbs its downstream contribution.
     Merge,
+    /// Single-synapse ablation with bias compensation (#135).
+    ///
+    /// The finest unit the razor cuts: one **edge** goes and the target's bias
+    /// absorbs what the source contributed on average, so a candidate can leave
+    /// every neuron in place.
+    Synapse,
 }
 
 /// One valid pruning candidate produced by the sweep.
@@ -96,6 +138,20 @@ pub struct SweepCandidate {
     /// replay or a Rebase check-in has to carry to say what was tried.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merged_with: Option<String>,
+    /// Source endpoint of the cut edge, for a [`CandidateKind::Synapse`] (#135).
+    ///
+    /// The same provenance contract [`Self::merged_with`] carries for a merge:
+    /// [`Self::uuid`] is a visit **key**, not a neuron, so the edge it names has
+    /// to travel with the candidate for a replay or a check-in to say what was
+    /// cut. `None` — and unserialised — for every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_uuid: Option<String>,
+    /// Destination endpoint of the cut edge, for a [`CandidateKind::Synapse`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_uuid: Option<String>,
+    /// Weight the cut edge carried, for a [`CandidateKind::Synapse`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
     /// Cohort file stem (`c000`, …).
     pub stem: String,
     /// Candidate creature.
@@ -111,6 +167,15 @@ impl SweepCandidate {
     /// cohort can never disagree about a candidate.
     pub fn is_group(&self) -> bool {
         self.kind == CandidateKind::Group
+    }
+
+    /// Whether this candidate cuts one synapse rather than a neuron (#135).
+    ///
+    /// The kind, not the shape of [`Self::uuid`]: one test for "is this an
+    /// edge cut?" across the run, so the cohort, the candidate log and the
+    /// screen record can never disagree about a candidate.
+    pub fn is_synapse(&self) -> bool {
+        self.kind == CandidateKind::Synapse
     }
 
     /// Hidden neurons this candidate cuts, upstream-first.
@@ -183,9 +248,14 @@ pub struct Sweep {
     pub seed: u64,
     /// Named ordering strategy that produced [`Self::order`].
     pub ordering: Ordering,
-    /// SHA-256 of `seed`, the ordering name and the ordered UUID list.
+    /// SHA-256 of `seed`, the ordering name and the ordered visit list.
     pub permutation_identity: String,
-    /// Hidden UUIDs in visitation order.
+    /// Visits in visitation order (Issue #135).
+    ///
+    /// A permutation of every hidden-neuron UUID **and** every synapse visit
+    /// key ([`synapse_key`]) the incumbent carries, so a run is reconstructable
+    /// from the identity above: an ordering reprioritises the walk, it never
+    /// shrinks it.
     pub order: Vec<String>,
     /// Next index to visit.
     pub next: usize,
@@ -213,27 +283,34 @@ impl Sweep {
         )
     }
 
-    /// Order the incumbent's hidden UUIDs with `seed` and `cfg` (Issue #11).
+    /// Order the incumbent's visits with `seed` and `cfg` (Issues #11, #135).
     ///
-    /// The order is always a permutation of every hidden UUID: an ordering
-    /// reprioritises the sweep, it never shrinks it.
+    /// The order is always a permutation of every hidden UUID **and** every
+    /// synapse visit key: an ordering reprioritises the sweep, it never shrinks
+    /// it. The strategies rank the hidden neurons ([`hidden_order`]); the
+    /// synapse keys are shuffled from the same `seed` ([`synapse_order`]) and
+    /// interleaved deterministically, so no strategy needs a per-synapse
+    /// feature vector to mix edges into the walk.
     pub fn with_ordering(
         creature: &CreatureExport,
         stats: &ActivationStats,
         seed: u64,
         cfg: OrderingConfig<'_>,
     ) -> Self {
-        let order = hidden_order(creature, stats, cfg, seed);
+        let neurons = hidden_order(creature, stats, cfg, seed);
+        let synapses = synapse_order(creature, seed);
+        let synapse_visits = synapses.len();
+        let order = interleave_visits(neurons, synapses);
         // The strategy that actually ranked, so a permutation identity always
         // names the ranking behind it (#107).
         let strategy = cfg.effective_strategy();
         let mut ident = format!(
-            "seed={seed}\nordering={}\nrandomQuota={}\n",
+            "seed={seed}\nordering={}\nrandomQuota={}\nsynapseVisits={synapse_visits}\n",
             strategy.name(),
             cfg.random_quota
         );
-        for uuid in &order {
-            ident.push_str(uuid);
+        for visit in &order {
+            ident.push_str(visit);
             ident.push('\n');
         }
         Self {
@@ -247,12 +324,12 @@ impl Sweep {
         }
     }
 
-    /// Remaining unvisited neurons.
+    /// Remaining unvisited visits — neurons and synapses alike (#135).
     pub fn remaining(&self) -> usize {
         self.order.len().saturating_sub(self.next)
     }
 
-    /// True when every hidden UUID has been visited.
+    /// True when every visit — hidden UUID and synapse key — has been made.
     pub fn exhausted(&self) -> bool {
         self.next >= self.order.len()
     }
@@ -362,6 +439,9 @@ impl Sweep {
                         permutation_index,
                         kind: proposed.kind,
                         merged_with: proposed.merged_with,
+                        from_uuid: proposed.from_uuid,
+                        to_uuid: proposed.to_uuid,
+                        weight: proposed.weight,
                         stem,
                         creature: proposed.creature,
                     });
@@ -376,6 +456,38 @@ impl Sweep {
         }
         (candidates, skips)
     }
+}
+
+/// Mix `synapses` into `neurons` at an even rate, preserving both orders (#135).
+///
+/// Deterministic and RNG-free: the seed already decided the synapse shuffle, so
+/// all that is left is *where* the edges land. Both input orders survive intact
+/// — the strategy's neuron ranking is not reshuffled by the presence of edges,
+/// and neither list is truncated — so the result is a permutation of every
+/// visit the incumbent has.
+fn interleave_visits(neurons: Vec<String>, synapses: Vec<String>) -> Vec<String> {
+    if neurons.is_empty() || synapses.is_empty() {
+        let mut out = neurons;
+        out.extend(synapses);
+        return out;
+    }
+    let total = neurons.len() + synapses.len();
+    let quota = synapses.len() as f64 / total as f64;
+    let mut out = Vec::with_capacity(total);
+    let (mut at_neuron, mut at_synapse) = (0usize, 0usize);
+    while out.len() < total {
+        let take_synapse = at_synapse < synapses.len()
+            && (at_neuron >= neurons.len()
+                || (at_synapse as f64) < quota * (out.len() + 1) as f64);
+        if take_synapse {
+            out.push(synapses[at_synapse].clone());
+            at_synapse += 1;
+        } else {
+            out.push(neurons[at_neuron].clone());
+            at_neuron += 1;
+        }
+    }
+    out
 }
 
 /// Whether `uuid` carries an `IDENTITY` squash — an exact-fold opportunity.
@@ -397,6 +509,12 @@ pub(crate) struct Proposed {
     pub kind: CandidateKind,
     /// Survivor for a [`CandidateKind::Merge`]; `None` for every other kind.
     pub merged_with: Option<String>,
+    /// Source endpoint for a [`CandidateKind::Synapse`]; `None` otherwise (#135).
+    pub from_uuid: Option<String>,
+    /// Destination endpoint for a [`CandidateKind::Synapse`]; `None` otherwise.
+    pub to_uuid: Option<String>,
+    /// Weight the cut edge carried, for a [`CandidateKind::Synapse`].
+    pub weight: Option<f64>,
     /// Validated candidate creature.
     pub creature: CreatureExport,
 }
@@ -406,6 +524,9 @@ impl Proposed {
         Self {
             kind,
             merged_with: None,
+            from_uuid: None,
+            to_uuid: None,
+            weight: None,
             creature,
         }
     }
@@ -428,6 +549,9 @@ fn propose_merge(
                 return Ok(Proposed {
                     kind: CandidateKind::Merge,
                     merged_with: Some(proposal.survivor_uuid.clone()),
+                    from_uuid: None,
+                    to_uuid: None,
+                    weight: None,
                     creature: merge.creature,
                 });
             }
@@ -482,12 +606,52 @@ fn with_merge_detail(mut blocked: Blocked, merge: Option<MergeRefusal>) -> Block
     blocked
 }
 
+/// The candidate that cuts the edge `from_uuid`→`to_uuid`, or why not (#135).
+///
+/// The source's fold value comes from the one resolver
+/// ([`crate::stats::source_value`]), so a hidden, `constant` or input source is
+/// all one path. A source that resolves to nothing is a fold this run cannot
+/// justify — [`BlockedReason::MissingActivation`] — and every other refusal is
+/// the one [`ablate_synapse`] reports, under its own reason code.
+///
+/// Nothing here weighs the edge: no weight, magnitude or contribution threshold
+/// decides eligibility, because only the full-corpus scorer accepts.
+fn propose_synapse(
+    incumbent: &CreatureExport,
+    stats: &ActivationStats,
+    from_uuid: &str,
+    to_uuid: &str,
+) -> Result<Proposed, Blocked> {
+    let Some(source) = source_value(incumbent, stats, from_uuid) else {
+        return Err(Blocked::new(
+            BlockedReason::MissingActivation,
+            format!("no source value for `{from_uuid}` (synapse `{from_uuid}`→`{to_uuid}`)"),
+        ));
+    };
+    match ablate_synapse(incumbent, from_uuid, to_uuid, source.value) {
+        Ok(a) => Ok(Proposed {
+            kind: CandidateKind::Synapse,
+            merged_with: None,
+            from_uuid: Some(a.from_uuid),
+            to_uuid: Some(a.to_uuid),
+            weight: Some(a.weight),
+            creature: a.creature,
+        }),
+        Err(e) => Err(Blocked::new(e.blocked_reason(), e.to_string())),
+    }
+}
+
 pub(crate) fn propose(
     incumbent: &CreatureExport,
     stats: &ActivationStats,
     merges: &MergeIndex,
     uuid: &str,
 ) -> Result<Proposed, Blocked> {
+    // An edge visit is its own ladder: there is no identity collapse, merge or
+    // constant substitution for a synapse, so it never enters the neuron one.
+    if let Some((from_uuid, to_uuid)) = parse_synapse_key(uuid) {
+        return propose_synapse(incumbent, stats, from_uuid, to_uuid);
+    }
     if is_identity(incumbent, uuid) {
         match collapse_identity(incumbent, uuid, CollapseOptions::default()) {
             Ok(c) => return Ok(Proposed::of(CandidateKind::Identity, c.creature)),
@@ -840,6 +1004,30 @@ mod tests {
         }
     }
 
+    /// Restrict `sweep` to its hidden-neuron visits.
+    ///
+    /// Issue #135 mixed synapse visits into the same seeded pool. The tests
+    /// that use this are about the **neuron** ladder — identity → merge →
+    /// ablation → constant substitution — so they walk the neuron half of the
+    /// permutation and leave the edge half to the synapse tests below. Nothing
+    /// about the neuron visits themselves changed, which is what these
+    /// unchanged assertions go on demonstrating.
+    fn neuron_visits_only(sweep: &mut Sweep) {
+        sweep.order.retain(|visit| parse_synapse_key(visit).is_none());
+    }
+
+    /// Every distinct synapse pair on `creature`, as visit keys.
+    fn expected_synapse_keys(creature: &CreatureExport) -> Vec<String> {
+        let mut keys: Vec<String> = creature
+            .synapses
+            .iter()
+            .map(|s| synapse_key(&s.from_uuid, &s.to_uuid))
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
     #[test]
     fn fixed_seed_reproduces_visitation_order() {
         let creature = two_hidden();
@@ -882,6 +1070,7 @@ mod tests {
         let creature = two_hidden();
         let stats = stats_for(&creature);
         let mut sweep = Sweep::new(&creature, 1);
+        neuron_visits_only(&mut sweep);
         let (batch, skips) = sweep.fill_batch(&creature, &stats, 8);
         assert!(skips.is_empty(), "{skips:?}");
         assert_eq!(batch.len(), 2);
@@ -926,6 +1115,7 @@ mod tests {
         let creature = two_hidden();
         let stats = stats_for(&creature);
         let mut sweep = Sweep::new(&creature, 9);
+        neuron_visits_only(&mut sweep);
         let (batch, _) = sweep.fill_batch(&creature, &stats, 8);
         let tmp = tempfile::tempdir().unwrap();
         let scorer = ScriptedScorer {
@@ -989,13 +1179,17 @@ mod tests {
         let creature = two_hidden();
         let stats = skewed_stats(&creature);
         let seed = 5;
-        let control = Sweep::with_ordering(&creature, &stats, seed, OrderingConfig::default());
-        let ranked = Sweep::with_ordering(
+        let mut control = Sweep::with_ordering(&creature, &stats, seed, OrderingConfig::default());
+        let mut ranked = Sweep::with_ordering(
             &creature,
             &stats,
             seed,
             OrderingConfig::new(Ordering::LowVariance),
         );
+        // The strategies rank hidden neurons and only hidden neurons (#135), so
+        // the ranking claim below is made over the neuron half of the walk.
+        neuron_visits_only(&mut control);
+        neuron_visits_only(&mut ranked);
         assert_eq!(ranked.ordering, Ordering::LowVariance);
         assert_eq!(
             ranked.order[0], "h_b",
@@ -1103,8 +1297,11 @@ mod tests {
         let stats = varied_stats(&creature);
         let screened = uuid_set(&["h1", "h3", "h5"]);
         let oldest = uuid_list(&["h5", "h1", "h3"]);
+        // Every visit, not just every neuron: `prefer_unchecked` treats a
+        // synapse key as an ordinary member of the walk (#135).
         let expected = {
             let mut u: Vec<String> = (0..6).map(|i| format!("h{i}")).collect();
+            u.extend(expected_synapse_keys(&creature));
             u.sort();
             u
         };
@@ -1117,7 +1314,7 @@ mod tests {
             got.sort();
             assert_eq!(
                 got, expected,
-                "{} quota={} lost or duplicated a neuron",
+                "{} quota={} lost or duplicated a visit",
                 cfg.strategy, cfg.random_quota
             );
         }
@@ -1215,6 +1412,7 @@ mod tests {
         let stats = varied_stats(&creature);
         let all: Vec<&str> = ["h0", "h1", "h2", "h3", "h4", "h5"].into();
         let mut sweep = Sweep::new(&creature, 5);
+        neuron_visits_only(&mut sweep);
         sweep.prefer_unchecked(&uuid_set(&all), &uuid_list(&all));
         assert_eq!(
             sweep.order,
@@ -1331,6 +1529,7 @@ mod tests {
         assert!(!merges.is_empty(), "{:?}", merges.report());
 
         let mut sweep = Sweep::new(&creature, 3);
+        neuron_visits_only(&mut sweep);
         let (batch, skips) =
             sweep.fill_batch_avoiding(&creature, &stats, &merges, 8, &HashSet::new());
         assert!(skips.is_empty(), "{skips:?}");
@@ -1432,6 +1631,7 @@ mod tests {
         let creature = neat_core::parse_creature_json(&json).unwrap();
         let stats = stats_for(&creature);
         let mut sweep = Sweep::new(&creature, 9);
+        neuron_visits_only(&mut sweep);
         let (batch, skips) =
             sweep.fill_batch_avoiding(&creature, &stats, MergeIndex::empty(), 8, &HashSet::new());
         assert!(skips.is_empty(), "a tag must not skip a neuron: {skips:?}");
@@ -1452,6 +1652,7 @@ mod tests {
             .collect();
         assert_eq!(outputs, vec!["output-0", "output-1"]);
         let mut sweep = Sweep::new(&creature, 4);
+        neuron_visits_only(&mut sweep);
         let mut visited = Vec::new();
         while !sweep.exhausted() {
             let (batch, skips) = sweep.fill_batch(&creature, &stats, 2);
@@ -1462,6 +1663,361 @@ mod tests {
         assert!(
             !visited.iter().any(|u| outputs.contains(&u.as_str())),
             "an output neuron must never be proposed: {visited:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Synapse visits (Issue #135)
+    // ---------------------------------------------------------------------
+
+    /// `stats_for`, plus a measured mean for every input wire.
+    ///
+    /// Without it an `input-N` source resolves to nothing and every edge out of
+    /// an input is a blocked visit — correct, and tested below, but not what
+    /// the mixed-pool tests are about.
+    fn stats_with_inputs(creature: &CreatureExport) -> ActivationStats {
+        let mut stats = stats_for(creature);
+        stats.inputs = (0..creature.input)
+            .map(|i| NeuronStats {
+                uuid: format!("input-{i}"),
+                neuron_index: i,
+                count: 1,
+                mean: 0.5,
+                variance: 0.0,
+                std_dev: 0.0,
+                mean_abs: 0.5,
+                min: 0.5,
+                max: 0.5,
+            })
+            .collect();
+        stats
+    }
+
+    /// A `condition` edge into an `IF` neuron — a typed pair that must fail closed.
+    fn typed_edge_creature() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_cond", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_if", 0.0, Some("IF")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_cond", 1.0),
+                crate::fixtures::typed_synapse("h_cond", "h_if", 1.0, "condition"),
+                crate::fixtures::typed_synapse("input-0", "h_if", 1.0, "positive"),
+                crate::fixtures::typed_synapse("input-0", "h_if", -1.0, "negative"),
+                synapse("h_if", "output-0", 1.0),
+            ],
+        )
+    }
+
+    /// An ordinary edge into a `MEAN` neuron — no bias can stand in for it.
+    fn aggregate_target_creature() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_src", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_mean", 0.0, Some("MEAN")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_src", 1.0),
+                synapse("input-0", "h_mean", 1.0),
+                synapse("h_src", "h_mean", 1.0),
+                synapse("h_mean", "output-0", 1.0),
+            ],
+        )
+    }
+
+    /// A visit key round-trips, and nothing that is not one parses as one.
+    #[test]
+    fn a_synapse_visit_key_round_trips_and_never_collides_with_a_neuron_uuid() {
+        for (from, to) in [
+            ("h_a", "output-0"),
+            ("input-0", "h_b"),
+            ("6f709b1c-3180-f8b0-0000-000000000001", "output-11"),
+        ] {
+            let key = synapse_key(from, to);
+            assert_eq!(parse_synapse_key(&key), Some((from, to)));
+            assert_ne!(key, from, "a key is never one of its endpoints");
+            assert_ne!(key, to);
+        }
+        // Distinct pairs never share a key, in either direction.
+        assert_ne!(synapse_key("h_a", "h_b"), synapse_key("h_b", "h_a"));
+        assert_ne!(synapse_key("a", "bc"), synapse_key("ab", "c"));
+        // Nothing a neuron UUID can be parses as an edge.
+        for not_a_key in [
+            "h_a",
+            "input-0",
+            "output-0",
+            SYNAPSE_KEY_TAG,
+            "synapse:h_a:output-0",
+            &format!("{SYNAPSE_KEY_TAG}{SYNAPSE_KEY_SEPARATOR}h_a"),
+            &format!("{SYNAPSE_KEY_TAG}{SYNAPSE_KEY_SEPARATOR}{SYNAPSE_KEY_SEPARATOR}output-0"),
+            &synapse_key("h_a", &synapse_key("h_b", "h_c")),
+        ] {
+            assert_eq!(parse_synapse_key(not_a_key), None, "{not_a_key:?}");
+        }
+    }
+
+    /// Issue #135: the walk is every hidden neuron **and** every synapse, once.
+    #[test]
+    fn every_hidden_neuron_and_every_synapse_is_visited_exactly_once() {
+        let creature = six_hidden();
+        let stats = varied_stats(&creature);
+        for cfg in every_ordering() {
+            let sweep = Sweep::with_ordering(&creature, &stats, 11, cfg);
+            let mut got = sweep.order.clone();
+            let unique = {
+                let mut u = got.clone();
+                u.sort();
+                u.dedup();
+                u.len()
+            };
+            assert_eq!(unique, got.len(), "a visit must not repeat");
+            got.retain(|v| parse_synapse_key(v).is_some());
+            got.sort();
+            assert_eq!(
+                got,
+                expected_synapse_keys(&creature),
+                "{} quota={} lost a synapse visit",
+                cfg.strategy,
+                cfg.random_quota
+            );
+            let neurons = sweep.order.len() - got.len();
+            assert_eq!(neurons, 6, "every hidden neuron is still visited");
+        }
+    }
+
+    /// A typed pair is a visit, not a filtered-out edge: it is walked and it
+    /// fails closed, because a blocked visit is still coverage.
+    #[test]
+    fn a_typed_synapse_enters_the_pool_rather_than_being_filtered_out() {
+        let creature = typed_edge_creature();
+        validate_creature(&creature).unwrap();
+        let sweep = Sweep::new(&creature, 2);
+        assert!(
+            sweep.order.contains(&synapse_key("h_cond", "h_if")),
+            "{:?}",
+            sweep.order
+        );
+        // One key per pair, even though `input-0`→`h_if` carries two roles.
+        assert_eq!(
+            sweep
+                .order
+                .iter()
+                .filter(|v| **v == synapse_key("input-0", "h_if"))
+                .count(),
+            1
+        );
+    }
+
+    /// Issue #135: same creature, stats and seed — same mixed order and
+    /// identity; a different seed changes both.
+    #[test]
+    fn the_seed_alone_decides_the_mixed_order_and_its_identity() {
+        let creature = six_hidden();
+        let stats = varied_stats(&creature);
+        let cfg = OrderingConfig {
+            strategy: Ordering::LowMeanAbs,
+            random_quota: 0.25,
+            priority: None,
+        };
+        let a = Sweep::with_ordering(&creature, &stats, 17, cfg);
+        let b = Sweep::with_ordering(&creature, &stats, 17, cfg);
+        assert_eq!(a.order, b.order);
+        assert_eq!(a.permutation_identity, b.permutation_identity);
+        assert!(a.order.iter().any(|v| parse_synapse_key(v).is_some()));
+
+        let other = Sweep::with_ordering(&creature, &stats, 18, cfg);
+        assert_ne!(a.order, other.order);
+        assert_ne!(a.permutation_identity, other.permutation_identity);
+    }
+
+    /// The identity covers the **whole** ordered visit list: moving one visit
+    /// changes it, so a run stays reconstructable from the hash it recorded.
+    #[test]
+    fn the_permutation_identity_covers_every_visit_including_the_synapses() {
+        let creature = two_hidden();
+        let stats = stats_with_inputs(&creature);
+        let sweep = Sweep::with_ordering(&creature, &stats, 6, OrderingConfig::default());
+        let ident = sweep.permutation_identity.clone();
+
+        let mut fewer = creature.clone();
+        fewer.synapses.retain(|s| s.to_uuid != "output-0" || s.from_uuid != "h_b");
+        let dropped = Sweep::with_ordering(&fewer, &stats, 6, OrderingConfig::default());
+        assert_ne!(
+            ident, dropped.permutation_identity,
+            "dropping a synapse visit must change the identity"
+        );
+    }
+
+    /// Issue #135: one batch holds neuron **and** synapse candidates, and every
+    /// one of them is a creature `validate()` accepts.
+    #[test]
+    fn fill_batch_returns_a_mixed_batch_of_valid_candidates() {
+        let creature = two_hidden();
+        validate_creature(&creature).unwrap();
+        let stats = stats_with_inputs(&creature);
+        let mut sweep = Sweep::new(&creature, 4);
+        let visits = sweep.order.len();
+        let (batch, skips) =
+            sweep.fill_batch_avoiding(&creature, &stats, MergeIndex::empty(), visits, &HashSet::new());
+        assert_eq!(batch.len() + skips.len(), visits, "every visit advances");
+        assert!(
+            batch.iter().any(|c| c.kind == CandidateKind::Synapse),
+            "no synapse candidate: {batch:?}"
+        );
+        assert!(
+            batch.iter().any(|c| c.kind != CandidateKind::Synapse),
+            "no neuron candidate: {batch:?}"
+        );
+        for c in &batch {
+            validate_creature(&c.creature)
+                .expect("a synapse candidate must not bypass creature.validate()");
+            assert_eq!(c.members.first(), Some(&c.uuid), "members head the uuid");
+            assert!(!c.members.is_empty());
+        }
+    }
+
+    /// Edge provenance travels with the candidate, and with nothing else.
+    #[test]
+    fn only_a_synapse_candidate_carries_and_serialises_its_edge() {
+        let creature = two_hidden();
+        let stats = stats_with_inputs(&creature);
+        let mut sweep = Sweep::new(&creature, 4);
+        let visits = sweep.order.len();
+        let (batch, _) =
+            sweep.fill_batch_avoiding(&creature, &stats, MergeIndex::empty(), visits, &HashSet::new());
+        let mut saw_synapse = false;
+        for c in &batch {
+            let json: serde_json::Value = serde_json::to_value(c).unwrap();
+            if c.kind == CandidateKind::Synapse {
+                saw_synapse = true;
+                let (from, to) = parse_synapse_key(&c.uuid).expect("a synapse names its edge");
+                assert_eq!(c.from_uuid.as_deref(), Some(from));
+                assert_eq!(c.to_uuid.as_deref(), Some(to));
+                let weight = c.weight.expect("a synapse carries its weight");
+                let carried = creature
+                    .synapses
+                    .iter()
+                    .find(|s| s.from_uuid == from && s.to_uuid == to)
+                    .expect("the edge is on the incumbent")
+                    .weight;
+                assert_eq!(weight, carried);
+                assert_eq!(json["fromUuid"], from);
+                assert_eq!(json["toUuid"], to);
+                assert_eq!(json["weight"], serde_json::json!(weight));
+            } else {
+                assert!(c.from_uuid.is_none() && c.to_uuid.is_none() && c.weight.is_none());
+                assert!(json.get("fromUuid").is_none(), "{json}");
+                assert!(json.get("toUuid").is_none(), "{json}");
+                assert!(json.get("weight").is_none(), "{json}");
+            }
+        }
+        assert!(saw_synapse, "{batch:?}");
+    }
+
+    /// Issue #135: a visit that proposes nothing still advances the walk, with
+    /// the reason code the refusal maps to.
+    #[test]
+    fn a_synapse_visit_that_proposes_nothing_is_skipped_with_its_reason() {
+        // No input statistics, so an `input-N` source resolves to no fold value.
+        let creature = two_hidden();
+        let stats = stats_for(&creature);
+        let blocked = propose(
+            &creature,
+            &stats,
+            MergeIndex::empty(),
+            &synapse_key("input-0", "h_a"),
+        )
+        .unwrap_err();
+        assert_eq!(blocked.reason, BlockedReason::MissingActivation, "{blocked}");
+
+        let typed = typed_edge_creature();
+        let typed_stats = stats_with_inputs(&typed);
+        let blocked = propose(
+            &typed,
+            &typed_stats,
+            MergeIndex::empty(),
+            &synapse_key("h_cond", "h_if"),
+        )
+        .unwrap_err();
+        assert_eq!(blocked.reason, BlockedReason::UnsafeTopology, "{blocked}");
+
+        let aggregate = aggregate_target_creature();
+        validate_creature(&aggregate).unwrap();
+        let aggregate_stats = stats_with_inputs(&aggregate);
+        let blocked = propose(
+            &aggregate,
+            &aggregate_stats,
+            MergeIndex::empty(),
+            &synapse_key("h_src", "h_mean"),
+        )
+        .unwrap_err();
+        assert_eq!(blocked.reason, BlockedReason::AggregateSquash, "{blocked}");
+    }
+
+    /// Every refused visit is filed as a skip, so the walk always advances.
+    #[test]
+    fn a_creature_whose_edges_all_refuse_still_advances_visit_by_visit() {
+        let creature = two_hidden();
+        // No input means: every `input-N`→hidden edge is a blocked visit.
+        let stats = stats_for(&creature);
+        let mut sweep = Sweep::new(&creature, 8);
+        let visits = sweep.order.len();
+        let mut seen = Vec::new();
+        while !sweep.exhausted() {
+            let (batch, skips) = sweep.fill_batch(&creature, &stats, 1);
+            assert!(!batch.is_empty() || !skips.is_empty());
+            seen.extend(batch.into_iter().map(|c| c.uuid));
+            seen.extend(skips.into_iter().map(|s| s.uuid));
+        }
+        assert_eq!(seen.len(), visits);
+        let mut unique = seen.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), visits, "no visit is made twice");
+    }
+
+    /// Selection treats a synapse key as an ordinary member of the walk.
+    #[test]
+    fn prefer_and_prefer_unchecked_move_synapse_visits_like_any_other() {
+        let creature = two_hidden();
+        let stats = stats_with_inputs(&creature);
+        let mut sweep = Sweep::with_ordering(&creature, &stats, 3, OrderingConfig::default());
+        let key = sweep
+            .order
+            .iter()
+            .rev()
+            .find(|v| parse_synapse_key(v).is_some())
+            .cloned()
+            .expect("the walk holds a synapse visit");
+        assert_eq!(sweep.prefer(std::slice::from_ref(&key)), 1);
+        assert_eq!(sweep.order[sweep.next], key);
+
+        let before = sweep.order.clone();
+        sweep.prefer_unchecked(&HashSet::from([key.clone()]), &[key.clone()]);
+        assert_eq!(
+            sweep.order.last(),
+            Some(&key),
+            "a screened synapse visit defers like a screened neuron"
+        );
+        let (mut got, mut expected) = (sweep.order.clone(), before);
+        got.sort();
+        expected.sort();
+        assert_eq!(got, expected, "the reorder must stay a permutation");
+    }
+
+    /// Issue #135: the label the verdict cache stores for an edge cut.
+    #[test]
+    fn a_synapse_candidate_is_labelled_synapse() {
+        assert_eq!(
+            crate::learnings::kind_label(CandidateKind::Synapse),
+            "synapse"
         );
     }
 }
