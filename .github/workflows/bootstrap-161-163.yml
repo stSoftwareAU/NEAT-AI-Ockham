@@ -43,6 +43,24 @@ jobs:
           text, n = re.subn(pattern, '', text, count=1, flags=re.S)
           if n != 1:
               raise SystemExit(f'expected one obsolete distinct-helper block, found {n}')
+
+          replacements = {
+              '    fn visits_count_every_uuid_reached_while_progress_counts_only_new_ones() {':
+                  '    fn visit_attempts_count_repeat_work_while_progress_counts_only_new_keys() {',
+              '        assert_eq!(progress.visited(), 0);':
+                  '        assert_eq!(progress.visit_counts().total, 0);',
+              '            progress.visited(),\n            3,\n            "a uuid is visited once, however often"':
+                  '            progress.visit_counts().total,\n            4,\n            "repeat visits are real work and stay counted"',
+              '        assert_eq!(progress.revisited(), 2, "h_a and h_b were already checked");':
+                  '        assert_eq!(progress.revisit_counts().total, 3, "two h_a visits plus h_b were revisits");',
+              '        assert_eq!(progress.revisited(), 2, "the new uuid is not a revisit");':
+                  '        assert_eq!(progress.revisit_counts().total, 3, "the new uuid is not a revisit");',
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected one test fragment, found {text.count(old)}: {old!r}')
+              text = text.replace(old, new, 1)
+
           p.write_text(text)
           PY
 
