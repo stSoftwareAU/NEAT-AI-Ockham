@@ -301,6 +301,35 @@ pub fn random_order(creature: &CreatureExport, seed: u64) -> Vec<String> {
     order
 }
 
+/// Distinct synapse **visit keys**, shuffled with `seed` (Issue #135).
+///
+/// Every ordered pair the incumbent carries an edge on, once — typed pairs
+/// included, because a typed edge is visited and fails closed rather than being
+/// filtered out of the pool silently, and a blocked visit is still coverage.
+/// Nothing here weighs an edge: no weight, magnitude or contribution threshold
+/// decides membership, because only the full-corpus scorer accepts.
+///
+/// Ranked by no strategy — the orderings rank hidden neurons on feature vectors
+/// and keep doing exactly that (#107). A synapse's place in the walk comes from
+/// this shuffle and the deterministic interleave the sweep applies to it, so the
+/// same seed reproduces the same mixed order.
+pub fn synapse_order(creature: &CreatureExport, seed: u64) -> Vec<String> {
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+    let mut order: Vec<String> = Vec::new();
+    for syn in &creature.synapses {
+        if seen.insert((syn.from_uuid.as_str(), syn.to_uuid.as_str())) {
+            order.push(crate::sweep::synapse_key(&syn.from_uuid, &syn.to_uuid));
+        }
+    }
+    // A stream of its own, so adding an edge cannot reshuffle the neuron order
+    // the strategies produced for the same seed.
+    SplitMix64(seed ^ SYNAPSE_STREAM).shuffle(&mut order);
+    order
+}
+
+/// Stream separator between the neuron shuffle and the synapse shuffle (#135).
+const SYNAPSE_STREAM: u64 = 0x5359_4E41_5053_4553;
+
 /// Per-creature ranking signals, built once for the strategies that read them.
 ///
 /// Topology does not change while an order is built, so each signal is walked
@@ -1318,6 +1347,76 @@ mod tests {
             OrderingConfig::new(Ordering::LowVariance)
                 .validate()
                 .is_ok()
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Synapse visit order (Issue #135)
+    // ---------------------------------------------------------------------
+
+    /// One key per distinct pair, whatever the weight or the role.
+    #[test]
+    fn synapse_order_covers_every_distinct_pair_exactly_once() {
+        let creature = wired();
+        let order = synapse_order(&creature, 3);
+        let mut expected: Vec<String> = creature
+            .synapses
+            .iter()
+            .map(|s| crate::sweep::synapse_key(&s.from_uuid, &s.to_uuid))
+            .collect();
+        expected.sort();
+        expected.dedup();
+        let mut got = order.clone();
+        got.sort();
+        assert_eq!(got, expected);
+        assert_eq!(order.len(), got.len(), "a pair must not repeat");
+        assert!(
+            order
+                .iter()
+                .all(|k| crate::sweep::parse_synapse_key(k).is_some()),
+            "{order:?}"
+        );
+    }
+
+    /// A creature with no synapses yields no synapse visit — the empty case the
+    /// interleave in `sweep` short-circuits on.
+    #[test]
+    fn a_creature_with_no_synapses_yields_no_synapse_visit() {
+        let bare = creature(
+            1,
+            1,
+            vec![neuron("output", "output-0", 0.0, Some("IDENTITY"))],
+            Vec::new(),
+        );
+        assert!(synapse_order(&bare, 7).is_empty());
+    }
+
+    /// The same seed reproduces the shuffle; a different seed moves it.
+    #[test]
+    fn synapse_order_is_seed_deterministic() {
+        let creature = wired();
+        assert_eq!(synapse_order(&creature, 11), synapse_order(&creature, 11));
+        assert_ne!(synapse_order(&creature, 11), synapse_order(&creature, 12));
+    }
+
+    /// The two shuffles are separate streams: adding an edge cannot reshuffle
+    /// the neuron order a strategy produced for the same seed.
+    #[test]
+    fn the_synapse_shuffle_does_not_disturb_the_neuron_shuffle() {
+        let creature = wired();
+        let neurons = random_order(&creature, 5);
+        let mut wider = creature.clone();
+        wider.synapses.push(synapse("h_flat", "output-1", 0.25));
+        crate::fixtures::sort_synapses_canonically(&mut wider);
+        assert_eq!(
+            random_order(&wider, 5),
+            neurons,
+            "the neuron shuffle must not depend on the edge count"
+        );
+        assert_ne!(
+            synapse_order(&wider, 5).len(),
+            synapse_order(&creature, 5).len(),
+            "the extra edge must be a visit"
         );
     }
 }

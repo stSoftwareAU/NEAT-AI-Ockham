@@ -1013,6 +1013,7 @@ fn ockham_loop(
             permutation_identity: sweep.permutation_identity.clone(),
             unchecked_first: sweep.unchecked_first,
             old_corpus_first: sweep.old_corpus_first,
+            synapse_visits_deferred: sweep.synapse_visits_deferred,
             hidden: incumbent.hidden_neurons(),
             synapses: incumbent.creature.synapses.len(),
             opening_score,
@@ -1233,6 +1234,9 @@ fn ockham_loop(
                             permutation_index: 0,
                             kind: proposed.kind,
                             merged_with: proposed.merged_with,
+                            from_uuid: proposed.from_uuid,
+                            to_uuid: proposed.to_uuid,
+                            weight: proposed.weight,
                             stem: "r000".into(),
                             creature: proposed.creature,
                         },
@@ -1301,6 +1305,9 @@ fn ockham_loop(
                                         permutation_index: 0,
                                         kind: proposed.kind,
                                         merged_with: proposed.merged_with,
+                                        from_uuid: proposed.from_uuid,
+                                        to_uuid: proposed.to_uuid,
+                                        weight: proposed.weight,
                                         stem: "r000".into(),
                                         creature: proposed.creature,
                                     },
@@ -2322,6 +2329,18 @@ fn fresh_sweep(
     prior: &PriorHint<'_>,
 ) -> Sweep {
     let mut sweep = Sweep::with_ordering(creature, activation, seed, ordering);
+    // The seeded pool holds every synapse visit (#135), but the run does not
+    // walk them yet — see `Sweep::retain_neuron_visits`. Dropped here, in the
+    // one place a sweep is built, and counted onto the sweep so `Event::Start`
+    // states it rather than leaving a permutation identity that names visits
+    // the run never made.
+    let deferred = sweep.retain_neuron_visits();
+    if deferred > 0 {
+        log::info(&format!(
+            "sweep: {deferred} synapse visit(s) deferred — record, coverage and accept parity \
+             land with #136/#137/#138 (#135)"
+        ));
+    }
     if unchecked_first {
         prefer_unchecked(&mut sweep, screens, creature);
     }
@@ -5509,6 +5528,83 @@ mod tests {
         assert_eq!(
             report.coverage_percent, None,
             "no screen store means no coverage state, not 0%"
+        );
+    }
+
+    /// Issue #135 puts every synapse in the seeded pool; the run keeps walking
+    /// neuron visits only until the parity issues land. Pinned rather than
+    /// assumed: this assertion is what fails when #136/#137/#138 remove the
+    /// gate in `fresh_sweep` without the coverage and record work beside it.
+    #[test]
+    fn the_run_walks_neuron_visits_until_synapse_parity_lands() {
+        let creature = crate::fixtures::creature(
+            1,
+            1,
+            vec![
+                crate::fixtures::neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
+                crate::fixtures::neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                crate::fixtures::synapse("input-0", "h_a", 1.0),
+                crate::fixtures::synapse("h_a", "output-0", 1.0),
+            ],
+        );
+        let stats = crate::stats::ActivationStats::empty();
+        let pooled = Sweep::with_ordering(
+            &creature,
+            &stats,
+            5,
+            crate::ordering::OrderingConfig::default(),
+        );
+        assert!(
+            pooled
+                .order
+                .iter()
+                .any(|v| crate::sweep::parse_synapse_key(v).is_some()),
+            "the sweep pool holds synapse visits: {:?}",
+            pooled.order
+        );
+
+        let walked = fresh_sweep(
+            &creature,
+            &stats,
+            5,
+            crate::ordering::OrderingConfig::default(),
+            false,
+            &[],
+            &PriorHint::none(),
+        );
+        assert_eq!(
+            walked.order,
+            vec!["h_a".to_string()],
+            "the run walks neuron visits only until #136/#137/#138 land"
+        );
+        // Never silent: the drop happens after `permutationIdentity` is hashed,
+        // so the count is carried for `Event::Start` to state.
+        assert_eq!(walked.synapse_visits_deferred, 2);
+    }
+
+    /// The deferral reaches the journal, so a run whose walk was not the
+    /// permutation its identity names still says so (#135).
+    #[test]
+    fn the_journal_states_how_many_synapse_visits_the_run_deferred() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 4,
+            ..test_defaults()
+        };
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            journal.contains(r#""synapse_visits_deferred":4"#),
+            "the run must state the visits it put aside: {journal}"
         );
     }
 

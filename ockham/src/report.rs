@@ -667,6 +667,7 @@ mod tests {
             permutation_identity: "x".into(),
             unchecked_first: false,
             old_corpus_first: 0,
+            synapse_visits_deferred: 0,
             hidden: 3,
             synapses: 10,
             opening_score: 0.50,

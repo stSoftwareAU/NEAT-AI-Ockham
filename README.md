@@ -118,7 +118,7 @@ known-good creature
         └── sampled hidden-neuron + input activation statistics
         │
         ▼
-seeded ordering of hidden neurons (random control by default)
+seeded ordering of visits — hidden neurons and synapses (random control by default)
         │
         ▼
 ~100 pruning candidates
@@ -279,7 +279,84 @@ measured being folded.
 
 The resolver is the value side of the single-synapse cut: it is what supplies
 `ablate_synapse`'s scalar. The sweep that walks a creature's edges and asks for
-one lands with the rest of that work, so nothing calls it on a run yet.
+one is the [synapse visit pool](#synapse-visits) below.
+
+## Synapse visits
+
+`Sweep::order` is a permutation of **visits**, not of hidden neurons alone: it
+holds every hidden-neuron UUID *and* one visit key per distinct synapse pair the
+incumbent carries. The strategies in [candidate ordering](#candidate-ordering)
+go on ranking hidden neurons on their feature vectors; the synapse keys are
+shuffled from the same seed and interleaved into that ranking at an even rate,
+so no ordering strategy needs a per-synapse feature vector, and the same
+`(creature, statistics, seed)` reproduces the same mixed order and the same
+`permutationIdentity`.
+
+No threshold decides which edges enter the pool. Every ordinary synapse is a
+visit, whatever its weight or contribution, because the full-corpus scorer is
+the sole acceptance gate — and a **typed** synapse is a visit too. It is walked
+and it fails closed rather than being filtered out silently, because a blocked
+visit is still coverage.
+
+A visit key is `synapse`, the source UUID and the destination UUID, joined by
+the ASCII UNIT SEPARATOR (`U+001F`). The separator is a control character
+precisely so that no neuron UUID — `input-N`, `output-N`, a generated id — can
+collide with a visit key or be mistaken for one by a keyed store.
+
+```mermaid
+flowchart LR
+    H["hidden UUIDs<br/>ranked by the ordering"] --> M["interleave<br/>even rate, order-preserving"]
+    S["synapse visit keys<br/>shuffled from the seed"] --> M
+    M --> O["Sweep::order<br/>one permutation of every visit"]
+    O -->|neuron visit| N["identity → merge →<br/>ablation → constant"]
+    O -->|synapse visit| E["source value → ablate_synapse"]
+    N --> C["candidate, or a skip with its blocked reason"]
+    E --> C
+```
+
+A synapse visit resolves its
+[source fold value](#synapse-source-fold-values) and calls `ablate_synapse`. A
+source that resolves to nothing is `missing-activation`; every other refusal
+carries the reason the transform itself reported. Either way the visit files a
+skip and the walk advances, exactly as a neuron visit does. A synapse candidate
+carries its `fromUuid`, `toUuid` and `weight` as provenance — no other kind
+serialises those fields — and its `uuid` is the visit key, headed as always by
+`members`.
+
+The pool is built; the **run loop** still walks neuron visits only. Screen
+records and the learnings cache, epoch coverage, and accepting and reporting a
+pure synapse win each land with their own work, and the sweep the run builds
+drops the edge half until they do — a visit a run cannot record is one it would
+make again every batch forever.
+
+That drop happens *after* `permutationIdentity` is hashed, so it is stated
+rather than silent: `Event::Start` carries `synapse_visits_deferred`, beside the
+`unchecked_first` and `old_corpus_first` fields that record the other two
+post-hash reorderings. A run whose walk was not the permutation its identity
+names always says so.
+
+### Benchmark
+
+```bash
+cargo run --release --example synapse_sweep_bench
+```
+
+On a forest-heavy creature — 799 hidden neurons, 1606 synapses, a typed `IF`
+gate every eighth tree and a `MEAN` collector every fifth — one full pass over
+the pool reports:
+
+| Figure | Value |
+| --- | --- |
+| pool | 2386 visits (799 neuron, 1587 synapse) |
+| synapse proposals built and validated | 1129 |
+| refused | 458 — 270 `aggregate-squash`, 188 `unsafe-topology` |
+| removed per accepted proposal | 2.03 synapses, 0.89 neurons cascaded |
+| cost | ~2.3–2.6ms per synapse visit, ~3.2–3.6ms per proposal built |
+
+Two thirds of the edges yield a candidate, and the average accepted proposal
+takes more than the one synapse it asked for — the cleanup cascade takes the
+structure the cut stranded with it. The refusals are the aggregate collectors
+and the typed gates, both failing closed as they should.
 
 ## Mean-activation ablation
 
@@ -729,8 +806,13 @@ against:
 | Visit | Record `kind` | Version | Counted as |
 |---|---|---|---|
 | Candidate the scorer screened, winner or loser | `identity` / `ablation` / `constant` / `merge` | 2 | checked |
+| A [synapse visit](#synapse-visits) the scorer screened | `synapse` | 2 | checked |
 | Nothing could be proposed — no finite activation statistic, a candidate that would not validate | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
 | A standing full-corpus verdict suppressed the try | `known-failure` | 3 | checked |
+
+The `synapse` row is the kind the sweep produces, not one a run writes yet: the
+run walks neuron visits only, and states in `experiments.jsonl` how many edge
+visits it deferred (`synapse_visits_deferred`).
 
 A record for a visit that scored nothing is written at **version 3**, which a
 pre-#93 binary does not accept. The fleet runs mixed versions against one shared
@@ -1836,8 +1918,11 @@ scorer made of it:
 Written **after** a verdict and never read during one. A candidate the screen
 threw out is logged too, with its sampled Δ and no full Δ: it is the only
 evidence the ranker gets about what does *not* work. `kind` is always the
-sweep's — `identity`, `ablation`, `constant` or `merge`. A `merge` row also
-carries `mergedWith`, the survivor that absorbed the neuron.
+sweep's — `identity`, `ablation`, `constant`, `merge` or `synapse`. A `merge`
+row also carries `mergedWith`, the survivor that absorbed the neuron, and a
+`synapse` candidate carries `fromUuid`, `toUuid` and `weight`, the edge it cut.
+No `synapse` row is written yet: the run defers those visits, as
+[synapse visits](#synapse-visits) says.
 
 Three exclusions, each for the same reason — a row must carry only what the
 scorer actually said about that neuron:
@@ -2232,7 +2317,7 @@ NEAT-AI-Ockham/
 │       ├── signature.rs       # behavioural signatures + correlated-pair discovery
 │       ├── merge.rs           # correlated-neuron merging
 │       ├── blocked.rs         # blocked-reason codes + per-epoch breakdown
-│       ├── sweep.rs           # seeded random sweep + 5% screen
+│       ├── sweep.rs           # seeded neuron + synapse visit sweep + 5% screen
 │       ├── screening.rs       # progressive adaptive screening ladder
 │       ├── promote.rs         # full-score winners + bundles
 │       ├── journal.rs         # experiments.jsonl

@@ -837,6 +837,7 @@ pub fn kind_label(kind: CandidateKind) -> &'static str {
         CandidateKind::Constant => "constant",
         CandidateKind::Merge => "merge",
         CandidateKind::Group => "group",
+        CandidateKind::Synapse => "synapse",
     }
 }
 
