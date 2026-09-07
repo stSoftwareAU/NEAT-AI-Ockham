@@ -28,7 +28,7 @@ The current Rust implementation includes:
 
 - immutable loading and validation of a forward-only incumbent;
 - authoritative full-corpus baseline scoring through `NEAT-AI-scorer`;
-- sampled hidden-neuron activation statistics;
+- sampled hidden-neuron and input activation statistics;
 - mean-activation neuron ablation with downstream bias compensation;
 - recursive removal/folding of newly redundant structure;
 - exact, cost-aware `IDENTITY` neuron collapse;
@@ -109,7 +109,7 @@ known-good creature
         │
         ├── immutable clone
         ├── full authoritative baseline score
-        └── sampled hidden-neuron activation statistics
+        └── sampled hidden-neuron + input activation statistics
         │
         ▼
 seeded ordering of hidden neurons (random control by default)
@@ -199,8 +199,15 @@ A second rule matters just as much:
 
 Before the sweep starts — and again after every accepted win — Ockham measures
 each hidden neuron's post-activation mean, variance, mean absolute value and
-range. Those numbers feed the [mean-activation ablation](#mean-activation-ablation)
-proposal and the statistics-driven [candidate orderings](#candidate-ordering).
+range, and on the same pass each **input**'s. Those numbers feed the
+[mean-activation ablation](#mean-activation-ablation) proposal, the
+[synapse-source fold values](#synapse-source-fold-values) a single-synapse cut
+folds, and the statistics-driven [candidate orderings](#candidate-ordering).
+
+The two populations are kept apart. Ordering, feature vectors and merge
+discovery read the **hidden** population alone, so an input is never an
+ablation, ordering or merge candidate; input means are looked up separately and
+exist only to value a synapse's source.
 
 They only ever **propose**. Nothing here can accept a cut, so the scan does not
 need full-corpus precision: on a 2.3M-record corpus an exhaustive scan spent
@@ -240,6 +247,30 @@ The sample weakens `min` / `max` most — they are extreme-value statistics — 
 the `narrow-range` ordering signal is the noisiest of the four. That is
 acceptable: an ordering only decides which neuron is tested sooner, and every
 candidate still faces the sampled screen and the full authoritative scorer.
+
+## Synapse-source fold values
+
+Cutting a single synapse `i -> j` folds what its source contributed on average
+into the target's bias, exactly as a neuron ablation does. One resolver answers
+"what scalar does this source contribute", for every kind of source an edge can
+have — so a prune candidate is not confined to the hidden-sourced edges the
+scan happens to cover:
+
+| Source | Value folded | How |
+| --- | --- | --- |
+| `hidden` | sampled mean post-activation | measured by the scan |
+| `constant` | `squash(bias)` | computed exactly — no corpus is read at all |
+| input | sampled mean of the `input-N` wire | measured by the same scan |
+| `output`, unknown uuid | nothing — the edge is not proposed | — |
+
+A constant needs no measurement: NEAT-AI-core rule 15 gives it no squash, so it
+emits its bias and the fold value is exact rather than sampled.
+
+The resolver fails closed. An aggregate squash, a non-finite value, a neuron
+the scan never measured, or a uuid the incumbent does not carry yields no value
+at all, and the visit is recorded as
+[`missing-activation`](docs/blocked-reasons.md) rather than folding a scalar
+nothing measured.
 
 ## Mean-activation ablation
 
@@ -1371,7 +1402,7 @@ Common options:
 | `--screen-stages` | none | Progressive screening ladder: ascending `rate[:margin]` stages, e.g. `0.0025:0.02,0.01,0.05`. Omitted, the screen is one stage at `--screen-sample-rate` — the control. See [Progressive screening](#progressive-screening). |
 | `--screen-reject-margin` | `0.01` | Early-rejection margin for a ladder stage that names none: a sampled Δ at or below its negation is rejected there instead of re-tested. Refused without `--screen-stages`, where it would do nothing. |
 | `--screen-threshold` | `0` | Sampled Δscore required for promotion. |
-| `--stats-sample-records` | `100000` | Records sampled for hidden-neuron activation statistics; `0` scans the whole corpus. See [Activation statistics](#activation-statistics). |
+| `--stats-sample-records` | `100000` | Records sampled for hidden-neuron and input activation statistics; `0` scans the whole corpus. See [Activation statistics](#activation-statistics). |
 | `--merge-correlation` | none | Propose removing one of two hidden neurons whose sampled behaviour correlates at least this strongly, compensating through the survivor; see [Correlated-neuron merging](#correlated-neuron-merging). Omitted: merging is off and no probes are retained. A threshold only proposes — the full scorer still decides. |
 | `--merge-probes` | `64` | Probe activations retained per hidden neuron for merge signatures. |
 | `--merge-band-bits` | `8` | Minimum signature bits a pair must share to be compared at all; widened automatically on a large creature so the comparison count stays linear in the neuron count. |
@@ -2097,7 +2128,7 @@ NEAT-AI-Ockham/
 │       ├── incumbent.rs       # immutable forward-only load + checksum
 │       ├── corpus.rs          # training-data identity / streaming
 │       ├── baseline.rs        # full-corpus scorer baseline
-│       ├── stats.rs           # hidden-neuron activation statistics
+│       ├── stats.rs           # activation statistics + synapse-source values
 │       ├── ablation.rs        # mean-activation + single-synapse ablation + cleanup
 │       ├── collapse.rs        # exact IDENTITY neuron collapse
 │       ├── canonical.rs       # exact zero-risk cleanup pre-pass

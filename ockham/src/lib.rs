@@ -121,7 +121,10 @@ pub use sensitivity::SensitivityIndex;
 pub use signature::{
     DiscoveryConfig, DiscoveryReport, MergeIndex, MergeProposal, discover as discover_merges,
 };
-pub use stats::{ActivationStats, NeuronProbes, NeuronStats, SampleSpec, ensure_activation_stats};
+pub use stats::{
+    ActivationStats, NeuronProbes, NeuronStats, SampleSpec, SourceValue, SourceValueKind,
+    ensure_activation_stats, source_value,
+};
 pub use substitute::{ConstantSubstitution, SubstitutionSkip, substitute_constant};
 pub use sweep::{
     ScreenConfig, ScreenOutcome, ScreenRejection, ScreenedLoser, Sweep, SweepCandidate, draw_seed,

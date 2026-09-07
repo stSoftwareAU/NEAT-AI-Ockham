@@ -5585,6 +5585,7 @@ mod tests {
             stopped_early: false,
             scan_ms: 0,
             from_cache: false,
+            inputs: Vec::new(),
             probes: Vec::new(),
             neurons: creature
                 .neurons
