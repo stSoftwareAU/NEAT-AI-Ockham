@@ -82,13 +82,22 @@ pub struct Report {
     pub hidden: Option<usize>,
     /// Hidden neurons carrying tags, at that same record (Issue #40).
     pub tagged: Option<usize>,
-    /// The coverage denominator — every hidden neuron, tagged included (#74).
+    /// The coverage denominator — every hidden neuron and every synapse.
     ///
-    /// Derived from `hidden`, so a journal written before #74 is reported on
-    /// the new denominator rather than replaying the old overstatement.
+    /// Derived from `hidden` + `synapses`, so a journal written before #74 is
+    /// reported on the new denominator rather than replaying the old
+    /// overstatement, and one written before #137 carries no synapse visits and
+    /// reports exactly the population it measured.
     pub checkable: Option<usize>,
-    /// Hidden UUIDs screened at least once, at that same record.
+    /// Visit keys screened at least once, at that same record.
     pub checked: Option<usize>,
+    /// Synapse visits on that incumbent, one per ordered pair (Issue #137).
+    ///
+    /// The edge half of `checkable`. `None` on a journal with no coverage
+    /// record; `Some(0)` on one written before #137.
+    pub synapses: Option<usize>,
+    /// Synapse visits screened at least once, at that same record (#137).
+    pub synapses_checked: Option<usize>,
     /// Checked UUIDs the razor could propose no cut for (Issue #93).
     ///
     /// A subset of `checked`: the sweep visited them and the structure — an
@@ -283,6 +292,8 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         tagged: None,
         checkable: None,
         checked: None,
+        synapses: None,
+        synapses_checked: None,
         blocked: None,
         blocked_by_reason: None,
         dominant_blocked_reason: None,
@@ -409,6 +420,8 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     hidden,
                     tagged,
                     checked,
+                    synapses,
+                    synapses_checked,
                     blocked,
                     blocked_by_reason,
                     cut,
@@ -421,16 +434,20 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     // comes from `Coverage` so the report can never disagree
                     // with the tag or the commit description.
                     //
-                    // `checkable` is derived from `hidden` rather than read
-                    // back (#74): a journal written before #74 carries the old
-                    // `hidden - tagged` denominator, and replaying it would
-                    // report the very overstatement #74 removed. Deriving is
-                    // exact, not a guess — the two are the same number now.
+                    // `checkable` is derived from `hidden` + `synapses` rather
+                    // than read back (#74, #137): a journal written before #74
+                    // carries the old `hidden - tagged` denominator, and
+                    // replaying it would report the very overstatement #74
+                    // removed. Deriving is exact, not a guess — the population
+                    // is exactly those two counts, and a pre-#137 record
+                    // carries no synapse visits because none were counted.
                     let cov = Coverage {
                         hidden,
                         tagged,
-                        checkable: hidden,
+                        checkable: hidden + synapses,
                         checked,
+                        synapses,
+                        synapses_checked,
                         blocked,
                         // A journal written before #103 carries the total and
                         // no reasons, so the difference is filed as
@@ -443,6 +460,8 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     report.tagged = Some(cov.tagged);
                     report.checkable = Some(cov.checkable);
                     report.checked = Some(cov.checked);
+                    report.synapses = Some(cov.synapses);
+                    report.synapses_checked = Some(cov.synapses_checked);
                     report.blocked = Some(cov.blocked);
                     report.blocked_by_reason = Some(cov.blocked_by_reason);
                     report.dominant_blocked_reason = cov
@@ -837,6 +856,8 @@ mod tests {
                 tagged: 0,
                 checkable: 40,
                 checked: 40,
+                synapses: 0,
+                synapses_checked: 0,
                 blocked: 0,
                 blocked_by_reason: BlockedBreakdown::default(),
                 cut: 1,
@@ -866,6 +887,8 @@ mod tests {
             tagged: 0,
             checkable: 40,
             checked: 12,
+            synapses: 0,
+            synapses_checked: 0,
             blocked: 0,
             blocked_by_reason: BlockedBreakdown::default(),
             cut: 0,
@@ -1244,6 +1267,8 @@ mod tests {
                 tagged: 2,
                 checkable: 12,
                 checked: 2,
+                synapses: 0,
+                synapses_checked: 0,
                 blocked: 0,
                 cut: 0,
                 corpus_identity: None,
@@ -1260,6 +1285,8 @@ mod tests {
                 tagged: 2,
                 checkable: 10,
                 checked: 3,
+                synapses: 0,
+                synapses_checked: 0,
                 blocked: 0,
                 cut: 2,
                 corpus_identity: None,
@@ -1289,6 +1316,8 @@ mod tests {
                 tagged: 42,
                 checkable: 5013,
                 checked: 1204,
+                synapses: 0,
+                synapses_checked: 0,
                 blocked: 0,
                 cut: 7,
                 corpus_identity: None,
@@ -1325,6 +1354,8 @@ mod tests {
                 tagged: 42,
                 checkable: 5013,
                 checked: 4200,
+                synapses: 0,
+                synapses_checked: 0,
                 blocked: 3000,
                 cut: 7,
                 corpus_identity: None,
@@ -1382,6 +1413,8 @@ mod tests {
                 tagged: 0,
                 checkable: 5013,
                 checked: 4200,
+                synapses: 0,
+                synapses_checked: 0,
                 blocked: 412,
                 cut: 0,
                 corpus_identity: Some("corp-aaaa1111".into()),
@@ -1427,6 +1460,8 @@ mod tests {
                 tagged: 0,
                 checkable: 100,
                 checked: 90,
+                synapses: 0,
+                synapses_checked: 0,
                 blocked,
                 cut: 0,
                 corpus_identity: Some(identity.into()),
@@ -1513,6 +1548,8 @@ mod tests {
                 tagged: 0,
                 checkable: 4,
                 checked: 4,
+                synapses: 0,
+                synapses_checked: 0,
                 blocked: 0,
                 cut: 1,
                 corpus_identity: Some("corp-aaaa1111".into()),
@@ -1535,6 +1572,8 @@ mod tests {
                 tagged: 0,
                 checkable: 4,
                 checked: 1,
+                synapses: 0,
+                synapses_checked: 0,
                 blocked: 0,
                 cut: 0,
                 corpus_identity: Some("corp-bbbb2222".into()),

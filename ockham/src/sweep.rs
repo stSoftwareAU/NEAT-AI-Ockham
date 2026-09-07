@@ -381,9 +381,10 @@ impl Sweep {
     /// The one place the edge half of the pool is removed. It exists because
     /// the pool is built before the run can count or report an edge cut —
     /// recording one is settled (Issue #136: a screen record and a verdict may
-    /// both be keyed by a visit key), epoch coverage is Issue #137 and
-    /// accepting a pure synapse win Issue #138 — and a visit whose coverage a
-    /// run cannot count is one it would make again every batch forever.
+    /// both be keyed by a visit key), epoch coverage counts one (Issue #137:
+    /// synapse visits are in the denominator, so an unwalked edge reads as
+    /// honestly unchecked), and accepting a pure synapse win is Issue #138,
+    /// which is what this deferral is now waiting on.
     ///
     /// The count is returned rather than discarded: this reorders the walk
     /// after [`Self::permutation_identity`] is hashed, exactly as

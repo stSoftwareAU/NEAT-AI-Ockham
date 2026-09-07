@@ -1,8 +1,11 @@
 # Blocked neurons, by reason — and what to do about each (Issue #103)
 
-`blocked` counts the hidden neurons the sweep has **visited** and could propose
-no cut for. It has never meant *not pruneable forever*: it means the current
-proposal mechanism does not know how to test that neuron safely.
+`blocked` counts the visits the sweep has made and could propose no cut for. It
+has never meant *not pruneable forever*: it means the current proposal mechanism
+does not know how to test that visit safely. Since Issue #137 a **synapse
+visit** is counted here beside a hidden neuron, because synapse visits are in
+the coverage population — a typed edge is visited, blocked, and therefore
+checked.
 
 Until Issue #103 it was one number, and one number cannot be attacked. Every
 blocked visit now carries a **reason code**, the code rides on the screen record
@@ -20,8 +23,10 @@ in `screens/<host>.jsonl`, and every reporting surface counts by it.
 | `other` | An explicit reason outside the codes above, including a code written by a newer binary than the one reading it. Since #109 a merge that failed its own growth-unit invariant is counted here: it is a fault to report, not a category to build a path for. | Case by case. |
 | `unrecorded` | The record was filed before #103 and carries no reason. | Unknown — it is counted separately rather than guessed at. |
 
-The counts are over UUIDs and **sum to the `blocked` total exactly**, so the
-breakdown is a partition of the blocked population rather than a sample of it.
+The counts are over visit keys and **sum to the `blocked` total exactly**, so
+the breakdown is a partition of the blocked population rather than a sample of
+it. That invariant holds across a mix of blocked neuron and blocked synapse
+visits (#137).
 
 ## The dominant category, and the path built for it
 
@@ -119,7 +124,7 @@ screened are ones nothing was ever going to prune before.
 
 | Surface | What it carries |
 |---|---|
-| `screens/<host>.jsonl` | `blockedReason` per neuron, per screening epoch. |
+| `screens/<host>.jsonl` | `blockedReason` per visit — hidden neuron or synapse — per screening epoch. |
 | `coverage.txt` | The `reasons:` line under `blocked:`, commonest first with each category's share. |
 | `coverage.json` | `blockedByReason`, one fixed key per code. |
 | `experiments.jsonl` | The `coverage` record carries `blockedByReason` beside `blocked`. |

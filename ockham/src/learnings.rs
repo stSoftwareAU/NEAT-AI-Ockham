@@ -2469,11 +2469,14 @@ mod tests {
     /// `"synapse"` record is an ordinary line of both logs at the versions
     /// already in the fleet — an unknown `kind` string and an unknown uuid, not
     /// a new enum variant or a new version — so it deserialises rather than
-    /// failing the load, and the reader that knows only hidden-neuron UUIDs
-    /// ([`crate::coverage::coverage`]) leaves it out of its figures instead of
-    /// panicking on it.
+    /// failing the load.
+    ///
+    /// Rewritten for Issue #137, which widened the coverage population: the
+    /// edge record used to be dropped by a hidden-only reader, and is now
+    /// counted as the visit it always was. The forward-compatibility half of
+    /// the test — both logs load the record, whatever wrote it — is unchanged.
     #[test]
-    fn a_synapse_record_loads_and_is_ignored_by_a_hidden_only_reader() {
+    fn a_synapse_record_loads_and_counts_as_coverage() {
         let key = crate::sweep::synapse_key("h_a", "h_b");
         // The key's separator is a control character, so the wire form escapes
         // it — exactly what a newer host writes into the shared log.
@@ -2491,8 +2494,8 @@ mod tests {
         assert_eq!(filed.uuid, key);
 
         // And through the store, beside a neuron record every reader knows:
-        // both lines load, and the hidden-only coverage reader counts the
-        // neuron alone rather than panicking on the edge.
+        // both lines load, and coverage counts the edge beside the neuron
+        // because `two_hidden` still carries the `h_a → h_b` pair (#137).
         let dir = tempfile::tempdir().unwrap();
         let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
         store.append(&l).unwrap();
@@ -2507,7 +2510,9 @@ mod tests {
 
         let cov = crate::coverage::coverage(&two_hidden(), &HashSet::new(), &screens, 0);
         assert_eq!(cov.hidden, 2);
-        assert_eq!(cov.checked, 1, "the edge record is ignored, not counted");
+        assert_eq!(cov.synapses, 3, "one visit per ordered endpoint pair");
+        assert_eq!(cov.checked, 2, "the edge record is coverage, not noise");
+        assert_eq!(cov.synapses_checked, 1);
     }
 
     #[test]
