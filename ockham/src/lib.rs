@@ -78,6 +78,7 @@ pub mod substitute;
 pub mod sweep;
 pub mod tags;
 pub mod telemetry;
+pub mod throughput;
 
 pub use ablation::{
     Ablation, AblationSkip, GroupAblation, GroupMember, TransformClass, ablate_group, ablate_mean,
@@ -132,6 +133,7 @@ pub use sweep::{
 };
 pub use tags::{CreatureMeta, OckhamProgress, ockham_progress_message};
 pub use telemetry::{CANDIDATE_LOG_FORMAT_VERSION, CandidateOutcome, CandidateRecord, RunStamp};
+pub use throughput::{Funnel, Rate, Throughput, VisitKind};
 
 /// Crate version from `ockham/Cargo.toml`.
 pub fn crate_version() -> &'static str {

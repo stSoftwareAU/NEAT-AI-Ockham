@@ -351,11 +351,20 @@ pub struct VisitCounts {
 
 impl VisitCounts {
     fn observe(&mut self, visit: &str) {
+        self.add(crate::throughput::VisitKind::of_visit(visit));
+    }
+
+    /// Count one entry of an already-classified kind (Issue #162).
+    ///
+    /// The funnel stages downstream of the sweep hold a cohort label rather
+    /// than a visit key, so they classify once and count here — against the
+    /// same two totals, so a stage can never be summed on different terms from
+    /// the visits above it.
+    pub(crate) fn add(&mut self, kind: crate::throughput::VisitKind) {
         self.total += 1;
-        if crate::sweep::parse_synapse_key(visit).is_some() {
-            self.synapses += 1;
-        } else {
-            self.neurons += 1;
+        match kind {
+            crate::throughput::VisitKind::Synapse => self.synapses += 1,
+            crate::throughput::VisitKind::Neuron => self.neurons += 1,
         }
     }
 }
@@ -886,6 +895,17 @@ pub struct CoverageReport {
     /// written before this field existed still deserialises.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passes: Option<Passes>,
+    /// The screening funnel, its rates and the rescan ETAs (Issue #162).
+    ///
+    /// Beside the pass counters rather than inside them: those say how many
+    /// times the razor has been round the creature, and this says how fast it
+    /// is getting round it and how much of the walk ever reaches a scorer. A
+    /// visit is not a proposal and a proposal is not a screen, so the funnel
+    /// keeps them apart and the ETAs say which of the two a rescan is paced by.
+    /// `#[serde(default)]` so an artefact written before this field existed
+    /// still deserialises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub throughput: Option<crate::throughput::Throughput>,
 }
 
 impl CoverageReport {
@@ -898,6 +918,7 @@ impl CoverageReport {
             corpus_identity: None,
             history: None,
             passes: None,
+            throughput: None,
         }
     }
 
@@ -934,6 +955,17 @@ impl CoverageReport {
             out.push_str(&line);
         }
         for line in self.winners.iter().flat_map(Winners::lines) {
+            out.push('\n');
+            out.push_str(&line);
+        }
+        // Last, because it is the only block about *rate* rather than state:
+        // everything above says where the sweep has got to, and these say how
+        // fast it got there and how long another lap would take (Issue #162).
+        for line in self
+            .throughput
+            .iter()
+            .flat_map(crate::throughput::Throughput::lines)
+        {
             out.push('\n');
             out.push_str(&line);
         }
@@ -1796,6 +1828,7 @@ mod tests {
             corpus_identity: None,
             history: None,
             passes: None,
+            throughput: None,
         };
         assert_eq!(
             report.description(100),
@@ -1811,6 +1844,66 @@ mod tests {
                 "dropped:   12 entries over budget (est 18s/creature)"
             )
         );
+    }
+
+    /// The throughput block renders exactly as GRQ will paste it, with every
+    /// funnel stage named apart from the others (Issue #162).
+    #[test]
+    fn the_throughput_block_renders_exactly_as_grq_will_paste_it() {
+        let kinds = |neurons: usize, synapses: usize| {
+            let mut counts = VisitCounts::default();
+            for _ in 0..neurons {
+                counts.add(crate::throughput::VisitKind::Neuron);
+            }
+            for _ in 0..synapses {
+                counts.add(crate::throughput::VisitKind::Synapse);
+            }
+            counts
+        };
+        let funnel = crate::throughput::Funnel {
+            blocked: kinds(8680, 29_295),
+            proposed: kinds(420, 2105),
+            sample_screened: kinds(312, 1840),
+            full_scored: kinds(24, 60),
+            ..crate::throughput::Funnel::default()
+        };
+        let report = CoverageReport {
+            coverage: fleet_coverage(),
+            newly_screened: 100,
+            winners: None,
+            corpus_identity: None,
+            history: None,
+            passes: None,
+            // One hour of measured wall clock, so each count reads straight
+            // off as its own rate.
+            throughput: Some(crate::throughput::Throughput::measured(
+                funnel,
+                kinds(9100, 31_400),
+                kinds(0, 0),
+                3_600_000,
+                5013,
+                2000,
+            )),
+        };
+        let block = report.description(100);
+        assert!(
+            block.ends_with(concat!(
+                "funnel:    neurons 9100 visits · 8680 blocked · 420 proposed · 312 screened · 24 scored\n",
+                "funnel:    synapses 31400 visits · 29295 blocked · 2105 proposed · 1840 screened · 60 scored\n",
+                "rate:      neurons 312 screened/h · synapses 1840 screened/h · full rescan ~0.8h\n",
+                "eta:       visit rescan ~0.2h · scored rescan ~0.8h · 5013 neurons + 2000 edges eligible"
+            )),
+            "{block}"
+        );
+    }
+
+    /// A report with no throughput renders exactly as it did before #162.
+    #[test]
+    fn a_report_without_throughput_renders_no_rate_lines() {
+        let block = CoverageReport::new(fleet_coverage()).description(100);
+        assert!(!block.contains("funnel:"), "{block}");
+        assert!(!block.contains("rate:"), "{block}");
+        assert!(!block.contains("eta:"), "{block}");
     }
 
     /// Issue #77: the per-run figure is rendered on every run, zero included —
@@ -1867,6 +1960,7 @@ mod tests {
             corpus_identity: None,
             history: None,
             passes: None,
+            throughput: None,
         };
         let block = report.description(100);
         assert!(block.ends_with("winners:   4 screened · 0 confirmed · 0 applied · 0 carried"));
@@ -1887,6 +1981,7 @@ mod tests {
             corpus_identity: None,
             history: None,
             passes: None,
+            throughput: None,
         };
         let block = report.description(100);
         assert!(
@@ -1906,6 +2001,7 @@ mod tests {
             corpus_identity: None,
             history: None,
             passes: None,
+            throughput: None,
         };
         write_files(&dir, &report, 100).unwrap();
 
