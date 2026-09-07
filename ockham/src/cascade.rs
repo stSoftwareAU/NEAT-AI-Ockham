@@ -175,6 +175,24 @@ impl<'a> CascadeIndex<'a> {
         slot
     }
 
+    /// Every synapse from `from_uuid` to `to_uuid`, by index.
+    ///
+    /// The **whole** pair, not the first match: NEAT-AI-core rule 26 lets a
+    /// pair repeat with distinct roles, and `ablation::ablate_synapse` requires
+    /// every edge on the pair to be ordinary before it will cut any of them. An
+    /// ordinary edge listed ahead of a typed one would otherwise be predicted
+    /// as cuttable and refused in practice.
+    fn synapses_between(&self, from_uuid: &str, to_uuid: &str) -> Vec<usize> {
+        let (Some(&from), Some(&to)) = (self.slots.get(from_uuid), self.slots.get(to_uuid)) else {
+            return Vec::new();
+        };
+        self.out_syn[from]
+            .iter()
+            .copied()
+            .filter(|&syn| self.syn_to[syn] == to)
+            .collect()
+    }
+
     /// Structure cutting every hidden neuron in `uuids` would remove.
     ///
     /// UUIDs the creature does not carry as hidden neurons contribute nothing:
@@ -197,21 +215,55 @@ impl<'a> CascadeIndex<'a> {
             fold_queue: (0..self.kind.len()).collect(),
             estimate: CascadeEstimate::default(),
         };
-        for uuid in uuids {
-            let Some(&slot) = self.slots.get(uuid) else {
-                continue;
-            };
-            if self.kind[slot] != Kind::Hidden || state.removed[slot] {
+        for visit in uuids {
+            // A visit key is a hidden neuron UUID or a synapse key (#138). The
+            // neuron list is consulted first, exactly as `propose` does, so a
+            // neuron whose UUID happens to look like an edge key is estimated
+            // as the neuron the creature actually carries.
+            if let Some(&slot) = self.slots.get(visit) {
+                if self.kind[slot] != Kind::Hidden || state.removed[slot] {
+                    continue;
+                }
+                if state.cut_blocked(slot) {
+                    return CascadeEstimate {
+                        blocked: true,
+                        ..CascadeEstimate::default()
+                    };
+                }
+                state.estimate.requested_neurons += 1;
+                state.strike(slot);
                 continue;
             }
-            if state.cut_blocked(slot) {
+            let Some((from_uuid, to_uuid)) = crate::sweep::parse_synapse_key(visit) else {
+                continue;
+            };
+            let edges = self.synapses_between(from_uuid, to_uuid);
+            let Some(&syn) = edges.first() else {
+                continue;
+            };
+            if state.cut_synapse[syn] {
+                continue;
+            }
+            // The structural refusals `ablation::ablate_synapse` makes, mirrored
+            // here so the estimate never promises a cut the razor cannot take:
+            // any typed edge on the pair carries a role a bias cannot absorb, an
+            // aggregate target is not a sum a fold can reach, and a source the
+            // neuron list does not carry — an implicit `input-N` — has no
+            // activation the transform may fold away.
+            //
+            // The one refusal not modelled is a source whose activation the
+            // corpus scan never measured: that is a fact about the statistics,
+            // not about the topology this index holds.
+            if edges.iter().any(|&e| self.typed[e])
+                || self.aggregate[self.syn_to[syn]]
+                || self.kind[self.syn_from[syn]] == Kind::External
+            {
                 return CascadeEstimate {
                     blocked: true,
                     ..CascadeEstimate::default()
                 };
             }
-            state.estimate.requested_neurons += 1;
-            state.strike(slot);
+            state.cut_edge(syn);
         }
         state.drain();
         let mut estimate = state.estimate;
@@ -282,6 +334,21 @@ impl Sweeper<'_, '_> {
             self.out_deg[from] -= 1;
             self.revisit(from);
         }
+    }
+
+    /// Cut one synapse and queue both endpoints for the cleanup rules (#138).
+    ///
+    /// The edge half of [`Self::strike`]: a pure edge cut removes no neuron of
+    /// its own, and whatever it strands is found by the same drain.
+    fn cut_edge(&mut self, syn: usize) {
+        self.cut_synapse[syn] = true;
+        self.estimate.synapses += 1;
+        let from = self.index.syn_from[syn];
+        let to = self.index.syn_to[syn];
+        self.out_deg[from] -= 1;
+        self.in_deg[to] -= 1;
+        self.revisit(from);
+        self.revisit(to);
     }
 
     /// Re-test `slot` against both rules once the graph around it changed.
@@ -420,6 +487,103 @@ mod tests {
 
     fn estimate(creature: &CreatureExport, uuid: &str) -> CascadeEstimate {
         CascadeIndex::new(creature).estimate(&[uuid])
+    }
+
+    /// Issue #138: an accept is audited against what the dry run predicted, so
+    /// a **synapse** visit key has to estimate the edge it names — a zero
+    /// estimate would report every pure edge cut as an infinite surprise.
+    #[test]
+    fn a_synapse_visit_key_estimates_the_edge_it_names() {
+        let creature = crate::fixtures::shortcut_edge_creature();
+        let key = crate::sweep::synapse_key("a", "output-0");
+        let got = estimate_cut(&creature, &[key]);
+        assert!(!got.blocked, "{got:?}");
+        assert_eq!(got.requested_neurons, 0, "no neuron is cut: {got:?}");
+        assert_eq!(got.cascade_hidden, 0, "nothing is stranded: {got:?}");
+        assert_eq!(got.synapses, 1, "{got:?}");
+        assert_eq!(got.growth_units, growth_units(0, 1));
+    }
+
+    /// An edge cut that strands the neuron behind it counts what goes with it.
+    #[test]
+    fn a_synapse_cut_counts_the_structure_it_strands() {
+        let creature = crate::fixtures::shortcut_edge_creature();
+        // `b` feeds only the output, so cutting that edge leaves it dead — and
+        // `a → b` goes with it.
+        let key = crate::sweep::synapse_key("b", "output-0");
+        let got = estimate_cut(&creature, &[key]);
+        assert!(!got.blocked, "{got:?}");
+        assert_eq!(got.requested_neurons, 0, "the request is an edge: {got:?}");
+        assert_eq!(got.cascade_hidden, 1, "b is stranded: {got:?}");
+        assert_eq!(got.synapses, 2, "the edge and `a → b`: {got:?}");
+        assert_eq!(got.growth_units, growth_units(1, 2));
+    }
+
+    /// A typed edge is one the razor fails closed on, so the dry run predicts
+    /// the refusal rather than a saving it can never take (Issue #138).
+    #[test]
+    fn a_typed_edge_is_predicted_as_refused() {
+        let mut creature = crate::fixtures::shortcut_edge_creature();
+        creature.synapses = vec![
+            crate::fixtures::synapse("input-0", "a", 0.7),
+            crate::fixtures::synapse("a", "b", 0.5),
+            crate::fixtures::typed_synapse("a", "output-0", 0.3, "condition"),
+            crate::fixtures::synapse("b", "output-0", 1.0),
+        ];
+        let got = estimate_cut(&creature, &[crate::sweep::synapse_key("a", "output-0")]);
+        assert!(got.blocked, "{got:?}");
+        assert_eq!(got.synapses, 0, "a refused cut saves nothing: {got:?}");
+    }
+
+    /// The whole pair decides, not the first edge on it: `ablate_synapse`
+    /// requires **every** edge on the pair to be ordinary, so an ordinary edge
+    /// listed ahead of a typed one must still be predicted as refused (#138).
+    #[test]
+    fn an_ordinary_edge_beside_a_typed_one_on_the_same_pair_is_predicted_as_refused() {
+        let mut creature = crate::fixtures::shortcut_edge_creature();
+        creature.synapses = vec![
+            crate::fixtures::synapse("input-0", "a", 0.7),
+            crate::fixtures::synapse("a", "b", 0.5),
+            crate::fixtures::synapse("a", "output-0", 0.3),
+            crate::fixtures::typed_synapse("a", "output-0", 0.4, "condition"),
+            crate::fixtures::synapse("b", "output-0", 1.0),
+        ];
+        let key = crate::sweep::synapse_key("a", "output-0");
+        let got = estimate_cut(&creature, std::slice::from_ref(&key));
+        assert!(got.blocked, "{got:?}");
+        // The transform agrees, which is the whole point of mirroring it.
+        assert!(
+            crate::ablation::ablate_synapse(&creature, "a", "output-0", 0.0).is_err(),
+            "the razor refuses this pair, so the estimate must too"
+        );
+    }
+
+    /// The razor cuts an edge only where the source is a **listed** neuron, so
+    /// an edge out of an implicit `input-N` is predicted as refused rather than
+    /// as the largest cascade on the creature (Issue #138).
+    #[test]
+    fn an_edge_out_of_an_input_is_predicted_as_refused() {
+        let creature = crate::fixtures::shortcut_edge_creature();
+        let got = estimate_cut(&creature, &[crate::sweep::synapse_key("input-0", "a")]);
+        assert!(got.blocked, "{got:?}");
+        assert_eq!(got.synapses, 0, "a refused cut saves nothing: {got:?}");
+        assert!(
+            crate::ablation::ablate_synapse(&creature, "input-0", "a", 0.0).is_err(),
+            "the razor refuses an unlisted source, so the estimate must too"
+        );
+    }
+
+    /// An edge the creature does not carry names no structure, so it is stepped
+    /// over exactly as an unknown neuron UUID is.
+    #[test]
+    fn an_edge_the_creature_does_not_carry_estimates_nothing() {
+        let got = estimate_cut(
+            &crate::fixtures::shortcut_edge_creature(),
+            &[crate::sweep::synapse_key("a", "nowhere")],
+        );
+        assert!(!got.blocked, "{got:?}");
+        assert_eq!(got.synapses, 0, "{got:?}");
+        assert_eq!(got.growth_units, 0.0);
     }
 
     #[test]

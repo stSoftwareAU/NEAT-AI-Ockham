@@ -1,8 +1,11 @@
-# Blocked neurons, by reason — and what to do about each (Issue #103)
+# Blocked visits, by reason — and what to do about each (Issue #103)
 
-`blocked` counts the hidden neurons the sweep has **visited** and could propose
-no cut for. It has never meant *not pruneable forever*: it means the current
-proposal mechanism does not know how to test that neuron safely.
+`blocked` counts the visits the sweep has made and could propose no cut for. It
+has never meant *not pruneable forever*: it means the current proposal mechanism
+does not know how to test that visit safely. Since Issue #137 a **synapse
+visit** is counted here beside a hidden neuron, because synapse visits are in
+the coverage population — a typed edge is visited, blocked, and therefore
+checked.
 
 Until Issue #103 it was one number, and one number cannot be attacked. Every
 blocked visit now carries a **reason code**, the code rides on the screen record
@@ -12,16 +15,44 @@ in `screens/<host>.jsonl`, and every reporting surface counts by it.
 
 | Code | What it means | Can the razor build a candidate? |
 |---|---|---|
-| `aggregate-squash` | The neuron, or something a bias fold would touch, uses an aggregate squash (`IF`, `MEAN`, `MINIMUM`, …) that does not sum its inputs. | **Yes, since #103** — constant substitution. The code is still recorded where no substitution was reachable, chiefly an IDENTITY collapse blocked by an aggregate target with no activation statistic to fall back on. |
-| `unsafe-topology` | The transform cannot treat the neuron as an ordinary hidden unit — it is not hidden, or not on the creature at all. Since #103 the typed-synapse case this code used to cover is proposed rather than blocked, because constant substitution keeps the role-carrying edge. Since #108 an empty group cut is counted here too: a group with no members would remove nothing, and a candidate identical to the incumbent is refused rather than scored. Since #109 a refused merge lands here as well — a survivor that does not already precede the target, a merge that would connect a neuron to itself, or a removed neuron feeding its own survivor. | Case by case; the recorded cases are structural faults, not categories to build a path for. |
-| `missing-activation` | No finite sampled activation statistic for the neuron. | No — there is no value to substitute. See below. |
+| `aggregate-squash` | The neuron, or something a bias fold would touch, uses an aggregate squash (`IF`, `MEAN`, `MINIMUM`, …) that does not sum its inputs. Since #135 a synapse visit into an aggregate target is counted here: the bias fold is not a sum. | **Yes, since #103** — constant substitution. The code is still recorded where no substitution was reachable, chiefly an IDENTITY collapse blocked by an aggregate target with no activation statistic to fall back on. |
+| `unsafe-topology` | The transform cannot treat the neuron as an ordinary hidden unit — it is not hidden, or not on the creature at all. Since #103 the typed-synapse case this code used to cover is proposed rather than blocked, because constant substitution keeps the role-carrying edge. Since #108 an empty group cut is counted here too: a group with no members would remove nothing, and a candidate identical to the incumbent is refused rather than scored. Since #109 a refused merge lands here as well — a survivor that does not already precede the target, a merge that would connect a neuron to itself, or a removed neuron feeding its own survivor. Since #133 a single-synapse ablation asked for an edge the incumbent does not carry is counted here: there is no such edge to cut, and no constant to substitute for one. Since #135 a **synapse visit** on a typed pair, or on a pair whose source is not a listed neuron, lands here too: the edge is visited and fails closed rather than being filtered out of the pool, because a blocked visit is still coverage. The source's fold value is resolved first, so an edge that is *both* structurally unsafe and unmeasured is filed under `missing-activation` — the value the cut would have needed is the refusal nearest the razor. | Case by case; the recorded cases are structural faults, not categories to build a path for. |
+| `missing-activation` | No finite sampled activation statistic for the neuron. Since #135 a synapse visit whose source resolves to no fold value is counted here — the resolver failed closed rather than guessing a scalar. | No — there is no value to substitute. See below. |
 | `validation-failed` | A candidate was built and NEAT-AI-core `creature.validate()` rejected it. | No — failing closed is the point. |
 | `no-output-path` | The neuron feeds nothing, so no candidate could be built around it. | Not reachable on a valid incumbent (rule 18). |
 | `other` | An explicit reason outside the codes above, including a code written by a newer binary than the one reading it. Since #109 a merge that failed its own growth-unit invariant is counted here: it is a fault to report, not a category to build a path for. | Case by case. |
 | `unrecorded` | The record was filed before #103 and carries no reason. | Unknown — it is counted separately rather than guessed at. |
 
-The counts are over UUIDs and **sum to the `blocked` total exactly**, so the
-breakdown is a partition of the blocked population rather than a sample of it.
+The counts are over visit keys and **sum to the `blocked` total exactly**, so
+the breakdown is a partition of the blocked population rather than a sample of
+it. That invariant holds across a mix of blocked neuron and blocked synapse
+visits (#137).
+
+## What a synapse visit can report (Issue #138)
+
+Since #138 the run walks the edge half of the pool as well as the neuron half,
+so these codes are the ones an operator will actually see against a visit key
+rather than a neuron UUID. A synapse visit reports exactly four of the codes
+above, and no others:
+
+| Code | When a synapse visit reports it |
+|---|---|
+| `missing-activation` | The source resolved to no fold value — an unmeasured hidden source, an unparsable constant, or an output as a source. The resolver runs **first**, so an edge that is both unmeasured and structurally unsafe is filed here: the value the cut would have needed is the refusal nearest the razor. |
+| `unsafe-topology` | The pair is typed, the source is not a listed neuron or an input the creature carries, or the incumbent carries no such edge at all. |
+| `aggregate-squash` | The destination uses an aggregate squash, so the bias fold the cut compensates through is not a sum. |
+| `validation-failed` | The cut was built and NEAT-AI-core `creature.validate()` rejected the result. |
+
+An edge out of an implicit `input-N` is the common `unsafe-topology` case on a
+real creature: the razor cuts an edge only where the source is a **listed**
+neuron, so those visits are walked, refused and counted — which is what stops
+them being asked again on every pass. `no-output-path` and `other` are neuron
+paths and are never reported for an edge; `unrecorded` belongs to records filed
+before #103 and pre-dates synapse visits entirely.
+
+Nothing weighs the edge. No weight, magnitude or contribution threshold decides
+whether a synapse visit is proposed, because the full-corpus scorer is the sole
+acceptance gate — a refusal here is always structural or a missing value, never
+a judgement that the edge was too small to bother with.
 
 ## The dominant category, and the path built for it
 
@@ -119,7 +150,7 @@ screened are ones nothing was ever going to prune before.
 
 | Surface | What it carries |
 |---|---|
-| `screens/<host>.jsonl` | `blockedReason` per neuron, per screening epoch. |
+| `screens/<host>.jsonl` | `blockedReason` per visit — hidden neuron or synapse — per screening epoch. |
 | `coverage.txt` | The `reasons:` line under `blocked:`, commonest first with each category's share. |
 | `coverage.json` | `blockedByReason`, one fixed key per code. |
 | `experiments.jsonl` | The `coverage` record carries `blockedByReason` beside `blocked`. |
