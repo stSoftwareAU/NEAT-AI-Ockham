@@ -71,6 +71,11 @@ pub struct Report {
     /// A restart says a run screened the creature end to end and rolled into
     /// re-screening the stalest neurons — the opposite of the idle spin it
     /// replaced.
+    ///
+    /// **Strict**: it counts whole permutations that reached their end, so a
+    /// run whose accepted cuts kept rebuilding the sweep reports zero here
+    /// however far the razor travelled (Issue #153). Read it beside
+    /// `passes.equivalent_passes_epoch`, which is what survives a rebuild.
     pub sweep_restarts: u64,
     /// Screening batches run after a replay accept ended the search (#91).
     ///
