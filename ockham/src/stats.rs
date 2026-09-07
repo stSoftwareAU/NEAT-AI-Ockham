@@ -790,7 +790,7 @@ fn sampled(measured: Option<&NeuronStats>) -> Option<SourceValue> {
 /// `IDENTITY` is the path every valid creature takes, and it is exactly what
 /// the compiled network activates the neuron to. Validation rejects a squashed
 /// constant before it can reach here; the squash is read rather than assumed so
-/// that an aggregate or unparseable one yields no value instead of a guess.
+/// that an aggregate or unparsable one yields no value instead of a guess.
 fn constant_value(neuron: &NeuronExport) -> Option<f64> {
     let squash = parse_squash_name(neuron.squash.as_deref().unwrap_or("IDENTITY")).ok()?;
     // An aggregate is a function of the inputs it has, not of its bias, so

@@ -195,7 +195,7 @@ Added to `ockham/src/stats.rs`:
   `apply_squash(squash, bias)` within `1e-12`, and a second bias resolves
   differently, so the value is not hardcoded.
 - `an_aggregate_constant_an_output_and_an_unknown_uuid_resolve_to_none` — plus
-  an unparseable squash, `input-2` past the declared width, `input-007`, and an
+  an unparsable squash, `input-2` past the declared width, `input-007`, and an
   unmeasured hidden neuron.
 - `input_means_are_recorded_by_the_scan_and_match_a_hand_calculation` — two
   inputs over a four-record corpus against hand-computed means (2.5 and 1.0),
