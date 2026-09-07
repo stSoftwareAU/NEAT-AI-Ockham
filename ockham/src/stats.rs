@@ -746,9 +746,9 @@ pub struct SourceValue {
 ///   a non-finite value — `None`.
 ///
 /// It fails closed rather than guessing: every `None` is a fold this run cannot
-/// justify, and the caller records it as
-/// [`crate::blocked::BlockedReason::MissingActivation`] instead of folding a
-/// scalar nothing measured.
+/// justify, so the caller proposes no cut for that edge instead of folding a
+/// scalar nothing measured. Which reason code the blocked visit is filed under
+/// is the caller's to decide — see `docs/blocked-reasons.md`.
 pub fn source_value(
     creature: &CreatureExport,
     stats: &ActivationStats,

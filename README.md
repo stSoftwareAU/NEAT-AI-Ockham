@@ -269,8 +269,11 @@ emits its bias and the fold value is exact rather than sampled.
 The resolver fails closed. An aggregate squash, a non-finite value, a neuron
 the scan never measured, or a uuid the incumbent does not carry yields no value
 at all, so no cut is proposed for that edge rather than a scalar nothing
-measured being folded — the shape a blocked visit is recorded under as
-[`missing-activation`](docs/blocked-reasons.md).
+measured being folded.
+
+The resolver is the value side of the single-synapse cut: it is what supplies
+`ablate_synapse`'s scalar. The sweep that walks a creature's edges and asks for
+one lands with the rest of that work, so nothing calls it on a run yet.
 
 ## Mean-activation ablation
 
