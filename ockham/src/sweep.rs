@@ -86,6 +86,50 @@ pub fn parse_synapse_key(key: &str) -> Option<(&str, &str)> {
     Some((from_uuid, to_uuid))
 }
 
+/// Every visit `creature` carries: one entry per neuron UUID and one
+/// [`synapse_key`] per ordered endpoint pair (Issue #136).
+///
+/// The presence set every still-present filter in [`crate::learnings`] reads.
+/// A synapse visit is a visit like any other, so a record keyed by an edge the
+/// creature still carries has to survive a filter that only knew hidden-neuron
+/// UUIDs — dropped, the edge looks permanently unchecked and the sweep visits
+/// it again on every pass forever.
+///
+/// Typed edges are in it too. The razor refuses to cut one, the sweep still
+/// visits it, and the blocked record that visit files is precisely the coverage
+/// that stops it being asked again — so the pair it names must read as present.
+pub fn present_visits(creature: &CreatureExport) -> HashSet<String> {
+    creature
+        .neurons
+        .iter()
+        .map(|n| n.uuid.clone())
+        .chain(
+            creature
+                .synapses
+                .iter()
+                .map(|s| synapse_key(&s.from_uuid, &s.to_uuid)),
+        )
+        .collect()
+}
+
+/// Whether `creature` still carries what the visit key `visit` names (#136).
+///
+/// The single-visit form of [`present_visits`], for a caller checking one key
+/// against a creature that moves under it. A listed neuron wins the tie exactly
+/// as it does in [`propose`]: a neuron whose UUID happens to be shaped like a
+/// synapse key is a neuron, not an edge.
+pub fn visit_present(creature: &CreatureExport, visit: &str) -> bool {
+    if creature.neurons.iter().any(|n| n.uuid == visit) {
+        return true;
+    }
+    parse_synapse_key(visit).is_some_and(|(from_uuid, to_uuid)| {
+        creature
+            .synapses
+            .iter()
+            .any(|s| s.from_uuid == from_uuid && s.to_uuid == to_uuid)
+    })
+}
+
 /// Kind of pruning proposal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -335,10 +379,11 @@ impl Sweep {
     /// Drop every synapse visit from the walk, returning how many went (#135).
     ///
     /// The one place the edge half of the pool is removed. It exists because
-    /// the pool is built before the run can record, count or report an edge
-    /// cut — screen-record and learnings parity is Issue #136, epoch coverage
-    /// Issue #137, and accepting a pure synapse win Issue #138 — and a visit a
-    /// run cannot record is a visit it would make again every batch forever.
+    /// the pool is built before the run can count or report an edge cut —
+    /// recording one is settled (Issue #136: a screen record and a verdict may
+    /// both be keyed by a visit key), epoch coverage is Issue #137 and
+    /// accepting a pure synapse win Issue #138 — and a visit whose coverage a
+    /// run cannot count is one it would make again every batch forever.
     ///
     /// The count is returned rather than discarded: this reorders the walk
     /// after [`Self::permutation_identity`] is hashed, exactly as
@@ -2062,6 +2107,60 @@ mod tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), visits, "no visit is made twice");
+    }
+
+    /// Issue #136: a standing full-corpus rejection of an edge cut reaches the
+    /// avoid set and the sweep skips that visit as a known failure, rather than
+    /// re-proposing a cut the fleet has already scored and judged.
+    #[test]
+    fn a_known_failing_synapse_visit_is_skipped_not_re_proposed() {
+        use crate::learnings::{Learning, Outcome, ReplayConfig, known_failures};
+        let creature = two_hidden();
+        let stats = stats_with_inputs(&creature);
+        let key = synapse_key("h_a", "output-0");
+        let known = vec![Learning {
+            version: 1,
+            uuid: key.clone(),
+            kind: "synapse".into(),
+            outcome: Outcome::Rejected,
+            unix_secs: 10,
+            host: "t".into(),
+            full_delta: None,
+            group: None,
+        }];
+        let avoid = known_failures(&known, &creature, ReplayConfig::default(), 20, 1e-6);
+        assert!(avoid.contains(&key), "{avoid:?}");
+
+        let mut sweep = Sweep::with_ordering(&creature, &stats, 4, OrderingConfig::default());
+        let mut skipped = None;
+        while !sweep.exhausted() && skipped.is_none() {
+            let (_, skips) =
+                sweep.fill_batch_avoiding(&creature, &stats, MergeIndex::empty(), 1, &avoid);
+            skipped = skips.into_iter().find(|s| s.uuid == key);
+        }
+        let skipped = skipped.expect("the known-failing synapse visit is reached and skipped");
+        assert_eq!(skipped.reason, KNOWN_FAILURE_REASON);
+        assert_eq!(skipped.blocked, None, "a judged cut is not blocked");
+    }
+
+    /// Presence is about the visit, not its shape: a neuron UUID, an edge the
+    /// creature carries, and nothing else (Issue #136).
+    #[test]
+    fn present_visits_covers_neurons_and_edges_and_nothing_else() {
+        let creature = two_hidden();
+        let present = present_visits(&creature);
+        assert!(present.contains("h_a"));
+        assert!(present.contains(&synapse_key("h_a", "output-0")));
+        assert!(!present.contains(&synapse_key("h_b", "h_a")));
+        assert_eq!(
+            present.len(),
+            creature.neurons.len() + creature.synapses.len()
+        );
+        for visit in Sweep::new(&creature, 2).order {
+            assert!(visit_present(&creature, &visit), "{visit}");
+        }
+        assert!(!visit_present(&creature, &synapse_key("h_b", "h_a")));
+        assert!(!visit_present(&creature, "nope"));
     }
 
     /// Selection treats a synapse key as an ordinary member of the walk.

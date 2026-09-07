@@ -1,7 +1,8 @@
 //! Fleet-shared cache of full-corpus prune verdicts.
 //!
-//! Forests caches portable patches (feature indices). Ockham caches **hidden
-//! neuron UUIDs**: a prune is only useful while that uuid is still in the
+//! Forests caches portable patches (feature indices). Ockham caches **visit
+//! keys** — a hidden neuron UUID, or the synapse visit key of one edge
+//! (Issue #136): a prune is only useful while what it names is still in the
 //! fittest creature. Known wins that remain are tried first (quick check-in).
 //! Known full-corpus failures are skipped until [`DEFAULT_RETRY_AFTER_SECS`].
 //!
@@ -91,7 +92,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::blocked::BlockedReason;
-use crate::sweep::CandidateKind;
+use crate::sweep::{CandidateKind, present_visits};
 
 /// Current learnings format version.
 pub const LEARNINGS_FORMAT_VERSION: u32 = 1;
@@ -115,9 +116,11 @@ pub enum Outcome {
 pub struct Learning {
     /// Format version.
     pub version: u32,
-    /// Hidden neuron UUID that was pruned.
+    /// What was pruned: a hidden neuron UUID, or the synapse visit key of the
+    /// edge that was cut ([`crate::sweep::synapse_key`], Issue #136).
     pub uuid: String,
-    /// `identity` or `ablation`.
+    /// [`kind_label`] of the transform judged — `ablation`, `identity`,
+    /// `constant`, `merge`, `group` or `synapse`.
     pub kind: String,
     /// Full-corpus outcome.
     pub outcome: Outcome,
@@ -246,14 +249,19 @@ pub enum ScreenOutcomeKind {
     Loser,
 }
 
-/// One hidden neuron the fleet has already looked at.
+/// One visit the fleet has already made — a hidden neuron, or a synapse.
 ///
-/// A coverage fact — "this uuid has been looked at" — used for
-/// `sweep X of Y hidden` reporting and unchecked-first selection. It is
-/// **never** a prune verdict: only [`Learning`] carries those.
+/// A coverage fact — "this visit has been looked at" — used for `sweep X of Y`
+/// reporting and unchecked-first selection. It is **never** a prune verdict:
+/// only [`Learning`] carries those.
 ///
-/// [`Self::kind`] says *what happened on the visit*: `identity` or `ablation`
-/// for a candidate the scorer actually screened, and [`SCREEN_KIND_SKIPPED`] or
+/// [`Self::uuid`] carries a hidden-neuron UUID or a synapse visit key
+/// (Issue #136); the shape of the record is the same either way, so a scored
+/// synapse candidate needs no format version bump and an older host reads the
+/// record without failing its load.
+///
+/// [`Self::kind`] says *what happened on the visit*: `identity`, `ablation` or
+/// `synapse` for a candidate the scorer actually screened, and [`SCREEN_KIND_SKIPPED`] or
 /// [`SCREEN_KIND_KNOWN_FAILURE`] for a visit that produced no candidate to
 /// score (Issue #93). A visit that could not propose is still coverage — the
 /// sweep has been there and there was nothing to try — and filing it is what
@@ -266,9 +274,12 @@ pub enum ScreenOutcomeKind {
 pub struct Screened {
     /// Format version.
     pub version: u32,
-    /// Hidden neuron UUID that was screened.
+    /// What was visited: a hidden neuron UUID, or the synapse visit key of the
+    /// edge that was looked at ([`crate::sweep::synapse_key`], Issue #136).
     pub uuid: String,
-    /// `identity` or `ablation`.
+    /// What happened on the visit: a [`kind_label`] — `identity`, `ablation`,
+    /// `synapse`, … — for a scored candidate, or [`SCREEN_KIND_SKIPPED`] /
+    /// [`SCREEN_KIND_KNOWN_FAILURE`] for a visit that scored nothing.
     pub kind: String,
     /// Which side of the screen it landed on — informational only.
     pub outcome: ScreenOutcomeKind,
@@ -841,7 +852,12 @@ pub fn kind_label(kind: CandidateKind) -> &'static str {
     }
 }
 
-/// Latest **individual** outcome per uuid still present on `creature`.
+/// Latest **individual** outcome per visit key still present on `creature`.
+///
+/// `present` is [`crate::sweep::present_visits`]: a hidden-neuron UUID or a
+/// synapse visit key (Issue #136), because the fleet judges edge cuts as well
+/// as neuron cuts and a verdict about an edge the creature still carries is
+/// every bit as live as one about a neuron.
 ///
 /// Group verdicts are skipped (Issue #108). A group cut was judged as a
 /// neighbourhood, so its record says nothing about whether that neuron comes
@@ -851,7 +867,7 @@ pub fn kind_label(kind: CandidateKind) -> &'static str {
 /// instead, keyed on the membership rather than on any one neuron.
 fn latest_by_uuid<'a>(
     known: &'a [Learning],
-    present: &HashSet<&str>,
+    present: &HashSet<String>,
 ) -> HashMap<&'a str, &'a Learning> {
     let mut latest: HashMap<&str, &Learning> = HashMap::new();
     for l in known {
@@ -874,7 +890,7 @@ fn latest_by_uuid<'a>(
 ///
 /// [`ReplayConfig::max`] of `0` means every still-present known win.
 pub fn known_wins(known: &[Learning], creature: &CreatureExport, cfg: ReplayConfig) -> Vec<String> {
-    let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
+    let present = present_visits(creature);
     let mut wins: Vec<&Learning> = latest_by_uuid(known, &present)
         .into_values()
         .filter(|l| l.outcome == Outcome::Accepted)
@@ -894,8 +910,12 @@ pub fn known_wins(known: &[Learning], creature: &CreatureExport, cfg: ReplayConf
 /// current signatures happen to offer a partner — a different cut wearing the
 /// winner's uuid. Restricting the index to these uuids keeps every replayed
 /// verdict the transform it was judged as.
+///
+/// Merge-only whatever else the history holds: a `synapse` verdict (Issue #136)
+/// names an edge, not a neuron the merge index could ever pair, so it is
+/// filtered out here by the same kind test that keeps an ablation out.
 pub fn merge_wins(known: &[Learning], creature: &CreatureExport) -> HashSet<String> {
-    let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
+    let present = present_visits(creature);
     latest_by_uuid(known, &present)
         .into_values()
         .filter(|l| l.outcome == Outcome::Accepted && l.kind == kind_label(CandidateKind::Merge))
@@ -915,7 +935,7 @@ pub fn known_failures(
     now: u64,
     min_improvement: f64,
 ) -> HashSet<String> {
-    let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
+    let present = present_visits(creature);
     latest_by_uuid(known, &present)
         .into_values()
         .filter(|l| {
@@ -976,7 +996,7 @@ pub fn ranked_confirmed(
     creature: &CreatureExport,
     min_improvement: f64,
 ) -> Vec<ConfirmedWin> {
-    let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
+    let present = present_visits(creature);
     let mut out: Vec<ConfirmedWin> = latest_by_uuid(known, &present)
         .into_values()
         .filter(|l| l.outcome == Outcome::Accepted || confirmed_positive(l, min_improvement))
@@ -1021,6 +1041,9 @@ pub fn confirmed_groups(
     creature: &CreatureExport,
     min_improvement: f64,
 ) -> Vec<Vec<String>> {
+    // Neurons only, deliberately: a group's membership is hidden neurons, and a
+    // synapse verdict carries no group at all (Issue #136), so it never reaches
+    // this reader.
     let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
     // The latest verdict per **membership**, exactly as the single-cut path
     // takes the latest verdict per uuid. A group the full corpus has since
@@ -1235,27 +1258,35 @@ pub fn latest_screen_by_uuid(screens: &[Screened]) -> HashMap<&str, &Screened> {
     latest
 }
 
-/// UUIDs screened at least once and still present on `creature`.
+/// Visit keys screened at least once and still present on `creature`.
 ///
-/// This is the coverage set: "sweep X of Y hidden". It says nothing about
-/// whether a prune was any good.
+/// This is the coverage set: "sweep X of Y". It says nothing about whether a
+/// prune was any good.
+///
+/// A key is a hidden-neuron UUID **or** a synapse visit key (Issue #136), so a
+/// visit to an edge the creature still carries counts as looked-at exactly as a
+/// neuron visit does. Filtered against neurons alone the edge records vanished,
+/// and every synapse — including the typed ones the razor can never cut — sat
+/// unchecked forever while the sweep revisited them on every pass.
 pub fn screened_uuids(screens: &[Screened], creature: &CreatureExport) -> HashSet<String> {
-    let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
+    let present = present_visits(creature);
     screens
         .iter()
         .map(|s| s.uuid.as_str())
-        .filter(|uuid| present.contains(uuid))
+        .filter(|uuid| present.contains(*uuid))
         .map(str::to_string)
         .collect()
 }
 
-/// Still-present screened UUIDs, least-recently screened first.
+/// Still-present screened visit keys, least-recently screened first.
 ///
 /// What recycling reads once coverage completes — selection only, never a
-/// prune verdict. Equal screen times are broken by uuid so the order is
+/// prune verdict. Synapse visit keys are retained beside hidden-neuron UUIDs
+/// (Issue #136): the stalest visit is the stalest visit, whether it names a
+/// neuron or an edge. Equal screen times are broken by key so the order is
 /// deterministic across hosts.
 pub fn oldest_screened_first(screens: &[Screened], creature: &CreatureExport) -> Vec<String> {
-    let present: HashSet<&str> = creature.neurons.iter().map(|n| n.uuid.as_str()).collect();
+    let present = present_visits(creature);
     let latest = latest_screen_by_uuid(screens);
     let mut still_present: Vec<&Screened> = latest
         .into_values()
@@ -1269,13 +1300,17 @@ pub fn oldest_screened_first(screens: &[Screened], creature: &CreatureExport) ->
     still_present.into_iter().map(|s| s.uuid.clone()).collect()
 }
 
-/// One visit to file: the uuid the sweep looked at, and what came of it.
+/// One visit to file: the key the sweep looked at, and what came of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScreenTry<'a> {
-    /// Hidden neuron UUID that was visited.
+    /// The visit key: a hidden neuron UUID, or a synapse visit key for an edge
+    /// the sweep looked at ([`crate::sweep::synapse_key`], Issue #136). A
+    /// blocked or skipped synapse visit files exactly as a neuron visit does,
+    /// so an edge the razor can never cut is recorded as looked-at-and-blocked
+    /// rather than sitting unchecked forever.
     pub uuid: &'a str,
-    /// `identity`, `ablation`, [`SCREEN_KIND_SKIPPED`] or
-    /// [`SCREEN_KIND_KNOWN_FAILURE`].
+    /// A [`kind_label`] — `identity`, `ablation`, `synapse`, … —
+    /// [`SCREEN_KIND_SKIPPED`] or [`SCREEN_KIND_KNOWN_FAILURE`].
     pub kind: &'a str,
     /// Which side of the screen it landed on; a visit with no candidate to
     /// score is filed as [`ScreenOutcomeKind::Loser`] — see [`Screened`].
@@ -2265,6 +2300,209 @@ mod tests {
         assert_eq!(latest["h_a"].unix_secs, 2);
         assert_eq!(latest["h_a"].outcome, ScreenOutcomeKind::Winner);
         assert_eq!(latest["h_b"].unix_secs, 5);
+    }
+
+    /// Issue #136: an edge visit is a visit. A screen record keyed by a
+    /// synapse the creature still carries has to survive the still-present
+    /// filter, and one keyed by an edge that has gone must not.
+    #[test]
+    fn screened_uuids_keep_synapse_visits_the_creature_still_carries() {
+        let c = two_hidden();
+        let present = crate::sweep::synapse_key("h_a", "h_b");
+        let departed = crate::sweep::synapse_key("h_b", "h_a");
+        let known = vec![
+            screen(&present, ScreenOutcomeKind::Loser, 1),
+            screen(&departed, ScreenOutcomeKind::Loser, 2),
+            screen("h_a", ScreenOutcomeKind::Winner, 3),
+        ];
+        assert_eq!(
+            screened_uuids(&known, &c),
+            HashSet::from([present, "h_a".to_string()])
+        );
+    }
+
+    /// The stalest visit is the stalest visit, edge or neuron (Issue #136):
+    /// recycling has to be able to reach a synapse it screened long ago.
+    #[test]
+    fn oldest_screened_first_ranks_synapse_visits_beside_neurons() {
+        let c = two_hidden();
+        let present = crate::sweep::synapse_key("h_a", "h_b");
+        let departed = crate::sweep::synapse_key("h_b", "h_a");
+        let known = vec![
+            screen("h_a", ScreenOutcomeKind::Winner, 30),
+            screen(&present, ScreenOutcomeKind::Loser, 5),
+            screen(&departed, ScreenOutcomeKind::Loser, 1),
+        ];
+        assert_eq!(
+            oldest_screened_first(&known, &c),
+            vec![present, "h_a".to_string()],
+            "the synapse screened first is recycled first; the departed edge is dropped"
+        );
+    }
+
+    /// A standing full-corpus rejection of an edge cut has to reach the avoid
+    /// set, or the sweep re-proposes a known-failing synapse every batch.
+    #[test]
+    fn known_failures_suppress_a_rejected_synapse_cut() {
+        let c = two_hidden();
+        let key = crate::sweep::synapse_key("h_a", "h_b");
+        let known = vec![Learning {
+            kind: "synapse".into(),
+            ..rec(&key, Outcome::Rejected, 10)
+        }];
+        let avoid = known_failures(&known, &c, ReplayConfig::default(), 20, 1e-6);
+        assert_eq!(avoid, HashSet::from([key]));
+    }
+
+    /// A rejection of an edge the creature no longer carries suppresses
+    /// nothing — the same still-present rule neuron verdicts follow.
+    #[test]
+    fn a_rejected_synapse_cut_stops_suppressing_once_the_edge_is_gone() {
+        let c = two_hidden();
+        let key = crate::sweep::synapse_key("h_b", "h_a");
+        let known = vec![Learning {
+            kind: "synapse".into(),
+            ..rec(&key, Outcome::Rejected, 10)
+        }];
+        assert!(
+            known_failures(&known, &c, ReplayConfig::default(), 20, 1e-6).is_empty(),
+            "the edge is not on the creature, so there is nothing to avoid"
+        );
+    }
+
+    /// A confirmed synapse win replays like any other, and an accepted one is
+    /// a known win — both keyed by the edge, neither mistaken for a neuron.
+    #[test]
+    fn a_confirmed_synapse_win_is_replayable() {
+        let c = two_hidden();
+        let key = crate::sweep::synapse_key("h_a", "h_b");
+        let known = vec![Learning {
+            kind: "synapse".into(),
+            ..confirmed(&key, 9e-6, 10)
+        }];
+        assert_eq!(confirmed_wins(&known, &c, 1e-6), vec![key.clone()]);
+        assert_eq!(ranked_confirmed(&known, &c, 1e-6)[0].uuid, key);
+
+        let applied = vec![Learning {
+            kind: "synapse".into(),
+            ..rec(&key, Outcome::Accepted, 11)
+        }];
+        assert_eq!(known_wins(&applied, &c, ReplayConfig::default()), vec![key]);
+    }
+
+    /// The merge index stays merge-only however much synapse history sits
+    /// beside it: an edge cut is not a partner a merge could ever re-derive.
+    #[test]
+    fn merge_wins_stay_merge_only_when_synapse_records_share_the_history() {
+        let c = two_hidden();
+        let key = crate::sweep::synapse_key("h_a", "h_b");
+        let known = vec![
+            Learning {
+                kind: "synapse".into(),
+                ..rec(&key, Outcome::Accepted, 10)
+            },
+            Learning {
+                kind: "merge".into(),
+                ..rec("h_a", Outcome::Accepted, 11)
+            },
+            rec("h_b", Outcome::Accepted, 12),
+        ];
+        assert_eq!(
+            merge_wins(&known, &c),
+            HashSet::from(["h_a".to_string()]),
+            "only the merge record indexes a merge"
+        );
+    }
+
+    /// A scored synapse candidate files an ordinary screen record: the key in
+    /// `uuid`, `synapse` in `kind`, and no format version bump (Issue #136).
+    #[test]
+    fn a_scored_synapse_candidate_files_a_synapse_screen_record() {
+        let key = crate::sweep::synapse_key("h_a", "h_b");
+        let mut filed = Vec::new();
+        let n = file_screens(
+            None,
+            &[ScreenTry::scored(
+                &key,
+                CandidateKind::Synapse,
+                ScreenOutcomeKind::Winner,
+            )],
+            &mut filed,
+        );
+        assert_eq!(n, 1);
+        assert_eq!(filed[0].uuid, key);
+        assert_eq!(filed[0].kind, "synapse");
+        assert_eq!(filed[0].version, SCREENS_FORMAT_VERSION);
+        assert_eq!(filed[0].blocked_category(), None);
+    }
+
+    /// A blocked synapse visit files its reason exactly as a blocked neuron
+    /// visit does, so an edge the razor can never cut is recorded as
+    /// looked-at-and-blocked instead of sitting unchecked forever.
+    #[test]
+    fn a_blocked_synapse_visit_files_its_reason() {
+        let key = crate::sweep::synapse_key("h_a", "h_b");
+        let mut filed = Vec::new();
+        file_screens(
+            None,
+            &[
+                ScreenTry::blocked(&key, BlockedReason::AggregateSquash),
+                ScreenTry::visited(&key, SCREEN_KIND_KNOWN_FAILURE),
+            ],
+            &mut filed,
+        );
+        assert_eq!(filed[0].uuid, key);
+        assert!(filed[0].is_skipped());
+        assert_eq!(
+            filed[0].blocked_category(),
+            Some(BlockedReason::AggregateSquash)
+        );
+        assert_eq!(filed[1].kind, SCREEN_KIND_KNOWN_FAILURE);
+        assert_eq!(filed[1].uuid, key);
+        assert_eq!(filed[1].blocked_category(), None);
+    }
+
+    /// Forward compatibility, pinned: a `"synapse"` record is an ordinary line
+    /// of both logs. A host that only knows hidden-neuron UUIDs loads it and
+    /// ignores it — it never fails the load for the whole fleet's history.
+    #[test]
+    fn a_synapse_record_loads_and_is_ignored_by_a_hidden_only_reader() {
+        let key = crate::sweep::synapse_key("h_a", "h_b");
+        // The key's separator is a control character, so the wire form escapes
+        // it — exactly what a newer host writes into the shared log.
+        let key = key.replace(crate::sweep::SYNAPSE_KEY_SEPARATOR, "\\u001f");
+        let verdict = format!(
+            r#"{{"version":1,"uuid":"{key}","kind":"synapse","outcome":"rejected","unixSecs":9,"host":"newer"}}"#
+        );
+        let key = crate::sweep::synapse_key("h_a", "h_b");
+        let l: Learning = serde_json::from_str(&verdict).unwrap();
+        assert_eq!(l.uuid, key);
+        assert_eq!(l.kind, "synapse");
+        let escaped = key.replace(crate::sweep::SYNAPSE_KEY_SEPARATOR, "\\u001f");
+        let record = format!(
+            r#"{{"version":2,"uuid":"{escaped}","kind":"synapse","outcome":"loser","unixSecs":9,"host":"newer","corpusIdentity":"corp"}}"#
+        );
+        let filed: Screened = serde_json::from_str(&record).unwrap();
+        assert_eq!(filed.uuid, key);
+
+        // And through the store, beside a neuron record an older reader does
+        // know: both lines load, and the hidden-only coverage reader counts the
+        // neuron alone rather than panicking on the edge.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        store.append(&l).unwrap();
+        store.append(&rec("h_a", Outcome::Rejected, 9)).unwrap();
+        store.append_screen(&filed).unwrap();
+        store
+            .append_screen(&screen("h_a", ScreenOutcomeKind::Loser, 9))
+            .unwrap();
+        assert_eq!(store.load().unwrap().len(), 2);
+        let screens = store.load_screens().unwrap();
+        assert_eq!(screens.len(), 2);
+
+        let cov = crate::coverage::coverage(&two_hidden(), &HashSet::new(), &screens, 0);
+        assert_eq!(cov.hidden, 2);
+        assert_eq!(cov.checked, 1, "the edge record is ignored, not counted");
     }
 
     #[test]

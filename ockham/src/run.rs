@@ -2337,8 +2337,8 @@ fn fresh_sweep(
     let deferred = sweep.retain_neuron_visits();
     if deferred > 0 {
         log::info(&format!(
-            "sweep: {deferred} synapse visit(s) deferred — record, coverage and accept parity \
-             land with #136/#137/#138 (#135)"
+            "sweep: {deferred} synapse visit(s) deferred — records and learnings are ready \
+             (#136); coverage and accept parity land with #137/#138 (#135)"
         ));
     }
     if unchecked_first {
@@ -7050,6 +7050,50 @@ mod tests {
         let unexplained = skip_try(&unexplained);
         assert_eq!(unexplained.kind, crate::learnings::SCREEN_KIND_SKIPPED);
         assert_eq!(unexplained.blocked_reason, Some(BlockedReason::Other));
+    }
+
+    /// Issue #136: a synapse visit files exactly what a neuron visit files —
+    /// the visit key in `uuid`, the same two kinds, the same reason — so an
+    /// edge the razor can never cut is recorded as looked-at-and-blocked
+    /// rather than sitting unchecked forever.
+    #[test]
+    fn a_synapse_visit_files_the_same_screen_record_a_neuron_visit_does() {
+        use crate::blocked::BlockedReason;
+        use crate::learnings::{ScreenOutcomeKind, file_screens};
+        use crate::sweep::{SweepSkip, synapse_key};
+        let key = synapse_key("h_a", "h_b");
+        let blocked_skip = SweepSkip {
+            uuid: key.clone(),
+            permutation_index: 0,
+            reason: "aggregate target `h_b` (`MEAN`); skipped".into(),
+            blocked: Some(BlockedReason::AggregateSquash),
+        };
+        let blocked = skip_try(&blocked_skip);
+        assert_eq!(blocked.uuid, key, "the key is what was visited");
+        assert_eq!(blocked.kind, crate::learnings::SCREEN_KIND_SKIPPED);
+        assert_eq!(blocked.blocked_reason, Some(BlockedReason::AggregateSquash));
+        assert_eq!(blocked.outcome, ScreenOutcomeKind::Loser);
+
+        let known_skip = SweepSkip {
+            uuid: key.clone(),
+            permutation_index: 1,
+            reason: crate::sweep::KNOWN_FAILURE_REASON.into(),
+            blocked: None,
+        };
+        let known = skip_try(&known_skip);
+        assert_eq!(known.uuid, key);
+        assert_eq!(known.kind, crate::learnings::SCREEN_KIND_KNOWN_FAILURE);
+
+        // And filed, the blocked record answers `blocked_category()` with the
+        // reason the visit reported.
+        let mut filed = Vec::new();
+        file_screens(None, &[blocked, known], &mut filed);
+        assert_eq!(
+            filed[0].blocked_category(),
+            Some(BlockedReason::AggregateSquash)
+        );
+        assert_eq!(filed[1].blocked_category(), None);
+        assert!(filed.iter().all(|f| f.uuid == key));
     }
 
     /// Issue #77 point 3, the sizing rules, unit by unit. A measured screen is
