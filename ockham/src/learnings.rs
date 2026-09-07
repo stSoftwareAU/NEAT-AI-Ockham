@@ -43,6 +43,14 @@
 //! the same reason those are kept apart from the verdicts — a corrupt pass log
 //! must break neither — and counted per screening epoch by [`epoch_passes`].
 //!
+//! Eligible visits ([`VisitLedger`]) live in a fourth sibling,
+//! `<root>/visits/<host>.jsonl` (Issue #153). One entry per run, carrying the
+//! visits that run's sweep performed with repeats included and the visit
+//! population it finished against. A pass marker is filed only when a
+//! permutation is exhausted, and an accepted cut rebuilds the sweep before that
+//! happens — so the ledger is what survives an accepted cut, and
+//! [`epoch_visits`] is what turns it into how far the razor has travelled.
+//!
 //! The pre-#76 `<root>/screens-<identity>/<host>.jsonl` directories are still
 //! **read** — never written — so no fleet history is lost. Every `<root>` here
 //! is whichever learnings root the caller passed, so an island's own root has
@@ -223,6 +231,17 @@ const PASSES_DIR: &str = "passes";
 /// Format version of a [`PassMarker`].
 pub const PASSES_FORMAT_VERSION: u32 = 1;
 
+/// Directory holding the fleet's eligible-visit ledger (Issue #153).
+///
+/// A fourth sibling of [`SCREENS_DIR`], for exactly the reason [`PASSES_DIR`]
+/// is a third: a ledger entry is a coverage fact, and a corrupt visit log must
+/// break neither verdict nor screen nor pass loading. Not keyed by corpus
+/// identity — the identity rides on the record.
+const VISITS_DIR: &str = "visits";
+
+/// Format version of a [`VisitLedger`].
+pub const VISITS_FORMAT_VERSION: u32 = 1;
+
 /// Prefix of the pre-#76 corpus-keyed screen directories.
 ///
 /// Read for their fleet history, never written: dropping them would re-create,
@@ -400,6 +419,68 @@ pub fn epoch_passes(markers: &[PassMarker], corpus_identity: &str) -> u64 {
         .iter()
         .filter(|m| m.corpus_identity.as_deref() == Some(corpus_identity))
         .count() as u64
+}
+
+/// One run's eligible-visit work, filed where the next run can read it (#153).
+///
+/// A [`PassMarker`] is filed only when a permutation is **exhausted**, and an
+/// accepted cut rebuilds the sweep before that happens — so a run that revisits
+/// a whole creature's worth of neurons and accepts several cuts files no marker
+/// at all and reports `0 complete this epoch`. That is not a measurement of how
+/// far the razor has travelled; it is a measurement of how rarely a permutation
+/// survives to its end.
+///
+/// This ledger is the topology-tolerant counterpart. One entry per run,
+/// recording the eligible visits the run's sweep actually performed — repeats
+/// included, because a revisit is the work the strict counter cannot see — and
+/// the visit population that was under the razor when the run finished. An
+/// accepted cut, a rebuilt sweep and a changed incumbent cost it nothing: the
+/// entries are already on disk, and nothing is ever recomputed from the
+/// creature in hand.
+///
+/// A coverage fact only: nothing here can accept or reject a prune.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisitLedger {
+    /// Format version.
+    pub version: u32,
+    /// Corpus identity the visits were performed under — the epoch (#100).
+    ///
+    /// `None` only on a record written with no corpus to name, which belongs to
+    /// no epoch and is therefore counted for none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpus_identity: Option<String>,
+    /// Host that performed the visits (`GRQ-23`).
+    pub host: String,
+    /// Unix seconds when the entry was filed.
+    pub unix_secs: u64,
+    /// Eligible visits the run performed, **repeats included**.
+    ///
+    /// Every uuid the sweep handed to a batch, whether it was scored, skipped
+    /// or had been visited a hundred times before. Deliberately not distinct:
+    /// distinctness is what the unique percentage already reports, and it stops
+    /// moving the moment the creature is fully covered.
+    pub visits: u64,
+    /// Visit population the run finished against — the equivalent-pass divisor.
+    ///
+    /// Recorded per entry rather than assumed constant, because pruning shrinks
+    /// it: the entry says what one creature was worth *at the time the visits
+    /// were performed*, which is what makes an epoch total honest across a
+    /// topology that never stops changing.
+    pub population: usize,
+}
+
+/// Eligible visits recorded against `corpus_identity` (Issue #153).
+///
+/// Summed across every host, scoped to the epoch for the same reason
+/// [`epoch_passes`] is: work done under last week's training data says nothing
+/// about the sweep in hand. Saturating, so a corrupt ledger claiming absurd
+/// figures cannot wrap the total round to a small one.
+pub fn epoch_visits(ledgers: &[VisitLedger], corpus_identity: &str) -> u64 {
+    ledgers
+        .iter()
+        .filter(|l| l.corpus_identity.as_deref() == Some(corpus_identity))
+        .fold(0u64, |total, l| total.saturating_add(l.visits))
 }
 
 /// The records of one screening epoch: those measured against this corpus (#100).
@@ -673,6 +754,46 @@ impl LearningsStore {
             unix_secs: now_secs(),
             pass,
             hidden,
+        }
+    }
+
+    /// Directory holding the fleet's eligible-visit ledger (Issue #153).
+    pub fn visits_dir(&self) -> PathBuf {
+        self.root.join(VISITS_DIR)
+    }
+
+    /// This host's append-only visit-ledger file.
+    pub fn visits_host_path(&self) -> PathBuf {
+        self.visits_dir().join(format!("{}.jsonl", self.host))
+    }
+
+    /// Load every visit-ledger entry the fleet has filed (Issue #153).
+    ///
+    /// Every epoch's, not just this one's: [`epoch_visits`] narrows them to the
+    /// corpus in hand. Coverage only — an entry is not a prune verdict.
+    pub fn load_visits(&self) -> Result<Vec<VisitLedger>, String> {
+        load_jsonl(&self.visits_dir(), |l: &VisitLedger| {
+            l.version == VISITS_FORMAT_VERSION
+        })
+    }
+
+    /// Append one visit-ledger entry to this host's file (Issue #153).
+    pub fn append_visits(&self, entry: &VisitLedger) -> Result<(), String> {
+        append_jsonl(&self.visits_dir(), &self.visits_host_path(), entry)
+    }
+
+    /// The ledger entry for the visits this run performed (Issue #153).
+    ///
+    /// Stamped with the store's own host and corpus identity, so an entry can
+    /// never claim an epoch the run was not screening against.
+    pub fn visit_ledger(&self, visits: u64, population: usize) -> VisitLedger {
+        VisitLedger {
+            version: VISITS_FORMAT_VERSION,
+            corpus_identity: Some(self.corpus_identity.clone()),
+            host: self.host.clone(),
+            unix_secs: now_secs(),
+            visits,
+            population,
         }
     }
 }
@@ -1815,6 +1936,128 @@ mod tests {
         assert_eq!(store.load_passes().unwrap().len(), 1);
         assert!(store.passes_dir().is_dir());
         assert_ne!(store.passes_dir(), store.screens_dir());
+    }
+
+    /// Issue #153: the visits a run performed outlive it, so the next run can
+    /// say how far the razor has travelled rather than restarting the count
+    /// every time an accepted cut rebuilds the sweep.
+    #[test]
+    fn visit_ledger_entries_round_trip_and_sum_across_the_fleet() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        assert_eq!(store.load_visits().unwrap(), Vec::new());
+        assert_eq!(epoch_visits(&[], "corp"), 0);
+
+        let entry = store.visit_ledger(7051, 7475);
+        store.append_visits(&entry).unwrap();
+        assert_eq!(entry.corpus_identity.as_deref(), Some("corp"));
+        assert_eq!(entry.host, "host-a");
+        assert_eq!(entry.visits, 7051);
+        assert_eq!(entry.population, 7475);
+        assert_eq!(store.load_visits().unwrap(), vec![entry]);
+
+        // A second host sweeping the same creature adds its own visits: the
+        // epoch total is the fleet's, not one host's.
+        let other = LearningsStore::new(dir.path(), "corp".into(), "host-b".into());
+        other
+            .append_visits(&other.visit_ledger(2_949, 7475))
+            .unwrap();
+        let all = store.load_visits().unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(epoch_visits(&all, "corp"), 10_000);
+    }
+
+    /// Visits are scoped to the epoch they were performed under, exactly as
+    /// passes are: work done against last week's training data says nothing
+    /// about the sweep in hand, and it is not thrown away either.
+    #[test]
+    fn visit_ledger_entries_are_counted_per_screening_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = LearningsStore::new(dir.path(), "corp-a".into(), "host-a".into());
+        for visits in [40u64, 60] {
+            old.append_visits(&old.visit_ledger(visits, 12)).unwrap();
+        }
+        let next = LearningsStore::new(dir.path(), "corp-b".into(), "host-a".into());
+        let all = next.load_visits().unwrap();
+        assert_eq!(all.len(), 2, "every entry is still readable");
+        assert_eq!(epoch_visits(&all, "corp-a"), 100);
+        assert_eq!(
+            epoch_visits(&all, "corp-b"),
+            0,
+            "a corpus change opens a new epoch at zero visits"
+        );
+
+        next.append_visits(&next.visit_ledger(9, 12)).unwrap();
+        let all = next.load_visits().unwrap();
+        assert_eq!(epoch_visits(&all, "corp-b"), 9);
+        assert_eq!(
+            epoch_visits(&all, "corp-a"),
+            100,
+            "history is not rewritten"
+        );
+    }
+
+    /// The same containment claim the pass log makes: a corrupt visit ledger is
+    /// loud on its own read and costs neither the verdicts, the screen coverage
+    /// nor the pass markers. An entry from a future format version is skipped
+    /// rather than counted at a meaning this binary does not know.
+    #[test]
+    fn a_corrupt_or_unknown_version_visit_ledger_costs_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        store.append(&rec("h_a", Outcome::Accepted, 9)).unwrap();
+        store
+            .append_screen(&screen("h_b", ScreenOutcomeKind::Winner, 9))
+            .unwrap();
+        store.append_pass(&store.pass_marker(1, 4)).unwrap();
+        store.append_visits(&store.visit_ledger(12, 4)).unwrap();
+
+        let future = VisitLedger {
+            version: VISITS_FORMAT_VERSION + 1,
+            ..store.visit_ledger(999, 4)
+        };
+        store.append_visits(&future).unwrap();
+        let ledgers = store.load_visits().unwrap();
+        assert_eq!(ledgers.len(), 1, "{ledgers:?}");
+        assert_eq!(epoch_visits(&ledgers, "corp"), 12);
+
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(store.visits_host_path())
+            .unwrap();
+        writeln!(file, "{{not json").unwrap();
+        assert!(store.load_visits().is_err(), "corruption must be loud");
+        assert_eq!(store.load().unwrap().len(), 1, "verdicts are unaffected");
+        assert_eq!(
+            store.load_screens().unwrap().len(),
+            1,
+            "screen coverage is unaffected"
+        );
+        assert_eq!(
+            store.load_passes().unwrap().len(),
+            1,
+            "the pass markers are unaffected"
+        );
+        assert!(store.visits_dir().is_dir());
+        assert_ne!(store.visits_dir(), store.passes_dir());
+        assert_ne!(store.visits_dir(), store.screens_dir());
+    }
+
+    /// An entry naming no corpus belongs to no epoch, so it is counted for
+    /// none — the same rule a pass marker follows.
+    #[test]
+    fn a_visit_ledger_entry_with_no_corpus_is_counted_for_no_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        let orphan = VisitLedger {
+            corpus_identity: None,
+            ..store.visit_ledger(500, 4)
+        };
+        store.append_visits(&orphan).unwrap();
+        store.append_visits(&store.visit_ledger(7, 4)).unwrap();
+        let all = store.load_visits().unwrap();
+        assert_eq!(all.len(), 2, "it is kept and readable: {all:?}");
+        assert_eq!(epoch_visits(&all, "corp"), 7);
     }
 
     #[test]

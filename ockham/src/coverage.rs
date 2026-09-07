@@ -338,6 +338,7 @@ pub(crate) struct ScreenProgress {
     opening: HashSet<String>,
     added: HashSet<String>,
     visited: HashSet<String>,
+    eligible_visits: u64,
 }
 
 impl ScreenProgress {
@@ -347,6 +348,7 @@ impl ScreenProgress {
             opening: screens.iter().map(|s| s.uuid.clone()).collect(),
             added: HashSet::new(),
             visited: HashSet::new(),
+            eligible_visits: 0,
         }
     }
 
@@ -358,11 +360,22 @@ impl ScreenProgress {
     /// reporting surface, and a fully covered creature reads as idle.
     pub(crate) fn visit(&mut self, uuid: &str) {
         self.visited.insert(uuid.to_string());
+        self.eligible_visits = self.eligible_visits.saturating_add(1);
     }
 
     /// Distinct hidden UUIDs the sweep reached this run, revisits included.
     pub(crate) fn visited(&self) -> usize {
         self.visited.len()
+    }
+
+    /// Every eligible visit the sweep performed this run, repeats included.
+    ///
+    /// The topology-tolerant work figure (Issue #153). [`Self::visited`] is a
+    /// set, so it stops moving once the run has been everywhere; this keeps
+    /// counting, and an accepted cut that rebuilds the sweep costs it nothing —
+    /// the count lives here, not in the permutation the accept threw away.
+    pub(crate) fn eligible_visits(&self) -> u64 {
+        self.eligible_visits
     }
 
     /// How many of those the fleet had already checked when the run opened.
@@ -560,7 +573,35 @@ impl History {
 /// markers rather than from the creature in hand. A **corpus change** does open
 /// a new epoch — [`Self::sweeps_completed_epoch`] counts markers filed under the
 /// corpus in hand — for the same reason coverage does (Issue #100).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// # Strict passes are not the whole answer (Issue #153)
+///
+/// A strict pass needs one permutation to survive from its first visit to its
+/// last. An accepted cut rebuilds the sweep (#96), so a run that prunes well
+/// keeps throwing part-finished permutations away and can revisit a whole
+/// creature's worth of neurons while [`Self::sweeps_completed_epoch`] stays at
+/// zero. That is not a lie about the razor — it is a measurement of how rarely
+/// a permutation survives — but read as *the* pass count it is operationally
+/// misleading, which is exactly what GRQ-sampler saw: `0 complete this epoch`
+/// beside 7,048 revisits at 100% unique coverage.
+///
+/// So the strict counters keep their names and their meaning, and the
+/// topology-tolerant ones sit beside them:
+/// [`Self::eligible_visits_epoch`] counts the visits themselves — repeats
+/// included, read back from the fleet's persisted ledger — and
+/// [`Self::equivalent_passes_epoch`] divides that by
+/// [`Self::visit_population`], the visit population of the incumbent the run
+/// finished on. An accepted cut costs neither: the visits are already counted
+/// and already on disk.
+///
+/// **The denominator, stated plainly:** one creature-equivalent pass is
+/// `visit_population` eligible visits, and `visit_population` is the same
+/// figure as [`Coverage::checkable`] — every hidden neuron and every synapse
+/// visit the **final** incumbent carries. Pruning shrinks it as the run works,
+/// so an equivalent pass is a stable approximation rather than a proof that
+/// every visit was reached once. It is preferred over a precise-looking counter
+/// that resets whenever a win changes the incumbent.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Passes {
     /// Exhausted-sweep restarts during **this** Ockham invocation (Issue #77).
@@ -599,15 +640,87 @@ pub struct Passes {
     /// batches: what it answers is how much of the run's work went over ground
     /// the fleet had already covered.
     pub revisited_run: usize,
+    /// Distinct UUIDs this run reached that the fleet had never checked.
+    ///
+    /// `visited_run - revisited_run`, derived rather than stored independently
+    /// so the rendered line cannot split the run's visits into two halves that
+    /// do not add up (Issue #153).
+    #[serde(default)]
+    pub first_visits_run: usize,
+    /// Eligible visits this run performed, **repeats included** (Issue #153).
+    ///
+    /// The work figure an accepted cut cannot erase: it is counted as the sweep
+    /// hands uuids to a batch, so rebuilding the sweep over a changed creature
+    /// takes nothing back.
+    #[serde(default)]
+    pub eligible_visits_run: u64,
+    /// Eligible visits the **fleet** has performed over this epoch (#153).
+    ///
+    /// Summed from the persisted visit ledger, filed under the corpus in hand,
+    /// and re-read at the end of the run for the same reasons
+    /// [`Self::sweeps_completed_epoch`] is: several hosts sweep the same
+    /// creature at once, and an entry a store fault lost is not reported as
+    /// though it had landed. A **floor** for an epoch that was already running
+    /// when the ledger shipped — visits performed before there was anything to
+    /// file them in left no record, and are never guessed at.
+    #[serde(default)]
+    pub eligible_visits_epoch: u64,
+    /// Eligible visits that make one creature-equivalent pass (Issue #153).
+    ///
+    /// [`Coverage::checkable`] of the incumbent the run finished on: every
+    /// hidden neuron and every synapse visit it still carries. Published beside
+    /// the equivalent-pass figures so the divisor is never left to be guessed
+    /// at, and so a consumer can re-derive them.
+    #[serde(default)]
+    pub visit_population: usize,
+    /// `eligible_visits_epoch / visit_population` — the fleet's rescan progress.
+    ///
+    /// How many creature-equivalent passes the razor has travelled this epoch.
+    /// `0.0` when the creature carries no visits to divide by: "one pass over
+    /// nothing" is not a measurement.
+    #[serde(default)]
+    pub equivalent_passes_epoch: f64,
+    /// `eligible_visits_run / visit_population` — this invocation's share.
+    #[serde(default)]
+    pub equivalent_passes_run: f64,
+}
+
+/// The topology-tolerant half of the pass counters (Issue #153).
+///
+/// Grouped rather than passed as three more bare numbers, so a call site cannot
+/// silently swap a run total for an epoch total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VisitTally {
+    /// Eligible visits this run performed, repeats included.
+    pub eligible_visits_run: u64,
+    /// Eligible visits the fleet has performed this epoch, repeats included.
+    pub eligible_visits_epoch: u64,
+    /// Visits that make one creature-equivalent pass — [`Coverage::checkable`].
+    pub population: usize,
+}
+
+impl VisitTally {
+    /// `visits / population`, or `0.0` when there is no population to divide by.
+    ///
+    /// A creature with nothing to visit has travelled no passes; reporting
+    /// `inf` or `NaN` would be a rendering artefact rather than a measurement.
+    fn equivalent(&self, visits: u64) -> f64 {
+        if self.population == 0 {
+            0.0
+        } else {
+            visits as f64 / self.population as f64
+        }
+    }
 }
 
 impl Passes {
-    /// Passes with `current_pass` derived from the completed count.
+    /// Passes with `current_pass` and the equivalent-pass figures derived.
     pub fn new(
         sweep_restarts_run: u64,
         sweeps_completed_epoch: u64,
         visited_run: usize,
         revisited_run: usize,
+        tally: VisitTally,
     ) -> Self {
         Self {
             sweep_restarts_run,
@@ -615,29 +728,56 @@ impl Passes {
             current_pass: sweeps_completed_epoch + 1,
             visited_run,
             revisited_run,
+            first_visits_run: visited_run.saturating_sub(revisited_run),
+            eligible_visits_run: tally.eligible_visits_run,
+            eligible_visits_epoch: tally.eligible_visits_epoch,
+            visit_population: tally.population,
+            equivalent_passes_epoch: tally.equivalent(tally.eligible_visits_epoch),
+            equivalent_passes_run: tally.equivalent(tally.eligible_visits_run),
         }
     }
 
-    /// The description lines: the pass counters, then this run's visits.
+    /// The description lines: the strict counters, the equivalent passes, then
+    /// this run's visits.
     ///
     /// ```text
-    /// passes:    3 complete this epoch · 1 this run · pass 4 in progress
-    /// visits:    120 hidden neurons visited this run · 40 revisited
+    /// passes:    3 complete this epoch · 1 this run · pass 4 in progress (strict sweep completions)
+    /// equiv:     4.12 creature-equivalent passes this epoch · 0.94 this run (7051 eligible visits / 7475 per pass)
+    /// visits:    120 hidden neurons visited this run · 40 revisited · 80 first visits
     /// ```
     ///
     /// The `passes:` line is always rendered — `0 complete this epoch · pass 1
     /// in progress` is the honest opening state, and a line that appears only
-    /// once there is something to boast about cannot be read as a series. The
-    /// `visits:` line is omitted when the run reached nothing.
+    /// once there is something to boast about cannot be read as a series. Its
+    /// trailing clause names what it measures (Issue #153): the strict figure
+    /// stays at zero through a run that accepts cuts all day, and a reader must
+    /// not take it for how far the razor has travelled.
+    ///
+    /// The `equiv:` line is what answers that instead, and is rendered whenever
+    /// the epoch has a visit population to divide by — including at `0.00`, for
+    /// the same reason `passes:` is always rendered. The `visits:` line is
+    /// omitted when the run reached nothing.
     fn lines(&self) -> Vec<String> {
         let mut out = vec![format!(
-            "{:<11}{} complete this epoch · {} this run · pass {} in progress",
+            "{:<11}{} complete this epoch · {} this run · pass {} in progress \
+             (strict sweep completions)",
             "passes:", self.sweeps_completed_epoch, self.sweep_restarts_run, self.current_pass
         )];
+        if self.visit_population > 0 {
+            out.push(format!(
+                "{:<11}{:.2} creature-equivalent passes this epoch · {:.2} this run \
+                 ({} eligible visits / {} per pass)",
+                "equiv:",
+                self.equivalent_passes_epoch,
+                self.equivalent_passes_run,
+                self.eligible_visits_epoch,
+                self.visit_population
+            ));
+        }
         if self.visited_run > 0 {
             out.push(format!(
-                "{:<11}{} hidden neurons visited this run · {} revisited",
-                "visits:", self.visited_run, self.revisited_run
+                "{:<11}{} hidden neurons visited this run · {} revisited · {} first visits",
+                "visits:", self.visited_run, self.revisited_run, self.first_visits_run
             ));
         }
         out
@@ -1414,6 +1554,19 @@ mod tests {
         }
     }
 
+    /// A visit tally over [`fleet_coverage`]'s population (Issue #153).
+    ///
+    /// `epoch_visits` is the fleet's cumulative eligible visits; the run's own
+    /// share is a hundredth of it, which is the shape a long-running epoch
+    /// actually has.
+    fn fleet_tally(epoch_visits: u64) -> VisitTally {
+        VisitTally {
+            eligible_visits_run: epoch_visits / 100,
+            eligible_visits_epoch: epoch_visits,
+            population: fleet_coverage().checkable,
+        }
+    }
+
     #[test]
     fn the_description_block_renders_exactly_as_grq_will_paste_it() {
         assert_eq!(
@@ -2163,14 +2316,17 @@ mod tests {
     #[test]
     fn the_description_reports_the_completed_passes_and_the_one_in_progress() {
         let report = CoverageReport {
-            passes: Some(Passes::new(1, 7, 120, 118)),
+            passes: Some(Passes::new(1, 7, 120, 118, fleet_tally(7051))),
             ..CoverageReport::new(fleet_coverage())
         };
         let block = report.description(100);
         assert!(
             block.contains(
-                "passes:    7 complete this epoch · 1 this run · pass 8 in progress\n\
-                 visits:    120 hidden neurons visited this run · 118 revisited"
+                "passes:    7 complete this epoch · 1 this run · pass 8 in progress \
+                 (strict sweep completions)\n\
+                 equiv:     1.41 creature-equivalent passes this epoch · 0.01 this run \
+                 (7051 eligible visits / 5013 per pass)\n\
+                 visits:    120 hidden neurons visited this run · 118 revisited · 2 first visits"
             ),
             "{block}"
         );
@@ -2185,7 +2341,7 @@ mod tests {
             ..fleet_coverage()
         };
         let report = CoverageReport {
-            passes: Some(Passes::new(2, 4, 300, 300)),
+            passes: Some(Passes::new(2, 4, 300, 300, fleet_tally(20_000))),
             corpus_identity: Some("6fc028da266d6c51".into()),
             ..CoverageReport::new(cov)
         };
@@ -2197,8 +2353,15 @@ mod tests {
         );
         assert!(block.contains("pass 5 in progress"), "{block}");
         assert!(
-            block.contains("visits:    300 hidden neurons visited this run · 300 revisited"),
+            block.contains(
+                "visits:    300 hidden neurons visited this run · 300 revisited · 0 first visits"
+            ),
             "the re-screening a complete sweep is doing must be visible: {block}"
+        );
+        assert!(
+            block.contains("equiv:     3.99 creature-equivalent passes this epoch · 0.04 this run"),
+            "the razor has been round the creature four times over, whatever the \
+             strict counter says: {block}"
         );
     }
 
@@ -2207,11 +2370,11 @@ mod tests {
     #[test]
     fn the_pass_in_progress_is_always_one_past_the_completed_count() {
         for completed in [0u64, 1, 9, 743] {
-            let passes = Passes::new(0, completed, 0, 0);
+            let passes = Passes::new(0, completed, 0, 0, VisitTally::default());
             assert_eq!(passes.current_pass, completed + 1);
         }
         let opening = CoverageReport {
-            passes: Some(Passes::new(0, 0, 0, 0)),
+            passes: Some(Passes::new(0, 0, 0, 0, VisitTally::default())),
             ..CoverageReport::new(fleet_coverage())
         };
         let block = opening.description(100);
@@ -2238,7 +2401,7 @@ mod tests {
         assert!(!bare.description(100).contains("passes:"));
 
         let report = CoverageReport {
-            passes: Some(Passes::new(1, 7, 120, 118)),
+            passes: Some(Passes::new(1, 7, 120, 118, fleet_tally(7051))),
             ..bare
         };
         write_files(&dir, &report, 100).unwrap();
@@ -2248,6 +2411,14 @@ mod tests {
         assert!(json.contains("\"currentPass\": 8"), "{json}");
         assert!(json.contains("\"visitedRun\": 120"), "{json}");
         assert!(json.contains("\"revisitedRun\": 118"), "{json}");
+        // The topology-tolerant counters ride the same object (Issue #153), so
+        // a consumer reads the strict and the equivalent figures together.
+        assert!(json.contains("\"firstVisitsRun\": 2"), "{json}");
+        assert!(json.contains("\"eligibleVisitsRun\": 70"), "{json}");
+        assert!(json.contains("\"eligibleVisitsEpoch\": 7051"), "{json}");
+        assert!(json.contains("\"visitPopulation\": 5013"), "{json}");
+        assert!(json.contains("\"equivalentPassesEpoch\": 1.4"), "{json}");
+        assert!(json.contains("\"equivalentPassesRun\": 0.01"), "{json}");
         let back: CoverageReport = serde_json::from_str(&json).unwrap();
         assert_eq!(back, report, "the pass counters must round-trip");
         let old: Coverage = serde_json::from_str(&json).unwrap();
@@ -2264,13 +2435,109 @@ mod tests {
         assert_eq!(older.passes, None);
     }
 
+    /// A pre-#153 artefact still deserialises: the strict counters it does
+    /// carry are read, and the equivalent-pass figures it does not read as
+    /// zero rather than failing — an absent measurement is not a measurement.
+    #[test]
+    fn a_pre_153_coverage_json_reads_as_no_equivalent_passes() {
+        let pre_153 = r#"{"hidden":5013,"tagged":42,"checkable":5013,"checked":1204,"cut":7,
+            "newlyScreened":0,"passes":{"sweepRestartsRun":1,"sweepsCompletedEpoch":7,
+            "currentPass":8,"visitedRun":120,"revisitedRun":118}}"#;
+        let report: CoverageReport = serde_json::from_str(pre_153).unwrap();
+        let passes = report.passes.expect("the strict counters are still read");
+        assert_eq!(passes.sweeps_completed_epoch, 7);
+        assert_eq!(passes.eligible_visits_epoch, 0);
+        assert_eq!(passes.equivalent_passes_epoch, 0.0);
+        assert_eq!(passes.visit_population, 0);
+        assert!(
+            !report.description(100).contains("equiv:"),
+            "with no population there is nothing to divide by: {}",
+            report.description(100)
+        );
+    }
+
+    /// A creature with nothing to visit has travelled no passes: the divisor is
+    /// zero, and `inf` or `NaN` in a commit description would be a rendering
+    /// artefact rather than a measurement (Issue #153).
+    #[test]
+    fn an_empty_visit_population_reports_no_equivalent_passes_rather_than_inf() {
+        let passes = Passes::new(
+            0,
+            0,
+            0,
+            0,
+            VisitTally {
+                eligible_visits_run: 40,
+                eligible_visits_epoch: 900,
+                population: 0,
+            },
+        );
+        assert_eq!(passes.equivalent_passes_epoch, 0.0);
+        assert_eq!(passes.equivalent_passes_run, 0.0);
+        assert!(passes.equivalent_passes_epoch.is_finite());
+        let block = CoverageReport {
+            passes: Some(passes),
+            ..CoverageReport::new(Coverage {
+                checkable: 0,
+                ..fleet_coverage()
+            })
+        }
+        .description(100);
+        assert!(!block.contains("equiv:"), "{block}");
+        assert!(!block.contains("inf") && !block.contains("NaN"), "{block}");
+    }
+
+    /// The strict counters and the topology-tolerant ones measure different
+    /// things and are never merged (Issue #153): a run that accepted cuts all
+    /// day reports zero strict passes and real equivalent progress, and the
+    /// rendered block says which is which.
+    #[test]
+    fn zero_strict_passes_can_sit_beside_real_equivalent_progress() {
+        let block = CoverageReport {
+            passes: Some(Passes::new(
+                0,
+                0,
+                4_902,
+                4_900,
+                VisitTally {
+                    eligible_visits_run: 7_051,
+                    eligible_visits_epoch: 7_051,
+                    population: 7_475,
+                },
+            )),
+            ..CoverageReport::new(fleet_coverage())
+        }
+        .description(100);
+        assert!(
+            block.contains(
+                "passes:    0 complete this epoch · 0 this run · pass 1 in progress \
+                 (strict sweep completions)"
+            ),
+            "{block}"
+        );
+        assert!(
+            block.contains(
+                "equiv:     0.94 creature-equivalent passes this epoch · 0.94 this run \
+                 (7051 eligible visits / 7475 per pass)"
+            ),
+            "the operator question — how far has the razor gone round? — is \
+             answered whatever the strict counter did: {block}"
+        );
+        assert!(
+            block.contains(
+                "visits:    4902 hidden neurons visited this run · 4900 revisited · 2 first visits"
+            ),
+            "{block}"
+        );
+    }
+
     /// The existing `checked` figure keeps its meaning: repeated passes are
     /// reported beside it, never folded into it (Issue #140).
     #[test]
     fn repeated_passes_never_move_the_unique_coverage_figures() {
         let cov = fleet_coverage();
         let with_passes = CoverageReport {
-            passes: Some(Passes::new(3, 9, 400, 400)),
+            passes: Some(Passes::new(3, 9, 400, 400, fleet_tally(9000))),
             ..CoverageReport::new(cov)
         };
         assert_eq!(with_passes.coverage, cov);
@@ -2357,6 +2624,31 @@ mod tests {
         progress.observe("h_new");
         assert_eq!(progress.count(), 1);
         assert_eq!(progress.revisited(), 2, "the new uuid is not a revisit");
+    }
+
+    /// Issue #153: the distinct set stops moving once the run has been
+    /// everywhere, so the eligible-visit count is what keeps measuring the work
+    /// — and it counts every visit, repeats included.
+    #[test]
+    fn eligible_visits_count_repeats_the_distinct_set_cannot_see() {
+        let existing = vec![screen("h_a", 10), screen("h_b", 11)];
+        let mut progress = ScreenProgress::new(&existing);
+        assert_eq!(progress.eligible_visits(), 0);
+
+        for _ in 0..5 {
+            progress.visit("h_a");
+            progress.visit("h_b");
+        }
+        assert_eq!(
+            progress.visited(),
+            2,
+            "two uuids, however many times each was reached"
+        );
+        assert_eq!(
+            progress.eligible_visits(),
+            10,
+            "five passes over a two-visit creature is ten eligible visits"
+        );
     }
 
     #[test]

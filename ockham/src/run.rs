@@ -853,6 +853,11 @@ fn ockham_loop(
     // because a store fault loses the marker but not the restart, and a pass
     // the fleet cannot read back must never be published as recorded.
     let mut passes_filed = 0u64;
+    // Eligible visits the fleet had already performed over this epoch when the
+    // run opened (Issue #153). The topology-tolerant counterpart of
+    // `epoch_passes_at_open`, and a floor for the same reason: work done before
+    // the ledger existed left nothing to count.
+    let mut epoch_visits_at_open = 0u64;
     // Indexed before the epoch filter below, so the cumulative figures survive
     // a corpus change that resets current-epoch coverage to zero (Issue #102).
     let mut screen_history = crate::coverage::ScreenHistory::default();
@@ -918,6 +923,23 @@ fn ockham_loop(
                 }
                 Err(e) => log::warn(&format!(
                     "pass markers unreadable ({e}); continuing without the pass count"
+                )),
+            }
+            // Eligible visits over this epoch (Issue #153). Reporting only, on
+            // the same terms as the pass markers above: an unreadable ledger
+            // costs the equivalent-pass figures and nothing else.
+            match s.load_visits() {
+                Ok(ledgers) => {
+                    epoch_visits_at_open =
+                        crate::learnings::epoch_visits(&ledgers, &corpus.identity);
+                    log::info(&format!(
+                        "visits: {epoch_visits_at_open} eligible visit(s) recorded this epoch \
+                         (corpus {})",
+                        corpus.identity
+                    ));
+                }
+                Err(e) => log::warn(&format!(
+                    "visit ledger unreadable ({e}); continuing without the equivalent-pass count"
                 )),
             }
         }
@@ -2146,20 +2168,56 @@ fn ockham_loop(
                 }
             })
             .unwrap_or(epoch_passes_at_open + passes_filed);
+        // How far the razor has travelled, which an accepted cut must not erase
+        // (Issue #153). The run's own visits are filed first so this run's work
+        // is part of the epoch total it publishes, then the whole ledger is
+        // re-read for the same reasons the pass markers are: the fleet sweeps
+        // this creature from several hosts at once, and an entry the store
+        // refused must not be reported as though it had landed.
+        let eligible_visits_run = progress.eligible_visits();
+        let mut ledger_filed = 0u64;
+        if let Some(s) = store {
+            match s.append_visits(&s.visit_ledger(eligible_visits_run, cov.checkable)) {
+                Ok(()) => ledger_filed = eligible_visits_run,
+                Err(e) => log::warn(&format!("visit ledger not written: {e}")),
+            }
+        }
+        let eligible_visits_epoch = store
+            .and_then(|s| match s.load_visits() {
+                Ok(ledgers) => Some(crate::learnings::epoch_visits(&ledgers, &corpus.identity)),
+                Err(e) => {
+                    log::warn(&format!(
+                        "visit ledger unreadable ({e}); reporting the visits this run knows of"
+                    ));
+                    None
+                }
+            })
+            .unwrap_or(epoch_visits_at_open + ledger_filed);
         let passes = crate::coverage::Passes::new(
             restarts,
             completed_epoch,
             progress.visited(),
             progress.revisited(),
+            crate::coverage::VisitTally {
+                eligible_visits_run,
+                eligible_visits_epoch,
+                // The visit population of the creature the run finished on, and
+                // the same figure the `sweep:` denominator uses — so the two
+                // rendered lines can never disagree about what one creature is
+                // worth.
+                population: cov.checkable,
+            },
         );
         // The epoch travels with the figure, so a log read months later can
         // tell a fresh epoch from a collapse in coverage (Issue #102).
         log::info(&format!(
-            "{} · epoch corpus {} · pass {} ({} complete this epoch)",
+            "{} · epoch corpus {} · pass {} ({} complete this epoch) · {:.2} \
+             creature-equivalent pass(es) this epoch",
             cov.summary(),
             crate::coverage::short_epoch(&corpus.identity),
             passes.current_pass,
-            passes.sweeps_completed_epoch
+            passes.sweeps_completed_epoch,
+            passes.equivalent_passes_epoch
         ));
         journal::append(
             &journal_path,
@@ -7143,6 +7201,122 @@ mod tests {
             "an unwritten marker is not a recorded pass: {passes:?}"
         );
         assert_eq!(passes.current_pass, 1);
+    }
+
+    /// Issue #153, the acceptance case: an accepted cut rebuilds the sweep
+    /// before its permutation can be exhausted, so the **strict** counters can
+    /// sit at zero through a run that revisited a creature's worth of neurons.
+    /// GRQ-sampler saw exactly that — `0 complete this epoch` beside 7,048
+    /// revisits at 100% unique coverage. The equivalent-pass figures are what
+    /// must survive the rebuild, and they are asserted here end to end.
+    #[test]
+    fn equivalent_pass_progress_survives_accepted_cuts_that_rebuild_the_sweep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = restart_cfg(
+            creature,
+            train.clone(),
+            tmp.path().join("out"),
+            Some(learnings_dir.clone()),
+            Some(20),
+        );
+        // Every candidate beats the incumbent, so the run accepts and rebuilds
+        // the sweep rather than ever exhausting a permutation.
+        let winning = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &winning).unwrap();
+        assert!(run.accepts >= 1, "the run must accept a cut: {run:?}");
+
+        let report = coverage_report_json(&cfg.output_dir);
+        let passes = report
+            .passes
+            .expect("the artefact carries the pass counters");
+        // The bug, stated as an assertion: the strict counters really are zero.
+        assert_eq!(
+            passes.sweep_restarts_run, 0,
+            "an accept rebuilds the sweep before it can be exhausted: {passes:?}"
+        );
+        assert_eq!(
+            passes.sweeps_completed_epoch, 0,
+            "so no pass marker is ever filed: {passes:?}"
+        );
+        // What must not be zero: the work the razor actually did.
+        assert!(
+            passes.eligible_visits_run > 0,
+            "the sweep visited neurons before and after the accept: {passes:?}"
+        );
+        assert_eq!(
+            passes.eligible_visits_epoch, passes.eligible_visits_run,
+            "the only run in this epoch contributed every visit: {passes:?}"
+        );
+        assert_eq!(
+            passes.visit_population, report.coverage.checkable,
+            "one equivalent pass is one creature — the same denominator the \
+             `sweep:` line uses: {passes:?}"
+        );
+        assert!(
+            passes.equivalent_passes_epoch > 0.0 && passes.equivalent_passes_run > 0.0,
+            "rescan progress survives the topology rebuild: {passes:?}"
+        );
+        assert_eq!(
+            passes.first_visits_run + passes.revisited_run,
+            passes.visited_run,
+            "first visits and revisits split the run's distinct visits: {passes:?}"
+        );
+
+        // The GRQ-facing text carries it too, so `0 complete` is never the only
+        // pass or progress measure an operator can read.
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(
+            text.contains("passes:    0 complete this epoch")
+                && text.contains("(strict sweep completions)"),
+            "the strict line names what it measures: {text}"
+        );
+        assert!(
+            text.contains("equiv:") && text.contains("creature-equivalent passes this epoch"),
+            "{text}"
+        );
+
+        // `report` reads the same counters out of the journal, so `ockham
+        // report`, `coverage.json` and `coverage.txt` cannot disagree.
+        let summary =
+            crate::report::summarise(&[cfg.output_dir.join("experiments.jsonl")]).unwrap();
+        assert_eq!(summary.passes, Some(passes));
+
+        // The ledger outlives the run: a second run over the same epoch adds to
+        // the fleet total rather than starting the count again — which is the
+        // counter an accepted cut used to erase.
+        let store = screens_store(&learnings_dir, &train);
+        let ledgers = store.load_visits().unwrap();
+        assert_eq!(ledgers.len(), 1, "one entry per run: {ledgers:?}");
+        assert_eq!(ledgers[0].visits, passes.eligible_visits_run);
+
+        let second = OckhamConfig {
+            output_dir: tmp.path().join("out-2"),
+            ..cfg.clone()
+        };
+        establish_run(&second, &winning).unwrap();
+        let next = coverage_report_json(&second.output_dir)
+            .passes
+            .expect("the second run carries them too");
+        assert!(
+            next.eligible_visits_epoch > passes.eligible_visits_epoch,
+            "the epoch total is cumulative across runs: {passes:?} then {next:?}"
+        );
+        assert!(
+            next.eligible_visits_epoch > next.eligible_visits_run,
+            "and it is not this run's own figure: {next:?}"
+        );
+        assert!(
+            next.equivalent_passes_epoch > next.equivalent_passes_run,
+            "so the epoch has travelled further than this run alone: {next:?}"
+        );
     }
 
     /// The recycling half of the restart: with every neuron already screened,

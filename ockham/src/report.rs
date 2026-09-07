@@ -721,6 +721,18 @@ mod tests {
     use super::*;
     use crate::journal::{self, Event};
 
+    /// A visit tally: `epoch_visits` over a `population`-visit creature (#153).
+    ///
+    /// The run's own share is a tenth of the epoch's, so a test can tell the
+    /// two figures apart on sight.
+    fn tally(epoch_visits: u64, population: usize) -> crate::coverage::VisitTally {
+        crate::coverage::VisitTally {
+            eligible_visits_run: epoch_visits / 10,
+            eligible_visits_epoch: epoch_visits,
+            population,
+        }
+    }
+
     fn start(ordering: Ordering) -> Event {
         Event::Start {
             seed: 7,
@@ -891,7 +903,7 @@ mod tests {
             "no coverage record is not pass 1"
         );
 
-        let passes = Passes::new(2, 9, 640, 600);
+        let passes = Passes::new(2, 9, 640, 600, tally(1_280, 40));
         journal::append(
             &path,
             &Event::Coverage {
@@ -915,6 +927,11 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"sweepsCompletedEpoch\":9"), "{json}");
         assert!(json.contains("\"currentPass\":10"), "{json}");
+        assert!(
+            json.contains("\"eligibleVisitsEpoch\":1280"),
+            "the topology-tolerant counters ride the same snapshot (#153): {json}"
+        );
+        assert!(json.contains("\"equivalentPassesEpoch\":32.0"), "{json}");
     }
 
     /// The counters move with the snapshot they belong to, absence included: a
@@ -938,7 +955,11 @@ mod tests {
             corpus_identity: Some("corp-aaaa1111".into()),
             passes,
         };
-        journal::append(&with_passes, &coverage(Some(Passes::new(2, 9, 40, 30)))).unwrap();
+        journal::append(
+            &with_passes,
+            &coverage(Some(Passes::new(2, 9, 40, 30, tally(90, 40)))),
+        )
+        .unwrap();
         journal::append(&without, &coverage(None)).unwrap();
 
         assert_eq!(
@@ -948,7 +969,7 @@ mod tests {
         );
         assert_eq!(
             summarise(&[&without, &with_passes]).unwrap().passes,
-            Some(Passes::new(2, 9, 40, 30))
+            Some(Passes::new(2, 9, 40, 30, tally(90, 40)))
         );
     }
 
