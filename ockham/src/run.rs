@@ -826,6 +826,10 @@ fn ockham_loop(
     let mut store = None;
     let mut known = Vec::new();
     let mut screens: Vec<Screened> = Vec::new();
+    // Complete passes the fleet had already recorded over this epoch when the
+    // run opened (Issue #140). A floor for an epoch that predates the markers:
+    // a pass that finished before they were filed left nothing to count.
+    let mut epoch_passes_at_open = 0u64;
     // Indexed before the epoch filter below, so the cumulative figures survive
     // a corpus change that resets current-epoch coverage to zero (Issue #102).
     let mut screen_history = crate::coverage::ScreenHistory::default();
@@ -873,6 +877,24 @@ fn ockham_loop(
                 }
                 Err(e) => log::warn(&format!(
                     "screen coverage unreadable ({e}); continuing without it"
+                )),
+            }
+            // Completed passes over this epoch (Issue #140). Reporting only, so
+            // an unreadable marker log costs the pass figures and nothing else
+            // — it must never stop pruning.
+            match s.load_passes() {
+                Ok(markers) => {
+                    epoch_passes_at_open =
+                        crate::learnings::epoch_passes(&markers, &corpus.identity);
+                    log::info(&format!(
+                        "passes: {epoch_passes_at_open} complete sweep(s) recorded this epoch \
+                         (corpus {}); working pass {}",
+                        corpus.identity,
+                        epoch_passes_at_open + 1
+                    ));
+                }
+                Err(e) => log::warn(&format!(
+                    "pass markers unreadable ({e}); continuing without the pass count"
                 )),
             }
         }
@@ -1469,6 +1491,16 @@ fn ockham_loop(
                 incumbent.hidden_neurons(),
                 progress.count()
             ));
+            // The pass that just finished is recorded where it outlives the run
+            // (Issue #140): the journal is this host's own, and the fleet-facing
+            // question is how many complete passes this epoch has had. A store
+            // fault warns and loses the marker rather than the pruning.
+            if let Some(store) = store.as_ref()
+                && let Err(e) =
+                    store.append_pass(&store.pass_marker(restarts, incumbent.hidden_neurons()))
+            {
+                log::warn(&format!("pass marker not written: {e}"));
+            }
             journal::append(
                 &journal_path,
                 &Event::SweepRestart {
@@ -1503,6 +1535,20 @@ fn ockham_loop(
             &avoid,
         );
         pass_candidates += candidates.len();
+        // What the sweep reached, whatever came of it (Issue #140). Filing a
+        // screen record is not the same as visiting: a revisit files nothing,
+        // so counted from the records alone a run re-screening a finished
+        // creature looks idle. Group proposals are excluded for the same reason
+        // they file no screen record — what was visited is the neuron, and a
+        // group is a proposal about a neighbourhood.
+        for uuid in candidates
+            .iter()
+            .filter(|c| !c.is_group())
+            .map(|c| c.uuid.as_str())
+            .chain(skips.iter().map(|s| s.uuid.as_str()))
+        {
+            progress.visit(uuid);
+        }
         // Structural neighbourhood proposals ride the same batch (Issue #108):
         // a chain or a low-fan-out branch that no single-neuron cut can expose,
         // screened and scored exactly like every other candidate. They are
@@ -2051,12 +2097,24 @@ fn ockham_loop(
     // Coverage is only meaningful with the screen store behind it; without one
     // there is no coverage state to report, so nothing is journalled.
     if store.is_some() {
+        // How many times the razor has been round the creature (Issue #140).
+        // Every restart this run filed a marker, so the epoch total is what the
+        // store held at open plus what this run completed — the same figure the
+        // next run will read back.
+        let passes = crate::coverage::Passes::new(
+            restarts,
+            epoch_passes_at_open + restarts,
+            progress.visited(),
+            progress.revisited(),
+        );
         // The epoch travels with the figure, so a log read months later can
         // tell a fresh epoch from a collapse in coverage (Issue #102).
         log::info(&format!(
-            "{} · epoch corpus {}",
+            "{} · epoch corpus {} · pass {} ({} complete this epoch)",
             cov.summary(),
-            crate::coverage::short_epoch(&corpus.identity)
+            crate::coverage::short_epoch(&corpus.identity),
+            passes.current_pass,
+            passes.sweeps_completed_epoch
         ));
         journal::append(
             &journal_path,
@@ -2069,6 +2127,7 @@ fn ockham_loop(
                 blocked_by_reason: cov.blocked_by_reason,
                 cut: cov.cut,
                 corpus_identity: Some(corpus.identity.clone()),
+                passes: Some(passes),
             },
         )?;
         // The GRQ-facing commit-description artefacts (Issues #40, #59). A
@@ -2086,6 +2145,7 @@ fn ockham_loop(
                 screen_history.over(&incumbent.creature)
             })
             .filter(crate::coverage::History::has_any),
+            passes: Some(passes),
         };
         match crate::coverage::write_files(&config.output_dir, &report, config.candidates) {
             Ok(()) => log::detail(&format!(
@@ -6461,6 +6521,99 @@ mod tests {
         assert_eq!(restarts[0]["restarts"], 1);
         assert_eq!(restarts[0]["hidden"], 2);
         assert_eq!(restarts[2]["newly_screened"], 2, "{restarts:?}");
+    }
+
+    /// Issue #140, the acceptance case: a run that exhausts its sweep, restarts
+    /// it and screens on into the next pass must say so in the artefacts. The
+    /// unique percentage stops at 100% by design — the pass counters are what
+    /// tell an operator the razor is on pass 4, not stuck at the end of pass 1.
+    #[test]
+    fn the_artefacts_report_the_completed_sweeps_and_the_pass_in_progress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = restart_cfg(
+            creature,
+            train.clone(),
+            tmp.path().join("out"),
+            Some(tmp.path().join("learnings")),
+            Some(4),
+        );
+        establish_run(&cfg, &losing_scorer()).unwrap();
+
+        let restarts = journal_records(&cfg.output_dir, "sweepRestart");
+        assert_eq!(restarts.len(), 3, "{restarts:?}");
+        let report = coverage_report_json(&cfg.output_dir);
+        let passes = report
+            .passes
+            .expect("the artefact carries the pass counters");
+        assert_eq!(
+            passes.sweep_restarts_run, 3,
+            "every restart is a complete sweep: {passes:?}"
+        );
+        assert_eq!(passes.sweeps_completed_epoch, 3);
+        assert_eq!(passes.current_pass, 4, "the fourth pass is under way");
+        assert!(
+            passes.visited_run >= 2,
+            "the run visited both neurons repeatedly: {passes:?}"
+        );
+        assert!(
+            report.coverage.sweep_complete(),
+            "the unique sweep finished: {:?}",
+            report.coverage
+        );
+
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(
+            text.contains("passes:    3 complete this epoch · 3 this run · pass 4 in progress"),
+            "{text}"
+        );
+        assert!(text.contains("visits:"), "{text}");
+
+        // `report` reads the same counters out of the journal, so the two
+        // GRQ-facing surfaces cannot disagree about which pass this was.
+        let summary =
+            crate::report::summarise(&[cfg.output_dir.join("experiments.jsonl")]).unwrap();
+        assert_eq!(summary.passes, Some(passes));
+        assert_eq!(
+            summary.sweep_restarts, passes.sweep_restarts_run,
+            "the restart count and the pass counters are the same event"
+        );
+
+        // The markers outlive the run: a second run over the same corpus opens
+        // on pass 4 rather than starting the count again.
+        let store = screens_store(&tmp.path().join("learnings"), &train);
+        let markers = store.load_passes().unwrap();
+        assert_eq!(markers.len(), 3, "{markers:?}");
+        assert_eq!(
+            crate::learnings::epoch_passes(&markers, store.corpus_identity()),
+            3
+        );
+
+        let second = OckhamConfig {
+            output_dir: tmp.path().join("out-2"),
+            ..cfg.clone()
+        };
+        establish_run(&second, &losing_scorer()).unwrap();
+        let next = coverage_report_json(&second.output_dir)
+            .passes
+            .expect("the second run carries them too");
+        assert_eq!(
+            next.sweeps_completed_epoch, 6,
+            "the epoch total is the fleet's, not one run's: {next:?}"
+        );
+        assert_eq!(next.sweep_restarts_run, 3, "{next:?}");
+        assert_eq!(next.current_pass, 7);
+        assert_eq!(
+            coverage_report_json(&second.output_dir).newly_screened,
+            0,
+            "the second run added no unique coverage — only passes"
+        );
+        assert!(
+            next.revisited_run > 0,
+            "re-screening a finished creature is revisiting: {next:?}"
+        );
     }
 
     /// The recycling half of the restart: with every neuron already screened,

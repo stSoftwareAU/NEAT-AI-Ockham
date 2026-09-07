@@ -262,6 +262,7 @@ impl Coverage {
 pub(crate) struct ScreenProgress {
     opening: HashSet<String>,
     added: HashSet<String>,
+    visited: HashSet<String>,
 }
 
 impl ScreenProgress {
@@ -270,7 +271,36 @@ impl ScreenProgress {
         Self {
             opening: screens.iter().map(|s| s.uuid.clone()).collect(),
             added: HashSet::new(),
+            visited: HashSet::new(),
         }
+    }
+
+    /// Record that the sweep reached this uuid, whatever came of the visit.
+    ///
+    /// Wider than [`Self::observe`] on purpose (Issue #140): a revisit files no
+    /// screen record — a blocked visit files one per epoch by design (#93) —
+    /// so without this the run's own re-screening work is invisible to every
+    /// reporting surface, and a fully covered creature reads as idle.
+    pub(crate) fn visit(&mut self, uuid: &str) {
+        if !self.visited.contains(uuid) {
+            self.visited.insert(uuid.to_string());
+        }
+    }
+
+    /// Distinct hidden UUIDs the sweep reached this run, revisits included.
+    pub(crate) fn visited(&self) -> usize {
+        self.visited.len()
+    }
+
+    /// How many of those the fleet had already checked when the run opened.
+    ///
+    /// Useful work that added no unique coverage — reported beside `progress:`,
+    /// never inside it.
+    pub(crate) fn revisited(&self) -> usize {
+        self.visited
+            .iter()
+            .filter(|uuid| self.opening.contains(*uuid))
+            .count()
     }
 
     /// Record one filed screen record; only a first-ever record counts.
@@ -432,6 +462,103 @@ impl History {
     }
 }
 
+/// How many times the razor has been all the way round the creature (#140).
+///
+/// `100% ever visited` is not `finished`. [`Coverage`] counts **unique** hidden
+/// UUIDs visited at least once this epoch, and once that reaches the whole
+/// creature it stops moving however hard the fleet is working: a re-screen of
+/// an already-visited neuron is real work, but it is not a new uuid, and
+/// counting it as one would break the meaning every existing consumer relies
+/// on. So repeated sweeps are reported here instead, beside the unique
+/// percentage and never inside it.
+///
+/// A **pass** is one complete sweep: the run visited every hidden neuron on the
+/// incumbent, the sweep was exhausted, and it was rebuilt to re-screen the
+/// stalest neurons first (Issue #77). Each rebuild files a marker in the
+/// learnings store, so the count survives the run that made it.
+///
+/// A topology change or an accepted cut resets nothing here: the counters move
+/// only when a sweep is exhausted, and the epoch total is read from persisted
+/// markers rather than from the creature in hand. A **corpus change** does open
+/// a new epoch — [`Self::sweeps_completed_epoch`] counts markers filed under the
+/// corpus in hand — for the same reason coverage does (Issue #100).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Passes {
+    /// Exhausted-sweep restarts during **this** Ockham invocation (Issue #77).
+    ///
+    /// The same event `report` counts as `sweepRestarts`, so the two surfaces
+    /// are the same figure read from the same journal.
+    pub sweep_restarts_run: u64,
+    /// Complete passes the fleet has recorded over the current epoch.
+    ///
+    /// Counted from the pass markers in the learnings store, filed under the
+    /// corpus in hand. Exact for an epoch that opened after the markers
+    /// existed; a **floor** for one already running when this shipped, because
+    /// a pass that finished before markers were persisted left no record to
+    /// count and is never guessed at (Issue #140).
+    pub sweeps_completed_epoch: u64,
+    /// 1-based pass currently being worked: `sweeps_completed_epoch + 1`.
+    ///
+    /// Derived rather than stored independently, so the rendered line can never
+    /// claim a pass number the completed count does not support.
+    pub current_pass: u64,
+    /// Distinct hidden UUIDs this run's sweep reached, revisits included.
+    ///
+    /// Deliberately **not** `newlyScreened`: that counts first-ever visits, and
+    /// on a fully screened creature it is zero however much re-screening the
+    /// run did. This is the work figure that keeps moving.
+    pub visited_run: usize,
+    /// How many of [`Self::visited_run`] the fleet had already checked.
+    ///
+    /// A revisit is useful work and is **not** new unique coverage, so it is
+    /// reported as its own number rather than folded into `progress:`.
+    pub revisited_run: usize,
+}
+
+impl Passes {
+    /// Passes with `current_pass` derived from the completed count.
+    pub fn new(
+        sweep_restarts_run: u64,
+        sweeps_completed_epoch: u64,
+        visited_run: usize,
+        revisited_run: usize,
+    ) -> Self {
+        Self {
+            sweep_restarts_run,
+            sweeps_completed_epoch,
+            current_pass: sweeps_completed_epoch + 1,
+            visited_run,
+            revisited_run,
+        }
+    }
+
+    /// The description lines: the pass counters, then this run's visits.
+    ///
+    /// ```text
+    /// passes:    3 complete this epoch · 1 this run · pass 4 in progress
+    /// visits:    120 hidden neurons visited this run · 40 revisited
+    /// ```
+    ///
+    /// The `passes:` line is always rendered — `0 complete this epoch · pass 1
+    /// in progress` is the honest opening state, and a line that appears only
+    /// once there is something to boast about cannot be read as a series. The
+    /// `visits:` line is omitted when the run reached nothing.
+    fn lines(&self) -> Vec<String> {
+        let mut out = vec![format!(
+            "{:<11}{} complete this epoch · {} this run · pass {} in progress",
+            "passes:", self.sweeps_completed_epoch, self.sweep_restarts_run, self.current_pass
+        )];
+        if self.visited_run > 0 {
+            out.push(format!(
+                "{:<11}{} hidden neurons visited this run · {} revisited",
+                "visits:", self.visited_run, self.revisited_run
+            ));
+        }
+        out
+    }
+}
+
 /// Every screen record the store holds, indexed across all epochs (Issue #102).
 ///
 /// Built from the **unfiltered** load, before
@@ -552,6 +679,16 @@ pub struct CoverageReport {
     /// field existed still deserialises.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<History>,
+    /// Repeated complete sweeps over the creature (Issue #140); absent with no
+    /// store.
+    ///
+    /// The counter that keeps moving once the unique percentage above reaches
+    /// 100%: without it a run re-screening the stalest half of a finished
+    /// creature is indistinguishable, from the commit description, from one
+    /// stuck at the tail of its first pass. `#[serde(default)]` so an artefact
+    /// written before this field existed still deserialises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passes: Option<Passes>,
 }
 
 impl CoverageReport {
@@ -563,6 +700,7 @@ impl CoverageReport {
             winners: None,
             corpus_identity: None,
             history: None,
+            passes: None,
         }
     }
 
@@ -573,8 +711,11 @@ impl CoverageReport {
     /// report names no epoch — so a report built by [`Self::new`] renders as it
     /// did before #100. The `progress:` line is always rendered, zero included
     /// — a plateau is only visible by reading two consecutive commits if the
-    /// figure is there in both. The `history:` line is omitted when the store
-    /// holds no records, and never contributes to the percentage above it.
+    /// figure is there in both. The `passes:` line follows it whenever the run
+    /// had a screen store to count markers from (Issue #140), saying how many
+    /// complete sweeps this epoch has had and which pass is in progress. The
+    /// `history:` line is omitted when the store holds no records, and never
+    /// contributes to the percentage above it.
     pub fn description(&self, candidates: usize) -> String {
         let mut out = self
             .coverage
@@ -583,6 +724,10 @@ impl CoverageReport {
             "\n{:<11}{} newly checked this run",
             "progress:", self.newly_screened
         ));
+        for line in self.passes.iter().flat_map(Passes::lines) {
+            out.push('\n');
+            out.push_str(&line);
+        }
         if let Some(line) = self
             .history
             .as_ref()
@@ -1379,6 +1524,7 @@ mod tests {
             winners: Some(fleet_winners()),
             corpus_identity: None,
             history: None,
+            passes: None,
         };
         assert_eq!(
             report.description(100),
@@ -1449,6 +1595,7 @@ mod tests {
             }),
             corpus_identity: None,
             history: None,
+            passes: None,
         };
         let block = report.description(100);
         assert!(block.ends_with("winners:   4 screened · 0 confirmed · 0 applied · 0 carried"));
@@ -1468,6 +1615,7 @@ mod tests {
             }),
             corpus_identity: None,
             history: None,
+            passes: None,
         };
         let block = report.description(100);
         assert!(
@@ -1486,6 +1634,7 @@ mod tests {
             winners: Some(fleet_winners()),
             corpus_identity: None,
             history: None,
+            passes: None,
         };
         write_files(&dir, &report, 100).unwrap();
 
@@ -1847,6 +1996,139 @@ mod tests {
         );
     }
 
+    /// Issue #140: the artefact says how many complete passes the razor has
+    /// made and which one is in progress, so a run beyond its first sweep is
+    /// legible from the commit description alone.
+    #[test]
+    fn the_description_reports_the_completed_passes_and_the_one_in_progress() {
+        let report = CoverageReport {
+            passes: Some(Passes::new(1, 7, 120, 118)),
+            ..CoverageReport::new(fleet_coverage())
+        };
+        let block = report.description(100);
+        assert!(
+            block.contains(
+                "passes:    7 complete this epoch · 1 this run · pass 8 in progress\n\
+                 visits:    120 hidden neurons visited this run · 118 revisited"
+            ),
+            "{block}"
+        );
+    }
+
+    /// The headline case: 100% unique coverage with re-screening under way must
+    /// not read as a run stuck at the end of its first pass.
+    #[test]
+    fn a_fully_covered_epoch_still_reports_the_pass_it_is_working() {
+        let cov = Coverage {
+            checked: 5013,
+            ..fleet_coverage()
+        };
+        let report = CoverageReport {
+            passes: Some(Passes::new(2, 4, 300, 300)),
+            corpus_identity: Some("6fc028da266d6c51".into()),
+            ..CoverageReport::new(cov)
+        };
+        let block = report.description(100);
+        assert!(cov.sweep_complete(), "{block}");
+        assert!(
+            block.contains("unchecked: 0 remaining — sweep complete for this epoch"),
+            "{block}"
+        );
+        assert!(block.contains("pass 5 in progress"), "{block}");
+        assert!(
+            block.contains("visits:    300 hidden neurons visited this run · 300 revisited"),
+            "the re-screening a complete sweep is doing must be visible: {block}"
+        );
+    }
+
+    /// The pass in progress is derived from the completed count, so the two can
+    /// never disagree — and a fresh epoch opens honestly at pass 1.
+    #[test]
+    fn the_pass_in_progress_is_always_one_past_the_completed_count() {
+        for completed in [0u64, 1, 9, 743] {
+            let passes = Passes::new(0, completed, 0, 0);
+            assert_eq!(passes.current_pass, completed + 1);
+        }
+        let opening = CoverageReport {
+            passes: Some(Passes::new(0, 0, 0, 0)),
+            ..CoverageReport::new(fleet_coverage())
+        };
+        let block = opening.description(100);
+        assert!(
+            block.contains("passes:    0 complete this epoch · 0 this run · pass 1 in progress"),
+            "{block}"
+        );
+        assert!(
+            !block.contains("visits:"),
+            "a run that reached nothing has no visits to report: {block}"
+        );
+    }
+
+    /// A report with no screen store behind it renders exactly as it did before
+    /// #140, and the new key round-trips for one that has.
+    #[test]
+    fn the_passes_object_round_trips_and_is_absent_without_a_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("out");
+        let bare = CoverageReport::new(fleet_coverage());
+        write_files(&dir, &bare, 100).unwrap();
+        let json = std::fs::read_to_string(dir.join(COVERAGE_JSON_FILE)).unwrap();
+        assert!(!json.contains("passes"), "{json}");
+        assert!(!bare.description(100).contains("passes:"));
+
+        let report = CoverageReport {
+            passes: Some(Passes::new(1, 7, 120, 118)),
+            ..bare
+        };
+        write_files(&dir, &report, 100).unwrap();
+        let json = std::fs::read_to_string(dir.join(COVERAGE_JSON_FILE)).unwrap();
+        assert!(json.contains("\"sweepRestartsRun\": 1"), "{json}");
+        assert!(json.contains("\"sweepsCompletedEpoch\": 7"), "{json}");
+        assert!(json.contains("\"currentPass\": 8"), "{json}");
+        assert!(json.contains("\"visitedRun\": 120"), "{json}");
+        assert!(json.contains("\"revisitedRun\": 118"), "{json}");
+        let back: CoverageReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, report, "the pass counters must round-trip");
+        let old: Coverage = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            old,
+            fleet_coverage(),
+            "a consumer that only knows Coverage still reads it"
+        );
+
+        // A pre-#140 artefact carries no passes, rather than failing to read.
+        let pre_140 = r#"{"hidden":5013,"tagged":42,"checkable":5013,"checked":1204,"cut":7,
+            "newlyScreened":0}"#;
+        let older: CoverageReport = serde_json::from_str(pre_140).unwrap();
+        assert_eq!(older.passes, None);
+    }
+
+    /// The existing `checked` figure keeps its meaning: repeated passes are
+    /// reported beside it, never folded into it (Issue #140).
+    #[test]
+    fn repeated_passes_never_move_the_unique_coverage_figures() {
+        let cov = fleet_coverage();
+        let with_passes = CoverageReport {
+            passes: Some(Passes::new(3, 9, 400, 400)),
+            ..CoverageReport::new(cov)
+        };
+        assert_eq!(with_passes.coverage, cov);
+        assert_eq!(with_passes.coverage.percent(), cov.percent());
+        assert_eq!(
+            with_passes.newly_screened, 0,
+            "a revisit is not a newly checked uuid"
+        );
+        let block = with_passes.description(100);
+        assert!(
+            block.contains("sweep:     1204 of 5013 hidden (24.0% of epoch)"),
+            "{block}"
+        );
+        assert!(
+            block.contains("progress:  0 newly checked this run"),
+            "{block}"
+        );
+    }
+
     /// The plateau signature itself: nothing newly screened while unchecked
     /// neurons remain. Eight silent runs become eight warnings.
     #[test]
@@ -1885,6 +2167,35 @@ mod tests {
         );
         progress.observe("h_c");
         assert_eq!(progress.count(), 2);
+    }
+
+    /// Issue #140: a revisit is work, not new coverage. Both figures are kept,
+    /// and neither is allowed to stand in for the other.
+    #[test]
+    fn visits_count_every_uuid_reached_while_progress_counts_only_new_ones() {
+        let existing = vec![screen("h_a", 10), screen("h_b", 11)];
+        let mut progress = ScreenProgress::new(&existing);
+        assert_eq!(progress.visited(), 0);
+
+        progress.visit("h_a");
+        progress.visit("h_a");
+        progress.visit("h_b");
+        progress.visit("h_new");
+        assert_eq!(
+            progress.visited(),
+            3,
+            "a uuid is visited once, however often"
+        );
+        assert_eq!(progress.revisited(), 2, "h_a and h_b were already checked");
+        assert_eq!(
+            progress.count(),
+            0,
+            "visiting is not filing: only a filed first-ever record is progress"
+        );
+
+        progress.observe("h_new");
+        assert_eq!(progress.count(), 1);
+        assert_eq!(progress.revisited(), 2, "the new uuid is not a revisit");
     }
 
     #[test]

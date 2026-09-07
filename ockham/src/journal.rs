@@ -183,6 +183,14 @@ pub enum Event {
         /// this field existed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         corpus_identity: Option<String>,
+        /// Complete sweeps over the creature, and the pass in progress (#140).
+        ///
+        /// Journalled beside the unique-coverage figures rather than inside
+        /// them, so `report` reads the same counters `coverage.json` carries
+        /// and the two surfaces cannot disagree about which pass a run was on.
+        /// `None` on a record written before this field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        passes: Option<crate::coverage::Passes>,
     },
     /// Full-corpus cohort result.
     Full {

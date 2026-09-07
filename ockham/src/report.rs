@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use crate::ablation::growth_units;
 use crate::blocked::{BlockedBreakdown, BlockedReason};
-use crate::coverage::{Coverage, Winners};
+use crate::coverage::{Coverage, Passes, Winners};
 use crate::journal::Event;
 use crate::ordering::Ordering;
 
@@ -126,6 +126,15 @@ pub struct Report {
     /// not that Ockham is done. `None` on a journal written before #100, whose
     /// coverage records name no epoch.
     pub corpus_identity: Option<String>,
+    /// Complete sweeps over the creature, and the pass in progress (#140).
+    ///
+    /// Read from the same coverage record as the figures above, so `report` and
+    /// `coverage.txt` / `coverage.json` can never disagree about how many
+    /// passes an epoch has had. `sweep_restarts` counts the same restarts from
+    /// the `sweepRestart` records themselves and agrees with
+    /// `passes.sweep_restarts_run` for a single run's journal. `None` on a
+    /// journal with no coverage record, and on one written before #140.
+    pub passes: Option<Passes>,
     /// Whether the sweep had reached every hidden neuron of that epoch.
     ///
     /// Derived from the same record as the percentage, so `report` can never
@@ -280,6 +289,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         coverage_percent: None,
         corpus_identity: None,
         sweep_complete: None,
+        passes: None,
         winners: None,
         est_ms_per_creature: None,
         budget_dropped: 0,
@@ -400,6 +410,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     blocked_by_reason,
                     cut,
                     corpus_identity,
+                    passes,
                     ..
                 } => {
                     // Coverage is a snapshot of one incumbent, not a total:
@@ -447,6 +458,13 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     // the figures and the identity they were measured against.
                     report.corpus_identity = corpus_identity;
                     report.sweep_complete = Some(cov.sweep_complete());
+                    // The pass counters belong to the same snapshot (#140), so
+                    // `report` and `coverage.json` name the same pass for the
+                    // same run. A journal written before they existed reports
+                    // none rather than a fabricated pass 1.
+                    if let Some(passes) = passes {
+                        report.passes = Some(passes);
+                    }
                 }
                 Event::Budget {
                     est_ms_per_creature,
@@ -790,6 +808,59 @@ mod tests {
         assert_eq!(report.sweep_restarts, 2);
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"sweepRestarts\":2"), "{json}");
+    }
+
+    /// Issue #140: `report` reads the pass counters out of the same coverage
+    /// record `coverage.json` is built from, so the two cannot disagree about
+    /// how many complete sweeps an epoch has had.
+    #[test]
+    fn report_carries_the_pass_counters_from_the_coverage_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        assert_eq!(
+            summarise(&[&path]).unwrap().passes,
+            None,
+            "no coverage record is not pass 1"
+        );
+
+        let passes = Passes::new(2, 9, 640, 600);
+        journal::append(
+            &path,
+            &Event::Coverage {
+                hidden: 40,
+                tagged: 0,
+                checkable: 40,
+                checked: 40,
+                blocked: 0,
+                blocked_by_reason: BlockedBreakdown::default(),
+                cut: 1,
+                corpus_identity: Some("corp-aaaa1111".into()),
+                passes: Some(passes),
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.passes, Some(passes));
+        assert_eq!(report.sweep_complete, Some(true));
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"sweepsCompletedEpoch\":9"), "{json}");
+        assert!(json.contains("\"currentPass\":10"), "{json}");
+    }
+
+    /// A journal written before the counters existed reports none rather than
+    /// a fabricated first pass — an absent measurement is not a measurement.
+    #[test]
+    fn a_pre_140_journal_reports_no_pass_counters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        let pre_140 = r#"{"record":"coverage","hidden":40,"tagged":0,"checkable":40,
+            "checked":12,"cut":0}"#
+            .replace('\n', "");
+        std::fs::write(&path, format!("{pre_140}\n")).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.checked, Some(12), "the old figures still read");
+        assert_eq!(report.passes, None);
     }
 
     #[test]
@@ -1138,6 +1209,7 @@ mod tests {
                 blocked: 0,
                 cut: 0,
                 corpus_identity: None,
+                passes: None,
             },
         )
         .unwrap();
@@ -1153,6 +1225,7 @@ mod tests {
                 blocked: 0,
                 cut: 2,
                 corpus_identity: None,
+                passes: None,
             },
         )
         .unwrap();
@@ -1181,6 +1254,7 @@ mod tests {
                 blocked: 0,
                 cut: 7,
                 corpus_identity: None,
+                passes: None,
             },
         )
         .unwrap();
@@ -1216,6 +1290,7 @@ mod tests {
                 blocked: 3000,
                 cut: 7,
                 corpus_identity: None,
+                passes: None,
             },
         )
         .unwrap();
@@ -1272,6 +1347,7 @@ mod tests {
                 blocked: 412,
                 cut: 0,
                 corpus_identity: Some("corp-aaaa1111".into()),
+                passes: None,
             },
         )
         .unwrap();
@@ -1316,6 +1392,7 @@ mod tests {
                 blocked,
                 cut: 0,
                 corpus_identity: Some(identity.into()),
+                passes: None,
             };
         // Two runs under the old corpus, then one under the new: the first
         // epoch keeps its freshest figures rather than a second row.
@@ -1401,6 +1478,7 @@ mod tests {
                 blocked: 0,
                 cut: 1,
                 corpus_identity: Some("corp-aaaa1111".into()),
+                passes: None,
             },
         )
         .unwrap();
@@ -1422,6 +1500,7 @@ mod tests {
                 blocked: 0,
                 cut: 0,
                 corpus_identity: Some("corp-bbbb2222".into()),
+                passes: None,
             },
         )
         .unwrap();
