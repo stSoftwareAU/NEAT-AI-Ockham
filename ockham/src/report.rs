@@ -731,9 +731,12 @@ mod tests {
     /// The run's own share is a tenth of the epoch's, so a test can tell the
     /// two figures apart on sight.
     fn tally(epoch_visits: u64, population: usize) -> crate::coverage::VisitTally {
+        let run = epoch_visits / 10;
         crate::coverage::VisitTally {
-            eligible_visits_run: epoch_visits / 10,
+            eligible_visits_run: run,
             eligible_visits_epoch: epoch_visits,
+            equivalent_passes_run: run as f64 / population as f64,
+            equivalent_passes_epoch: epoch_visits as f64 / population as f64,
             population,
         }
     }

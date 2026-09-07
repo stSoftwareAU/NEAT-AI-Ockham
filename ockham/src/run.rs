@@ -858,6 +858,8 @@ fn ockham_loop(
     // `epoch_passes_at_open`, and a floor for the same reason: work done before
     // the ledger existed left nothing to count.
     let mut epoch_visits_at_open = 0u64;
+    // The equivalent-pass half of the same snapshot, kept for the same fallback.
+    let mut epoch_equivalent_at_open = 0f64;
     // Indexed before the epoch filter below, so the cumulative figures survive
     // a corpus change that resets current-epoch coverage to zero (Issue #102).
     let mut screen_history = crate::coverage::ScreenHistory::default();
@@ -932,9 +934,11 @@ fn ockham_loop(
                 Ok(ledgers) => {
                     epoch_visits_at_open =
                         crate::learnings::epoch_visits(&ledgers, &corpus.identity);
+                    epoch_equivalent_at_open =
+                        crate::learnings::epoch_equivalent_passes(&ledgers, &corpus.identity);
                     log::info(&format!(
                         "visits: {epoch_visits_at_open} eligible visit(s) recorded this epoch \
-                         (corpus {})",
+                         (corpus {}) — {epoch_equivalent_at_open:.2} creature-equivalent pass(es)",
                         corpus.identity
                     ));
                 }
@@ -1596,13 +1600,23 @@ fn ockham_loop(
         // creature looks idle. Counted here, before the group proposals below
         // join the batch: a group is a proposal about a neighbourhood, not a
         // sweep visit, which is why it files no screen record either.
+        let mut reached = 0usize;
         for uuid in candidates
             .iter()
             .map(|c| c.uuid.as_str())
             .chain(skips.iter().map(|s| s.uuid.as_str()))
         {
             progress.visit(uuid);
+            reached += 1;
         }
+        // Credited against the creature the batch was actually performed on
+        // (Issue #153). Dividing the run's total by the creature it *finishes*
+        // on would inflate without bound as pruning shrinks the divisor; this
+        // is the integral over a topology that never stops changing.
+        progress.credit_batch(
+            reached,
+            crate::coverage::visit_population_size(&incumbent.creature),
+        );
         // Structural neighbourhood proposals ride the same batch (Issue #108):
         // a chain or a low-fan-out branch that no single-neuron cut can expose,
         // screened and scored exactly like every other candidate. They are
@@ -2175,29 +2189,46 @@ fn ockham_loop(
         // this creature from several hosts at once, and an entry the store
         // refused must not be reported as though it had landed.
         let eligible_visits_run = progress.eligible_visits();
-        let mut ledger_filed = 0u64;
+        let equivalent_passes_run = progress.equivalent_passes();
+        let mut filed = None;
         // A run that visited nothing files nothing: an entry of zero visits
         // records no work and would grow the shared append-only log by one line
         // per run forever.
         if let Some(s) = store
             && eligible_visits_run > 0
         {
-            match s.append_visits(&s.visit_ledger(eligible_visits_run, cov.checkable)) {
-                Ok(()) => ledger_filed = eligible_visits_run,
+            let entry = s.visit_ledger(eligible_visits_run, equivalent_passes_run, cov.checkable);
+            match s.append_visits(&entry) {
+                Ok(()) => filed = Some(entry),
                 Err(e) => log::warn(&format!("visit ledger not written: {e}")),
             }
         }
-        let eligible_visits_epoch = store
-            .and_then(|s| match s.load_visits() {
-                Ok(ledgers) => Some(crate::learnings::epoch_visits(&ledgers, &corpus.identity)),
-                Err(e) => {
-                    log::warn(&format!(
-                        "visit ledger unreadable ({e}); reporting the visits this run knows of"
-                    ));
-                    None
-                }
-            })
-            .unwrap_or(epoch_visits_at_open + ledger_filed);
+        // Re-read for the same reasons the pass markers are: several hosts sweep
+        // this creature at once, and an entry the store refused must not be
+        // published as though it had landed. On an unreadable ledger the epoch
+        // figures fall back to what this run can vouch for — what it read at
+        // open plus what it actually filed — and the artefact says so, rather
+        // than passing a degraded number off as the fleet's (Issue #153).
+        let reread = store.and_then(|s| match s.load_visits() {
+            Ok(ledgers) => Some(ledgers),
+            Err(e) => {
+                log::warn(&format!(
+                    "visit ledger unreadable ({e}); the epoch visit figures fall back to \
+                     what this run read at open plus what it filed"
+                ));
+                None
+            }
+        });
+        let (eligible_visits_epoch, equivalent_passes_epoch) = match reread {
+            Some(ledgers) => (
+                crate::learnings::epoch_visits(&ledgers, &corpus.identity),
+                crate::learnings::epoch_equivalent_passes(&ledgers, &corpus.identity),
+            ),
+            None => (
+                epoch_visits_at_open + filed.as_ref().map_or(0, |e| e.visits),
+                epoch_equivalent_at_open + filed.as_ref().map_or(0.0, |e| e.equivalent_passes),
+            ),
+        };
         let passes = crate::coverage::Passes::new(
             restarts,
             completed_epoch,
@@ -2206,10 +2237,12 @@ fn ockham_loop(
             crate::coverage::VisitTally {
                 eligible_visits_run,
                 eligible_visits_epoch,
+                equivalent_passes_run,
+                equivalent_passes_epoch,
                 // The visit population of the creature the run finished on, and
                 // the same figure the `sweep:` denominator uses — so the two
                 // rendered lines can never disagree about what one creature is
-                // worth.
+                // worth. A reference size, not the divisor: see `VisitTally`.
                 population: cov.checkable,
             },
         );
@@ -7236,6 +7269,39 @@ mod tests {
         let run = establish_run(&cfg, &winning).unwrap();
         assert!(run.accepts >= 1, "the run must accept a cut: {run:?}");
 
+        // The sweep really was rebuilt mid-run and really did keep visiting
+        // afterwards: there is a `batch` record after the first accepted
+        // `full` record. Without this the rest of the test could pass on a run
+        // that accepted on its very last batch and never revisited anything.
+        let ordered: Vec<serde_json::Value> =
+            std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).expect("journal line is JSON"))
+                .collect();
+        let first_accept = ordered
+            .iter()
+            .position(|v| v["record"] == "full" && v["accepted"] == true)
+            .expect("the run accepted a cut");
+        let batches_after = ordered[first_accept..]
+            .iter()
+            .filter(|v| v["record"] == "batch")
+            .count();
+        assert!(
+            batches_after > 0,
+            "the rebuilt sweep must keep visiting, or there is no rebuild to \
+             survive: {ordered:?}"
+        );
+        let visits_before_accept: u64 = ordered[..first_accept]
+            .iter()
+            .filter(|v| v["record"] == "batch")
+            .map(|v| v["candidates"].as_u64().unwrap_or(0) + v["skipped"].as_u64().unwrap_or(0))
+            .sum();
+        assert!(
+            visits_before_accept > 0,
+            "the run visited before it accepted: {ordered:?}"
+        );
+
         let report = coverage_report_json(&cfg.output_dir);
         let passes = report
             .passes
@@ -7249,14 +7315,34 @@ mod tests {
             passes.sweeps_completed_epoch, 0,
             "so no pass marker is ever filed: {passes:?}"
         );
-        // What must not be zero: the work the razor actually did.
+        // What must not be zero: the work the razor actually did. Strictly
+        // greater than the visits performed before the accept **and** greater
+        // than the whole creature the run finished on, so the figure cannot be
+        // explained by post-rebuild work alone — the pre-accept visits are
+        // still in it.
         assert!(
-            passes.eligible_visits_run > 0,
-            "the sweep visited neurons before and after the accept: {passes:?}"
+            passes.eligible_visits_run > visits_before_accept,
+            "visits kept accumulating across the rebuild: {passes:?} \
+             (before the accept: {visits_before_accept})"
+        );
+        assert!(
+            passes.eligible_visits_run > report.coverage.checkable as u64,
+            "the run counted more visits than the creature it ended with could \
+             supply in one pass, which is only possible if the rebuilds kept \
+             what came before them: {passes:?}"
+        );
+        assert!(
+            passes.equivalent_passes_run > 1.0,
+            "more than one creature travelled, without a single strict pass: \
+             {passes:?}"
         );
         assert_eq!(
             passes.eligible_visits_epoch, passes.eligible_visits_run,
             "the only run in this epoch contributed every visit: {passes:?}"
+        );
+        assert_eq!(
+            passes.equivalent_passes_epoch, passes.equivalent_passes_run,
+            "and every equivalent pass: {passes:?}"
         );
         assert_eq!(
             passes.visit_population, report.coverage.checkable,
@@ -7268,7 +7354,7 @@ mod tests {
             "rescan progress survives the topology rebuild: {passes:?}"
         );
         assert_eq!(
-            passes.first_visits_run + passes.revisited_run,
+            passes.first_visits_run() + passes.revisited_run,
             passes.visited_run,
             "first visits and revisits split the run's distinct visits: {passes:?}"
         );
@@ -7301,6 +7387,8 @@ mod tests {
         let ledgers = store.load_visits().unwrap();
         assert_eq!(ledgers.len(), 1, "one entry per run: {ledgers:?}");
         assert_eq!(ledgers[0].visits, passes.eligible_visits_run);
+        assert_eq!(ledgers[0].equivalent_passes, passes.equivalent_passes_run);
+        assert_eq!(ledgers[0].population, report.coverage.checkable);
 
         let second = OckhamConfig {
             output_dir: tmp.path().join("out-2"),
@@ -7322,6 +7410,91 @@ mod tests {
             next.equivalent_passes_epoch > next.equivalent_passes_run,
             "so the epoch has travelled further than this run alone: {next:?}"
         );
+    }
+
+    /// Issue #153: an equivalent pass is credited against the creature the
+    /// batch was performed on, never against the one the run finished with.
+    /// Dividing by the final creature is what makes the figure explode — this
+    /// run prunes almost everything away, so the two differ by an order of
+    /// magnitude and the honest one is the smaller.
+    #[test]
+    fn equivalent_passes_are_credited_against_the_creature_of_the_day() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let cfg = restart_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(tmp.path().join("learnings")),
+            Some(20),
+        );
+        let winning = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        establish_run(&cfg, &winning).unwrap();
+
+        let report = coverage_report_json(&cfg.output_dir);
+        let passes = report.passes.expect("the counters are reported");
+        assert!(
+            report.coverage.checkable < 4,
+            "the run must have pruned the creature right down for this test to \
+             mean anything: {:?}",
+            report.coverage
+        );
+        let naive = passes.eligible_visits_run as f64 / report.coverage.checkable as f64;
+        assert!(
+            passes.equivalent_passes_run < naive,
+            "dividing by the creature the run ended on would claim {naive:.2} \
+             passes; the accumulated figure is {:.2}: {passes:?}",
+            passes.equivalent_passes_run
+        );
+        // And it is bounded by what the run could actually have travelled: the
+        // creature never had fewer than one visit in it, and the run performed
+        // `eligible_visits_run` of them.
+        assert!(
+            passes.equivalent_passes_run <= passes.eligible_visits_run as f64,
+            "{passes:?}"
+        );
+    }
+
+    /// A ledger entry the store refused is not counted in the **epoch** figures,
+    /// exactly as a refused pass marker is not counted as a completed pass. The
+    /// run's own measured work is still published — it happened, and the run
+    /// knows it happened — and the run itself is unharmed, because a reporting
+    /// cache fault must never cost pruning.
+    #[test]
+    fn a_visit_ledger_the_store_refused_is_not_counted_in_the_epoch_total() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        // A directory where this host's ledger file belongs: every append fails.
+        std::fs::create_dir_all(learnings_dir.join("visits").join("t.jsonl")).unwrap();
+
+        let cfg = restart_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(learnings_dir),
+            Some(10),
+        );
+        let run = establish_run(&cfg, &losing_scorer()).unwrap();
+        assert_eq!(run.stop_reason, "max-experiments", "the run still finishes");
+
+        let passes = coverage_report_json(&cfg.output_dir)
+            .passes
+            .expect("the artefact carries the counters");
+        assert!(
+            passes.eligible_visits_run > 0,
+            "the run's own work is known whatever the store did: {passes:?}"
+        );
+        assert!(passes.equivalent_passes_run > 0.0, "{passes:?}");
+        assert_eq!(
+            passes.eligible_visits_epoch, 0,
+            "an unwritten entry is not recorded work: {passes:?}"
+        );
+        assert_eq!(passes.equivalent_passes_epoch, 0.0, "{passes:?}");
     }
 
     /// The recycling half of the restart: with every neuron already screened,

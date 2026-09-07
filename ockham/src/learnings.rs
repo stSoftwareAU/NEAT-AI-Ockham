@@ -439,7 +439,7 @@ pub fn epoch_passes(markers: &[PassMarker], corpus_identity: &str) -> u64 {
 /// creature in hand.
 ///
 /// A coverage fact only: nothing here can accept or reject a prune.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VisitLedger {
     /// Format version.
@@ -461,12 +461,25 @@ pub struct VisitLedger {
     /// distinctness is what the unique percentage already reports, and it stops
     /// moving the moment the creature is fully covered.
     pub visits: u64,
-    /// Visit population the run finished against — the equivalent-pass divisor.
+    /// Creature-equivalent passes those visits amount to.
     ///
-    /// Recorded per entry rather than assumed constant, because pruning shrinks
-    /// it: the entry says what one creature was worth *at the time the visits
-    /// were performed*, which is what makes an epoch total honest across a
-    /// topology that never stops changing.
+    /// The payload of the entry, and deliberately **not** derivable from
+    /// [`Self::visits`] and [`Self::population`]: the run accumulated it batch
+    /// by batch against the creature each batch was actually performed on, so
+    /// pruning during the run neither inflates nor erases it. Summed across the
+    /// epoch's entries by [`epoch_equivalent_passes`].
+    ///
+    /// `#[serde(default)]` so the field can be read as `0.0` rather than
+    /// failing; an entry that genuinely travelled nothing and one written
+    /// before this field existed are both honestly "no recorded progress".
+    #[serde(default)]
+    pub equivalent_passes: f64,
+    /// Visit population the run finished against — what one creature was worth.
+    ///
+    /// Diagnostic, exactly as [`PassMarker::hidden`] is: it makes an entry
+    /// interpretable on its own, and lets an operator see the creature shrink
+    /// across an epoch. It is **not** the divisor of the epoch total — that is
+    /// [`Self::equivalent_passes`], accumulated while the run was working.
     pub population: usize,
 }
 
@@ -481,6 +494,22 @@ pub fn epoch_visits(ledgers: &[VisitLedger], corpus_identity: &str) -> u64 {
         .iter()
         .filter(|l| l.corpus_identity.as_deref() == Some(corpus_identity))
         .fold(0u64, |total, l| total.saturating_add(l.visits))
+}
+
+/// Creature-equivalent passes recorded against `corpus_identity` (#153).
+///
+/// The sum of what each run travelled, **not** [`epoch_visits`] divided by any
+/// one creature: every entry was accumulated against the creature its own run
+/// was sweeping, so an epoch that pruned its way from 7,475 visits down to
+/// 6,000 is still measured honestly. Scoped to the epoch for the same reason
+/// [`epoch_passes`] is.
+pub fn epoch_equivalent_passes(ledgers: &[VisitLedger], corpus_identity: &str) -> f64 {
+    ledgers
+        .iter()
+        .filter(|l| l.corpus_identity.as_deref() == Some(corpus_identity))
+        .map(|l| l.equivalent_passes)
+        .filter(|p| p.is_finite())
+        .sum()
 }
 
 /// The records of one screening epoch: those measured against this corpus (#100).
@@ -786,13 +815,19 @@ impl LearningsStore {
     ///
     /// Stamped with the store's own host and corpus identity, so an entry can
     /// never claim an epoch the run was not screening against.
-    pub fn visit_ledger(&self, visits: u64, population: usize) -> VisitLedger {
+    pub fn visit_ledger(
+        &self,
+        visits: u64,
+        equivalent_passes: f64,
+        population: usize,
+    ) -> VisitLedger {
         VisitLedger {
             version: VISITS_FORMAT_VERSION,
             corpus_identity: Some(self.corpus_identity.clone()),
             host: self.host.clone(),
             unix_secs: now_secs(),
             visits,
+            equivalent_passes,
             population,
         }
     }
@@ -1947,8 +1982,9 @@ mod tests {
         let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
         assert_eq!(store.load_visits().unwrap(), Vec::new());
         assert_eq!(epoch_visits(&[], "corp"), 0);
+        assert_eq!(epoch_equivalent_passes(&[], "corp"), 0.0);
 
-        let entry = store.visit_ledger(7051, 7475);
+        let entry = store.visit_ledger(7051, 0.94, 7475);
         store.append_visits(&entry).unwrap();
         assert_eq!(entry.corpus_identity.as_deref(), Some("corp"));
         assert_eq!(entry.host, "host-a");
@@ -1960,11 +1996,67 @@ mod tests {
         // epoch total is the fleet's, not one host's.
         let other = LearningsStore::new(dir.path(), "corp".into(), "host-b".into());
         other
-            .append_visits(&other.visit_ledger(2_949, 7475))
+            .append_visits(&other.visit_ledger(2_949, 0.39, 7475))
             .unwrap();
         let all = store.load_visits().unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(epoch_visits(&all, "corp"), 10_000);
+        // The equivalent total is the sum of what each run travelled, never the
+        // visit total divided by one creature: each entry was accumulated
+        // against the creature its own run was sweeping.
+        assert!(
+            (epoch_equivalent_passes(&all, "corp") - 1.33).abs() < 1e-9,
+            "0.94 + 0.39: {all:?}"
+        );
+    }
+
+    /// The epoch total is a **sum of what each run travelled**, not the epoch's
+    /// visits divided by any one creature (Issue #153). A creature pruned
+    /// between runs is exactly the case that distinguishes the two: dividing
+    /// 300 visits by the 20-visit creature the epoch ended on would claim 15
+    /// passes for work that was really 6.
+    #[test]
+    fn the_epoch_equivalent_total_is_immune_to_a_creature_that_shrank() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        // Three passes over a 50-visit creature, then three over a 20-visit one.
+        store
+            .append_visits(&store.visit_ledger(150, 3.0, 50))
+            .unwrap();
+        store
+            .append_visits(&store.visit_ledger(60, 3.0, 20))
+            .unwrap();
+        let all = store.load_visits().unwrap();
+
+        assert_eq!(epoch_visits(&all, "corp"), 210);
+        assert!(
+            (epoch_equivalent_passes(&all, "corp") - 6.0).abs() < 1e-9,
+            "six passes, not 210/20 = 10.5: {all:?}"
+        );
+    }
+
+    /// A non-finite figure in a corrupt or hand-edited entry cannot poison the
+    /// epoch total: `NaN` added to a sum makes the whole sum `NaN`, and a
+    /// commit description that reads `NaN creature-equivalent passes` reports
+    /// nothing at all.
+    #[test]
+    fn a_non_finite_ledger_entry_cannot_poison_the_epoch_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        let entries = vec![
+            store.visit_ledger(10, 2.0, 5),
+            VisitLedger {
+                equivalent_passes: f64::NAN,
+                ..store.visit_ledger(10, 0.0, 5)
+            },
+            VisitLedger {
+                equivalent_passes: f64::INFINITY,
+                ..store.visit_ledger(10, 0.0, 5)
+            },
+        ];
+        let total = epoch_equivalent_passes(&entries, "corp");
+        assert!(total.is_finite(), "{total}");
+        assert_eq!(total, 2.0);
     }
 
     /// Visits are scoped to the epoch they were performed under, exactly as
@@ -1975,19 +2067,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let old = LearningsStore::new(dir.path(), "corp-a".into(), "host-a".into());
         for visits in [40u64, 60] {
-            old.append_visits(&old.visit_ledger(visits, 12)).unwrap();
+            old.append_visits(&old.visit_ledger(visits, visits as f64 / 12.0, 12))
+                .unwrap();
         }
         let next = LearningsStore::new(dir.path(), "corp-b".into(), "host-a".into());
         let all = next.load_visits().unwrap();
         assert_eq!(all.len(), 2, "every entry is still readable");
         assert_eq!(epoch_visits(&all, "corp-a"), 100);
+        assert!(
+            (epoch_equivalent_passes(&all, "corp-a") - 100.0 / 12.0).abs() < 1e-9,
+            "{all:?}"
+        );
+        assert_eq!(epoch_equivalent_passes(&all, "corp-b"), 0.0);
         assert_eq!(
             epoch_visits(&all, "corp-b"),
             0,
             "a corpus change opens a new epoch at zero visits"
         );
 
-        next.append_visits(&next.visit_ledger(9, 12)).unwrap();
+        next.append_visits(&next.visit_ledger(9, 0.75, 12)).unwrap();
         let all = next.load_visits().unwrap();
         assert_eq!(epoch_visits(&all, "corp-b"), 9);
         assert_eq!(
@@ -2010,16 +2108,19 @@ mod tests {
             .append_screen(&screen("h_b", ScreenOutcomeKind::Winner, 9))
             .unwrap();
         store.append_pass(&store.pass_marker(1, 4)).unwrap();
-        store.append_visits(&store.visit_ledger(12, 4)).unwrap();
+        store
+            .append_visits(&store.visit_ledger(12, 3.0, 4))
+            .unwrap();
 
         let future = VisitLedger {
             version: VISITS_FORMAT_VERSION + 1,
-            ..store.visit_ledger(999, 4)
+            ..store.visit_ledger(999, 250.0, 4)
         };
         store.append_visits(&future).unwrap();
         let ledgers = store.load_visits().unwrap();
         assert_eq!(ledgers.len(), 1, "{ledgers:?}");
         assert_eq!(epoch_visits(&ledgers, "corp"), 12);
+        assert_eq!(epoch_equivalent_passes(&ledgers, "corp"), 3.0);
 
         let mut file = OpenOptions::new()
             .append(true)
@@ -2051,13 +2152,16 @@ mod tests {
         let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
         let orphan = VisitLedger {
             corpus_identity: None,
-            ..store.visit_ledger(500, 4)
+            ..store.visit_ledger(500, 125.0, 4)
         };
         store.append_visits(&orphan).unwrap();
-        store.append_visits(&store.visit_ledger(7, 4)).unwrap();
+        store
+            .append_visits(&store.visit_ledger(7, 1.75, 4))
+            .unwrap();
         let all = store.load_visits().unwrap();
         assert_eq!(all.len(), 2, "it is kept and readable: {all:?}");
         assert_eq!(epoch_visits(&all, "corp"), 7);
+        assert_eq!(epoch_equivalent_passes(&all, "corp"), 1.75);
     }
 
     #[test]

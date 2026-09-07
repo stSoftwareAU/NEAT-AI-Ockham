@@ -1269,31 +1269,51 @@ current creature?** So the two are reported beside each other:
 |---|---|---|
 | `sweepRestartsRun` / `sweepsCompletedEpoch` / `currentPass` | Strict permutation completions — one exhausted sweep each, one marker each in `passes/<host>.jsonl` | ✗ — the interrupted permutation never completes |
 | `eligibleVisitsRun` / `eligibleVisitsEpoch` | Eligible **visits** performed, repeats included, filed in `visits/<host>.jsonl` | ✓ — counted as they happen, never recomputed from the creature |
-| `equivalentPassesRun` / `equivalentPassesEpoch` | `eligibleVisits / visitPopulation` — creature-equivalent rescan progress | ✓ |
-| `visitedRun` / `revisitedRun` / `firstVisitsRun` | Distinct uuids this run reached, split into revisits and first visits | ✓ (within the run) |
+| `equivalentPassesRun` / `equivalentPassesEpoch` | Creature-equivalent rescan progress, accumulated batch by batch against the creature each batch was performed on | ✓ |
+| `visitedRun` / `revisitedRun` | Distinct uuids this run reached, and how many of those the fleet had already checked; the `visits:` line renders the first-visit remainder | ✓ (within the run) |
 
-**The denominator, stated exactly.** One creature-equivalent pass is
-`visitPopulation` eligible visits, and `visitPopulation` is the **same figure as
-the `sweep:` denominator**: every hidden neuron and every synapse visit the
-**final** incumbent carries, published on the `passes` object so nothing has to
-be guessed at. Pruning shrinks that population as the run works, so an
-equivalent pass is a *stable approximation* rather than a proof that every visit
-was reached once. That is deliberate: a stable, honest approximation is
-preferable to a precise-looking counter that resets whenever a win changes the
-incumbent. A creature with no visits at all reports `0.00` rather than `inf` or
-`NaN`, and the `equiv:` line is omitted entirely.
+**The denominator, stated exactly.** One creature-equivalent pass is one visit
+per visit on the creature — but *which* creature? Not the one the run finished
+on. Pruning shrinks that population as the run works, so
+`eligibleVisits / finalPopulation` inflates without bound: a run that performed
+fourteen visits and ended on a one-visit creature would claim fourteen passes.
+
+So the figure is an **integral, not a quotient**. Each batch is credited against
+the visit population that was actually under the razor when it ran —
+`batchVisits / populationAtTheTime` — and the fractions are summed. A creature
+that never changes gives exactly `eligibleVisits / visitPopulation`; one that is
+pruned hard gives a figure that stays put instead of exploding. That is the
+stable, honest approximation this issue asks for, in preference to a
+precise-looking counter that resets whenever a win changes the incumbent.
+
+`visitPopulation` is published beside it as the **reference** size of one pass —
+the same figure the `sweep:` denominator uses, every hidden neuron and every
+synapse visit the final incumbent carries — so a reader knows what one pass is
+worth. It is deliberately **not** the divisor: dividing it into
+`eligibleVisitsEpoch` will not reproduce `equivalentPassesEpoch` on a creature
+that was pruned while the run ran, and the README says so rather than leaving a
+consumer to discover it. A creature with no visits left reports the visit total
+and says plainly that there is no population to measure it against, rather than
+printing `inf`, `NaN`, or nothing at all.
 
 Each run that visited anything files **one** ledger entry — the visits it
-performed and the population it finished against — into `visits/<host>.jsonl`, a
-fourth sibling of
-`screens/`, `passes/` and the verdict directories, for the same containment
-reason: a corrupt visit log breaks none of the other three. `eligibleVisitsEpoch`
-sums the entries filed under the corpus in hand, so it is the **fleet's** figure
-and not one host's, and it is re-read at the end of the run rather than counted
-forward — an entry the store refused is not published as though it had landed.
-Like `sweepsCompletedEpoch`, it is a **floor** for an epoch that was already
-running when the ledger shipped: visits performed before there was anywhere to
-file them left no record, and are never guessed at.
+performed, the equivalent passes it travelled, and the population it finished
+against — into `visits/<host>.jsonl`, a fourth sibling of `screens/`, `passes/`
+and the verdict directories, for the same containment reason: a corrupt visit log
+breaks none of the other three. `eligibleVisitsEpoch` and
+`equivalentPassesEpoch` sum the entries filed under the corpus in hand, so they
+are the **fleet's** figures and not one host's — summing per-run contributions,
+never dividing an epoch total by one creature, which is what keeps them honest
+across an epoch that pruned as it went. Both are re-read at the end of the run
+rather than counted forward: an entry the store refused is not counted in the
+**epoch** figures, though the run's own `eligibleVisitsRun` /
+`equivalentPassesRun` are still published, exactly as `sweepRestartsRun` is
+published when a pass marker could not be written. Like `sweepsCompletedEpoch`,
+they are a **floor** for an epoch that was already running when the ledger
+shipped: visits performed before there was anywhere to file them left no record,
+and are never guessed at. If the ledger cannot be read at all, the epoch figures
+fall back to what this run read at open plus what it filed, and the warning says
+so.
 
 ```mermaid
 flowchart TD
@@ -1305,8 +1325,10 @@ flowchart TD
     A -->|yes| RB["rebuild sweep over<br/>the changed creature"]
     RB --> X["strict pass lost —<br/>eligibleVisits untouched"]
     X --> B
+    B --> P["credit batch:<br/>equivalentPasses +=<br/>reached / population now"]
+    P --> B
     L --> F["end of run: file<br/>visits/host.jsonl"]
-    F --> Q["equivalentPassesEpoch =<br/>epoch eligible visits / visitPopulation"]
+    F --> Q["equivalentPassesEpoch =<br/>Σ each run's contribution"]
 ```
 
 **The limitation, stated plainly:** for an epoch that was already running when
@@ -1367,7 +1389,7 @@ reasons:   missing-activation 380 (92.2%) · validation-failed 32 (7.8%)
 tagged:    42 carry tags, screened like any other
 progress:  100 newly checked this run
 passes:    7 complete this epoch · 1 this run · pass 8 in progress (strict sweep completions)
-equiv:     1.41 creature-equivalent passes this epoch · 0.02 this run (7051 eligible visits / 5013 per pass)
+equiv:     1.41 creature-equivalent passes this epoch · 0.02 this run (7051 eligible visits, 5013 per pass)
 visits:    120 hidden neurons visited this run · 118 revisited · 2 first visits
 history:   4802 of 5013 ever checked across 3 corpus epochs
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
@@ -1418,15 +1440,21 @@ dropped:   12 entries over budget (est 18s/creature)
   run that revisited a whole creature, and it must not be taken for how far the
   razor has travelled;
 - the `equiv:` line is what answers that instead (#153), and is rendered
-  whenever there is a visit population to divide by — `0.00` included, for the
-  same reason `passes:` is always rendered. It reports creature-equivalent
-  passes for the epoch and for this run, then names the numerator and the
-  divisor in brackets so the figure can be re-derived. Once the percentage above
-  reaches 100% this and the `visits:` line are the only ones that still move,
-  which is what stops a run re-screening a finished creature reading as one
-  stuck at the tail of its first pass. The `visits:` line counts the hidden
-  neurons the run's sweep actually reached, split into revisits and first
-  visits — omitted when the run reached nothing. See
+  whenever there is anything to say — a visit population, or visits recorded
+  against one — so work is never silently dropped, `0.00` included. It reports
+  creature-equivalent passes for the epoch and for this run, then states the
+  epoch's visit total and the reference size of one pass in brackets. Those two
+  bracketed figures are **not** a division that reproduces the two before them:
+  the equivalent figures are accumulated per batch against the creature of the
+  moment. With visits recorded but no population left to measure them against
+  the line says exactly that
+  (`equiv:     900 eligible visits this epoch · no visit population to measure
+  them against`) rather than printing a ratio it cannot compute. Once the
+  percentage above reaches 100% this and the `visits:` line are the only ones
+  that still move, which is what stops a run re-screening a finished creature
+  reading as one stuck at the tail of its first pass. The `visits:` line counts
+  the hidden neurons the run's sweep actually reached, split into revisits and
+  first visits — omitted when the run reached nothing. See
   [Strict sweep completions versus creature-equivalent passes](#strict-sweep-completions-versus-creature-equivalent-passes);
 - the `history:` line is the cumulative counterpart (#102): how many of the
   current hidden neurons the fleet has ever checked, under how many corpus
@@ -1441,10 +1469,12 @@ dropped:   12 entries over budget (est 18s/creature)
   epoch under `corpusIdentity` (in full), the cumulative figures under an
   additive `history` key, the pass counters under an additive `passes` key
   (`sweepRestartsRun`, `sweepsCompletedEpoch`, `currentPass`, `visitedRun`,
-  `revisitedRun`, plus `firstVisitsRun`, `eligibleVisitsRun`,
-  `eligibleVisitsEpoch`, `visitPopulation`, `equivalentPassesEpoch` and
-  `equivalentPassesRun` since #153 — an artefact written before them reads them
-  as zero rather than failing) and the winner figures under an additive
+  `revisitedRun`, plus `eligibleVisitsRun`, `eligibleVisitsEpoch`,
+  `visitPopulation`, `equivalentPassesEpoch` and `equivalentPassesRun` since
+  #153 — an artefact written before them reads them as zero rather than
+  failing; the first-visit remainder is rendered rather than stored, so it can
+  never disagree with `visitedRun` and `revisitedRun`) and the winner figures
+  under an additive
   `winners` key, and
   still deserialises straight into `Coverage` for a consumer that ignores them,
   so nothing downstream needs to parse the prose.

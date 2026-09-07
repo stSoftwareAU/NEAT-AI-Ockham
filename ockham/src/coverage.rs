@@ -339,6 +339,7 @@ pub(crate) struct ScreenProgress {
     added: HashSet<String>,
     visited: HashSet<String>,
     eligible_visits: u64,
+    equivalent_passes: f64,
 }
 
 impl ScreenProgress {
@@ -349,6 +350,7 @@ impl ScreenProgress {
             added: HashSet::new(),
             visited: HashSet::new(),
             eligible_visits: 0,
+            equivalent_passes: 0.0,
         }
     }
 
@@ -363,9 +365,26 @@ impl ScreenProgress {
         self.eligible_visits = self.eligible_visits.saturating_add(1);
     }
 
-    /// Distinct hidden UUIDs the sweep reached this run, revisits included.
-    pub(crate) fn visited(&self) -> usize {
-        self.visited.len()
+    /// Credit one batch's visits against the creature they were performed on.
+    ///
+    /// The whole point of Issue #153. Dividing a run's total visits by the
+    /// creature it *finished* on is not a measurement: pruning shrinks that
+    /// divisor as the run works, so the quotient inflates without bound — a run
+    /// that visited fourteen times and ended on a one-visit creature would
+    /// claim fourteen passes. The honest figure is the integral: each batch is
+    /// credited against the visit population that was actually under the razor
+    /// when it ran, and the fractions are summed. A creature that never changes
+    /// gives exactly `visits / population`; one that is pruned away gives a
+    /// figure that stays put instead of exploding.
+    ///
+    /// `population` is [`Coverage::checkable`] of the incumbent in hand. A
+    /// population of zero credits nothing — there is nothing to be a fraction
+    /// of — which cannot lose work, because a creature with no visits produces
+    /// no batch to credit.
+    pub(crate) fn credit_batch(&mut self, reached: usize, population: usize) {
+        if population > 0 && reached > 0 {
+            self.equivalent_passes += reached as f64 / population as f64;
+        }
     }
 
     /// Every eligible visit the sweep performed this run, repeats included.
@@ -376,6 +395,20 @@ impl ScreenProgress {
     /// the count lives here, not in the permutation the accept threw away.
     pub(crate) fn eligible_visits(&self) -> u64 {
         self.eligible_visits
+    }
+
+    /// Creature-equivalent passes this run travelled (Issue #153).
+    ///
+    /// Accumulated by [`Self::credit_batch`] against the creature each batch was
+    /// performed on, so a rebuilt sweep and a shrinking incumbent both leave it
+    /// alone.
+    pub(crate) fn equivalent_passes(&self) -> f64 {
+        self.equivalent_passes
+    }
+
+    /// Distinct hidden UUIDs the sweep reached this run, revisits included.
+    pub(crate) fn visited(&self) -> usize {
+        self.visited.len()
     }
 
     /// How many of those the fleet had already checked when the run opened.
@@ -640,13 +673,6 @@ pub struct Passes {
     /// batches: what it answers is how much of the run's work went over ground
     /// the fleet had already covered.
     pub revisited_run: usize,
-    /// Distinct UUIDs this run reached that the fleet had never checked.
-    ///
-    /// `visited_run - revisited_run`, derived rather than stored independently
-    /// so the rendered line cannot split the run's visits into two halves that
-    /// do not add up (Issue #153).
-    #[serde(default)]
-    pub first_visits_run: usize,
     /// Eligible visits this run performed, **repeats included** (Issue #153).
     ///
     /// The work figure an accepted cut cannot erase: it is counted as the sweep
@@ -665,56 +691,55 @@ pub struct Passes {
     /// file them in left no record, and are never guessed at.
     #[serde(default)]
     pub eligible_visits_epoch: u64,
-    /// Eligible visits that make one creature-equivalent pass (Issue #153).
+    /// Visits on the incumbent the run finished — the size of one creature.
     ///
-    /// [`Coverage::checkable`] of the incumbent the run finished on: every
-    /// hidden neuron and every synapse visit it still carries. Published beside
-    /// the equivalent-pass figures so the divisor is never left to be guessed
-    /// at, and so a consumer can re-derive them.
+    /// [`Coverage::checkable`]: every hidden neuron and every synapse visit it
+    /// still carries. Published as the **reference** size of a
+    /// creature-equivalent pass, so a reader knows what "one pass" is worth.
+    ///
+    /// The equivalent-pass figures below are deliberately **not** this divided
+    /// into the visit totals. Pruning shrinks this population as the run works,
+    /// so that quotient would inflate without bound — a run that visited
+    /// fourteen times and ended on a one-visit creature would claim fourteen
+    /// passes. They are accumulated batch by batch against the creature each
+    /// batch was actually performed on instead, which is why a creature that
+    /// never changes gives exactly `eligible_visits / visit_population` and a
+    /// pruned one gives a figure that stays put.
     #[serde(default)]
     pub visit_population: usize,
-    /// `eligible_visits_epoch / visit_population` — the fleet's rescan progress.
+    /// Creature-equivalent passes the **fleet** travelled this epoch (#153).
     ///
-    /// How many creature-equivalent passes the razor has travelled this epoch.
-    /// `0.0` when the creature carries no visits to divide by: "one pass over
-    /// nothing" is not a measurement.
+    /// Summed from the persisted visit ledger, one contribution per run,
+    /// each accumulated against the creature that run was sweeping. `0.0` on an
+    /// epoch with nothing recorded: "one pass over nothing" is not a
+    /// measurement, and `inf` would be a rendering artefact rather than one.
     #[serde(default)]
     pub equivalent_passes_epoch: f64,
-    /// `eligible_visits_run / visit_population` — this invocation's share.
+    /// Creature-equivalent passes **this invocation** travelled (#153).
     #[serde(default)]
     pub equivalent_passes_run: f64,
 }
 
 /// The topology-tolerant half of the pass counters (Issue #153).
 ///
-/// Grouped rather than passed as three more bare numbers, so a call site cannot
+/// Grouped rather than passed as four more bare numbers, so a call site cannot
 /// silently swap a run total for an epoch total.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct VisitTally {
     /// Eligible visits this run performed, repeats included.
     pub eligible_visits_run: u64,
     /// Eligible visits the fleet has performed this epoch, repeats included.
     pub eligible_visits_epoch: u64,
-    /// Visits that make one creature-equivalent pass — [`Coverage::checkable`].
+    /// Creature-equivalent passes this run travelled, accumulated per batch.
+    pub equivalent_passes_run: f64,
+    /// Creature-equivalent passes the fleet travelled this epoch.
+    pub equivalent_passes_epoch: f64,
+    /// Visits on the incumbent the run finished — [`Coverage::checkable`].
     pub population: usize,
 }
 
-impl VisitTally {
-    /// `visits / population`, or `0.0` when there is no population to divide by.
-    ///
-    /// A creature with nothing to visit has travelled no passes; reporting
-    /// `inf` or `NaN` would be a rendering artefact rather than a measurement.
-    fn equivalent(&self, visits: u64) -> f64 {
-        if self.population == 0 {
-            0.0
-        } else {
-            visits as f64 / self.population as f64
-        }
-    }
-}
-
 impl Passes {
-    /// Passes with `current_pass` and the equivalent-pass figures derived.
+    /// Passes with `current_pass` derived from the completed count.
     pub fn new(
         sweep_restarts_run: u64,
         sweeps_completed_epoch: u64,
@@ -728,13 +753,23 @@ impl Passes {
             current_pass: sweeps_completed_epoch + 1,
             visited_run,
             revisited_run,
-            first_visits_run: visited_run.saturating_sub(revisited_run),
             eligible_visits_run: tally.eligible_visits_run,
             eligible_visits_epoch: tally.eligible_visits_epoch,
             visit_population: tally.population,
-            equivalent_passes_epoch: tally.equivalent(tally.eligible_visits_epoch),
-            equivalent_passes_run: tally.equivalent(tally.eligible_visits_run),
+            equivalent_passes_epoch: tally.equivalent_passes_epoch,
+            equivalent_passes_run: tally.equivalent_passes_run,
         }
+    }
+
+    /// Distinct UUIDs this run reached that the fleet had never checked.
+    ///
+    /// Derived on every read rather than stored (Issue #153): a stored copy
+    /// would deserialise to zero out of any artefact written before it existed,
+    /// and the rendered line would split the run's visits into two halves that
+    /// do not add up. `visited_run` and `revisited_run` are the record; this is
+    /// the arithmetic.
+    pub fn first_visits_run(&self) -> usize {
+        self.visited_run.saturating_sub(self.revisited_run)
     }
 
     /// The description lines: the strict counters, the equivalent passes, then
@@ -742,7 +777,7 @@ impl Passes {
     ///
     /// ```text
     /// passes:    3 complete this epoch · 1 this run · pass 4 in progress (strict sweep completions)
-    /// equiv:     4.12 creature-equivalent passes this epoch · 0.94 this run (7051 eligible visits / 7475 per pass)
+    /// equiv:     4.12 creature-equivalent passes this epoch · 0.94 this run (7051 eligible visits, 7475 per pass)
     /// visits:    120 hidden neurons visited this run · 40 revisited · 80 first visits
     /// ```
     ///
@@ -753,10 +788,20 @@ impl Passes {
     /// stays at zero through a run that accepts cuts all day, and a reader must
     /// not take it for how far the razor has travelled.
     ///
-    /// The `equiv:` line is what answers that instead, and is rendered whenever
-    /// the epoch has a visit population to divide by — including at `0.00`, for
-    /// the same reason `passes:` is always rendered. The `visits:` line is
-    /// omitted when the run reached nothing.
+    /// The `equiv:` line is what answers that instead. It is rendered whenever
+    /// there is anything to say — a visit population, or visits recorded against
+    /// one — so work is never silently dropped. The bracketed clause states the
+    /// epoch's visit total and the reference size of one pass; the two figures
+    /// before it are accumulated per batch, so dividing one by the other will
+    /// **not** reproduce them on a creature that was pruned while the run ran.
+    /// With visits recorded but no population left to measure them against, the
+    /// line says exactly that rather than printing a ratio it cannot compute:
+    ///
+    /// ```text
+    /// equiv:     900 eligible visits this epoch · no visit population to measure them against
+    /// ```
+    ///
+    /// The `visits:` line is omitted when the run reached nothing.
     fn lines(&self) -> Vec<String> {
         let mut out = vec![format!(
             "{:<11}{} complete this epoch · {} this run · pass {} in progress \
@@ -766,18 +811,29 @@ impl Passes {
         if self.visit_population > 0 {
             out.push(format!(
                 "{:<11}{:.2} creature-equivalent passes this epoch · {:.2} this run \
-                 ({} eligible visits / {} per pass)",
+                 ({} eligible visits, {} per pass)",
                 "equiv:",
                 self.equivalent_passes_epoch,
                 self.equivalent_passes_run,
                 self.eligible_visits_epoch,
                 self.visit_population
             ));
+        } else if self.eligible_visits_epoch > 0 || self.eligible_visits_run > 0 {
+            // Work with nothing left to measure it against. Reporting silence
+            // here would drop the very figure this issue exists to publish.
+            out.push(format!(
+                "{:<11}{} eligible visits this epoch · no visit population to \
+                 measure them against",
+                "equiv:", self.eligible_visits_epoch
+            ));
         }
         if self.visited_run > 0 {
             out.push(format!(
                 "{:<11}{} hidden neurons visited this run · {} revisited · {} first visits",
-                "visits:", self.visited_run, self.revisited_run, self.first_visits_run
+                "visits:",
+                self.visited_run,
+                self.revisited_run,
+                self.first_visits_run()
             ));
         }
         out
@@ -1024,6 +1080,15 @@ fn visit_population(creature: &CreatureExport) -> HashSet<String> {
     let mut population = synapse_visits(creature);
     population.extend(hidden_uuids(creature).into_iter().map(str::to_string));
     population
+}
+
+/// How many visits `creature` puts in the coverage denominator (Issue #153).
+///
+/// The same figure [`Coverage::checkable`] carries, read straight off the
+/// creature so a batch can be credited against the incumbent in hand rather
+/// than against the one the run happens to finish on.
+pub fn visit_population_size(creature: &CreatureExport) -> usize {
+    visit_population(creature).len()
 }
 
 /// Count coverage of `creature` from `screens`; `tagged` is counted, not excluded.
@@ -1560,10 +1625,17 @@ mod tests {
     /// share is a hundredth of it, which is the shape a long-running epoch
     /// actually has.
     fn fleet_tally(epoch_visits: u64) -> VisitTally {
+        let population = fleet_coverage().checkable;
+        let run = epoch_visits / 100;
         VisitTally {
-            eligible_visits_run: epoch_visits / 100,
+            eligible_visits_run: run,
             eligible_visits_epoch: epoch_visits,
-            population: fleet_coverage().checkable,
+            // A creature that never changed, so the accumulated figures are
+            // exactly the quotients — which is what makes these fixtures easy
+            // to read against the rendered line.
+            equivalent_passes_run: run as f64 / population as f64,
+            equivalent_passes_epoch: epoch_visits as f64 / population as f64,
+            population,
         }
     }
 
@@ -2325,7 +2397,7 @@ mod tests {
                 "passes:    7 complete this epoch · 1 this run · pass 8 in progress \
                  (strict sweep completions)\n\
                  equiv:     1.41 creature-equivalent passes this epoch · 0.01 this run \
-                 (7051 eligible visits / 5013 per pass)\n\
+                 (7051 eligible visits, 5013 per pass)\n\
                  visits:    120 hidden neurons visited this run · 118 revisited · 2 first visits"
             ),
             "{block}"
@@ -2413,7 +2485,6 @@ mod tests {
         assert!(json.contains("\"revisitedRun\": 118"), "{json}");
         // The topology-tolerant counters ride the same object (Issue #153), so
         // a consumer reads the strict and the equivalent figures together.
-        assert!(json.contains("\"firstVisitsRun\": 2"), "{json}");
         assert!(json.contains("\"eligibleVisitsRun\": 70"), "{json}");
         assert!(json.contains("\"eligibleVisitsEpoch\": 7051"), "{json}");
         assert!(json.contains("\"visitPopulation\": 5013"), "{json}");
@@ -2449,10 +2520,22 @@ mod tests {
         assert_eq!(passes.eligible_visits_epoch, 0);
         assert_eq!(passes.equivalent_passes_epoch, 0.0);
         assert_eq!(passes.visit_population, 0);
+        assert_eq!(
+            passes.first_visits_run(),
+            2,
+            "derived on read, so an artefact that never carried the field still \
+             splits its visits into halves that add up: {passes:?}"
+        );
+        let block = report.description(100);
         assert!(
-            !report.description(100).contains("equiv:"),
-            "with no population there is nothing to divide by: {}",
-            report.description(100)
+            block.contains(
+                "visits:    120 hidden neurons visited this run · 118 revisited · 2 first visits"
+            ),
+            "118 + 2 = 120, whatever the artefact was written by: {block}"
+        );
+        assert!(
+            !block.contains("equiv:"),
+            "no population and no recorded visits is nothing to report: {block}"
         );
     }
 
@@ -2469,6 +2552,10 @@ mod tests {
             VisitTally {
                 eligible_visits_run: 40,
                 eligible_visits_epoch: 900,
+                // Nothing was credited: every batch was measured against a
+                // creature with no visits in it.
+                equivalent_passes_run: 0.0,
+                equivalent_passes_epoch: 0.0,
                 population: 0,
             },
         );
@@ -2483,8 +2570,32 @@ mod tests {
             })
         }
         .description(100);
-        assert!(!block.contains("equiv:"), "{block}");
+        // The work is still reported: silence here would drop the very figure
+        // this issue exists to publish.
+        assert!(
+            block.contains(
+                "equiv:     900 eligible visits this epoch · no visit population to \
+                 measure them against"
+            ),
+            "{block}"
+        );
         assert!(!block.contains("inf") && !block.contains("NaN"), "{block}");
+    }
+
+    /// A run that reached nothing on a creature with nothing to reach says
+    /// nothing about equivalent passes — there is no work and no population, so
+    /// the line has nothing to report and is omitted.
+    #[test]
+    fn no_visits_and_no_population_renders_no_equivalent_line() {
+        let block = CoverageReport {
+            passes: Some(Passes::new(0, 0, 0, 0, VisitTally::default())),
+            ..CoverageReport::new(Coverage {
+                checkable: 0,
+                ..fleet_coverage()
+            })
+        }
+        .description(100);
+        assert!(!block.contains("equiv:"), "{block}");
     }
 
     /// The strict counters and the topology-tolerant ones measure different
@@ -2502,6 +2613,8 @@ mod tests {
                 VisitTally {
                     eligible_visits_run: 7_051,
                     eligible_visits_epoch: 7_051,
+                    equivalent_passes_run: 7_051.0 / 7_475.0,
+                    equivalent_passes_epoch: 7_051.0 / 7_475.0,
                     population: 7_475,
                 },
             )),
@@ -2518,7 +2631,7 @@ mod tests {
         assert!(
             block.contains(
                 "equiv:     0.94 creature-equivalent passes this epoch · 0.94 this run \
-                 (7051 eligible visits / 7475 per pass)"
+                 (7051 eligible visits, 7475 per pass)"
             ),
             "the operator question — how far has the razor gone round? — is \
              answered whatever the strict counter did: {block}"
