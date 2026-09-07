@@ -1283,8 +1283,9 @@ preferable to a precise-looking counter that resets whenever a win changes the
 incumbent. A creature with no visits at all reports `0.00` rather than `inf` or
 `NaN`, and the `equiv:` line is omitted entirely.
 
-Each run files **one** ledger entry — the visits it performed and the population
-it finished against — into `visits/<host>.jsonl`, a fourth sibling of
+Each run that visited anything files **one** ledger entry — the visits it
+performed and the population it finished against — into `visits/<host>.jsonl`, a
+fourth sibling of
 `screens/`, `passes/` and the verdict directories, for the same containment
 reason: a corrupt visit log breaks none of the other three. `eligibleVisitsEpoch`
 sums the entries filed under the corpus in hand, so it is the **fleet's** figure
