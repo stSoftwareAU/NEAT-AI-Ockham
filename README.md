@@ -1446,9 +1446,11 @@ eta:       visit rescan ~0.2h · scored rescan ~0.8h · 5013 neurons + 2000 edge
   `visits:` line above it is — and each names every stage separately, so
   `visited`, `proposed`, `screened` and `scored` can never be read as the same
   figure. `rate:` is the compact GRQ line: the per-kind screened-per-hour
-  figures and the full rescan ETA. `eta:` carries both rescan estimates beside
-  the eligible population they are over, and renders `unknown` — never a zero —
-  for an estimate nothing was measured for. See
+  figures and the full rescan ETA — the same figure `eta:` names `scored
+  rescan`, carried alone so a reader of the subject line has it. `eta:` carries
+  both rescan estimates beside the eligible population they are over, renders
+  `unknown` — never a zero — for an estimate nothing was measured for, and
+  `none left` when there is genuinely nothing proposable to get through. See
   [Screening throughput and rescan ETA](#screening-throughput-and-rescan-eta);
 - `coverage.json` carries the same per-run figure under `newlyScreened`, the
   epoch under `corpusIdentity` (in full), the cumulative figures under an
@@ -1456,9 +1458,9 @@ eta:       visit rescan ~0.2h · scored rescan ~0.8h · 5013 neurons + 2000 edge
   (`sweepRestartsRun`, `sweepsCompletedEpoch`, `currentPass`, `visitedRun`,
   `revisitedRun`), the winner figures under an additive
   `winners` key and the funnel, rates and ETAs under an additive `throughput`
-  key (`elapsedMs`, `funnel`, `visitsPerHour`, `proposedPerHour`,
-  `screenedPerHour`, `fullScoredPerHour`, `proposableEstimate`,
-  `visitRescanHours`, `scoredRescanHours`), and
+  key (`elapsedMs`, `funnel`, `hidden`, `synapses`, `visitsPerHour`,
+  `proposedPerHour`, `screenedPerHour`, `fullScoredPerHour`,
+  `proposableEstimate`, `visitRescanHours`, `scoredRescanHours`), and
   still deserialises straight into `Coverage` for a consumer that ignores them,
   so nothing downstream needs to parse the prose. `ockham report` reads the same
   `throughput` snapshot back off the journal's `coverage` record, so the three
@@ -2527,7 +2529,7 @@ NEAT-AI-Ockham/
 │       ├── model.rs           # learned logistic ranker (ranking only)
 │       ├── neighbourhood.rs   # bounded chain/branch group-cut proposals
 │       ├── telemetry.rs       # candidate feature/outcome training rows
-│       ├── throughput.rs     # screening funnel, per-hour rates, rescan ETAs
+│       ├── throughput.rs      # screening funnel, per-hour rates, rescan ETAs
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs

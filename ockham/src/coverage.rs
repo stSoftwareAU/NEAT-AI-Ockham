@@ -1888,10 +1888,10 @@ mod tests {
         let block = report.description(100);
         assert!(
             block.ends_with(concat!(
-                "funnel:    neurons 9100 visits · 8680 blocked · 420 proposed · 312 screened · 24 scored\n",
-                "funnel:    synapses 31400 visits · 29295 blocked · 2105 proposed · 1840 screened · 60 scored\n",
+                "funnel:    neurons 9100 visits · 8680 blocked · 0 judged · 420 proposed · 312 screened · 24 scored\n",
+                "funnel:    synapses 31400 visits · 29295 blocked · 0 judged · 2105 proposed · 1840 screened · 60 scored\n",
                 "rate:      neurons 312 screened/h · synapses 1840 screened/h · full rescan ~0.8h\n",
-                "eta:       visit rescan ~0.2h · scored rescan ~0.8h · 5013 neurons + 2000 edges eligible"
+                "eta:       visit rescan ~0.6h · scored rescan ~0.8h · 5013 neurons + 2000 edges eligible"
             )),
             "{block}"
         );

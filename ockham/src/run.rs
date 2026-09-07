@@ -1591,7 +1591,16 @@ fn ockham_loop(
         // group proposals below join the batch, for the same reason the visits
         // above are — a neighbourhood is not a sweep visit.
         for skip in &skips {
-            funnel.record_blocked(crate::throughput::VisitKind::of_visit(&skip.uuid));
+            let kind = crate::throughput::VisitKind::of_visit(&skip.uuid);
+            // The same split `skip_try` files below: a known failure was
+            // proposed, scored and judged on an earlier run, so it is skipped
+            // rather than blocked, and counting it as blocked would report
+            // proposable structure as unproposable (#162).
+            if skip.reason == crate::sweep::KNOWN_FAILURE_REASON && skip.blocked.is_none() {
+                funnel.record_judged(kind);
+            } else {
+                funnel.record_blocked(kind);
+            }
         }
         for candidate in &candidates {
             funnel.record_proposed(crate::throughput::VisitKind::of_visit(&candidate.uuid));
@@ -5302,7 +5311,7 @@ mod tests {
         // Every visit either produced a candidate or produced nothing, and the
         // two are counted apart — the conflation this issue is about.
         assert_eq!(
-            t.funnel.blocked.total + t.funnel.proposed.total,
+            t.funnel.blocked.total + t.funnel.judged.total + t.funnel.proposed.total,
             t.funnel.visits.total,
             "{t:?}"
         );
@@ -5355,9 +5364,10 @@ mod tests {
         assert_eq!(text, format!("{}\n", report.description(cfg.candidates)));
         assert!(
             text.contains(&format!(
-                "funnel:    neurons {} visits · {} blocked · {} proposed · {} screened · {} scored",
+                "funnel:    neurons {} visits · {} blocked · {} judged · {} proposed · {} screened · {} scored",
                 t.funnel.visits.neurons,
                 t.funnel.blocked.neurons,
+                t.funnel.judged.neurons,
                 t.funnel.proposed.neurons,
                 t.funnel.sample_screened.neurons,
                 t.funnel.full_scored.neurons

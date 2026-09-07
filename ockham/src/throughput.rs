@@ -10,8 +10,9 @@
 //! kind of thing the razor was working on:
 //!
 //! ```text
-//! visits → blocked (nothing proposable) → proposed → sample-screened
-//!        → sample winners → full-scored → confirmed → applied
+//! visits → blocked (nothing proposable) | judged (already decided)
+//!        → proposed → sample-screened → sample winners → full-scored
+//!        → confirmed → applied
 //! ```
 //!
 //! Every stage is counted separately and none of them is a synonym for another.
@@ -134,13 +135,25 @@ pub struct Funnel {
     pub visits: VisitCounts,
     /// Visits over keys the fleet had already checked when the run opened.
     pub revisits: VisitCounts,
-    /// Visits the razor could propose no cut for — blocked or already judged.
+    /// Visits the razor could **structurally** propose no cut for.
     ///
     /// The cheap half of the walk: no candidate was built and no scorer was
     /// paid, so a rescan that is mostly these is fast and finds nothing. Why
     /// each was refused is [`crate::coverage::Coverage::blocked_by_reason`]'s
-    /// job; this is how many, and of what kind.
+    /// job; this is how many, and of what kind. The same refusal the `blocked:`
+    /// line counts (#93, #103) — that line counts distinct keys over the epoch,
+    /// this one counts this run's attempts.
     pub blocked: VisitCounts,
+    /// Visits skipped because the fleet's learnings had already judged them.
+    ///
+    /// Counted apart from [`Self::blocked`] (Issue #162) because the structure
+    /// is *proposable*: the cut was built, scored and rejected on an earlier
+    /// run, and only the known-failure cache stops it being offered again. The
+    /// sweep files these as visited rather than blocked, so folding them into
+    /// the blocked bucket would shrink the proposable estimate — and the scored
+    /// rescan ETA with it — as the cache grows, which is exactly backwards on
+    /// the mature creatures the ETA exists for.
+    pub judged: VisitCounts,
     /// Valid pruning candidates the sweep constructed.
     pub proposed: VisitCounts,
     /// Candidates that entered the sampled screen.
@@ -160,9 +173,14 @@ pub struct Funnel {
 }
 
 impl Funnel {
-    /// Count one visit the razor could propose nothing for.
+    /// Count one visit the razor could structurally propose nothing for.
     pub(crate) fn record_blocked(&mut self, kind: VisitKind) {
         self.blocked.add(kind);
+    }
+
+    /// Count one visit skipped because the learnings cache had judged it.
+    pub(crate) fn record_judged(&mut self, kind: VisitKind) {
+        self.judged.add(kind);
     }
 
     /// Count one constructed pruning candidate.
@@ -195,7 +213,13 @@ impl Funnel {
                 self.confirmed.add(kind);
             }
         }
-        if let Some(win) = &full.winner {
+        // Individuals only here too. A bundle or group winner is a plan the
+        // scored stage never counted, so counting it applied would put a cut
+        // into the funnel that never entered it — and `applied` would exceed
+        // `fullScored`. What those plans removed is `winners:`' business.
+        if let Some(win) = &full.winner
+            && matches!(win.candidate.kind, "individual" | "synapse")
+        {
             self.applied.add(VisitKind::of_cohort(win.candidate.kind));
         }
     }
@@ -235,7 +259,11 @@ pub struct Throughput {
     /// The eligible population scaled by the proposable fraction this run
     /// measured, per kind: a creature whose edges are mostly typed proposes few
     /// of them, and a rescan of it has correspondingly little to score.
-    pub proposable_estimate: f64,
+    ///
+    /// `None` — not `0.0` — when a kind with a live population was never
+    /// visited: its proposable share was never measured, and a total that
+    /// quietly dropped it would read as a measurement of both kinds.
+    pub proposable_estimate: Option<f64>,
     /// Hours to walk every eligible visit once at [`Self::visits_per_hour`].
     ///
     /// `None` when no time or no visit was measured — an ETA nothing was
@@ -267,14 +295,31 @@ impl Throughput {
         funnel.revisits = revisits;
         let visits_per_hour = Rate::per_hour(funnel.visits, elapsed_ms);
         let screened_per_hour = Rate::per_hour(funnel.sample_screened, elapsed_ms);
-        let population = hidden + synapses;
-        let visit_rescan_hours = (visits_per_hour.total > 0.0 && population > 0)
-            .then(|| population as f64 / visits_per_hour.total);
-        let proposable_estimate =
-            proposable(hidden, funnel.proposed.neurons, funnel.visits.neurons).unwrap_or(0.0)
-                + proposable(synapses, funnel.proposed.synapses, funnel.visits.synapses)
-                    .unwrap_or(0.0);
-        let scored_rescan_hours = scored_rescan_hours(&funnel, screened_per_hour, hidden, synapses);
+        let visit_rescan_hours = rescan_hours(
+            (Some(hidden as f64), visits_per_hour.neurons),
+            (Some(synapses as f64), visits_per_hour.synapses),
+        );
+        // Measured once and used twice: the estimate published beside the ETA
+        // and the ETA itself must be the same arithmetic, or a reader could
+        // divide one by the rate and not get the other.
+        let neurons = proposable(
+            hidden,
+            funnel.proposed.neurons + funnel.judged.neurons,
+            funnel.visits.neurons,
+        );
+        let synapse_share = proposable(
+            synapses,
+            funnel.proposed.synapses + funnel.judged.synapses,
+            funnel.visits.synapses,
+        );
+        let proposable_estimate = match (neurons, synapse_share) {
+            (Some(n), Some(s)) => Some(n + s),
+            _ => None,
+        };
+        let scored_rescan_hours = rescan_hours(
+            (neurons, screened_per_hour.neurons),
+            (synapse_share, screened_per_hour.synapses),
+        );
         Self {
             elapsed_ms,
             funnel,
@@ -298,10 +343,16 @@ impl Throughput {
     /// The description lines: the funnel per kind, the rates, then the ETAs.
     ///
     /// ```text
-    /// funnel:    neurons 120 visits · 96 blocked · 24 proposed · 24 screened · 3 scored
-    /// rate:      neurons 312 screened/h · synapses 1840 screened/h · full rescan ~18.7h
-    /// eta:       visit rescan ~2.1h · scored rescan ~18.7h · 9100 neurons + 31400 edges
+    /// funnel:    neurons 9100 visits · 8680 blocked · 0 judged · 420 proposed · 312 screened · 24 scored
+    /// funnel:    synapses 31400 visits · 29295 blocked · 0 judged · 2105 proposed · 1840 screened · 60 scored
+    /// rate:      neurons 312 screened/h · synapses 1840 screened/h · full rescan ~0.8h
+    /// eta:       visit rescan ~0.6h · scored rescan ~0.8h · 5013 neurons + 2000 edges eligible
     /// ```
+    ///
+    /// `full rescan` on the `rate:` line and `scored rescan` on the `eta:` line
+    /// are the same figure, deliberately: the compact line GRQ pastes into a
+    /// commit subject carries it alone, and the `eta:` line puts it beside the
+    /// walk-only estimate it must not be confused with.
     ///
     /// The synapse funnel line is omitted when the run reached no edge, exactly
     /// as the `visits:` line beside it is, so a neuron-only run renders neither
@@ -347,9 +398,10 @@ impl Throughput {
             VisitKind::Synapse => counts.synapses,
         };
         format!(
-            "{} visits · {} blocked · {} proposed · {} screened · {} scored",
+            "{} visits · {} blocked · {} judged · {} proposed · {} screened · {} scored",
             of(self.funnel.visits),
             of(self.funnel.blocked),
+            of(self.funnel.judged),
             of(self.funnel.proposed),
             of(self.funnel.sample_screened),
             of(self.funnel.full_scored)
@@ -369,39 +421,30 @@ fn proposable(population: usize, proposed: usize, visits: usize) -> Option<f64> 
     (visits > 0).then(|| population as f64 * (proposed as f64 / visits as f64))
 }
 
-/// Hours to sample-score every proposable candidate once, per kind, summed.
+/// Hours for one pass over both kinds: each kind's population at its own rate.
 ///
-/// Unknown — `None` — when a kind with a live proposable share was never
-/// screened, because the total would otherwise report the other kind's ETA as
-/// though it covered both.
-fn scored_rescan_hours(
-    funnel: &Funnel,
-    screened_per_hour: Rate,
-    hidden: usize,
-    synapses: usize,
-) -> Option<f64> {
-    let kinds = [
-        (
-            proposable(hidden, funnel.proposed.neurons, funnel.visits.neurons),
-            screened_per_hour.neurons,
-        ),
-        (
-            proposable(synapses, funnel.proposed.synapses, funnel.visits.synapses),
-            screened_per_hour.synapses,
-        ),
-    ];
+/// Per kind and summed, never a blended rate over a blended population: a run
+/// that walked only neurons has measured nothing about edges, and projecting
+/// the neuron rate onto the edge population would invent the number. Unknown —
+/// `None` — when a kind with a live population was never measured or never
+/// worked at, because the total would otherwise report the other kind's
+/// estimate as though it covered both.
+///
+/// `Some(0.0)` is a real answer and not an unknown one: there is nothing left
+/// of either population to get through.
+fn rescan_hours(neurons: (Option<f64>, f64), synapses: (Option<f64>, f64)) -> Option<f64> {
     let mut total = 0.0;
-    for (proposable, rate) in kinds {
-        let proposable = proposable?;
-        if proposable <= 0.0 {
+    for (population, rate) in [neurons, synapses] {
+        let population = population?;
+        if population <= 0.0 {
             continue;
         }
         if rate <= 0.0 {
             return None;
         }
-        total += proposable / rate;
+        total += population / rate;
     }
-    (total > 0.0).then_some(total)
+    Some(total)
 }
 
 /// `~18.7h`, or `unknown` when nothing was measured to estimate from.
@@ -411,7 +454,8 @@ fn scored_rescan_hours(
 /// done.
 fn hours_clause(hours: Option<f64>) -> String {
     match hours {
-        Some(h) if h > 0.0 && h < 0.05 => "~<0.1h".to_string(),
+        Some(h) if h <= 0.0 => "none left".to_string(),
+        Some(h) if h < 0.05 => "~<0.1h".to_string(),
         Some(h) => format!("~{h:.1}h"),
         None => "unknown".to_string(),
     }
@@ -509,13 +553,13 @@ mod tests {
         let lines = t.lines().join("\n");
         assert!(
             lines.contains(
-                "funnel:    neurons 100 visits · 90 blocked · 10 proposed · 6 screened · 2 scored"
+                "funnel:    neurons 100 visits · 90 blocked · 0 judged · 10 proposed · 6 screened · 2 scored"
             ),
             "{lines}"
         );
         assert!(
             lines.contains(
-                "funnel:    synapses 10 visits · 8 blocked · 2 proposed · 1 screened · 1 scored"
+                "funnel:    synapses 10 visits · 8 blocked · 0 judged · 2 proposed · 1 screened · 1 scored"
             ),
             "{lines}"
         );
@@ -535,7 +579,7 @@ mod tests {
         // 2000 eligible visits at 1000 visits/h.
         assert_eq!(t.visit_rescan_hours, Some(2.0));
         // 10% of 2000 are proposable, screened at 50/h.
-        assert_eq!(t.proposable_estimate, 200.0);
+        assert_eq!(t.proposable_estimate, Some(200.0));
         assert_eq!(t.scored_rescan_hours, Some(4.0));
         let lines = t.lines().join("\n");
         assert!(
@@ -544,23 +588,141 @@ mod tests {
         );
     }
 
-    /// An unmeasured kind makes the scored ETA unknown, never a silent zero
-    /// (Issue #162).
+    /// An unmeasured kind makes **both** ETAs unknown, never a silent zero and
+    /// never the other kind's rate projected onto it (Issue #162).
     #[test]
-    fn an_unvisited_population_leaves_the_scored_eta_unknown() {
+    fn an_unvisited_population_leaves_both_etas_unknown() {
         let f = funnel((100, 0), (50, 0), (50, 0));
         let t = Throughput::measured(f, counts(100, 0), counts(0, 0), ONE_HOUR_MS, 100, 400);
         assert_eq!(
             t.scored_rescan_hours, None,
-            "400 edges were never visited, so their share is unmeasured"
+            "400 edges were never screened, so their share is unmeasured"
         );
-        assert!(t.visit_rescan_hours.is_some(), "the walk rate is measured");
+        assert_eq!(
+            t.visit_rescan_hours, None,
+            "400 edges were never walked either — the neuron rate says nothing about them"
+        );
+        assert_eq!(
+            t.proposable_estimate, None,
+            "an estimate that omits a live population is not an estimate"
+        );
         let lines = t.lines().join("\n");
         assert!(lines.contains("scored rescan unknown"), "{lines}");
+        assert!(lines.contains("visit rescan unknown"), "{lines}");
         assert!(
             !lines.contains("funnel:    synapses"),
             "no edge was walked, so no edge funnel is claimed: {lines}"
         );
+    }
+
+    /// A visit the learnings cache already judged is proposable structure, so
+    /// it is counted apart from a structural refusal and keeps the scored
+    /// rescan honest as the cache grows (Issue #162).
+    #[test]
+    fn a_judged_visit_is_not_a_blocked_one() {
+        let mut f = funnel((100, 0), (60, 0), (10, 0));
+        f.judged = counts(30, 0);
+        let t = Throughput::measured(f, counts(100, 0), counts(0, 0), ONE_HOUR_MS, 100, 0);
+        assert_eq!(t.funnel.blocked.neurons, 60);
+        assert_eq!(t.funnel.judged.neurons, 30);
+        assert_eq!(
+            t.funnel.blocked.total + t.funnel.judged.total + t.funnel.proposed.total,
+            t.funnel.visits.total,
+            "every visit is blocked, judged or proposed"
+        );
+        // 40 of 100 visits were proposable — the 10 proposed plus the 30 the
+        // cache skipped — so 40 of the 100 eligible neurons are, screened at
+        // 10/h.
+        assert_eq!(t.proposable_estimate, Some(40.0));
+        assert_eq!(t.scored_rescan_hours, Some(4.0));
+    }
+
+    /// A creature with nothing proposable left is answered, not shrugged at:
+    /// `none left` is a measurement, `unknown` is the absence of one (#162).
+    #[test]
+    fn a_fully_blocked_creature_reports_nothing_left_to_score() {
+        let mut f = funnel((100, 0), (100, 0), (0, 0));
+        f.sample_screened = counts(0, 0);
+        let t = Throughput::measured(f, counts(100, 0), counts(0, 0), ONE_HOUR_MS, 100, 0);
+        assert_eq!(t.proposable_estimate, Some(0.0));
+        assert_eq!(t.scored_rescan_hours, Some(0.0));
+        let lines = t.lines().join("\n");
+        assert!(lines.contains("scored rescan none left"), "{lines}");
+        assert!(lines.contains("visit rescan ~1.0h"), "{lines}");
+    }
+
+    /// The cohort end of the funnel: individuals are scored and confirmed on
+    /// their own delta, and only an individual or synapse winner is counted
+    /// applied — a bundle plan the scored stage never saw is not (Issue #162).
+    #[test]
+    fn observe_full_counts_individuals_and_leaves_plans_to_the_winners_block() {
+        let candidate = |kind: &'static str, delta: f64| crate::promote::FullCandidate {
+            stem: kind.into(),
+            kind,
+            uuids: vec!["h_a".into(), "h_b".into()],
+            score: 0.5 + delta,
+            error: 0.5,
+            complexity_penalty: 0.0,
+            after: crate::ablation::StructureSnapshot {
+                hidden_neurons: 1,
+                constant_neurons: 0,
+                synapses: 2,
+                growth_units: 1.2,
+            },
+            delta,
+        };
+        let outcome =
+            |individuals: Vec<crate::promote::FullCandidate>,
+             winner: Option<crate::promote::FullCandidate>| FullOutcome {
+                incumbent_score: 0.5,
+                incumbent_error: 0.5,
+                individuals,
+                bundles: Vec::new(),
+                groups: Vec::new(),
+                sample_false_positives: Vec::new(),
+                winner: winner.map(|candidate| crate::promote::LocalWinner {
+                    candidate,
+                    checksum: "c".into(),
+                    creature: crate::fixtures::creature(1, 1, Vec::new(), Vec::new()),
+                }),
+                full_ms: 1,
+                skipped_bundles: 0,
+                dropped_individuals: 0,
+                dropped_bundles: 0,
+                capped_plans: 0,
+            };
+
+        // A delta exactly at the threshold is not confirmed: the rule is
+        // strictly better, exactly as the cohort's own accept rule is.
+        let mut f = Funnel::default();
+        f.observe_full(
+            &outcome(
+                vec![
+                    candidate("individual", 0.2),
+                    candidate("individual", 0.1),
+                    candidate("synapse", 0.3),
+                ],
+                Some(candidate("individual", 0.2)),
+            ),
+            0.1,
+        );
+        assert_eq!(f.full_scored.neurons, 2);
+        assert_eq!(f.full_scored.synapses, 1);
+        assert_eq!(f.confirmed.neurons, 1, "0.1 is not strictly above 0.1");
+        assert_eq!(f.confirmed.synapses, 1);
+        assert_eq!(f.applied.neurons, 1);
+
+        // A bundle winner cut neurons the scored stage never judged one at a
+        // time, so the funnel counts none of them applied.
+        let mut bundled = Funnel::default();
+        bundled.observe_full(&outcome(Vec::new(), Some(candidate("bundle", 0.9))), 0.1);
+        assert_eq!(bundled.applied.total, 0);
+        assert_eq!(bundled.full_scored.total, 0);
+
+        // An empty cohort moves nothing.
+        let mut empty = Funnel::default();
+        empty.observe_full(&outcome(Vec::new(), None), 0.1);
+        assert_eq!(empty, Funnel::default());
     }
 
     /// A run that measured no wall clock reports no rate at all, rather than
