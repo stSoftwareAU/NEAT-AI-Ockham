@@ -45,7 +45,12 @@ const KIND_GROUP_MIN: usize = 2;
 pub struct FullCandidate {
     /// Cohort file stem.
     pub stem: String,
-    /// `individual` or `bundle`.
+    /// `individual`, `synapse`, `group` or `bundle`.
+    ///
+    /// A single edge cut is its own kind (Issue #138): it is scored and
+    /// accepted exactly as an individual is, but it removes no hidden neuron,
+    /// so the accept series can only tell the two apart if the cohort says
+    /// which one it was.
     pub kind: &'static str,
     /// Hidden UUIDs applied, in order.
     pub uuids: Vec<String>,
@@ -296,6 +301,14 @@ pub fn bundle_plans(members: &[BundleMember]) -> BundlePlans {
         push(&mut out, identity);
         push(&mut out, ablation);
     }
+    // Edge cuts bundle like any other kind (Issue #138). Emitted on their own
+    // count rather than paired with a neuron kind: a batch of confirmed
+    // synapse wins is a plan worth scoring whether or not the neuron ladder
+    // produced two winners of its own that pass.
+    let synapse = by_kind(CandidateKind::Synapse);
+    if synapse.len() >= KIND_GROUP_MIN {
+        push(&mut out, synapse);
+    }
     out.primary = out.plans.len();
 
     let mut prefixes: Vec<usize> = Vec::new();
@@ -505,10 +518,14 @@ pub fn evaluate_full(
         write_creature(cfg.dir, &stem, &w.candidate.creature)?;
         // A group carries every neuron it cut, so the winner it may become
         // names the whole neighbourhood rather than the member it was keyed on.
-        let kind = if w.candidate.is_group() {
-            "group"
-        } else {
-            "individual"
+        // A synapse candidate names an edge and no neuron at all (#138), and it
+        // is judged on exactly the same terms — the label is what lets the
+        // journal, `report` and the telemetry count edge cuts apart from
+        // neuron cuts, never a gate on the accept.
+        let kind = match w.candidate.kind {
+            CandidateKind::Group => "group",
+            CandidateKind::Synapse => "synapse",
+            _ => "individual",
         };
         pending.push((
             stem,
@@ -582,7 +599,10 @@ pub fn evaluate_full(
             .get(&stem)
             .ok_or_else(|| format!("full: scorer returned no entry for `{stem}`"))?;
         let cand = full_candidate(stem, kind, uuids, &creature, result, baseline.score);
-        if kind == "individual" && cand.delta <= cfg.min_improvement {
+        // A synapse candidate is an individual verdict on one visit, so a
+        // sampled win the full corpus does not confirm is a false positive
+        // exactly as a neuron's is (#138).
+        if is_solo(kind) && cand.delta <= cfg.min_improvement {
             sample_false_positives.push(cand.uuids[0].clone());
         }
         if cand.delta > cfg.min_improvement {
@@ -601,8 +621,8 @@ pub fn evaluate_full(
             }
         }
         match kind {
-            "individual" => individuals.push(cand),
             "group" => groups.push(cand),
+            k if is_solo(k) => individuals.push(cand),
             _ => bundles.push(cand),
         }
     }
@@ -645,6 +665,16 @@ enum Entry<'a> {
     Bundle(Vec<String>),
     /// A neighbourhood rebuilt as one group cut (Issue #108).
     Group(Vec<String>),
+}
+
+/// Whether `kind` is a cohort entry the scorer judged **on its own**.
+///
+/// One test for "is this an individual verdict?", so the false-positive list
+/// and the `individuals` series can never disagree about a synapse candidate
+/// (Issue #138): an edge cut is one visit scored alone, exactly as a neuron cut
+/// is, and only the label differs.
+fn is_solo(kind: &str) -> bool {
+    matches!(kind, "individual" | "synapse")
 }
 
 fn write_creature(dir: &Path, stem: &str, creature: &CreatureExport) -> Result<(), String> {
@@ -798,6 +828,104 @@ mod tests {
         assert!(out.winner.is_none());
         assert_eq!(out.sample_false_positives.len(), 1);
         assert!(!best.exists(), "sample win must not write best.json");
+    }
+
+    /// Issue #138: a candidate that removes **one synapse and no hidden
+    /// neuron** is accepted on the full-corpus scorer alone. Nothing in the
+    /// accept path asks for a hidden removal or a minimum growth-unit saving —
+    /// only `min_improvement`, which the scorer comparison already applies.
+    ///
+    /// The delta here is deliberately tiny: a lone edge is 0.1 growth units, so
+    /// any incidental minimum-saving gate would silently discard exactly this
+    /// win.
+    #[test]
+    fn a_pure_synapse_win_is_accepted_on_the_scorer_alone() {
+        let incumbent = crate::fixtures::shortcut_edge_creature();
+        validate_creature(&incumbent).unwrap();
+        let stats = stats_for(&incumbent);
+        let cut = crate::sweep::synapse_key("a", "output-0");
+        let mut sweep = Sweep::new(&incumbent, 1);
+        sweep.prefer(std::slice::from_ref(&cut));
+        let (batch, _) = sweep.fill_batch(&incumbent, &stats, 8);
+        let candidate = batch
+            .into_iter()
+            .find(|c| c.uuid == cut)
+            .expect("the shortcut edge must be proposed");
+        assert_eq!(candidate.kind, CandidateKind::Synapse);
+        let before = StructureSnapshot::of(&incumbent);
+        let after = StructureSnapshot::of(&candidate.creature);
+        assert_eq!(
+            after.hidden_neurons, before.hidden_neurons,
+            "the fixture must offer a cut that removes no neuron"
+        );
+        assert_eq!(after.synapses, before.synapses - 1);
+        assert!((before.growth_units - after.growth_units - 0.1).abs() < 1e-9);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let best = tmp.path().join("best.json");
+        let mut stem_scores = BTreeMap::new();
+        stem_scores.insert("baseline".into(), 0.50);
+        // Barely above the incumbent, and above `min_improvement`: a real
+        // full-corpus improvement, and nothing more.
+        stem_scores.insert("i000".into(), 0.50 + 1e-5);
+        let scorer = ScriptedScorer {
+            stem_scores,
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let out = evaluate_full(
+            &scorer,
+            tmp.path(),
+            &incumbent,
+            &stats,
+            &[sampled(candidate, 0.90, 0.50)],
+            FullConfig::new(1e-6, &tmp.path().join("full"), Some(&best)),
+        )
+        .unwrap();
+
+        assert!(
+            out.sample_false_positives.is_empty(),
+            "{:?}",
+            out.sample_false_positives
+        );
+        let win = out.winner.expect("the full corpus accepts the edge cut");
+        assert_eq!(win.candidate.kind, "synapse");
+        assert_eq!(win.candidate.uuids, vec![cut]);
+        assert_eq!(win.candidate.after.hidden_neurons, before.hidden_neurons);
+        assert_eq!(win.candidate.after.synapses, before.synapses - 1);
+        assert_eq!(out.individuals.len(), 1, "an edge cut is judged alone");
+        assert!(best.exists(), "the accept publishes the winner");
+    }
+
+    /// A synapse candidate the full corpus does **not** confirm is a sample
+    /// false positive, exactly as a neuron candidate is (Issue #138).
+    #[test]
+    fn a_synapse_candidate_the_full_corpus_refuses_is_a_sample_false_positive() {
+        let incumbent = crate::fixtures::shortcut_edge_creature();
+        let stats = stats_for(&incumbent);
+        let cut = crate::sweep::synapse_key("a", "output-0");
+        let mut sweep = Sweep::new(&incumbent, 1);
+        sweep.prefer(std::slice::from_ref(&cut));
+        let (batch, _) = sweep.fill_batch(&incumbent, &stats, 8);
+        let candidate = batch.into_iter().find(|c| c.uuid == cut).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut stem_scores = BTreeMap::new();
+        stem_scores.insert("baseline".into(), 0.50);
+        stem_scores.insert("i000".into(), 0.40);
+        let scorer = ScriptedScorer {
+            stem_scores,
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let out = evaluate_full(
+            &scorer,
+            tmp.path(),
+            &incumbent,
+            &stats,
+            &[sampled(candidate, 0.90, 0.50)],
+            FullConfig::new(1e-6, &tmp.path().join("full"), None),
+        )
+        .unwrap();
+        assert!(out.winner.is_none());
+        assert_eq!(out.sample_false_positives, vec![cut]);
     }
 
     /// `input-0 → g1 → g2 → output-0`, beside a lone `h1 → output-0`.
@@ -1157,6 +1285,67 @@ mod tests {
             "the all-winners plan appears once: {:?}",
             plans.plans
         );
+    }
+
+    /// Issue #138: a batch of confirmed edge cuts bundles like any other kind.
+    #[test]
+    fn confirmed_synapse_wins_are_bundled_as_a_per_kind_plan() {
+        let synapse_keys: Vec<String> = (0..3)
+            .map(|i| crate::sweep::synapse_key(&format!("h{i}"), "output-0"))
+            .collect();
+        let mut members: Vec<BundleMember> = synapse_keys
+            .iter()
+            .enumerate()
+            .map(|(i, uuid)| BundleMember {
+                uuid: uuid.clone(),
+                kind: CandidateKind::Synapse,
+                delta: 0.9 - i as f64 / 100.0,
+            })
+            .collect();
+        // Two neuron cuts beside them, so the all-winners plan is not itself
+        // the synapse plan: the per-kind plan has to be emitted on its own.
+        members.push(BundleMember {
+            uuid: "h_x".into(),
+            kind: CandidateKind::Ablation,
+            delta: 0.5,
+        });
+        members.push(BundleMember {
+            uuid: "h_y".into(),
+            kind: CandidateKind::Ablation,
+            delta: 0.4,
+        });
+
+        let plans = bundle_plans(&members);
+        let expected: HashSet<&String> = synapse_keys.iter().collect();
+        assert!(
+            plans
+                .plans
+                .iter()
+                .any(|p| p.iter().collect::<HashSet<&String>>() == expected),
+            "no all-synapse plan: {:?}",
+            plans.plans
+        );
+    }
+
+    /// A lone confirmed edge cut is not a bundle, exactly as a lone neuron cut
+    /// is not: a per-kind plan needs at least two members (Issue #138).
+    #[test]
+    fn one_synapse_winner_emits_no_per_kind_plan() {
+        let members = vec![
+            BundleMember {
+                uuid: crate::sweep::synapse_key("h0", "output-0"),
+                kind: CandidateKind::Synapse,
+                delta: 0.9,
+            },
+            BundleMember {
+                uuid: "h_x".into(),
+                kind: CandidateKind::Ablation,
+                delta: 0.5,
+            },
+        ];
+        let plans = bundle_plans(&members);
+        assert_eq!(plans.plans.len(), 1, "{:?}", plans.plans);
+        assert_eq!(plans.plans[0].len(), 2, "only the all-winners pair");
     }
 
     #[test]

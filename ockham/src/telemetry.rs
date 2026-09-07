@@ -265,6 +265,118 @@ pub fn corpora(records: &[CandidateRecord]) -> Vec<String> {
     seen
 }
 
+/// What one candidate kind was worth to a run (Issue #138).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KindCounts {
+    /// Candidates of this kind the run judged, whatever became of them.
+    pub proposals: usize,
+    /// Of those, the ones the full corpus accepted.
+    pub accepts: usize,
+    /// Of those, the ones that reached the training set as a row.
+    pub logged: usize,
+}
+
+/// Candidate kind that carries no training row **by construction** (#138).
+///
+/// Every feature in the vector is a hidden neuron's — fan-in, outgoing weight,
+/// depth, cascade estimate — and a synapse candidate names an edge, so there is
+/// nothing to key a row on. Its absence from the training set is the design,
+/// not a fault, which is why it is named here and excluded from the anomaly
+/// warning rather than inflating it on every batch.
+const ROWLESS_KIND: &str = "synapse";
+
+/// Proposals, accepts and logged rows per candidate kind (Issue #138).
+///
+/// The candidate log is keyed by a **hidden-neuron** feature vector, and a
+/// synapse candidate names an edge rather than a neuron — so it carries no
+/// vector and no training row. Counting what was offered beside what was
+/// written is what stops an edge cut vanishing from the telemetry altogether:
+/// every synapse proposal and every synapse accept is reported here, whether or
+/// not the training set could hold it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KindTally {
+    counts: BTreeMap<String, KindCounts>,
+    anomalies: usize,
+}
+
+impl KindTally {
+    /// Record one judged candidate of `kind`.
+    pub fn offer(&mut self, kind: &str, accepted: bool, logged: bool) {
+        let counts = self.counts.entry(kind.to_string()).or_default();
+        counts.proposals += 1;
+        counts.accepts += usize::from(accepted);
+        counts.logged += usize::from(logged);
+    }
+
+    /// Record a cohort entry whose **kind could not be named** at all.
+    ///
+    /// An entry naming no uuid, or a uuid this run's sweep did not propose.
+    /// Kept out of the kind map on purpose: `unnamed` and `unproposed` are not
+    /// candidate kinds, and rendering them beside `ablation` and `synapse`
+    /// would put two vocabularies in one column. They are still counted, and
+    /// they are what the anomaly warning is really for.
+    pub fn anomaly(&mut self) {
+        self.anomalies += 1;
+    }
+
+    /// What `kind` was worth; all-zero for a kind the run never proposed.
+    pub fn counts(&self, kind: &str) -> KindCounts {
+        self.counts.get(kind).copied().unwrap_or_default()
+    }
+
+    /// Cohort entries whose kind could not be named.
+    pub fn anomalies(&self) -> usize {
+        self.anomalies
+    }
+
+    /// Whether nothing at all was tallied.
+    pub fn is_empty(&self) -> bool {
+        self.counts.is_empty() && self.anomalies == 0
+    }
+
+    /// Candidates of every kind that carried no training row.
+    pub fn unlogged(&self) -> usize {
+        self.counts
+            .values()
+            .map(|c| c.proposals - c.logged)
+            .sum::<usize>()
+            + self.anomalies
+    }
+
+    /// Candidates that carried no row **where one was expected**.
+    ///
+    /// [`Self::unlogged`] minus the kinds that can never hold one. This is the
+    /// figure the warning fires on: a training set that silently stopped
+    /// growing is the fault worth shouting about, and warning on an edge cut —
+    /// which by design holds no row — would drown that signal in noise.
+    pub fn unexpected_unlogged(&self) -> usize {
+        self.counts
+            .iter()
+            .filter(|(kind, _)| kind.as_str() != ROWLESS_KIND)
+            .map(|(_, c)| c.proposals - c.logged)
+            .sum::<usize>()
+            + self.anomalies
+    }
+
+    /// `kind proposed/accepted/logged` per kind, in kind order.
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = self
+            .counts
+            .iter()
+            .map(|(kind, c)| {
+                format!(
+                    "{kind} {} proposed, {} accepted, {} logged",
+                    c.proposals, c.accepts, c.logged
+                )
+            })
+            .collect();
+        if self.anomalies > 0 {
+            parts.push(format!("{} of no nameable kind", self.anomalies));
+        }
+        parts.join(" · ")
+    }
+}
+
 /// Opt-in candidate feature/outcome telemetry (Issue #107).
 ///
 /// Written **after** a verdict and never read during one: this is the training
@@ -309,16 +421,17 @@ impl CandidateLog<'_> {
         let features = crate::features::extract(creature, stats, self.evidence);
         let each_ms = screen_ms / cohort.max(losers.len()).max(1) as u64;
         let mut records = Vec::with_capacity(losers.len());
-        let mut unknown = 0usize;
+        let mut tally = KindTally::default();
         for loser in losers {
+            let kind = crate::learnings::kind_label(loser.kind);
             let Some(f) = features.get(&loser.uuid) else {
-                unknown += 1;
+                tally.offer(kind, false, false);
                 continue;
             };
             let mut record = CandidateRecord::new(
                 &self.stamp,
                 &loser.uuid,
-                crate::learnings::kind_label(loser.kind),
+                kind,
                 f,
                 CandidateOutcome::ScreenedOut,
             );
@@ -327,8 +440,9 @@ impl CandidateLog<'_> {
             record.sample_delta = Some(loser.delta);
             record.scorer_ms = each_ms;
             records.push(record);
+            tally.offer(kind, false, true);
         }
-        self.write(&records, unknown);
+        self.write(&records, &tally);
     }
 
     /// Rows for the candidates the full corpus judged individually.
@@ -366,37 +480,46 @@ impl CandidateLog<'_> {
             .unwrap_or_default();
         let each_ms = full.full_ms / full.entries().max(1) as u64;
         let mut records = Vec::with_capacity(full.individuals.len());
-        let mut unknown = 0usize;
+        let mut tally = KindTally::default();
         for scored in &full.individuals {
-            // A cohort entry naming no uuid describes no neuron; counted, not
+            // A cohort entry naming no uuid describes no visit; counted, not
             // dropped in silence.
             let Some(uuid) = scored.uuids.first() else {
-                unknown += 1;
-                continue;
-            };
-            // The kind is the sweep's — `identity`, `ablation`, `constant` or
-            // `merge` — never the cohort's `individual`, so one column carries
-            // one vocabulary. A uuid this run's sweep did not propose (a carried
-            // winner from an earlier batch) has no candidate kind to record and
-            // is left for the batch that did propose it.
-            // The group candidate keyed on this uuid is not the row's
-            // candidate (#108): a group's kind and sampled delta describe the
-            // whole neighbourhood, and this row is about one neuron the scorer
-            // judged alone.
-            let (Some(f), Some(candidate)) = (
-                features.get(uuid),
-                sampled
-                    .iter()
-                    .find(|w| !w.candidate.is_group() && &w.candidate.uuid == uuid),
-            ) else {
-                unknown += 1;
+                tally.anomaly();
                 continue;
             };
             let accepted = winner.contains(uuid.as_str());
+            // The kind is the sweep's — `identity`, `ablation`, `constant`,
+            // `merge` or `synapse` — never the cohort's `individual`, so one
+            // column carries one vocabulary. A uuid this run's sweep did not
+            // propose (a carried winner from an earlier batch) has no candidate
+            // kind to record and is left for the batch that did propose it.
+            // The group candidate keyed on this uuid is not the row's
+            // candidate (#108): a group's kind and sampled delta describe the
+            // whole neighbourhood, and this row is about one visit the scorer
+            // judged alone.
+            let Some(candidate) = sampled
+                .iter()
+                .find(|w| !w.candidate.is_group() && &w.candidate.uuid == uuid)
+            else {
+                // A carried winner from an earlier batch: this run's sweep did
+                // not propose it, so there is no kind to record it under.
+                tally.anomaly();
+                continue;
+            };
+            let kind = crate::learnings::kind_label(candidate.candidate.kind);
+            // A synapse candidate names an **edge**, so the hidden-neuron
+            // feature vectors never carry one and it can hold no training row
+            // (#138). The tally above still reports the proposal and the
+            // accept, which is what keeps an edge cut visible in the telemetry.
+            let Some(f) = features.get(uuid) else {
+                tally.offer(kind, accepted, false);
+                continue;
+            };
             let mut record = CandidateRecord::new(
                 &self.stamp,
                 uuid,
-                crate::learnings::kind_label(candidate.candidate.kind),
+                kind,
                 f,
                 if accepted {
                     CandidateOutcome::Accepted
@@ -419,20 +542,34 @@ impl CandidateLog<'_> {
             };
             record.scorer_ms = each_ms;
             records.push(record);
+            tally.offer(kind, accepted, true);
         }
-        self.write(&records, unknown);
+        self.write(&records, &tally);
     }
 
     /// Append `records`, saying what was written and what could not be.
     ///
-    /// `unknown` counts candidates with no feature vector or no sweep candidate
-    /// to name their kind. It is reported rather than dropped quietly: a
-    /// training set that silently shrank fits a model nobody can account for.
-    fn write(&self, records: &[CandidateRecord], unknown: usize) {
+    /// `tally` is every candidate the caller judged, by kind. It is reported
+    /// rather than dropped quietly: a training set that silently shrank fits a
+    /// model nobody can account for, and an edge cut that held no row would
+    /// otherwise leave no trace at all (#138).
+    fn write(&self, records: &[CandidateRecord], tally: &KindTally) {
+        // Every kind the run judged is reported, logged or not (#138): a
+        // synapse candidate names an edge, so it carries no hidden-neuron
+        // feature vector and no training row, and a count is the only place its
+        // proposals and accepts are said out loud.
+        if !tally.is_empty() {
+            crate::log::detail(&format!("candidate log: {}", tally.summary()));
+        }
+        // Only where a row was **expected**: an edge cut holds none by design
+        // and is reported by the tally above, so warning about it every batch
+        // would bury the fault this warning exists for — a training set that
+        // silently stopped growing.
+        let unknown = tally.unexpected_unlogged();
         if unknown > 0 {
             crate::log::warn(&format!(
-                "candidate log: {unknown} judged candidate(s) carried no feature vector; \
-                 their outcomes are not in the training set"
+                "candidate log: {unknown} judged candidate(s) carried no feature vector where one \
+                 was expected; their outcomes are not in the training set"
             ));
         }
         match append(self.path, records) {
@@ -686,5 +823,93 @@ mod tests {
         other.corpus_identity = "corpus-b".into();
         let rows = vec![record(CandidateOutcome::Accepted), other];
         assert_eq!(corpora(&rows), ["corpus-a", "corpus-b"]);
+    }
+
+    /// Issue #138: a synapse candidate carries no hidden-neuron feature vector,
+    /// so it can never hold a training row — and without a per-kind tally its
+    /// proposals and its accepts would leave no trace in the telemetry at all.
+    #[test]
+    fn the_tally_reports_synapse_proposals_and_accepts_that_carry_no_row() {
+        let mut tally = KindTally::default();
+        tally.offer("ablation", false, true);
+        tally.offer("ablation", true, true);
+        tally.offer("synapse", false, false);
+        tally.offer("synapse", true, false);
+        tally.offer("synapse", false, false);
+
+        assert_eq!(
+            tally.counts("synapse"),
+            KindCounts {
+                proposals: 3,
+                accepts: 1,
+                logged: 0,
+            }
+        );
+        assert_eq!(
+            tally.counts("ablation"),
+            KindCounts {
+                proposals: 2,
+                accepts: 1,
+                logged: 2,
+            }
+        );
+        assert_eq!(
+            tally.counts("merge"),
+            KindCounts::default(),
+            "a kind the run never proposed reads as zero, not as absent"
+        );
+        assert_eq!(tally.unlogged(), 3, "every synapse proposal is unlogged");
+        assert_eq!(
+            tally.unexpected_unlogged(),
+            0,
+            "an edge cut holds no row by design, so it is not an anomaly"
+        );
+        assert_eq!(
+            tally.summary(),
+            "ablation 2 proposed, 1 accepted, 2 logged · synapse 3 proposed, 1 accepted, 0 logged"
+        );
+    }
+
+    /// A **neuron** candidate with no feature vector is the fault the warning
+    /// exists for, and it must survive the synapse exclusion (Issue #138).
+    #[test]
+    fn a_neuron_candidate_with_no_row_is_still_an_anomaly() {
+        let mut tally = KindTally::default();
+        tally.offer("synapse", false, false);
+        tally.offer("ablation", false, false);
+        tally.anomaly();
+
+        assert_eq!(tally.unlogged(), 3);
+        assert_eq!(
+            tally.unexpected_unlogged(),
+            2,
+            "the ablation row and the unnameable entry, never the synapse"
+        );
+        assert_eq!(tally.anomalies(), 1);
+        assert!(
+            tally.summary().ends_with("1 of no nameable kind"),
+            "{}",
+            tally.summary()
+        );
+    }
+
+    #[test]
+    fn an_empty_tally_reports_nothing_rather_than_an_empty_line() {
+        let tally = KindTally::default();
+        assert!(tally.is_empty());
+        assert_eq!(tally.unlogged(), 0);
+        assert_eq!(tally.unexpected_unlogged(), 0);
+        assert_eq!(tally.anomalies(), 0);
+        assert_eq!(tally.summary(), "");
+    }
+
+    /// An anomaly alone is still something to report, so the tally is not
+    /// "empty" just because no kind was nameable.
+    #[test]
+    fn a_tally_of_anomalies_alone_is_not_empty() {
+        let mut tally = KindTally::default();
+        tally.anomaly();
+        assert!(!tally.is_empty());
+        assert_eq!(tally.summary(), "1 of no nameable kind");
     }
 }

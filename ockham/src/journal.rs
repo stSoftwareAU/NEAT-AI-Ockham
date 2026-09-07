@@ -44,8 +44,9 @@ pub enum Event {
         /// Beside the two above for the same reason: the seeded pool holds a
         /// visit per ordinary synapse and `permutation_identity` covers all of
         /// them, so a run that walked only the neuron half is reconstructable
-        /// only if the journal says how many it put aside. `0` once #136/#137
-        /// give edge visits their records and coverage and the run walks them.
+        /// only if the journal says how many it put aside. `0` on every run
+        /// since #138, which walks the edge half of the pool like any other
+        /// visit; a non-zero figure names a journal written before it.
         #[serde(default)]
         synapse_visits_deferred: usize,
         /// Hidden neurons on the opening incumbent.
