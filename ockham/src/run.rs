@@ -2176,7 +2176,12 @@ fn ockham_loop(
         // refused must not be reported as though it had landed.
         let eligible_visits_run = progress.eligible_visits();
         let mut ledger_filed = 0u64;
-        if let Some(s) = store {
+        // A run that visited nothing files nothing: an entry of zero visits
+        // records no work and would grow the shared append-only log by one line
+        // per run forever.
+        if let Some(s) = store
+            && eligible_visits_run > 0
+        {
             match s.append_visits(&s.visit_ledger(eligible_visits_run, cov.checkable)) {
                 Ok(()) => ledger_filed = eligible_visits_run,
                 Err(e) => log::warn(&format!("visit ledger not written: {e}")),
@@ -7838,11 +7843,12 @@ mod tests {
     fn a_run_that_screened_nothing_reports_zero_progress() {
         let tmp = tempfile::tempdir().unwrap();
         let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
         let cfg = restart_cfg(
             creature,
-            train,
+            train.clone(),
             tmp.path().join("out"),
-            Some(tmp.path().join("learnings")),
+            Some(learnings_dir.clone()),
             Some(0),
         );
         let run = establish_run(&cfg, &losing_scorer()).unwrap();
@@ -7862,6 +7868,19 @@ mod tests {
             text.contains("progress:  0 newly checked this run"),
             "{text}"
         );
+        // A run that visited nothing files no ledger entry (Issue #153): zero
+        // visits records no work, and one such line per run would grow the
+        // shared append-only log forever.
+        assert_eq!(
+            screens_store(&learnings_dir, &train).load_visits().unwrap(),
+            Vec::new()
+        );
+        let passes = coverage_report_json(&cfg.output_dir)
+            .passes
+            .expect("the counters are still reported");
+        assert_eq!(passes.eligible_visits_run, 0, "{passes:?}");
+        assert_eq!(passes.eligible_visits_epoch, 0, "{passes:?}");
+        assert_eq!(passes.equivalent_passes_epoch, 0.0, "{passes:?}");
     }
 
     /// The contract of #63, asserted end to end: every run advances the checked
