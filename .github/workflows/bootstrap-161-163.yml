@@ -27,42 +27,22 @@ jobs:
           python3 scripts/apply-161-163.py
           python3 - <<'PY'
           from pathlib import Path
+          import re
           p = Path('ockham/src/coverage.rs')
           text = p.read_text()
-
           old = '#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]\n#[serde(rename_all = "camelCase")]\npub struct Passes {'
           new = '#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]\n#[serde(rename_all = "camelCase")]\npub struct Passes {'
           if text.count(old) != 1:
               raise SystemExit(f'expected one Passes derive, found {text.count(old)}')
           text = text.replace(old, new, 1)
-
-          for old in (
-              '    visited: HashSet<String>,\n',
-              '            visited: HashSet::new(),\n',
-              '        self.visited.insert(uuid.to_string());\n',
-          ):
+          for old in ('    visited: HashSet<String>,\n', '            visited: HashSet::new(),\n', '        self.visited.insert(uuid.to_string());\n'):
               if text.count(old) != 1:
-                  raise SystemExit(f'expected one obsolete distinct-visit fragment, found {text.count(old)}: {old!r}')
+                  raise SystemExit(f'expected one obsolete fragment, found {text.count(old)}: {old!r}')
               text = text.replace(old, '', 1)
-
-          old = '''    /// Distinct visit keys the sweep reached this run, retained for coverage
-    /// diagnostics that still care about uniqueness.
-    pub(crate) fn visited(&self) -> usize {
-        self.visited.len()
-    }
-
-    /// Distinct visit keys already checked when the run opened.
-    pub(crate) fn revisited(&self) -> usize {
-        self.visited
-            .iter()
-            .filter(|uuid| self.opening.contains(*uuid))
-            .count()
-    }
-
-'''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected obsolete distinct-visit methods once, found {text.count(old)}')
-          text = text.replace(old, '', 1)
+          pattern = r'    /// Distinct visit keys the sweep reached this run, retained for coverage\n.*?(?=    /// Every visit attempt this run, including repeats after sweep rebuilds\.)'
+          text, n = re.subn(pattern, '', text, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit(f'expected one obsolete distinct-helper block, found {n}')
           p.write_text(text)
           PY
 
