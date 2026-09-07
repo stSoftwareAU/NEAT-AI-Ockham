@@ -115,9 +115,9 @@ pub fn present_visits(creature: &CreatureExport) -> HashSet<String> {
 /// Whether `creature` still carries what the visit key `visit` names (#136).
 ///
 /// The single-visit form of [`present_visits`], for a caller checking one key
-/// against a creature that moves under it. A listed neuron wins the tie exactly
-/// as it does when a visit is proposed: a neuron whose UUID happens to be
-/// shaped like a synapse key is a neuron, not an edge.
+/// against a creature that moves under it — a replay applying cuts one at a
+/// time, say. The neuron list is consulted first and the endpoints only when it
+/// misses, so a key is parsed as an edge only where no neuron carries it.
 pub fn visit_present(creature: &CreatureExport, visit: &str) -> bool {
     if creature.neurons.iter().any(|n| n.uuid == visit) {
         return true;

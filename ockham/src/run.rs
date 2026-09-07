@@ -698,6 +698,24 @@ fn standing_pool(
 
 /// Fold one cohort's individual verdicts into the carried-winner pool.
 ///
+/// The kind to assume for `visit` when the transform that built it is not to
+/// hand (Issue #136).
+///
+/// Two places file a record for a visit key without a candidate beside it: a
+/// pool member whose sampled winner is no longer in the batch, and a member of
+/// a winning bundle. Both have always assumed the single-neuron default. A
+/// synapse visit key is not a neuron cut, so assuming one there would file an
+/// edge key into the shared cache wearing a neuron transform's label — a cut
+/// replay would rebuild as the wrong thing, which is exactly what keying the
+/// cache by visit rather than by neuron is meant to prevent.
+fn assumed_kind(visit: &str) -> CandidateKind {
+    if crate::sweep::parse_synapse_key(visit).is_some() {
+        CandidateKind::Synapse
+    } else {
+        CandidateKind::Ablation
+    }
+}
+
 /// The latest verdict wins: a uuid measured at or below `min_improvement`
 /// leaves, and an applied cut leaves because it is no longer on the creature.
 fn update_pool(
@@ -725,7 +743,7 @@ fn update_pool(
         let kind = sampled
             .iter()
             .find(|w| !w.candidate.is_group() && w.candidate.uuid == *uuid)
-            .map_or(CandidateKind::Ablation, |w| w.candidate.kind);
+            .map_or_else(|| assumed_kind(uuid), |w| w.candidate.kind);
         pool.push(BundleMember {
             uuid: uuid.clone(),
             kind,
@@ -2626,7 +2644,7 @@ fn file_full_outcome(
                 }
                 verdicts.push(Verdict {
                     uuid: uuid.as_str(),
-                    kind: crate::sweep::CandidateKind::Ablation,
+                    kind: assumed_kind(uuid),
                     outcome: Outcome::Accepted,
                     // Measured only inside the winning bundle, so its
                     // individual contribution is unknown — never guess it.
@@ -5889,6 +5907,54 @@ mod tests {
                 .iter()
                 .all(|l| l.outcome == Outcome::Accepted && l.full_delta == Some(0.3))
         );
+    }
+
+    /// Issue #136: a visit key filed without the candidate that built it keeps
+    /// the kind its key names. An edge cut recorded as an `ablation` would be a
+    /// synapse key wearing a neuron transform's label, and replay would rebuild
+    /// it as a different cut entirely.
+    #[test]
+    fn a_synapse_key_filed_without_its_candidate_keeps_the_synapse_kind() {
+        let key = crate::sweep::synapse_key("h_a", "h_b");
+        assert_eq!(assumed_kind(&key), CandidateKind::Synapse);
+        assert_eq!(
+            assumed_kind("h_a"),
+            CandidateKind::Ablation,
+            "a neuron uuid keeps the single-neuron default"
+        );
+
+        // Through the pool: no sampled winner names this visit, so the kind is
+        // read off the key.
+        let mut pool = Vec::new();
+        update_pool(&mut pool, &[], &outcome_with(&[(&key, 9e-6)], None), 1e-6);
+        assert_eq!(pool.len(), 1, "{pool:?}");
+        assert_eq!(pool[0].kind, CandidateKind::Synapse);
+
+        // And through a winning bundle's member verdicts.
+        let mut known = Vec::new();
+        let winner = crate::promote::FullCandidate {
+            stem: "b000".into(),
+            kind: "bundle",
+            uuids: vec![key.clone()],
+            score: 0.9,
+            error: 0.5,
+            complexity_penalty: 0.0,
+            after: crate::ablation::StructureSnapshot::of(&hidden_creature(&["h_a", "h_b"])),
+            delta: 0.2,
+        };
+        let mut full = outcome_with(&[], None);
+        full.winner = Some(LocalWinner {
+            candidate: winner,
+            checksum: "c".into(),
+            creature: hidden_creature(&["h_a", "h_b"]),
+        });
+        file_full_outcome(None, &mut known, &[], &full);
+        let filed = known
+            .iter()
+            .find(|l| l.uuid == key)
+            .expect("the bundle member is filed");
+        assert_eq!(filed.kind, "synapse");
+        assert_eq!(filed.outcome, Outcome::Accepted);
     }
 
     #[test]

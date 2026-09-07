@@ -191,7 +191,7 @@ impl<'a> FullConfig<'a> {
 /// earlier batch join a bundle without being scored again (Issue #56).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BundleMember {
-    /// Hidden neuron UUID.
+    /// Hidden neuron UUID, or the synapse visit key of an edge cut (#136).
     pub uuid: String,
     /// How the cut was proposed.
     pub kind: CandidateKind,

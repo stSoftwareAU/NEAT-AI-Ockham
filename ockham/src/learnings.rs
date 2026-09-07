@@ -261,7 +261,8 @@ pub enum ScreenOutcomeKind {
 /// record without failing its load.
 ///
 /// [`Self::kind`] says *what happened on the visit*: `identity`, `ablation` or
-/// `synapse` for a candidate the scorer actually screened, and [`SCREEN_KIND_SKIPPED`] or
+/// `synapse` for a candidate the scorer actually screened, and
+/// [`SCREEN_KIND_SKIPPED`] or
 /// [`SCREEN_KIND_KNOWN_FAILURE`] for a visit that produced no candidate to
 /// score (Issue #93). A visit that could not propose is still coverage — the
 /// sweep has been there and there was nothing to try — and filing it is what
@@ -952,13 +953,14 @@ pub(crate) fn confirmed_positive(l: &Learning, min_improvement: f64) -> bool {
     l.full_delta.is_some_and(|d| d > min_improvement)
 }
 
-/// One still-present uuid a previous full-corpus score spoke well of.
+/// One still-present visit a previous full-corpus score spoke well of.
 ///
 /// Either it was applied ([`Outcome::Accepted`]) or its own individual delta
 /// beat `min_improvement` while another candidate won the cohort.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfirmedWin {
-    /// Hidden neuron UUID.
+    /// Hidden neuron UUID, or the synapse visit key of the edge that was cut
+    /// (Issue #136).
     pub uuid: String,
     /// Measured individual full-corpus delta, when one was recorded.
     pub full_delta: Option<f64>,
@@ -1196,7 +1198,8 @@ pub fn history_epochs(prior: &[HistoricalLearning]) -> Vec<(String, usize)> {
 
 /// One full-corpus verdict to file.
 pub struct Verdict<'a> {
-    /// Hidden UUID.
+    /// Hidden neuron UUID, or the synapse visit key of the edge that was cut
+    /// (Issue #136).
     pub uuid: &'a str,
     /// Sweep kind.
     pub kind: CandidateKind,
@@ -2462,31 +2465,33 @@ mod tests {
         assert_eq!(filed[1].blocked_category(), None);
     }
 
-    /// Forward compatibility, pinned: a `"synapse"` record is an ordinary line
-    /// of both logs. A host that only knows hidden-neuron UUIDs loads it and
-    /// ignores it — it never fails the load for the whole fleet's history.
+    /// Forward compatibility, pinned as far as one binary can pin it: a
+    /// `"synapse"` record is an ordinary line of both logs at the versions
+    /// already in the fleet — an unknown `kind` string and an unknown uuid, not
+    /// a new enum variant or a new version — so it deserialises rather than
+    /// failing the load, and the reader that knows only hidden-neuron UUIDs
+    /// ([`crate::coverage::coverage`]) leaves it out of its figures instead of
+    /// panicking on it.
     #[test]
     fn a_synapse_record_loads_and_is_ignored_by_a_hidden_only_reader() {
         let key = crate::sweep::synapse_key("h_a", "h_b");
         // The key's separator is a control character, so the wire form escapes
         // it — exactly what a newer host writes into the shared log.
-        let key = key.replace(crate::sweep::SYNAPSE_KEY_SEPARATOR, "\\u001f");
+        let escaped = key.replace(crate::sweep::SYNAPSE_KEY_SEPARATOR, "\\u001f");
         let verdict = format!(
-            r#"{{"version":1,"uuid":"{key}","kind":"synapse","outcome":"rejected","unixSecs":9,"host":"newer"}}"#
+            r#"{{"version":1,"uuid":"{escaped}","kind":"synapse","outcome":"rejected","unixSecs":9,"host":"newer"}}"#
         );
-        let key = crate::sweep::synapse_key("h_a", "h_b");
         let l: Learning = serde_json::from_str(&verdict).unwrap();
         assert_eq!(l.uuid, key);
         assert_eq!(l.kind, "synapse");
-        let escaped = key.replace(crate::sweep::SYNAPSE_KEY_SEPARATOR, "\\u001f");
         let record = format!(
             r#"{{"version":2,"uuid":"{escaped}","kind":"synapse","outcome":"loser","unixSecs":9,"host":"newer","corpusIdentity":"corp"}}"#
         );
         let filed: Screened = serde_json::from_str(&record).unwrap();
         assert_eq!(filed.uuid, key);
 
-        // And through the store, beside a neuron record an older reader does
-        // know: both lines load, and the hidden-only coverage reader counts the
+        // And through the store, beside a neuron record every reader knows:
+        // both lines load, and the hidden-only coverage reader counts the
         // neuron alone rather than panicking on the edge.
         let dir = tempfile::tempdir().unwrap();
         let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
