@@ -150,7 +150,7 @@ pub fn establish_run(
 
     let sample = config.stats_sample_spec();
     log::info(&format!(
-        "computing hidden-neuron activation statistics ({})",
+        "computing activation statistics ({})",
         if sample.max_records == 0 {
             "full corpus".to_string()
         } else {
@@ -166,8 +166,9 @@ pub fn establish_run(
         &sample,
     )?;
     log::detail(&format!(
-        "activation stats: {} hidden neurons, {}/{} records, {}ms{}{}",
+        "activation stats: {} hidden neurons, {} inputs, {}/{} records, {}ms{}{}",
         activation.neurons.len(),
+        activation.inputs.len(),
         activation.record_count,
         activation.corpus_record_count,
         activation.scan_ms,
@@ -2794,12 +2795,13 @@ mod tests {
         assert!(cfg.output_dir.join("best.json").exists());
         assert!(run.workspace.join("incumbent.json").exists());
         assert!(run.workspace.join("baseline.json").exists());
-        // No hidden neurons, so there is nothing to measure and the scan is
-        // skipped outright rather than streaming the corpus for an empty
-        // result (#44).
-        assert_eq!(run.activation.record_count, 0);
+        // No hidden neuron to measure, but the inputs are still scanned: an
+        // `input -> output` edge is a prune candidate and a cut folds its
+        // source's mean (#134, was skipped outright under #44).
+        assert_eq!(run.activation.record_count, 2);
         assert_eq!(run.activation.corpus_record_count, 2);
         assert!(run.activation.neurons.is_empty());
+        assert_eq!(run.activation.inputs.len(), 1);
         assert_eq!(std::fs::read(&cfg.creature).unwrap(), before);
         assert_eq!(
             std::fs::read(cfg.output_dir.join("best.json")).unwrap(),
@@ -5585,6 +5587,7 @@ mod tests {
             stopped_early: false,
             scan_ms: 0,
             from_cache: false,
+            inputs: Vec::new(),
             probes: Vec::new(),
             neurons: creature
                 .neurons
