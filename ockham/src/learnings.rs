@@ -34,6 +34,14 @@
 //! a full-corpus result genuinely is a claim about one corpus, so
 //! `corpus-<identity>/` stays keyed exactly as it was.
 //!
+//! Completed **passes** ([`PassMarker`]) live in a third sibling,
+//! `<root>/passes/<host>.jsonl` (Issue #140). One marker per exhausted sweep
+//! rebuilt: the run visited every hidden neuron and rolled into re-screening
+//! the stalest first, which is the only event that means "the razor has been
+//! all the way round the creature once". Kept apart from the screen records for
+//! the same reason those are kept apart from the verdicts — a corrupt pass log
+//! must break neither — and counted per screening epoch by [`epoch_passes`].
+//!
 //! The pre-#76 `<root>/screens-<identity>/<host>.jsonl` directories are still
 //! **read** — never written — so no fleet history is lost. Every `<root>` here
 //! is whichever learnings root the caller passed, so an island's own root has
@@ -201,6 +209,17 @@ pub const SCREEN_KIND_KNOWN_FAILURE: &str = "known-failure";
 /// Stable across corpus identities on purpose — see the module docs.
 const SCREENS_DIR: &str = "screens";
 
+/// Directory holding the fleet's completed-pass markers (Issue #140).
+///
+/// A sibling of [`SCREENS_DIR`] for the same reason that is a sibling of the
+/// verdict directories: a marker is a coverage fact, and a corrupt pass log
+/// must not be able to break verdict or screen loading. Not keyed by corpus
+/// identity — the identity rides on the record, exactly as it does on a screen.
+const PASSES_DIR: &str = "passes";
+
+/// Format version of a [`PassMarker`].
+pub const PASSES_FORMAT_VERSION: u32 = 1;
+
 /// Prefix of the pre-#76 corpus-keyed screen directories.
 ///
 /// Read for their fleet history, never written: dropping them would re-create,
@@ -313,6 +332,62 @@ impl Screened {
     pub fn in_epoch(&self, corpus_identity: &str) -> bool {
         self.corpus_identity.as_deref() == Some(corpus_identity)
     }
+}
+
+/// One complete sweep over the creature, recorded where it survives the run.
+///
+/// Filed when an exhausted sweep is rebuilt (Issue #77): the run visited every
+/// hidden neuron on the incumbent and rolled into re-screening the stalest
+/// first. That event is the only thing that means "the razor has been all the
+/// way round the creature once", and until Issue #140 it lived in the host's
+/// own journal alone — so nothing fleet-facing could say whether re-screening
+/// was pass 2 or pass 20.
+///
+/// **The count is a floor for an epoch that was already running when markers
+/// started being filed.** A pass completed before this record existed left
+/// nothing behind to count, and it is never guessed at — that limitation is
+/// stated here, in the rendered artefacts' documentation and in the README,
+/// rather than papered over with a reconstruction from screen records. It
+/// cannot be reconstructed from those: a visit the razor can propose nothing
+/// for files one record per epoch by design (Issue #93), so per-uuid record
+/// counts do not rise once per pass.
+///
+/// A coverage fact only: nothing here can accept or reject a prune.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PassMarker {
+    /// Format version.
+    pub version: u32,
+    /// Corpus identity the completed pass swept — the screening epoch (#100).
+    ///
+    /// `None` only on a record written with no corpus to name, which belongs
+    /// to no epoch and is therefore never counted as one epoch's pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpus_identity: Option<String>,
+    /// Host that completed the pass (`GRQ-23`).
+    pub host: String,
+    /// Unix seconds when the pass finished.
+    pub unix_secs: u64,
+    /// 1-based pass number **within the run that filed it**.
+    ///
+    /// A run's own restart count, kept so a marker is diagnosable on its own;
+    /// the epoch total is the number of markers, never this field, because
+    /// several hosts sweep the same creature concurrently.
+    pub pass: u64,
+    /// Hidden neurons the completed pass swept.
+    pub hidden: usize,
+}
+
+/// Complete passes recorded against `corpus_identity` (Issue #140).
+///
+/// Scoped to the epoch for the same reason coverage is (#100): a pass over last
+/// week's training data says nothing about the sweep in hand. A marker naming
+/// no corpus belongs to no epoch and is counted for none.
+pub fn epoch_passes(markers: &[PassMarker], corpus_identity: &str) -> u64 {
+    markers
+        .iter()
+        .filter(|m| m.corpus_identity.as_deref() == Some(corpus_identity))
+        .count() as u64
 }
 
 /// The records of one screening epoch: those measured against this corpus (#100).
@@ -546,6 +621,47 @@ impl LearningsStore {
     /// Coverage and selection only — this is not a prune verdict.
     pub fn append_screen(&self, screened: &Screened) -> Result<(), String> {
         append_jsonl(&self.screens_dir(), &self.screens_host_path(), screened)
+    }
+
+    /// Directory holding the fleet's completed-pass markers (Issue #140).
+    pub fn passes_dir(&self) -> PathBuf {
+        self.root.join(PASSES_DIR)
+    }
+
+    /// This host's append-only pass-marker file.
+    pub fn passes_host_path(&self) -> PathBuf {
+        self.passes_dir().join(format!("{}.jsonl", self.host))
+    }
+
+    /// Load every completed-pass marker the fleet has filed (Issue #140).
+    ///
+    /// Every epoch's, not just this one's: [`epoch_passes`] narrows them to the
+    /// corpus in hand, and the history stays readable for anything that wants
+    /// it. Coverage only — a marker is not a prune verdict.
+    pub fn load_passes(&self) -> Result<Vec<PassMarker>, String> {
+        load_jsonl(&self.passes_dir(), |m: &PassMarker| {
+            m.version == PASSES_FORMAT_VERSION
+        })
+    }
+
+    /// Append one completed-pass marker to this host's file (Issue #140).
+    pub fn append_pass(&self, marker: &PassMarker) -> Result<(), String> {
+        append_jsonl(&self.passes_dir(), &self.passes_host_path(), marker)
+    }
+
+    /// The marker for a pass this host has just completed (Issue #140).
+    ///
+    /// Stamped with the store's own host and corpus identity, so a marker can
+    /// never claim an epoch the run was not screening against.
+    pub fn pass_marker(&self, pass: u64, hidden: usize) -> PassMarker {
+        PassMarker {
+            version: PASSES_FORMAT_VERSION,
+            corpus_identity: Some(self.corpus_identity.clone()),
+            host: self.host.clone(),
+            unix_secs: now_secs(),
+            pass,
+            hidden,
+        }
     }
 }
 
@@ -1549,6 +1665,117 @@ mod tests {
         format!(
             r#"{{"version":1,"uuid":"{uuid}","kind":"ablation","outcome":"loser","unixSecs":{secs},"host":"legacy"}}"#
         )
+    }
+
+    /// Issue #140: a completed pass survives the run that made it, so a later
+    /// run can say which pass it is working rather than guessing.
+    #[test]
+    fn pass_markers_round_trip_through_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        assert_eq!(store.load_passes().unwrap(), Vec::new());
+
+        let marker = store.pass_marker(1, 5013);
+        store.append_pass(&marker).unwrap();
+        assert_eq!(marker.corpus_identity.as_deref(), Some("corp"));
+        assert_eq!(marker.host, "host-a");
+        assert_eq!(marker.hidden, 5013);
+        assert_eq!(store.load_passes().unwrap(), vec![marker.clone()]);
+
+        // A second host sweeping the same creature adds its own pass: the
+        // epoch total is the fleet's, not one host's.
+        let other = LearningsStore::new(dir.path(), "corp".into(), "host-b".into());
+        other.append_pass(&other.pass_marker(1, 5013)).unwrap();
+        let all = store.load_passes().unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(epoch_passes(&all, "corp"), 2);
+    }
+
+    /// A pass is a pass over **one** corpus: extending the training data opens
+    /// a fresh epoch at pass 1, and the earlier passes stay on disk as history.
+    #[test]
+    fn pass_markers_are_counted_per_screening_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = LearningsStore::new(dir.path(), "corp-a".into(), "host-a".into());
+        for pass in 1..=3 {
+            old.append_pass(&old.pass_marker(pass, 4)).unwrap();
+        }
+        let next = LearningsStore::new(dir.path(), "corp-b".into(), "host-a".into());
+        let all = next.load_passes().unwrap();
+        assert_eq!(all.len(), 3, "every marker is still readable");
+        assert_eq!(epoch_passes(&all, "corp-a"), 3);
+        assert_eq!(
+            epoch_passes(&all, "corp-b"),
+            0,
+            "a corpus change opens a new epoch at pass 1"
+        );
+
+        next.append_pass(&next.pass_marker(1, 4)).unwrap();
+        let all = next.load_passes().unwrap();
+        assert_eq!(epoch_passes(&all, "corp-b"), 1);
+        assert_eq!(epoch_passes(&all, "corp-a"), 3, "history is not rewritten");
+    }
+
+    /// The safety claim the layout is built on, asserted rather than stated: a
+    /// corrupt pass log is loud on its own read and costs neither the verdicts
+    /// nor the screen coverage. A marker from a future format version is
+    /// **skipped**, so a newer host in a mixed-version fleet cannot turn a
+    /// forward-compatible record into a hard failure — or have it counted as a
+    /// pass whose meaning this binary does not know.
+    #[test]
+    fn a_corrupt_or_unknown_version_pass_marker_costs_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        store.append(&rec("h_a", Outcome::Accepted, 9)).unwrap();
+        store
+            .append_screen(&screen("h_b", ScreenOutcomeKind::Winner, 9))
+            .unwrap();
+        store.append_pass(&store.pass_marker(1, 4)).unwrap();
+
+        // A marker this binary's format does not know: read, skipped, and never
+        // counted as a completed pass.
+        let future = PassMarker {
+            version: PASSES_FORMAT_VERSION + 1,
+            ..store.pass_marker(2, 4)
+        };
+        store.append_pass(&future).unwrap();
+        let markers = store.load_passes().unwrap();
+        assert_eq!(markers.len(), 1, "{markers:?}");
+        assert_eq!(epoch_passes(&markers, "corp"), 1);
+
+        // A truncated line is loud on the pass log and silent everywhere else.
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(store.passes_host_path())
+            .unwrap();
+        writeln!(file, "{{not json").unwrap();
+        assert!(store.load_passes().is_err(), "corruption must be loud");
+        assert_eq!(store.load().unwrap().len(), 1, "verdicts are unaffected");
+        assert_eq!(
+            store.load_screens().unwrap().len(),
+            1,
+            "screen coverage is unaffected"
+        );
+    }
+
+    /// The markers live beside the screen records, never inside them: a pass
+    /// marker must not be readable as coverage, and neither log may break the
+    /// other.
+    #[test]
+    fn pass_markers_are_kept_apart_from_screen_records_and_verdicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        store.append_pass(&store.pass_marker(1, 2)).unwrap();
+        store
+            .append_screen(&screen("h_a", ScreenOutcomeKind::Winner, 9))
+            .unwrap();
+        store.append(&rec("h_a", Outcome::Accepted, 9)).unwrap();
+
+        assert_eq!(store.load_screens().unwrap().len(), 1);
+        assert_eq!(store.load().unwrap().len(), 1);
+        assert_eq!(store.load_passes().unwrap().len(), 1);
+        assert!(store.passes_dir().is_dir());
+        assert_ne!(store.passes_dir(), store.screens_dir());
     }
 
     #[test]
