@@ -82,7 +82,7 @@ measured_block = '''        if self.visits_run > 0 {
             }
         }
 '''
-measured_with_fallback = measured_block[:-2] + ''' else if self.visited_run > 0 {
+measured_with_fallback = measured_block[:-1] + ''' else if self.visited_run > 0 {
             out.push(format!(
                 "{:<11}{} hidden neurons visited this run · {} revisited",
                 "visits:", self.visited_run, self.revisited_run
