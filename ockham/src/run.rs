@@ -830,6 +830,10 @@ fn ockham_loop(
     // run opened (Issue #140). A floor for an epoch that predates the markers:
     // a pass that finished before they were filed left nothing to count.
     let mut epoch_passes_at_open = 0u64;
+    // Markers this run actually got onto disk. Counted apart from `restarts`
+    // because a store fault loses the marker but not the restart, and a pass
+    // the fleet cannot read back must never be published as recorded.
+    let mut passes_filed = 0u64;
     // Indexed before the epoch filter below, so the cumulative figures survive
     // a corpus change that resets current-epoch coverage to zero (Issue #102).
     let mut screen_history = crate::coverage::ScreenHistory::default();
@@ -1495,11 +1499,11 @@ fn ockham_loop(
             // (Issue #140): the journal is this host's own, and the fleet-facing
             // question is how many complete passes this epoch has had. A store
             // fault warns and loses the marker rather than the pruning.
-            if let Some(store) = store.as_ref()
-                && let Err(e) =
-                    store.append_pass(&store.pass_marker(restarts, incumbent.hidden_neurons()))
-            {
-                log::warn(&format!("pass marker not written: {e}"));
+            if let Some(store) = store.as_ref() {
+                match store.append_pass(&store.pass_marker(restarts, incumbent.hidden_neurons())) {
+                    Ok(()) => passes_filed += 1,
+                    Err(e) => log::warn(&format!("pass marker not written: {e}")),
+                }
             }
             journal::append(
                 &journal_path,
@@ -1538,12 +1542,11 @@ fn ockham_loop(
         // What the sweep reached, whatever came of it (Issue #140). Filing a
         // screen record is not the same as visiting: a revisit files nothing,
         // so counted from the records alone a run re-screening a finished
-        // creature looks idle. Group proposals are excluded for the same reason
-        // they file no screen record — what was visited is the neuron, and a
-        // group is a proposal about a neighbourhood.
+        // creature looks idle. Counted here, before the group proposals below
+        // join the batch: a group is a proposal about a neighbourhood, not a
+        // sweep visit, which is why it files no screen record either.
         for uuid in candidates
             .iter()
-            .filter(|c| !c.is_group())
             .map(|c| c.uuid.as_str())
             .chain(skips.iter().map(|s| s.uuid.as_str()))
         {
@@ -2098,12 +2101,25 @@ fn ockham_loop(
     // there is no coverage state to report, so nothing is journalled.
     if store.is_some() {
         // How many times the razor has been round the creature (Issue #140).
-        // Every restart this run filed a marker, so the epoch total is what the
-        // store held at open plus what this run completed — the same figure the
-        // next run will read back.
+        // Re-read rather than counted forward from the open: several hosts sweep
+        // the same creature at once, so the markers filed while this run worked
+        // are part of the epoch's total, and a marker this run failed to write
+        // must not be reported as though it had landed. The store is the figure
+        // the next run will read back, so it is the figure published here.
+        let completed_epoch = store
+            .and_then(|s| match s.load_passes() {
+                Ok(markers) => Some(crate::learnings::epoch_passes(&markers, &corpus.identity)),
+                Err(e) => {
+                    log::warn(&format!(
+                        "pass markers unreadable ({e}); reporting the count this run knows of"
+                    ));
+                    None
+                }
+            })
+            .unwrap_or(epoch_passes_at_open + passes_filed);
         let passes = crate::coverage::Passes::new(
             restarts,
-            epoch_passes_at_open + restarts,
+            completed_epoch,
             progress.visited(),
             progress.revisited(),
         );
@@ -6614,6 +6630,89 @@ mod tests {
             next.revisited_run > 0,
             "re-screening a finished creature is revisiting: {next:?}"
         );
+    }
+
+    /// The epoch total is the **fleet's**: several hosts sweep the same creature
+    /// at once, so the count is read back from the store at the end of the run
+    /// rather than counted forward from what it held at the start. Counting
+    /// forward would report this host's passes plus a snapshot, and would also
+    /// claim a marker a store fault had dropped.
+    #[test]
+    fn the_epoch_pass_total_counts_every_host_that_swept_this_corpus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+
+        // Another host got here first and completed two passes of its own.
+        let other =
+            LearningsStore::new(&learnings_dir, corpus_identity(&train), "GRQ-other".into());
+        for pass in 1..=2 {
+            other.append_pass(&other.pass_marker(pass, 2)).unwrap();
+        }
+        // A pass over a different corpus is a different epoch, and counts here
+        // for nothing.
+        let foreign = LearningsStore::new(
+            &learnings_dir,
+            "some-other-corpus".into(),
+            "GRQ-other".into(),
+        );
+        foreign.append_pass(&foreign.pass_marker(1, 2)).unwrap();
+
+        let cfg = restart_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(learnings_dir),
+            Some(4),
+        );
+        establish_run(&cfg, &losing_scorer()).unwrap();
+
+        let passes = coverage_report_json(&cfg.output_dir)
+            .passes
+            .expect("the artefact carries the pass counters");
+        assert_eq!(passes.sweep_restarts_run, 3, "{passes:?}");
+        assert_eq!(
+            passes.sweeps_completed_epoch, 5,
+            "two from the other host plus three from this run: {passes:?}"
+        );
+        assert_eq!(passes.current_pass, 6);
+    }
+
+    /// A marker the store could not accept is **not** reported as though it had
+    /// landed: the epoch total is what the fleet can read back, so a run cannot
+    /// publish a pass count the next run will not find. The run itself is
+    /// unharmed — a reporting cache fault must never cost pruning — and its own
+    /// restarts are still reported.
+    #[test]
+    fn a_pass_marker_the_store_refused_is_not_counted_as_a_completed_pass() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        // A directory where this host's marker file belongs: every append fails.
+        std::fs::create_dir_all(learnings_dir.join("passes").join("t.jsonl")).unwrap();
+
+        let cfg = restart_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(learnings_dir),
+            Some(4),
+        );
+        let run = establish_run(&cfg, &losing_scorer()).unwrap();
+        assert_eq!(run.stop_reason, "max-experiments", "the run still finishes");
+
+        let passes = coverage_report_json(&cfg.output_dir)
+            .passes
+            .expect("the artefact carries the pass counters");
+        assert_eq!(
+            passes.sweep_restarts_run, 3,
+            "this run's own restarts are known whatever the store did: {passes:?}"
+        );
+        assert_eq!(
+            passes.sweeps_completed_epoch, 0,
+            "an unwritten marker is not a recorded pass: {passes:?}"
+        );
+        assert_eq!(passes.current_pass, 1);
     }
 
     /// The recycling half of the restart: with every neuron already screened,

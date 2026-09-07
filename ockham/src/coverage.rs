@@ -493,10 +493,13 @@ pub struct Passes {
     /// Complete passes the fleet has recorded over the current epoch.
     ///
     /// Counted from the pass markers in the learnings store, filed under the
-    /// corpus in hand. Exact for an epoch that opened after the markers
-    /// existed; a **floor** for one already running when this shipped, because
-    /// a pass that finished before markers were persisted left no record to
-    /// count and is never guessed at (Issue #140).
+    /// corpus in hand, and re-read at the end of the run rather than counted
+    /// forward from its start: several hosts sweep the same creature at once,
+    /// so this is the **fleet's** total, and a marker a store fault lost is not
+    /// reported as though it had landed. Exact for an epoch that opened after
+    /// the markers existed; a **floor** for one already running when this
+    /// shipped, because a pass that finished before markers were persisted left
+    /// no record to count and is never guessed at (Issue #140).
     pub sweeps_completed_epoch: u64,
     /// 1-based pass currently being worked: `sweeps_completed_epoch + 1`.
     ///
@@ -509,10 +512,14 @@ pub struct Passes {
     /// on a fully screened creature it is zero however much re-screening the
     /// run did. This is the work figure that keeps moving.
     pub visited_run: usize,
-    /// How many of [`Self::visited_run`] the fleet had already checked.
+    /// How many of [`Self::visited_run`] the fleet had **already** checked when
+    /// this run opened.
     ///
     /// A revisit is useful work and is **not** new unique coverage, so it is
-    /// reported as its own number rather than folded into `progress:`.
+    /// reported as its own number rather than folded into `progress:`. Measured
+    /// against the store as the run opened, not against this run's own earlier
+    /// batches: what it answers is how much of the run's work went over ground
+    /// the fleet had already covered.
     pub revisited_run: usize,
 }
 

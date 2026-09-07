@@ -1032,7 +1032,7 @@ questions and are reported side by side, never merged (#140):
 | `sweep X/Y checked (Z% of epoch)` | How many **unique** hidden neurons has this epoch visited at least once? | `checked` / `checkable` |
 | `progress: N newly checked this run` | How many uuids did this run visit for the **first** time? | `newlyScreened` |
 | `passes: N complete this epoch · pass M in progress` | How many times has the razor been all the way **round** the creature? | `passes` |
-| `visits: N visited this run · K revisited` | How much screening work did this run actually do? | `passes.visitedRun` / `revisitedRun` |
+| `visits: N visited this run · K revisited` | How many hidden neurons did this run's sweep reach, and how many of those had the fleet already checked before it opened? | `passes.visitedRun` / `revisitedRun` |
 
 A **pass** is one complete sweep: the run visited every hidden neuron on the
 incumbent, the sweep was exhausted, and it was rebuilt to re-screen the stalest
@@ -1051,9 +1051,13 @@ counters instead.
 
 What resets what, stated rather than left to be discovered:
 
-- **an accepted cut or any other topology change resets nothing.** The counters
-  move only when a sweep is exhausted, and the epoch total is read back from
-  persisted markers rather than derived from the creature in hand;
+- **an accepted cut or any other topology change resets no counter.** The
+  counters move only when a sweep is exhausted, and the epoch total is read back
+  from persisted markers rather than derived from the creature in hand. What an
+  accept does do is rebuild the sweep over the changed creature (#96), so the
+  *part-finished* pass it interrupts is not carried over — the next marker is
+  filed when the rebuilt sweep is itself exhausted. Nothing already counted is
+  lost;
 - **a corpus change opens a new epoch at pass 1**, exactly as it opens coverage
   at `0 / hidden` (#100). The earlier epochs' markers stay on disk and stay
   readable — history is scoped, never cleared.
@@ -1065,6 +1069,14 @@ at. It cannot be reconstructed from the screen records either: a visit the razor
 can propose nothing for files one record per epoch by design (#93), so per-uuid
 record counts do not rise once per pass. The marker is persisted going forward
 instead, which makes every epoch opened after it exact.
+
+**Current-pass coverage is deliberately not reported**, for the same reason. A
+pass usually spans many runs and many hosts, and only a first-ever visit and a
+scored candidate leave a record — a revisit of a blocked neuron files nothing —
+so a `visited this pass / hidden` numerator could not be reconstructed across
+runs without over-reporting. `visits:` says what **this run** reached, which is
+measured rather than inferred; the fleet-wide question is answered by the pass
+number itself.
 
 ```mermaid
 flowchart TD
