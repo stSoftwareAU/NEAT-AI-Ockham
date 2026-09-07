@@ -243,9 +243,11 @@ fn split_mix64(state: u64) -> u64 {
 pub struct NeuronStats {
     /// Neuron UUID.
     pub uuid: String,
-    /// Index into `creature.neurons`; the input's own index for an
-    /// [`ActivationStats::inputs`] entry, which the export form leaves
-    /// implicit rather than listing (#134).
+    /// Index into `creature.neurons`.
+    ///
+    /// An [`ActivationStats::inputs`] entry is **not** indexing that list —
+    /// the export form leaves inputs implicit — so it carries the input's own
+    /// index, which is the wire number in its `input-N` uuid (#134).
     pub neuron_index: usize,
     /// Records accumulated.
     pub count: u64,
@@ -492,11 +494,11 @@ pub fn compute_activation_stats(
     let mut input_acc: Vec<Accumulator> = (0..net.num_inputs)
         .map(|i| Accumulator::new(input_uuid(i), i, i, 0))
         .collect();
-    if acc.is_empty() {
-        // No hidden neuron: the pass the input means ride along on is not paid
-        // for on its own, so nothing is measured here rather than a corpus
-        // being streamed for it. `source_value` fails closed on the input means
-        // that leaves absent (#134).
+    if acc.is_empty() && input_acc.is_empty() {
+        // Nothing to measure: streaming the corpus could only produce an empty
+        // measurement more slowly. A creature with no hidden neuron is still
+        // scanned for its inputs (#134) — its `input -> output` edges are prune
+        // candidates, and a source with no mean is one the razor cannot cut.
         return Ok(ActivationStats {
             creature_checksum: creature_checksum.to_string(),
             corpus_identity: corpus.identity.clone(),
@@ -702,8 +704,7 @@ impl ActivationStats {
 }
 
 /// How a synapse source's fold value was arrived at (#134).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceValueKind {
     /// Sampled mean post-activation — a hidden or input source.
     Mean,
@@ -787,9 +788,9 @@ fn sampled(measured: Option<&NeuronStats>) -> Option<SourceValue> {
 ///
 /// NEAT-AI-core rule 15 gives a constant no squash — it emits its bias — so
 /// `IDENTITY` is the path every valid creature takes, and it is exactly what
-/// the compiled network activates the neuron to. The declared squash is still
-/// read, so a creature that breaks that rule fails closed here instead of
-/// having its bias folded as though the squash were not there.
+/// the compiled network activates the neuron to. Validation rejects a squashed
+/// constant before it can reach here; the squash is read rather than assumed so
+/// that an aggregate or unparseable one yields no value instead of a guess.
 fn constant_value(neuron: &NeuronExport) -> Option<f64> {
     let squash = parse_squash_name(neuron.squash.as_deref().unwrap_or("IDENTITY")).ok()?;
     // An aggregate is a function of the inputs it has, not of its bias, so
@@ -1032,8 +1033,12 @@ mod tests {
         assert!(stats.record_count > 0);
     }
 
+    /// Issue #134 changed what this creature costs: with no hidden neuron there
+    /// was nothing to measure and nothing was read, but its `input -> output`
+    /// edges are prune candidates and a cut folds the source's mean — so the
+    /// inputs are measured even though the hidden population is empty.
     #[test]
-    fn a_creature_without_hidden_neurons_is_not_scanned_at_all() {
+    fn a_creature_without_hidden_neurons_is_still_scanned_for_its_inputs() {
         let (tmp, _inc, corpus) = setup(&[1.0, 2.0, 3.0], 0.0, 1.0);
         let flat = crate::fixtures::identity_creature(1, 1);
         let stats = compute_activation_stats(
@@ -1045,9 +1050,15 @@ mod tests {
             &SampleSpec::with_max_records(2),
         )
         .unwrap();
-        assert!(stats.neurons.is_empty());
-        assert_eq!(stats.record_count, 0, "nothing to measure, nothing to read");
+        assert!(stats.neurons.is_empty(), "no hidden neuron was measured");
+        assert_eq!(stats.record_count, 2, "the inputs are worth a read");
         assert_eq!(stats.corpus_record_count, 3);
+        let measured = stats.input_by_uuid("input-0").expect("input-0 is measured");
+        assert_eq!(measured.count, 2);
+        assert!(close(
+            source_value(&flat, &stats, "input-0").unwrap().value,
+            measured.mean
+        ));
     }
 
     #[test]
@@ -1091,6 +1102,43 @@ mod tests {
             stats.record_count > 1_000,
             "noisy neuron needs more records"
         );
+    }
+
+    /// Issue #134: an input mean is folded like a hidden one, so it is held to
+    /// the same convergence target — a settled hidden neuron does not end a
+    /// scan whose inputs are still moving.
+    #[test]
+    fn a_moving_input_holds_the_scan_open_past_a_settled_hidden_neuron() {
+        // weight 0 makes h1 the constant `bias` whatever the record holds, so
+        // the hidden population converges at the adaptive floor while input-0
+        // sawtooths across a wide range.
+        let values: Vec<f32> = (0..20_000).map(|i| (i % 101) as f32).collect();
+        let (tmp, inc, corpus) = setup(&values, 0.25, 0.0);
+        let spec = SampleSpec {
+            max_records: 10_000,
+            block_records: 500,
+            min_records: 1_000,
+            target_rel_se: 0.01,
+            probes: 0,
+        };
+        let stats = compute_activation_stats(
+            &inc.creature,
+            &inc.checksum,
+            tmp.path(),
+            &corpus,
+            500,
+            &spec,
+        )
+        .unwrap();
+        let hidden = stats.by_uuid("h1").expect("h1");
+        assert!(close(hidden.mean, 0.25), "h1 is constant: {}", hidden.mean);
+        assert_eq!(hidden.variance, 0.0, "h1 converged at the floor");
+        assert!(
+            stats.record_count > 1_000,
+            "a moving input needs more than the {} records the hidden neuron did",
+            stats.record_count
+        );
+        assert_eq!(stats.inputs[0].count, stats.record_count);
     }
 
     /// Issue #109: probe records are retained only when asked for, land at the
