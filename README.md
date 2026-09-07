@@ -327,9 +327,11 @@ serialises those fields — and its `uuid` is the visit key, headed as always by
 The pool is built, and the **records** are ready for it: a screen record and a
 full-corpus verdict may both be keyed by a visit key, and every still-present
 filter in the learnings cache matches a synapse key against the creature's
-synapses (#136). Epoch coverage and accepting a pure synapse win land with their
-own work, and the sweep the run builds drops the edge half until they do — a
-visit a run cannot count is one it would make again every batch forever.
+synapses (#136), and epoch coverage counts one (#137): a synapse visit is in
+the denominator, so an edge the run has not reached reads as honestly unchecked.
+Accepting a pure synapse win lands with its own work, and the sweep the run
+builds drops the edge half until it does — a visit a run cannot *act on* is one
+it would make again every batch forever.
 
 That drop happens *after* `permutationIdentity` is hashed, so it is stated
 rather than silent: `Event::Start` carries `synapse_visits_deferred`, beside the
@@ -819,9 +821,11 @@ sitting unchecked forever. The shape is unchanged, so no format version bump is
 needed and an older host reads a `synapse` record and ignores it rather than
 failing its load. The learnings cache reads those keys the same way: a standing
 rejection of an edge cut suppresses it, and a confirmed one replays. The run
-does not write them **yet** — it walks neuron visits only until the coverage
-denominator counts them, and states in `experiments.jsonl` how many edge visits
-it deferred (`synapse_visits_deferred`).
+does not write them **yet** — it walks neuron visits only until accepting a pure
+synapse win lands (#138), and states in `experiments.jsonl` how many edge visits
+it deferred (`synapse_visits_deferred`). Coverage counts them from #137
+regardless, so the epoch stays honestly open rather than reporting a sweep that
+never reached the edges.
 
 A record for a visit that scored nothing is written at **version 3**, which a
 pre-#93 binary does not accept. The fleet runs mixed versions against one shared

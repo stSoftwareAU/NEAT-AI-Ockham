@@ -1,4 +1,4 @@
-# Blocked neurons, by reason — and what to do about each (Issue #103)
+# Blocked visits, by reason — and what to do about each (Issue #103)
 
 `blocked` counts the visits the sweep has made and could propose no cut for. It
 has never meant *not pruneable forever*: it means the current proposal mechanism

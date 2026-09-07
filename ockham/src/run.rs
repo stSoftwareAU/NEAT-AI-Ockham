@@ -5006,9 +5006,11 @@ mod tests {
             .expect("synapses")
             .iter()
             .map(|s| {
+                // Named keys, so a rename fails the test loudly rather than
+                // collapsing every edge onto one empty pair.
                 (
-                    s["fromUUID"].as_str().unwrap_or_default().to_string(),
-                    s["toUUID"].as_str().unwrap_or_default().to_string(),
+                    s["fromUUID"].as_str().expect("fromUUID").to_string(),
+                    s["toUUID"].as_str().expect("toUUID").to_string(),
                 )
             })
             .collect::<HashSet<(String, String)>>()

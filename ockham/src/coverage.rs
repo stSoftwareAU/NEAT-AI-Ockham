@@ -848,25 +848,42 @@ pub fn write_files(dir: &Path, report: &CoverageReport, candidates: usize) -> Re
     std::fs::write(&path, format!("{json}\n")).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Every visit `creature` puts in the coverage denominator (Issue #137).
+/// Hidden neuron UUIDs of `creature`, in listed order.
 ///
-/// Its hidden neuron UUIDs and one [`crate::sweep::synapse_key`] per ordered
-/// endpoint pair. Deliberately narrower than [`crate::sweep::present_visits`],
-/// which also names inputs, outputs and constants: those are not swept, so a
-/// stray record for one must not raise coverage.
-fn visit_population(creature: &CreatureExport) -> HashSet<String> {
+/// The neuron half of the coverage population. Deliberately narrower than the
+/// neuron list [`crate::sweep::present_visits`] builds, which also names
+/// inputs, outputs and constants: those are not swept, so a stray record for
+/// one must not raise coverage.
+fn hidden_uuids(creature: &CreatureExport) -> Vec<&str> {
     creature
         .neurons
         .iter()
         .filter(|n| n.neuron_type == "hidden")
-        .map(|n| n.uuid.clone())
-        .chain(
-            creature
-                .synapses
-                .iter()
-                .map(|s| crate::sweep::synapse_key(&s.from_uuid, &s.to_uuid)),
-        )
+        .map(|n| n.uuid.as_str())
         .collect()
+}
+
+/// One [`crate::sweep::synapse_key`] per ordered endpoint pair (Issue #137).
+///
+/// The edge half of the coverage population, deduplicated exactly as the sweep
+/// pool builds it (#135): a repeated pair is one visit, never two.
+fn synapse_visits(creature: &CreatureExport) -> HashSet<String> {
+    creature
+        .synapses
+        .iter()
+        .map(|s| crate::sweep::synapse_key(&s.from_uuid, &s.to_uuid))
+        .collect()
+}
+
+/// Every visit `creature` puts in the coverage denominator (Issue #137).
+///
+/// The single definition of that population: [`coverage`] and
+/// [`ScreenHistory::over`] both count against it, so the current-epoch figures
+/// and the cumulative ones can never disagree about what is on the creature.
+fn visit_population(creature: &CreatureExport) -> HashSet<String> {
+    let mut population = synapse_visits(creature);
+    population.extend(hidden_uuids(creature).into_iter().map(str::to_string));
+    population
 }
 
 /// Count coverage of `creature` from `screens`; `tagged` is counted, not excluded.
@@ -887,25 +904,14 @@ pub fn coverage(
     screens: &[Screened],
     cut: usize,
 ) -> Coverage {
-    let hidden_uuids: Vec<&str> = creature
-        .neurons
-        .iter()
-        .filter(|n| n.neuron_type == "hidden")
-        .map(|n| n.uuid.as_str())
-        .collect();
+    let hidden_uuids = hidden_uuids(creature);
     let hidden = hidden_uuids.len();
     let tagged_hidden = hidden_uuids
         .iter()
         .filter(|uuid| tagged.contains(**uuid))
         .count();
     let hidden_uuids: HashSet<&str> = hidden_uuids.into_iter().collect();
-    // One visit key per ordered endpoint pair, exactly as the sweep pool builds
-    // them (#135), so a repeated pair is one visit rather than two.
-    let synapse_visits: HashSet<String> = creature
-        .synapses
-        .iter()
-        .map(|s| crate::sweep::synapse_key(&s.from_uuid, &s.to_uuid))
-        .collect();
+    let synapse_visits = synapse_visits(creature);
     let synapses = synapse_visits.len();
     // A map of the screened visit keys, so a visit screened many times — by
     // this host or another — still counts once. The value is "every record so
