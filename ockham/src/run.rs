@@ -7145,6 +7145,182 @@ mod tests {
         assert_eq!(passes.current_pass, 1);
     }
 
+    /// Issue #140, the acceptance case: a run that exhausts its sweep, restarts
+    /// it and screens on into the next pass must say so in the artefacts. The
+    /// unique percentage stops at 100% by design — the pass counters are what
+    /// tell an operator the razor is on pass 4, not stuck at the end of pass 1.
+    #[test]
+    fn the_artefacts_report_the_completed_sweeps_and_the_pass_in_progress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = restart_cfg(
+            creature,
+            train.clone(),
+            tmp.path().join("out"),
+            Some(tmp.path().join("learnings")),
+            Some(4),
+        );
+        establish_run(&cfg, &losing_scorer()).unwrap();
+
+        let restarts = journal_records(&cfg.output_dir, "sweepRestart");
+        assert_eq!(restarts.len(), 3, "{restarts:?}");
+        let report = coverage_report_json(&cfg.output_dir);
+        let passes = report
+            .passes
+            .expect("the artefact carries the pass counters");
+        assert_eq!(
+            passes.sweep_restarts_run, 3,
+            "every restart is a complete sweep: {passes:?}"
+        );
+        assert_eq!(passes.sweeps_completed_epoch, 3);
+        assert_eq!(passes.current_pass, 4, "the fourth pass is under way");
+        assert!(
+            passes.visited_run >= 2,
+            "the run visited both neurons repeatedly: {passes:?}"
+        );
+        assert!(
+            report.coverage.sweep_complete(),
+            "the unique sweep finished: {:?}",
+            report.coverage
+        );
+
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert!(
+            text.contains("passes:    3 complete this epoch · 3 this run · pass 4 in progress"),
+            "{text}"
+        );
+        assert!(text.contains("visits:"), "{text}");
+
+        // `report` reads the same counters out of the journal, so the two
+        // GRQ-facing surfaces cannot disagree about which pass this was.
+        let summary =
+            crate::report::summarise(&[cfg.output_dir.join("experiments.jsonl")]).unwrap();
+        assert_eq!(summary.passes, Some(passes));
+        assert_eq!(
+            summary.sweep_restarts, passes.sweep_restarts_run,
+            "the restart count and the pass counters are the same event"
+        );
+
+        // The markers outlive the run: a second run over the same corpus opens
+        // on pass 4 rather than starting the count again.
+        let store = screens_store(&tmp.path().join("learnings"), &train);
+        let markers = store.load_passes().unwrap();
+        assert_eq!(markers.len(), 3, "{markers:?}");
+        assert_eq!(
+            crate::learnings::epoch_passes(&markers, store.corpus_identity()),
+            3
+        );
+
+        let second = OckhamConfig {
+            output_dir: tmp.path().join("out-2"),
+            ..cfg.clone()
+        };
+        establish_run(&second, &losing_scorer()).unwrap();
+        let next = coverage_report_json(&second.output_dir)
+            .passes
+            .expect("the second run carries them too");
+        assert_eq!(
+            next.sweeps_completed_epoch, 6,
+            "the epoch total is the fleet's, not one run's: {next:?}"
+        );
+        assert_eq!(next.sweep_restarts_run, 3, "{next:?}");
+        assert_eq!(next.current_pass, 7);
+        assert_eq!(
+            coverage_report_json(&second.output_dir).newly_screened,
+            0,
+            "the second run added no unique coverage — only passes"
+        );
+        assert!(
+            next.revisited_run > 0,
+            "re-screening a finished creature is revisiting: {next:?}"
+        );
+    }
+
+    /// The epoch total is the **fleet's**: several hosts sweep the same creature
+    /// at once, so the count is read back from the store at the end of the run
+    /// rather than counted forward from what it held at the start. Counting
+    /// forward would report this host's passes plus a snapshot, and would also
+    /// claim a marker a store fault had dropped.
+    #[test]
+    fn the_epoch_pass_total_counts_every_host_that_swept_this_corpus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+
+        // Another host got here first and completed two passes of its own.
+        let other =
+            LearningsStore::new(&learnings_dir, corpus_identity(&train), "GRQ-other".into());
+        for pass in 1..=2 {
+            other.append_pass(&other.pass_marker(pass, 2)).unwrap();
+        }
+        // A pass over a different corpus is a different epoch, and counts here
+        // for nothing.
+        let foreign = LearningsStore::new(
+            &learnings_dir,
+            "some-other-corpus".into(),
+            "GRQ-other".into(),
+        );
+        foreign.append_pass(&foreign.pass_marker(1, 2)).unwrap();
+
+        let cfg = restart_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(learnings_dir),
+            Some(4),
+        );
+        establish_run(&cfg, &losing_scorer()).unwrap();
+
+        let passes = coverage_report_json(&cfg.output_dir)
+            .passes
+            .expect("the artefact carries the pass counters");
+        assert_eq!(passes.sweep_restarts_run, 3, "{passes:?}");
+        assert_eq!(
+            passes.sweeps_completed_epoch, 5,
+            "two from the other host plus three from this run: {passes:?}"
+        );
+        assert_eq!(passes.current_pass, 6);
+    }
+
+    /// A marker the store could not accept is **not** reported as though it had
+    /// landed: the epoch total is what the fleet can read back, so a run cannot
+    /// publish a pass count the next run will not find. The run itself is
+    /// unharmed — a reporting cache fault must never cost pruning — and its own
+    /// restarts are still reported.
+    #[test]
+    fn a_pass_marker_the_store_refused_is_not_counted_as_a_completed_pass() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let learnings_dir = tmp.path().join("learnings");
+        // A directory where this host's marker file belongs: every append fails.
+        std::fs::create_dir_all(learnings_dir.join("passes").join("t.jsonl")).unwrap();
+
+        let cfg = restart_cfg(
+            creature,
+            train,
+            tmp.path().join("out"),
+            Some(learnings_dir),
+            Some(4),
+        );
+        let run = establish_run(&cfg, &losing_scorer()).unwrap();
+        assert_eq!(run.stop_reason, "max-experiments", "the run still finishes");
+
+        let passes = coverage_report_json(&cfg.output_dir)
+            .passes
+            .expect("the artefact carries the pass counters");
+        assert_eq!(
+            passes.sweep_restarts_run, 3,
+            "this run's own restarts are known whatever the store did: {passes:?}"
+        );
+        assert_eq!(
+            passes.sweeps_completed_epoch, 0,
+            "an unwritten marker is not a recorded pass: {passes:?}"
+        );
+        assert_eq!(passes.current_pass, 1);
+    }
+
     /// The recycling half of the restart: with every neuron already screened,
     /// block A is empty and the fresh sweep is the stalest-first order itself.
     #[test]
