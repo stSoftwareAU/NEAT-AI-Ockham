@@ -1251,7 +1251,7 @@ into `--output-dir`, beside `best.json`:
 ```text
 🪒 Ockham neuron screening coverage
 sweep:     1204 of 5013 visits (24.0% of epoch)
-synapses:  330 of 2000 edges checked (16.5% of epoch)
+synapses:  330 of 2000 edges checked this epoch
 epoch:     corpus 6fc028da — coverage counts this corpus only
 cut:       7 this run
 unchecked: 3809 remaining this epoch (~39 runs at 100/run)
@@ -1275,7 +1275,10 @@ dropped:   12 entries over budget (est 18s/creature)
   `0 remaining — no hidden neurons to sweep`: there was nothing to finish;
 - the `synapses:` line is omitted when the creature carries no synapse visits,
   and says how much of the edge half of the `sweep:` denominator has been
-  reached (#137). The `sweep:` noun follows the same rule — `hidden` while the
+  reached (#137). It carries **no percentage of its own**: the only percentage
+  in the block is `sweep:`, over the whole visit population, so two
+  identically-suffixed percentages with different denominators can never sit one
+  above the other. The `sweep:` noun follows the same rule — `hidden` while the
   population is hidden neurons alone, `visits` once edges are in it — so an
   older `coverage.json`, which carries no synapse figures, still renders the
   block exactly as it did;

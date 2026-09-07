@@ -4889,7 +4889,7 @@ mod tests {
             "{complete}"
         );
         assert!(
-            complete.contains("synapses:  8 of 8 edges checked (100.0% of epoch)"),
+            complete.contains("synapses:  8 of 8 edges checked this epoch"),
             "{complete}"
         );
         assert!(

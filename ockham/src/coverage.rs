@@ -164,17 +164,6 @@ impl Coverage {
         (self.checked as f64 / self.checkable as f64 * 100.0).min(100.0)
     }
 
-    /// `synapses_checked / synapses * 100`; `0.0` with no synapse visits.
-    ///
-    /// The edge half of [`Self::percent`], never a substitute for it: the
-    /// headline percentage stays over the whole visit population.
-    pub fn synapse_percent(&self) -> f64 {
-        if self.synapses == 0 {
-            return 0.0;
-        }
-        (self.synapses_checked as f64 / self.synapses as f64 * 100.0).min(100.0)
-    }
-
     /// Whether the sweep has reached every visit **this epoch** (#137).
     ///
     /// Every hidden neuron *and* every synapse: one unchecked edge is enough to
@@ -230,7 +219,7 @@ impl Coverage {
     /// ```text
     /// 🪒 Ockham neuron screening coverage
     /// sweep:     1204 of 5013 visits (24.0% of epoch)
-    /// synapses:  330 of 2000 edges checked (16.5% of epoch)
+    /// synapses:  330 of 2000 edges checked this epoch
     /// epoch:     corpus 6fc028da — coverage counts this corpus only
     /// cut:       7 this run
     /// unchecked: 3809 remaining this epoch (~39 runs at 100/run)
@@ -249,8 +238,11 @@ impl Coverage {
     ///
     /// The `synapses:` line is the additive half of Issue #137: it says how
     /// much of the edge population inside the `sweep:` denominator has been
-    /// visited, and is omitted entirely when the creature carries no synapse
-    /// visits — so an older `coverage.json`, which deserialises with no synapse
+    /// visited. It carries **no percentage of its own** — the only percentage
+    /// in the block is `sweep:`, over the whole visit population, so two
+    /// identically-suffixed percentages with different denominators can never
+    /// sit one above the other. It is omitted entirely when the creature
+    /// carries no synapse visits — so an older `coverage.json`, which deserialises with no synapse
     /// figures at all, still renders the block byte for byte as it did. The
     /// `sweep:` noun follows the same rule: `hidden` while the population is
     /// hidden neurons alone, `visits` once edges are in it, because a widened
@@ -297,11 +289,8 @@ impl Coverage {
         ));
         if self.synapses > 0 {
             out.push_str(&format!(
-                "{:<11}{} of {} edges checked ({:.1}% of epoch)\n",
-                "synapses:",
-                self.synapses_checked,
-                self.synapses,
-                self.synapse_percent()
+                "{:<11}{} of {} edges checked this epoch\n",
+                "synapses:", self.synapses_checked, self.synapses
             ));
         }
         if let Some(identity) = epoch {
@@ -2551,7 +2540,7 @@ mod tests {
             concat!(
                 "🪒 Ockham neuron screening coverage\n",
                 "sweep:     2 of 12 visits (16.7% of epoch)\n",
-                "synapses:  1 of 8 edges checked (12.5% of epoch)\n",
+                "synapses:  1 of 8 edges checked this epoch\n",
                 "cut:       1 this run\n",
                 "unchecked: 10 remaining this epoch (~1 run at 100/run)"
             )
