@@ -1013,6 +1013,7 @@ fn ockham_loop(
             permutation_identity: sweep.permutation_identity.clone(),
             unchecked_first: sweep.unchecked_first,
             old_corpus_first: sweep.old_corpus_first,
+            synapse_visits_deferred: sweep.synapse_visits_deferred,
             hidden: incumbent.hidden_neurons(),
             synapses: incumbent.creature.synapses.len(),
             opening_score,
@@ -2329,15 +2330,17 @@ fn fresh_sweep(
 ) -> Sweep {
     let mut sweep = Sweep::with_ordering(creature, activation, seed, ordering);
     // The seeded pool holds every synapse visit (#135), but the run does not
-    // walk them yet: a visit the run cannot record, count or report is a visit
-    // that would be re-made every batch forever. Screen-record and
-    // learnings-cache parity is Issue #136, epoch coverage is Issue #137 and
-    // accepting a pure synapse win is Issue #138 — this one line goes when
-    // those land. Dropped here, in the one place a sweep is built, so the
-    // boundary is visible rather than scattered through the loop.
-    sweep
-        .order
-        .retain(|visit| crate::sweep::parse_synapse_key(visit).is_none());
+    // walk them yet — see `Sweep::retain_neuron_visits`. Dropped here, in the
+    // one place a sweep is built, and counted onto the sweep so `Event::Start`
+    // states it rather than leaving a permutation identity that names visits
+    // the run never made.
+    let deferred = sweep.retain_neuron_visits();
+    if deferred > 0 {
+        log::info(&format!(
+            "sweep: {deferred} synapse visit(s) deferred — record, coverage and accept parity \
+             land with #136/#137/#138 (#135)"
+        ));
+    }
     if unchecked_first {
         prefer_unchecked(&mut sweep, screens, creature);
     }
@@ -5575,6 +5578,33 @@ mod tests {
             walked.order,
             vec!["h_a".to_string()],
             "the run walks neuron visits only until #136/#137/#138 land"
+        );
+        // Never silent: the drop happens after `permutationIdentity` is hashed,
+        // so the count is carried for `Event::Start` to state.
+        assert_eq!(walked.synapse_visits_deferred, 2);
+    }
+
+    /// The deferral reaches the journal, so a run whose walk was not the
+    /// permutation its identity names still says so (#135).
+    #[test]
+    fn the_journal_states_how_many_synapse_visits_the_run_deferred() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = two_hidden_paths(tmp.path());
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: 4,
+            ..test_defaults()
+        };
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
+        assert!(
+            journal.contains(r#""synapse_visits_deferred":4"#),
+            "the run must state the visits it put aside: {journal}"
         );
     }
 

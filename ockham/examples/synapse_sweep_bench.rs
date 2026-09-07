@@ -156,6 +156,7 @@ fn main() {
     let started = Instant::now();
     let mut proposals = 0usize;
     let mut refusals = BlockedBreakdown::default();
+    let mut uncoded = 0usize;
     let mut synapses_removed = 0usize;
     let mut neurons_cascaded = 0usize;
     while !sweep.exhausted() {
@@ -170,8 +171,12 @@ fn main() {
             .iter()
             .filter(|s| parse_synapse_key(&s.uuid).is_some())
         {
-            if let Some(reason) = skip.blocked {
-                refusals.add(reason);
+            match skip.blocked {
+                Some(reason) => refusals.add(reason),
+                // Counted, never swallowed: a refusal with no reason code is
+                // not "no refusal", and the printed total has to match the
+                // visits that produced no candidate.
+                None => uncoded += 1,
             }
         }
     }
@@ -179,16 +184,24 @@ fn main() {
 
     println!(
         "synapse proposals: {proposals} built and validated, {} refused",
-        refusals.total()
+        refusals.total() + uncoded
     );
+    // "Built", never "accepted": nothing here is scored, and only the
+    // full-corpus scorer accepts.
     println!(
-        "  removed per accepted proposal: {:.2} synapse(s), {:.2} neuron(s) cascaded",
+        "  removed per proposal built: {:.2} synapse(s), {:.2} neuron(s) cascaded",
         synapses_removed as f64 / proposals.max(1) as f64,
         neurons_cascaded as f64 / proposals.max(1) as f64,
     );
     println!("refusals by reason:");
     for (reason, count) in refusals.entries() {
         println!("  {:<20} {count:>6}  {}", reason.code(), reason.describe());
+    }
+    if uncoded > 0 {
+        println!(
+            "  {:<20} {uncoded:>6}  refused with no reason code",
+            "(uncoded)"
+        );
     }
     println!(
         "cost: {visit_ms:.1}ms over {synapse_visits} synapse visit(s) — \

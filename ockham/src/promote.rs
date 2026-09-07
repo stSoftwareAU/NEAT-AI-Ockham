@@ -746,9 +746,7 @@ mod tests {
         // are about the full-scoring ladder, so they walk the neuron half of
         // the permutation and leave the synapse half (#135) to the sweep's own
         // tests — the sweep still visits it, this helper simply does not.
-        sweep
-            .order
-            .retain(|visit| crate::sweep::parse_synapse_key(visit).is_none());
+        sweep.retain_neuron_visits();
         let (batch, skips) = sweep.fill_batch(incumbent, stats, 8);
         assert!(skips.is_empty(), "{skips:?}");
         batch
@@ -1156,9 +1154,7 @@ mod tests {
         let stats = stats_for(&incumbent);
         let mut sweep = Sweep::new(&incumbent, 1);
         // `n` **neuron** winners, as before (#135) — see `candidates` above.
-        sweep
-            .order
-            .retain(|visit| crate::sweep::parse_synapse_key(visit).is_none());
+        sweep.retain_neuron_visits();
         let (batch, _) = sweep.fill_batch(&incumbent, &stats, n);
         let winners = batch
             .into_iter()

@@ -39,6 +39,15 @@ pub enum Event {
         /// with the priority off, no cache, or nothing left to prioritise.
         #[serde(default)]
         old_corpus_first: usize,
+        /// Synapse visits the run dropped before walking the sweep (Issue #135).
+        ///
+        /// Beside the two above for the same reason: the seeded pool holds a
+        /// visit per ordinary synapse and `permutation_identity` covers all of
+        /// them, so a run that walked only the neuron half is reconstructable
+        /// only if the journal says how many it put aside. `0` once #136/#137
+        /// give edge visits their records and coverage and the run walks them.
+        #[serde(default)]
+        synapse_visits_deferred: usize,
         /// Hidden neurons on the opening incumbent.
         hidden: usize,
         /// Synapses on the opening incumbent.

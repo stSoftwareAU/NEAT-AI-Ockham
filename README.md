@@ -326,7 +326,14 @@ serialises those fields — and its `uuid` is the visit key, headed as always by
 The pool is built; the **run loop** still walks neuron visits only. Screen
 records and the learnings cache, epoch coverage, and accepting and reporting a
 pure synapse win each land with their own work, and the sweep the run builds
-drops the edge half until they do.
+drops the edge half until they do — a visit a run cannot record is one it would
+make again every batch forever.
+
+That drop happens *after* `permutationIdentity` is hashed, so it is stated
+rather than silent: `Event::Start` carries `synapse_visits_deferred`, beside the
+`unchecked_first` and `old_corpus_first` fields that record the other two
+post-hash reorderings. A run whose walk was not the permutation its identity
+names always says so.
 
 ### Benchmark
 
@@ -344,7 +351,7 @@ the pool reports:
 | synapse proposals built and validated | 1129 |
 | refused | 458 — 270 `aggregate-squash`, 188 `unsafe-topology` |
 | removed per accepted proposal | 2.03 synapses, 0.89 neurons cascaded |
-| cost | 2.6ms per synapse visit, 3.6ms per proposal built |
+| cost | ~2.3–2.6ms per synapse visit, ~3.2–3.6ms per proposal built |
 
 Two thirds of the edges yield a candidate, and the average accepted proposal
 takes more than the one synapse it asked for — the cleanup cascade takes the
@@ -799,8 +806,13 @@ against:
 | Visit | Record `kind` | Version | Counted as |
 |---|---|---|---|
 | Candidate the scorer screened, winner or loser | `identity` / `ablation` / `constant` / `merge` | 2 | checked |
+| A [synapse visit](#synapse-visits) the scorer screened | `synapse` | 2 | checked |
 | Nothing could be proposed — no finite activation statistic, a candidate that would not validate | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
 | A standing full-corpus verdict suppressed the try | `known-failure` | 3 | checked |
+
+The `synapse` row is the kind the sweep produces, not one a run writes yet: the
+run walks neuron visits only, and states in `experiments.jsonl` how many edge
+visits it deferred (`synapse_visits_deferred`).
 
 A record for a visit that scored nothing is written at **version 3**, which a
 pre-#93 binary does not accept. The fleet runs mixed versions against one shared
@@ -1906,8 +1918,11 @@ scorer made of it:
 Written **after** a verdict and never read during one. A candidate the screen
 threw out is logged too, with its sampled Δ and no full Δ: it is the only
 evidence the ranker gets about what does *not* work. `kind` is always the
-sweep's — `identity`, `ablation`, `constant` or `merge`. A `merge` row also
-carries `mergedWith`, the survivor that absorbed the neuron.
+sweep's — `identity`, `ablation`, `constant`, `merge` or `synapse`. A `merge`
+row also carries `mergedWith`, the survivor that absorbed the neuron, and a
+`synapse` candidate carries `fromUuid`, `toUuid` and `weight`, the edge it cut.
+No `synapse` row is written yet: the run defers those visits, as
+[synapse visits](#synapse-visits) says.
 
 Three exclusions, each for the same reason — a row must carry only what the
 scorer actually said about that neuron:
