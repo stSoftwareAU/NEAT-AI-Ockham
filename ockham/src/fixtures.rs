@@ -163,10 +163,54 @@ pub fn hidden_identity_creature(bias: f64, weight: f64) -> CreatureExport {
     )
 }
 
+/// `input-0 → a → b → output-0` with a redundant `a → output-0` shortcut.
+///
+/// The pure-synapse-win shape (Issue #138): cutting the shortcut leaves both
+/// hidden neurons in place — `a` still feeds `b`, and `b` still feeds the
+/// output — so the candidate removes one synapse, no neuron, and 0.1 growth
+/// units. Every other visit takes a hidden neuron with it: cutting `a → b`
+/// leaves `b` with no incoming synapse so the cleanup folds it away, cutting
+/// `b → output-0` leaves `b` feeding nothing, and either neuron cut removes
+/// itself. The two edges out of `input-0` are refused outright — the razor cuts
+/// an edge only where the source is a listed neuron.
+pub fn shortcut_edge_creature() -> CreatureExport {
+    creature(
+        1,
+        1,
+        vec![
+            neuron("hidden", "a", 0.1, Some("TANH")),
+            neuron("hidden", "b", 0.2, Some("TANH")),
+            neuron("output", "output-0", 0.0, Some("IDENTITY")),
+        ],
+        vec![
+            synapse("input-0", "a", 0.7),
+            synapse("a", "b", 0.5),
+            synapse("a", "output-0", 0.3),
+            synapse("b", "output-0", 1.0),
+        ],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use neat_core::parse_creature_json;
+
+    /// The Issue #138 fixture is only a pure-synapse-win fixture while cutting
+    /// `a → output-0` leaves both hidden neurons standing. Pinned here, beside
+    /// the fixture, so a future edit to it fails loudly rather than quietly
+    /// turning three tests into something else.
+    #[test]
+    fn the_shortcut_fixture_offers_a_cut_that_removes_no_neuron() {
+        let before = shortcut_edge_creature();
+        let cut = crate::ablation::ablate_synapse(&before, "a", "output-0", 0.0)
+            .expect("the shortcut must be cuttable");
+        assert_eq!(cut.removed_neurons, vec![], "no neuron may go with it");
+        assert_eq!(cut.before.hidden_neurons, 2);
+        assert_eq!(cut.after.hidden_neurons, 2);
+        assert_eq!(cut.after.synapses, cut.before.synapses - 1);
+        assert!((cut.before.growth_units - cut.after.growth_units - 0.1).abs() < 1e-9);
+    }
 
     #[test]
     fn identity_fixture_is_forward_only() {

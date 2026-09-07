@@ -3,7 +3,7 @@
 //! One place answers "how far has Ockham got through this creature?", so the
 //! `ockham` tag, the commit description and `--report` can never disagree.
 //!
-//! Three rules make the denominator honest:
+//! Four rules make the denominator honest:
 //!
 //! - **The current incumbent is the whole world.** A screen record for a uuid
 //!   that is no longer on the creature is ignored entirely — it neither raises
@@ -20,6 +20,15 @@
 //!   *fall*, one neuron per accepted cut. The sweep files coverage for them
 //!   too, and [`Coverage::blocked`] reports how many of the checked were
 //!   blocked, so a rising percentage never claims a screen that never happened.
+//! - **A synapse is a visit too** (Issue #137). The razor cuts single edges as
+//!   well as neurons, so the population is every hidden neuron **and** every
+//!   synapse the incumbent carries, keyed by [`crate::sweep::synapse_key`].
+//!   Typed edges are in it beside ordinary ones: the sweep visits one, the
+//!   visit is blocked, and that blocked record is what makes it checked — so a
+//!   creature full of typed edges reaches a complete sweep instead of standing
+//!   permanently short of one. `checkable` stays the whole visit population, so
+//!   [`Coverage::percent`] and [`Coverage::sweep_complete`] keep their meaning
+//!   and no consumer changes its arithmetic.
 //!
 //! Evolution keeps adding hidden neurons, and each new one starts unchecked and
 //! *lowers* the percentage. That is intended: coverage is a statement about the
@@ -83,13 +92,43 @@ pub struct Coverage {
     /// Informational only (Issue #87): the count reports what is there, it
     /// never changes what Ockham may prune.
     pub tagged: usize,
-    /// Hidden neurons Ockham may try — all of them, tagged included (#74).
+    /// Visits Ockham may try — every hidden neuron **and** every synapse.
     ///
     /// The key keeps its name so `coverage.json` stays deserialisable by
-    /// anything already reading it; what changed is the definition.
+    /// anything already reading it; what changed is the definition. It widened
+    /// once for #74 (tagged neurons stopped being deducted) and again for #137:
+    /// the population is now [`Self::hidden`] + [`Self::synapses`], because the
+    /// razor cuts single edges as well as neurons and a denominator that
+    /// counted only neurons would call an epoch swept while every edge on the
+    /// creature had never been tried.
+    ///
+    /// [`Self::percent`] and [`Self::sweep_complete`] keep their arithmetic
+    /// unchanged, so no consumer has to change to read the wider figure.
     pub checkable: usize,
-    /// Hidden UUIDs with at least one screen record.
+    /// Visit keys with at least one screen record — neurons and synapses.
     pub checked: usize,
+    /// Synapse visits on the current incumbent: one per ordered edge pair.
+    ///
+    /// The edge half of [`Self::checkable`] (Issue #137). An **ordinary**
+    /// (untyped) edge is what [`crate::ablation::ablate_synapse`] can actually
+    /// cut, and a **typed** edge is counted here beside it: the sweep visits
+    /// one and files the blocked record that stops it being asked again, so
+    /// leaving typed edges out would strand a creature full of them on a sweep
+    /// that could never complete.
+    ///
+    /// `#[serde(default)]` so a pre-#137 `coverage.json` still deserialises,
+    /// reading as no synapse visits rather than as a failed parse.
+    #[serde(default)]
+    pub synapses: usize,
+    /// Synapse visit keys with at least one screen record.
+    ///
+    /// The synapse share of [`Self::checked`], reported beside the total rather
+    /// than carved out of it: `checked` stays the whole visit numerator so
+    /// [`Self::percent`] keeps its meaning.
+    ///
+    /// `#[serde(default)]` so a pre-#137 `coverage.json` still deserialises.
+    #[serde(default)]
+    pub synapses_checked: usize,
     /// Checked UUIDs the razor could never propose a cut for (Issue #93).
     ///
     /// A subset of [`Self::checked`]: every record for the uuid is a skipped
@@ -125,9 +164,13 @@ impl Coverage {
         (self.checked as f64 / self.checkable as f64 * 100.0).min(100.0)
     }
 
-    /// Whether the sweep has reached every hidden neuron **this epoch**.
+    /// Whether the sweep has reached every visit **this epoch** (#137).
     ///
-    /// A creature with no hidden neurons is not a finished sweep: there was
+    /// Every hidden neuron *and* every synapse: one unchecked edge is enough to
+    /// keep the sweep open, because an epoch declared finished with thousands
+    /// of edge visits never tried is the failure this counts against.
+    ///
+    /// A creature with nothing to visit is not a finished sweep: there was
     /// nothing to sweep, and `0/0` must never render as an achievement.
     pub fn sweep_complete(&self) -> bool {
         self.checkable > 0 && self.checked >= self.checkable
@@ -135,12 +178,14 @@ impl Coverage {
 
     /// One-line progress summary — a log line beside the run's other figures.
     ///
-    /// `sweep 1204/5013 checked (24.0% of epoch), 7 cut, 42 tagged`. The `X/Y`
-    /// denominator is [`Self::checkable`], so it always agrees with the
-    /// percentage, and `of epoch` says what the percentage is a percentage
-    /// *of* (Issue #102) — the corpus in hand, not Ockham's whole task. The
-    /// tagged clause counts neurons *inside* that denominator (#74) and is
-    /// omitted when nothing is tagged.
+    /// `sweep 1204/5013 checked (24.0% of epoch), 7 cut, 330/2000 synapses,
+    /// 42 tagged`. The `X/Y` denominator is [`Self::checkable`], so it always
+    /// agrees with the percentage, and `of epoch` says what the percentage is a
+    /// percentage *of* (Issue #102) — the corpus in hand, not Ockham's whole
+    /// task. The synapse clause names the edge half of that denominator (#137)
+    /// and the tagged clause counts neurons inside it (#74); each is omitted
+    /// when it has nothing to report, so a creature with no synapse visits
+    /// renders exactly the line it did before.
     pub fn summary(&self) -> String {
         let mut out = format!(
             "sweep {}/{} checked ({:.1}% of epoch), {} cut",
@@ -149,16 +194,22 @@ impl Coverage {
             self.percent(),
             self.cut
         );
+        if self.synapses > 0 {
+            out.push_str(&format!(
+                ", {}/{} synapses",
+                self.synapses_checked, self.synapses
+            ));
+        }
         if self.tagged > 0 {
             out.push_str(&format!(", {} tagged", self.tagged));
         }
         out
     }
 
-    /// Hidden UUIDs with no screen record yet.
+    /// Visits with no screen record yet — neurons and synapses alike (#137).
     ///
     /// Saturating: a stale record set can report more `checked` than there are
-    /// checkable neurons, and "minus three unchecked" is not a measurement.
+    /// checkable visits, and "minus three unchecked" is not a measurement.
     pub fn unchecked(&self) -> usize {
         self.checkable.saturating_sub(self.checked)
     }
@@ -167,7 +218,8 @@ impl Coverage {
     ///
     /// ```text
     /// 🪒 Ockham neuron screening coverage
-    /// sweep:     1204 of 5013 hidden (24.0% of epoch)
+    /// sweep:     1204 of 5013 visits (24.0% of epoch)
+    /// synapses:  330 of 2000 edges checked this epoch
     /// epoch:     corpus 6fc028da — coverage counts this corpus only
     /// cut:       7 this run
     /// unchecked: 3809 remaining this epoch (~39 runs at 100/run)
@@ -183,6 +235,18 @@ impl Coverage {
     /// sweep finishes, Ockham does not. `epoch` is the corpus identity the
     /// figures were measured against, rendered in [`short_epoch`] form and
     /// omitted when the caller has no screen store to name one.
+    ///
+    /// The `synapses:` line is the additive half of Issue #137: it says how
+    /// much of the edge population inside the `sweep:` denominator has been
+    /// visited. It carries **no percentage of its own** — the only percentage
+    /// in the block is `sweep:`, over the whole visit population, so two
+    /// identically-suffixed percentages with different denominators can never
+    /// sit one above the other. It is omitted entirely when the creature
+    /// carries no synapse visits — so an older `coverage.json`, which deserialises with no synapse
+    /// figures at all, still renders the block byte for byte as it did. The
+    /// `sweep:` noun follows the same rule: `hidden` while the population is
+    /// hidden neurons alone, `visits` once edges are in it, because a widened
+    /// denominator labelled `hidden` would be a wrong count, not a stable one.
     ///
     /// The `tagged:` line is omitted when nothing is tagged, and says only how
     /// many neurons carry tags — cutting one needs no declaration (Issue #87).
@@ -211,13 +275,24 @@ impl Coverage {
             format!("{unchecked} remaining this epoch{runs}")
         };
         let mut out = String::from("🪒 Ockham neuron screening coverage\n");
+        let population = if self.synapses > 0 {
+            "visits"
+        } else {
+            "hidden"
+        };
         out.push_str(&format!(
-            "{:<11}{} of {} hidden ({:.1}% of epoch)\n",
+            "{:<11}{} of {} {population} ({:.1}% of epoch)\n",
             "sweep:",
             self.checked,
             self.checkable,
             self.percent()
         ));
+        if self.synapses > 0 {
+            out.push_str(&format!(
+                "{:<11}{} of {} edges checked this epoch\n",
+                "synapses:", self.synapses_checked, self.synapses
+            ));
+        }
         if let Some(identity) = epoch {
             out.push_str(&format!(
                 "{:<11}corpus {} — coverage counts this corpus only\n",
@@ -326,14 +401,19 @@ impl ScreenProgress {
 
 /// The zero-progress warning, or `None` when the run advanced coverage.
 ///
-/// A run that adds nothing to the screened set while unchecked neurons remain
+/// A run that adds nothing to the screened set while unchecked visits remain
 /// has not done the job it exists to do, whatever else it reported. The line
 /// names both figures so a plateau is legible from one run's log rather than
 /// only by diffing two commits.
+///
+/// Both figures count **visits** since Issue #137 — hidden neurons and synapse
+/// keys alike — so a run that screened only synapses is progress and says
+/// nothing, and a run that screened nothing is measured against every visit
+/// still outstanding rather than against the neurons alone.
 pub(crate) fn zero_progress_warning(newly_screened: usize, unchecked: usize) -> Option<String> {
     (newly_screened == 0 && unchecked > 0).then(|| {
         format!(
-            "no progress: 0 newly checked uuid(s) this run while {unchecked} hidden neuron(s) \
+            "no progress: 0 newly checked visit(s) this run while {unchecked} visit(s) \
              remain unchecked"
         )
     })
@@ -606,27 +686,29 @@ impl ScreenHistory {
         }
     }
 
-    /// Cumulative coverage of `creature` — hidden UUIDs reached in any epoch.
+    /// Cumulative coverage of `creature` — visits reached in any epoch.
+    ///
+    /// The same population current coverage counts (#137): every hidden neuron
+    /// and every synapse visit key the incumbent still carries. A synapse
+    /// missing from it would leave that edge's history invisible to the
+    /// cumulative line and to unchecked-first selection, which reads the same
+    /// still-present set.
     ///
     /// Scoped to the creature in hand for the same reason current coverage is
-    /// (#37): a record for a uuid that has been pruned away describes a
+    /// (#37): a record for a visit that has been pruned away describes a
     /// creature that no longer exists. The epoch count is scoped the same way,
     /// so the rendered line cannot say "0 ever checked across 7 epochs" — an
     /// epoch that reached nothing still on the creature reached nothing to
     /// report.
     pub fn over(&self, creature: &CreatureExport) -> History {
-        let hidden: HashSet<&str> = creature
-            .neurons
-            .iter()
-            .filter(|n| n.neuron_type == "hidden")
-            .map(|n| n.uuid.as_str())
-            .collect();
+        let population = visit_population(creature);
         let mut checked: HashSet<&str> = HashSet::new();
         let mut epochs = 0;
         for uuids in self.by_epoch.values() {
             let reached = uuids
                 .iter()
-                .filter_map(|u| hidden.get(u.as_str()).copied())
+                .filter(|u| population.contains(u.as_str()))
+                .map(String::as_str)
                 .collect::<Vec<&str>>();
             if reached.is_empty() {
                 continue;
@@ -766,10 +848,53 @@ pub fn write_files(dir: &Path, report: &CoverageReport, candidates: usize) -> Re
     std::fs::write(&path, format!("{json}\n")).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Hidden neuron UUIDs of `creature`, in listed order.
+///
+/// The neuron half of the coverage population. Deliberately narrower than the
+/// neuron list [`crate::sweep::present_visits`] builds, which also names
+/// inputs, outputs and constants: those are not swept, so a stray record for
+/// one must not raise coverage.
+fn hidden_uuids(creature: &CreatureExport) -> Vec<&str> {
+    creature
+        .neurons
+        .iter()
+        .filter(|n| n.neuron_type == "hidden")
+        .map(|n| n.uuid.as_str())
+        .collect()
+}
+
+/// One [`crate::sweep::synapse_key`] per ordered endpoint pair (Issue #137).
+///
+/// The edge half of the coverage population, deduplicated exactly as the sweep
+/// pool builds it (#135): a repeated pair is one visit, never two.
+fn synapse_visits(creature: &CreatureExport) -> HashSet<String> {
+    creature
+        .synapses
+        .iter()
+        .map(|s| crate::sweep::synapse_key(&s.from_uuid, &s.to_uuid))
+        .collect()
+}
+
+/// Every visit `creature` puts in the coverage denominator (Issue #137).
+///
+/// The single definition of that population: [`coverage`] and
+/// [`ScreenHistory::over`] both count against it, so the current-epoch figures
+/// and the cumulative ones can never disagree about what is on the creature.
+fn visit_population(creature: &CreatureExport) -> HashSet<String> {
+    let mut population = synapse_visits(creature);
+    population.extend(hidden_uuids(creature).into_iter().map(str::to_string));
+    population
+}
+
 /// Count coverage of `creature` from `screens`; `tagged` is counted, not excluded.
 ///
 /// Every hidden neuron is in the denominator, tagged ones included (#74) —
-/// `tagged` only says how many of them carry tags.
+/// `tagged` only says how many of them carry tags — and since Issue #137 every
+/// synapse the incumbent carries is in it beside them, keyed by
+/// [`crate::sweep::synapse_key`]. A typed edge counts too: the sweep visits it,
+/// the visit is blocked, and the blocked record is what makes it *checked*, so
+/// a creature full of typed edges reaches a complete sweep rather than sitting
+/// permanently short of one.
 ///
 /// `cut` is the hidden neurons removed this run, carried through rather than
 /// derived, because the creature in hand no longer holds them.
@@ -779,38 +904,40 @@ pub fn coverage(
     screens: &[Screened],
     cut: usize,
 ) -> Coverage {
-    let hidden_uuids: Vec<&str> = creature
-        .neurons
-        .iter()
-        .filter(|n| n.neuron_type == "hidden")
-        .map(|n| n.uuid.as_str())
-        .collect();
+    let hidden_uuids = hidden_uuids(creature);
     let hidden = hidden_uuids.len();
     let tagged_hidden = hidden_uuids
         .iter()
         .filter(|uuid| tagged.contains(**uuid))
         .count();
     let hidden_uuids: HashSet<&str> = hidden_uuids.into_iter().collect();
-    // A map of the screened UUIDs, so a uuid screened many times — by this host
-    // or another — still counts once. The value is "every record so far was a
-    // skipped visit": one real screen anywhere in the fleet's history clears it
-    // permanently, so `blocked` never over-reports (Issue #93).
+    let synapse_visits = synapse_visits(creature);
+    let synapses = synapse_visits.len();
+    // A map of the screened visit keys, so a visit screened many times — by
+    // this host or another — still counts once. The value is "every record so
+    // far was a skipped visit": one real screen anywhere in the fleet's history
+    // clears it permanently, so `blocked` never over-reports (Issue #93).
     let mut checked: HashMap<&str, CheckedUuid<'_>> = HashMap::new();
-    for s in screens
-        .iter()
-        .filter(|s| hidden_uuids.contains(s.uuid.as_str()))
-    {
+    for s in screens.iter().filter(|s| {
+        hidden_uuids.contains(s.uuid.as_str()) || synapse_visits.contains(s.uuid.as_str())
+    }) {
         checked.entry(s.uuid.as_str()).or_default().observe(s);
     }
     let mut blocked_by_reason = BlockedBreakdown::default();
     for reason in checked.values().filter_map(CheckedUuid::blocked_reason) {
         blocked_by_reason.add(reason);
     }
+    let synapses_checked = checked
+        .keys()
+        .filter(|key| synapse_visits.contains(**key))
+        .count();
     Coverage {
         hidden,
         tagged: tagged_hidden,
-        checkable: hidden,
+        checkable: hidden + synapses,
         checked: checked.len(),
+        synapses,
+        synapses_checked,
         blocked: blocked_by_reason.total(),
         blocked_by_reason,
         cut,
@@ -882,21 +1009,40 @@ impl<'a> CheckedUuid<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures::{creature, neuron, synapse};
+    use crate::fixtures::{creature, neuron, synapse, typed_synapse};
     use crate::learnings::{SCREENS_FORMAT_VERSION, ScreenOutcomeKind};
 
-    /// Creature with `n` parallel hidden IDENTITY neurons `h0..h{n-1}`.
-    fn hidden_creature(n: usize) -> CreatureExport {
+    /// The neuron half of the visit population alone: `n` parallel hidden
+    /// IDENTITY neurons `h0..h{n-1}`, and no edges at all.
+    ///
+    /// Edge-free on purpose since Issue #137 widened the population: a test
+    /// about hidden-neuron arithmetic — a tagged neuron staying in the
+    /// denominator, a percentage, the rendered block for a creature with no
+    /// synapse visits — must measure that half and nothing else.
+    /// [`hidden_creature`] is the wired form, and the synapse tests use it.
+    fn neurons_only(n: usize) -> CreatureExport {
         let mut neurons: Vec<_> = (0..n)
             .map(|i| neuron("hidden", &format!("h{i}"), 0.0, Some("IDENTITY")))
             .collect();
         neurons.push(neuron("output", "output-0", 0.0, Some("IDENTITY")));
-        let mut synapses = Vec::new();
+        creature(1, 1, neurons, Vec::new())
+    }
+
+    /// [`neurons_only`] wired up: `input-0 → h{i} → output-0` for every neuron.
+    ///
+    /// `2n` ordered endpoint pairs, so the visit population is `n + 2n` (#137).
+    fn hidden_creature(n: usize) -> CreatureExport {
+        let mut c = neurons_only(n);
         for i in 0..n {
-            synapses.push(synapse("input-0", &format!("h{i}"), 1.0));
-            synapses.push(synapse(&format!("h{i}"), "output-0", 1.0));
+            c.synapses.push(synapse("input-0", &format!("h{i}"), 1.0));
+            c.synapses.push(synapse(&format!("h{i}"), "output-0", 1.0));
         }
-        creature(1, 1, neurons, synapses)
+        c
+    }
+
+    /// The visit key of the edge `from`→`to`, as the sweep pool builds it.
+    fn edge(from: &str, to: &str) -> String {
+        crate::sweep::synapse_key(from, to)
     }
 
     fn screen(uuid: &str, unix_secs: u64) -> Screened {
@@ -936,7 +1082,7 @@ mod tests {
     /// still reported separately.
     #[test]
     fn tagged_neurons_stay_in_the_denominator_and_are_reported_separately() {
-        let creature = hidden_creature(10);
+        let creature = neurons_only(10);
         let screens = [screen("h2", 1), screen("h3", 2), screen("h4", 3)];
         let cov = coverage(&creature, &tags(&["h0", "h1"]), &screens, 0);
         assert_eq!(cov.hidden, 10);
@@ -950,7 +1096,7 @@ mod tests {
     /// percentage can never be inflated by deducting tagged neurons.
     #[test]
     fn checkable_equals_hidden_however_many_neurons_are_tagged() {
-        let creature = hidden_creature(6);
+        let creature = neurons_only(6);
         for tagged in [
             vec![],
             vec!["h0"],
@@ -968,7 +1114,7 @@ mod tests {
     /// grows without `checked` also counting tagged UUIDs, or vice versa.
     #[test]
     fn an_all_tagged_fully_screened_creature_reports_one_hundred_percent() {
-        let creature = hidden_creature(4);
+        let creature = neurons_only(4);
         let screens = [
             screen("h0", 1),
             screen("h1", 2),
@@ -985,7 +1131,7 @@ mod tests {
 
     #[test]
     fn screens_for_departed_uuids_raise_neither_checked_nor_hidden() {
-        let creature = hidden_creature(4);
+        let creature = neurons_only(4);
         let screens = [screen("h0", 1), screen("gone-a", 2), screen("gone-b", 3)];
         let cov = coverage(&creature, &HashSet::new(), &screens, 2);
         assert_eq!(cov.hidden, 4, "pruned neurons are not on the incumbent");
@@ -995,7 +1141,7 @@ mod tests {
 
     #[test]
     fn a_uuid_screened_many_times_counts_once() {
-        let creature = hidden_creature(4);
+        let creature = neurons_only(4);
         let screens = [screen("h0", 1), screen("h0", 2), screen("h0", 3)];
         let cov = coverage(&creature, &HashSet::new(), &screens, 0);
         assert_eq!(cov.checked, 1);
@@ -1005,7 +1151,7 @@ mod tests {
     /// Rewritten for Issue #74: a screened tagged uuid raises `checked`.
     #[test]
     fn a_screened_tagged_uuid_counts_as_checked() {
-        let creature = hidden_creature(4);
+        let creature = neurons_only(4);
         let screens = [screen("h0", 1), screen("h1", 2)];
         let cov = coverage(&creature, &tags(&["h1"]), &screens, 0);
         assert_eq!(cov.checkable, 4);
@@ -1017,7 +1163,7 @@ mod tests {
     /// sweep has been there — and reported as blocked rather than as a screen.
     #[test]
     fn a_visit_with_no_candidate_is_checked_and_reported_as_blocked() {
-        let creature = hidden_creature(4);
+        let creature = neurons_only(4);
         let screens = [screen("h0", 1), visit("h1", 2), visit("h2", 3)];
         let cov = coverage(&creature, &HashSet::new(), &screens, 0);
         assert_eq!(cov.checked, 3, "every visited uuid counts as checked");
@@ -1031,7 +1177,7 @@ mod tests {
     /// of the blocked population, never a sample of it.
     #[test]
     fn the_reason_counts_sum_to_the_blocked_total() {
-        let creature = hidden_creature(6);
+        let creature = neurons_only(6);
         let screens = [
             screen("h0", 1),
             blocked("h1", 2, BlockedReason::AggregateSquash),
@@ -1059,7 +1205,7 @@ mod tests {
     /// statement about the creature in hand.
     #[test]
     fn the_freshest_record_decides_the_reason_whatever_order_it_was_read_in() {
-        let creature = hidden_creature(1);
+        let creature = neurons_only(1);
         let old = blocked("h0", 1, BlockedReason::MissingActivation);
         let new = blocked("h0", 9, BlockedReason::AggregateSquash);
         for screens in [
@@ -1077,7 +1223,7 @@ mod tests {
     /// the breakdown can never exceed the blocked total it splits.
     #[test]
     fn a_uuid_with_one_real_screen_contributes_no_reason() {
-        let creature = hidden_creature(2);
+        let creature = neurons_only(2);
         let screens = [
             blocked("h0", 1, BlockedReason::AggregateSquash),
             screen("h0", 2),
@@ -1092,7 +1238,7 @@ mod tests {
     /// attack is legible without opening the JSON.
     #[test]
     fn the_description_breaks_the_blocked_line_down_by_reason() {
-        let creature = hidden_creature(4);
+        let creature = neurons_only(4);
         let screens = [
             blocked("h0", 1, BlockedReason::AggregateSquash),
             blocked("h1", 2, BlockedReason::AggregateSquash),
@@ -1112,7 +1258,7 @@ mod tests {
 
     #[test]
     fn the_description_omits_the_reasons_line_when_nothing_is_blocked() {
-        let cov = coverage(&hidden_creature(4), &HashSet::new(), &[screen("h0", 1)], 0);
+        let cov = coverage(&neurons_only(4), &HashSet::new(), &[screen("h0", 1)], 0);
         assert!(!cov.description(100, None).contains("reasons:"));
     }
 
@@ -1120,7 +1266,7 @@ mod tests {
     /// the fleet's history says the razor could propose something for it.
     #[test]
     fn one_real_screen_clears_blocked_however_many_visits_surround_it() {
-        let creature = hidden_creature(2);
+        let creature = neurons_only(2);
         for screens in [
             vec![visit("h0", 1), screen("h0", 2)],
             vec![screen("h0", 1), visit("h0", 2)],
@@ -1134,7 +1280,7 @@ mod tests {
 
     #[test]
     fn a_blocked_uuid_no_longer_on_the_creature_counts_for_nothing() {
-        let creature = hidden_creature(2);
+        let creature = neurons_only(2);
         let screens = [visit("gone", 1), visit("h0", 2)];
         let cov = coverage(&creature, &HashSet::new(), &screens, 1);
         assert_eq!(cov.checked, 1);
@@ -1150,7 +1296,7 @@ mod tests {
     /// eligible to be visited again — while the records themselves survive.
     #[test]
     fn a_corpus_change_opens_a_new_epoch_at_zero_coverage() {
-        let creature = hidden_creature(4);
+        let creature = neurons_only(4);
         let old_epoch = vec![
             screen("h0", 1),
             screen("h1", 2),
@@ -1186,9 +1332,9 @@ mod tests {
     #[test]
     fn newly_evolved_neurons_lower_the_percentage() {
         let screens = [screen("h0", 1), screen("h1", 2)];
-        let before = coverage(&hidden_creature(2), &HashSet::new(), &screens, 0);
+        let before = coverage(&neurons_only(2), &HashSet::new(), &screens, 0);
         assert_eq!(before.percent(), 100.0);
-        let after = coverage(&hidden_creature(4), &HashSet::new(), &screens, 0);
+        let after = coverage(&neurons_only(4), &HashSet::new(), &screens, 0);
         assert_eq!(after.percent(), 50.0, "two new neurons start unchecked");
         assert!(after.percent() < before.percent());
     }
@@ -1197,7 +1343,7 @@ mod tests {
     /// now, so the zero-denominator guard is the no-hidden-neurons case below.
     #[test]
     fn nothing_checked_yields_zero_percent_without_panicking() {
-        let creature = hidden_creature(2);
+        let creature = neurons_only(2);
         let cov = coverage(&creature, &tags(&["h0", "h1"]), &[], 0);
         assert_eq!(cov.checkable, 2);
         assert_eq!(cov.checked, 0);
@@ -1211,7 +1357,7 @@ mod tests {
     /// The only zero denominator left: no hidden neurons at all.
     #[test]
     fn an_empty_denominator_yields_zero_percent_without_panicking() {
-        let cov = coverage(&hidden_creature(0), &HashSet::new(), &[], 0);
+        let cov = coverage(&neurons_only(0), &HashSet::new(), &[], 0);
         assert_eq!(cov.checkable, 0);
         assert_eq!(cov.percent(), 0.0);
         assert_eq!(cov.summary(), "sweep 0/0 checked (0.0% of epoch), 0 cut");
@@ -1225,6 +1371,8 @@ mod tests {
             tagged: 0,
             checkable: 3,
             checked: 9,
+            synapses: 0,
+            synapses_checked: 0,
             blocked: 0,
             cut: 0,
         };
@@ -1233,7 +1381,7 @@ mod tests {
 
     #[test]
     fn summary_omits_the_tagged_clause_when_nothing_is_tagged() {
-        let creature = hidden_creature(4);
+        let creature = neurons_only(4);
         let screens = [screen("h0", 1)];
         let cov = coverage(&creature, &HashSet::new(), &screens, 3);
         assert_eq!(cov.summary(), "sweep 1/4 checked (25.0% of epoch), 3 cut");
@@ -1242,7 +1390,7 @@ mod tests {
 
     #[test]
     fn summary_appends_the_tagged_clause_when_neurons_carry_tags() {
-        let creature = hidden_creature(6);
+        let creature = neurons_only(6);
         let screens = [screen("h2", 1), screen("h3", 2)];
         let cov = coverage(&creature, &tags(&["h0"]), &screens, 1);
         assert_eq!(
@@ -1259,6 +1407,8 @@ mod tests {
             tagged: 42,
             checkable: 5013,
             checked: 1204,
+            synapses: 0,
+            synapses_checked: 0,
             blocked: 0,
             cut: 7,
         }
@@ -1351,6 +1501,8 @@ mod tests {
             tagged: 0,
             checkable: 4,
             checked: 2,
+            synapses: 0,
+            synapses_checked: 0,
             blocked: 0,
             cut: 0,
         };
@@ -1381,6 +1533,8 @@ mod tests {
             tagged: 0,
             checkable: 4,
             checked: 4,
+            synapses: 0,
+            synapses_checked: 0,
             blocked: 0,
             cut: 1,
         };
@@ -1403,6 +1557,8 @@ mod tests {
             tagged: 0,
             checkable: 3,
             checked: 9,
+            synapses: 0,
+            synapses_checked: 0,
             blocked: 0,
             cut: 0,
         };
@@ -1485,7 +1641,7 @@ mod tests {
 
     #[test]
     fn the_cut_count_is_carried_through_rather_than_derived() {
-        let cov = coverage(&hidden_creature(4), &tags(&["h0"]), &[], 3);
+        let cov = coverage(&neurons_only(4), &tags(&["h0"]), &[], 3);
         assert_eq!(
             cov.cut, 3,
             "the cut neurons are no longer on the creature to count"
@@ -1738,7 +1894,7 @@ mod tests {
     /// The principle in one assertion: the **sweep** finishes, Ockham does not.
     #[test]
     fn a_finished_sweep_is_reported_as_a_complete_sweep_never_a_finished_ockham() {
-        let creature = hidden_creature(4);
+        let creature = neurons_only(4);
         let screens = [
             screen("h0", 1),
             screen("h1", 2),
@@ -1769,7 +1925,7 @@ mod tests {
     /// A creature with nothing to sweep has not completed a sweep.
     #[test]
     fn an_empty_denominator_never_claims_a_complete_sweep() {
-        let cov = coverage(&hidden_creature(0), &HashSet::new(), &[], 0);
+        let cov = coverage(&neurons_only(0), &HashSet::new(), &[], 0);
         assert!(!cov.sweep_complete());
         let block = cov.description(100, Some("6fc028da266d6c51"));
         assert!(
@@ -1783,7 +1939,7 @@ mod tests {
     /// coverage that must replace the `100%` rather than carry it forward.
     #[test]
     fn a_complete_epoch_then_a_corpus_change_reports_fresh_partial_coverage() {
-        let creature = hidden_creature(4);
+        let creature = neurons_only(4);
         let old_epoch: Vec<Screened> = ["h0", "h1", "h2", "h3"]
             .iter()
             .enumerate()
@@ -1869,7 +2025,7 @@ mod tests {
             },
             screen("gone", 4),
         ];
-        let history = ScreenHistory::new(&records).over(&hidden_creature(4));
+        let history = ScreenHistory::new(&records).over(&neurons_only(4));
         assert_eq!(
             history.checked_ever, 3,
             "the departed uuid counts for nothing"
@@ -1879,7 +2035,7 @@ mod tests {
             "an unnamed pre-#76 epoch is still an epoch"
         );
         assert!(history.has_any());
-        assert!(!ScreenHistory::default().over(&hidden_creature(4)).has_any());
+        assert!(!ScreenHistory::default().over(&neurons_only(4)).has_any());
 
         // Records filed after the index was built are history too.
         let mut index = ScreenHistory::new(&records);
@@ -1887,7 +2043,7 @@ mod tests {
             corpus_identity: Some("later".into()),
             ..screen("h3", 5)
         }]);
-        let after = index.over(&hidden_creature(4));
+        let after = index.over(&neurons_only(4));
         assert_eq!(after.checked_ever, 4);
         assert_eq!(after.epochs, 4);
     }
@@ -1908,7 +2064,7 @@ mod tests {
                 ..screen("also-departed", 3)
             },
         ];
-        let history = ScreenHistory::new(&records).over(&hidden_creature(4));
+        let history = ScreenHistory::new(&records).over(&neurons_only(4));
         assert_eq!(history.checked_ever, 1);
         assert_eq!(
             history.epochs, 1,
@@ -1917,7 +2073,7 @@ mod tests {
 
         // Nothing on this creature was ever reached: the line is omitted rather
         // than reporting epochs with no checks behind them.
-        let foreign = ScreenHistory::new(&records[1..]).over(&hidden_creature(4));
+        let foreign = ScreenHistory::new(&records[1..]).over(&neurons_only(4));
         assert_eq!(foreign.checked_ever, 0);
         assert_eq!(foreign.epochs, 0);
         assert!(!foreign.has_any());
@@ -2205,10 +2361,288 @@ mod tests {
 
     #[test]
     fn a_creature_with_no_hidden_neurons_is_complete_and_empty() {
-        let cov = coverage(&hidden_creature(0), &HashSet::new(), &[], 7);
+        let cov = coverage(&neurons_only(0), &HashSet::new(), &[], 7);
         assert_eq!(cov.hidden, 0);
         assert_eq!(cov.checkable, 0);
         assert_eq!(cov.percent(), 0.0);
         assert_eq!(cov.cut, 7);
+    }
+
+    // ---- Issue #137: synapse visits in the epoch coverage denominator ----
+
+    /// The acceptance criterion: `checkable` is the whole visit population.
+    #[test]
+    fn synapse_visits_join_the_hidden_neurons_in_the_denominator() {
+        let creature = hidden_creature(4);
+        let cov = coverage(&creature, &HashSet::new(), &[], 0);
+        assert_eq!(cov.hidden, 4);
+        assert_eq!(cov.synapses, 8, "input-0 → h{{i}} → output-0 for each of 4");
+        assert_eq!(cov.checkable, 12, "N hidden + M synapses");
+        assert_eq!(cov.checked, 0);
+        assert_eq!(cov.synapses_checked, 0);
+    }
+
+    /// A screened edge raises `checked` and the synapse figure beside it, and
+    /// the two halves always add up to the whole numerator.
+    #[test]
+    fn a_screened_edge_raises_both_the_total_and_the_synapse_count() {
+        let creature = hidden_creature(2);
+        let screens = [
+            screen("h0", 1),
+            screen(&edge("input-0", "h0"), 2),
+            screen(&edge("h1", "output-0"), 3),
+        ];
+        let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+        assert_eq!(cov.checkable, 6, "2 hidden + 4 edges");
+        assert_eq!(cov.checked, 3);
+        assert_eq!(cov.synapses_checked, 2);
+        assert_eq!(cov.percent(), 50.0);
+        assert_eq!(cov.unchecked(), 3);
+    }
+
+    /// Issue #137: a typed edge is visited, blocked, and therefore checked. A
+    /// creature whose every edge is typed must still be able to finish a sweep.
+    #[test]
+    fn a_typed_edge_is_counted_and_a_blocked_visit_checks_it() {
+        let creature = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h0", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                typed_synapse("input-0", "h0", 1.0, "condition"),
+                typed_synapse("h0", "output-0", 1.0, "positive"),
+            ],
+        );
+        let bare = coverage(&creature, &HashSet::new(), &[], 0);
+        assert_eq!(bare.synapses, 2, "a typed edge is a visit like any other");
+        assert_eq!(bare.checkable, 3);
+        assert!(!bare.sweep_complete(), "nothing has been visited yet");
+
+        let screens = [
+            blocked("h0", 1, BlockedReason::UnsafeTopology),
+            blocked(&edge("input-0", "h0"), 2, BlockedReason::UnsafeTopology),
+            blocked(&edge("h0", "output-0"), 3, BlockedReason::UnsafeTopology),
+        ];
+        let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+        assert_eq!(cov.checked, 3, "every visit was reached");
+        assert_eq!(cov.synapses_checked, 2);
+        assert_eq!(cov.blocked, 3, "and none of them could be cut");
+        assert_eq!(cov.blocked_by_reason.unsafe_topology, 3);
+        assert!(
+            cov.sweep_complete(),
+            "a typed creature reaches a complete sweep, it is not stranded"
+        );
+    }
+
+    /// Issue #137: one unchecked edge keeps the epoch open. This is the whole
+    /// point — an epoch declared finished with edges never tried is the failure.
+    #[test]
+    fn the_sweep_is_incomplete_while_a_single_synapse_visit_is_unchecked() {
+        let creature = hidden_creature(2);
+        let mut screens = vec![screen("h0", 1), screen("h1", 2)];
+        assert!(
+            !coverage(&creature, &HashSet::new(), &screens, 0).sweep_complete(),
+            "every hidden neuron checked is not a swept epoch any more"
+        );
+        for (from, to) in [
+            ("input-0", "h0"),
+            ("input-0", "h1"),
+            ("h0", "output-0"),
+            ("h1", "output-0"),
+        ] {
+            screens.push(screen(&edge(from, to), 3));
+        }
+        let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+        assert!(cov.sweep_complete(), "{cov:?}");
+        assert_eq!(cov.percent(), 100.0);
+        assert_eq!(cov.synapses_checked, cov.synapses);
+    }
+
+    /// Issue #137: the blocked breakdown is still a partition of `blocked`
+    /// when the blocked population mixes neuron and synapse visits.
+    #[test]
+    fn the_reason_counts_sum_to_blocked_across_neuron_and_synapse_visits() {
+        let creature = hidden_creature(3);
+        let screens = [
+            screen("h0", 1),
+            blocked("h1", 2, BlockedReason::AggregateSquash),
+            visit("h2", 3),
+            blocked(&edge("input-0", "h0"), 4, BlockedReason::UnsafeTopology),
+            blocked(&edge("h0", "output-0"), 5, BlockedReason::UnsafeTopology),
+            blocked(&edge("input-0", "h1"), 6, BlockedReason::MissingActivation),
+            screen(&edge("h1", "output-0"), 7),
+        ];
+        let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+        assert_eq!(cov.checked, 7);
+        assert_eq!(cov.synapses_checked, 4);
+        assert_eq!(cov.blocked, 5, "two neurons and three edges");
+        assert_eq!(
+            cov.blocked_by_reason.total(),
+            cov.blocked,
+            "the breakdown is a partition of the blocked population"
+        );
+        assert_eq!(cov.blocked_by_reason.unsafe_topology, 2);
+        assert_eq!(cov.blocked_by_reason.aggregate_squash, 1);
+        assert_eq!(cov.blocked_by_reason.missing_activation, 1);
+        assert_eq!(cov.blocked_by_reason.unrecorded, 1);
+    }
+
+    /// One visit key per **ordered pair**, exactly as the sweep pool builds it:
+    /// a repeated pair is one visit, never two entries in the denominator.
+    #[test]
+    fn a_repeated_endpoint_pair_is_one_synapse_visit() {
+        let mut creature = hidden_creature(1);
+        creature
+            .synapses
+            .push(typed_synapse("input-0", "h0", 0.5, "condition"));
+        let cov = coverage(&creature, &HashSet::new(), &[], 0);
+        assert_eq!(cov.synapses, 2, "three edges, two ordered pairs");
+        assert_eq!(cov.checkable, 3);
+    }
+
+    /// The #37 rule holds for edges too: a record for an edge the creature no
+    /// longer carries describes a creature that no longer exists.
+    #[test]
+    fn a_screen_record_for_a_departed_edge_raises_nothing() {
+        let creature = hidden_creature(1);
+        let screens = [
+            screen(&edge("h0", "gone"), 1),
+            screen(&edge("input-0", "h0"), 2),
+        ];
+        let cov = coverage(&creature, &HashSet::new(), &screens, 0);
+        assert_eq!(cov.synapses, 2);
+        assert_eq!(cov.synapses_checked, 1, "only the still-present edge");
+        assert_eq!(cov.checked, 1);
+    }
+
+    /// Issue #137: `coverage.txt` gains a line, it does not restructure one.
+    /// The no-synapse block — which is what a pre-#137 `coverage.json` renders
+    /// as — is byte-for-byte what it was.
+    #[test]
+    fn the_description_gains_a_synapse_line_and_leaves_the_rest_alone() {
+        let without = coverage(&neurons_only(4), &HashSet::new(), &[screen("h0", 1)], 1);
+        assert_eq!(
+            without.description(100, None),
+            concat!(
+                "🪒 Ockham neuron screening coverage\n",
+                "sweep:     1 of 4 hidden (25.0% of epoch)\n",
+                "cut:       1 this run\n",
+                "unchecked: 3 remaining this epoch (~1 run at 100/run)"
+            ),
+            "a creature with no synapse visits renders exactly as before"
+        );
+
+        let with = coverage(
+            &hidden_creature(4),
+            &HashSet::new(),
+            &[screen("h0", 1), screen(&edge("input-0", "h0"), 2)],
+            1,
+        );
+        assert_eq!(
+            with.description(100, None),
+            concat!(
+                "🪒 Ockham neuron screening coverage\n",
+                "sweep:     2 of 12 visits (16.7% of epoch)\n",
+                "synapses:  1 of 8 edges checked this epoch\n",
+                "cut:       1 this run\n",
+                "unchecked: 10 remaining this epoch (~1 run at 100/run)"
+            )
+        );
+    }
+
+    /// The one-line log summary names both populations too, and is unchanged
+    /// for a creature with no synapse visits.
+    #[test]
+    fn the_summary_names_both_populations() {
+        let without = coverage(&neurons_only(4), &HashSet::new(), &[screen("h0", 1)], 3);
+        assert_eq!(
+            without.summary(),
+            "sweep 1/4 checked (25.0% of epoch), 3 cut"
+        );
+        let with = coverage(
+            &hidden_creature(4),
+            &tags(&["h1"]),
+            &[screen("h0", 1), screen(&edge("input-0", "h0"), 2)],
+            3,
+        );
+        assert_eq!(
+            with.summary(),
+            "sweep 2/12 checked (16.7% of epoch), 3 cut, 1/8 synapses, 1 tagged"
+        );
+    }
+
+    /// Issue #137: an artefact written before the synapse fields existed still
+    /// deserialises, reading as zero rather than failing the parse.
+    #[test]
+    fn a_pre_137_coverage_json_reads_as_no_synapse_visits() {
+        let json = r#"{
+            "hidden": 40,
+            "tagged": 2,
+            "checkable": 40,
+            "checked": 12,
+            "blocked": 3,
+            "cut": 1
+        }"#;
+        let cov: Coverage =
+            serde_json::from_str(json).expect("a pre-#137 artefact must still read");
+        assert_eq!(cov.synapses, 0);
+        assert_eq!(cov.synapses_checked, 0);
+        assert_eq!(
+            cov.checkable, 40,
+            "the stored denominator is not re-derived"
+        );
+        assert!(!cov.description(100, None).contains("synapses:"));
+    }
+
+    /// A synapse's history must be visible to the cumulative line — and so to
+    /// unchecked-first selection, which reads the same still-present set.
+    #[test]
+    fn the_history_counts_synapse_visits_beside_hidden_neurons() {
+        let creature = hidden_creature(2);
+        let old = edge("input-0", "h0");
+        let history = ScreenHistory::new(&[
+            Screened {
+                corpus_identity: Some("corp-old".into()),
+                ..screen("h0", 1)
+            },
+            Screened {
+                corpus_identity: Some("corp-old".into()),
+                ..screen(&old, 2)
+            },
+            Screened {
+                corpus_identity: Some("corp-old".into()),
+                ..screen(&edge("h0", "gone"), 3)
+            },
+        ]);
+        let over = history.over(&creature);
+        assert_eq!(
+            over.checked_ever, 2,
+            "the neuron and the still-present edge, never the departed one"
+        );
+        assert_eq!(over.epochs, 1);
+    }
+
+    /// Issue #137: a run that only reached synapse visits has advanced
+    /// coverage, so it must not be reported as a plateau — and the figure the
+    /// warning names counts visits, not hidden neurons.
+    #[test]
+    fn a_run_that_only_checked_synapses_is_progress_not_a_plateau() {
+        let existing = vec![screen("h0", 1)];
+        let mut progress = ScreenProgress::new(&existing);
+        progress.observe("h0");
+        assert_eq!(progress.count(), 0, "re-screening the neuron is not new");
+        progress.observe(&edge("input-0", "h0"));
+        assert_eq!(progress.count(), 1, "an edge is coverage like any other");
+        assert_eq!(
+            zero_progress_warning(progress.count(), 7),
+            None,
+            "a synapse-only run advanced coverage"
+        );
+        let warning = zero_progress_warning(0, 7).expect("a plateau must still warn");
+        assert!(warning.contains("visit(s)"), "{warning}");
+        assert!(!warning.contains("hidden neuron"), "{warning}");
     }
 }

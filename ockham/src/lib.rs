@@ -18,6 +18,7 @@
 //! | corpus identity / streaming | [`corpus`] | #2 |
 //! | sampled activation statistics | [`stats`] | #3, #44 |
 //! | mean-activation ablation + cleanup | [`ablation`] | #4 |
+//! | single-synapse ablation + cleanup | [`ablation`] | #133 |
 //! | exact IDENTITY collapse | [`collapse`] | #5 |
 //! | exact canonicalisation pre-pass | [`canonical`] | #110 |
 //! | seeded sampled sweep | [`sweep`] | #6 |
@@ -106,7 +107,7 @@ pub use neighbourhood::{
     MIN_NEIGHBOURHOOD_SIZE, Neighbourhood, NeighbourhoodConfig, NeighbourhoodKind,
     propose_neighbourhoods,
 };
-pub use ordering::{Ordering, OrderingConfig, hidden_order};
+pub use ordering::{Ordering, OrderingConfig, hidden_order, synapse_order};
 pub use priority::{CompositeWeights, PriorityContext, expected_pruning_value};
 pub use promote::{FullOutcome, evaluate_full};
 pub use report::{Report, summarise};
@@ -120,11 +121,14 @@ pub use sensitivity::SensitivityIndex;
 pub use signature::{
     DiscoveryConfig, DiscoveryReport, MergeIndex, MergeProposal, discover as discover_merges,
 };
-pub use stats::{ActivationStats, NeuronProbes, NeuronStats, SampleSpec, ensure_activation_stats};
+pub use stats::{
+    ActivationStats, NeuronProbes, NeuronStats, SampleSpec, SourceValue, SourceValueKind,
+    ensure_activation_stats, source_value,
+};
 pub use substitute::{ConstantSubstitution, SubstitutionSkip, substitute_constant};
 pub use sweep::{
-    ScreenConfig, ScreenOutcome, ScreenRejection, ScreenedLoser, Sweep, SweepCandidate, draw_seed,
-    screen_batch,
+    CandidateKind, ScreenConfig, ScreenOutcome, ScreenRejection, ScreenedLoser, Sweep,
+    SweepCandidate, draw_seed, parse_synapse_key, screen_batch, synapse_key,
 };
 pub use tags::{CreatureMeta, OckhamProgress, ockham_progress_message};
 pub use telemetry::{CANDIDATE_LOG_FORMAT_VERSION, CandidateOutcome, CandidateRecord, RunStamp};

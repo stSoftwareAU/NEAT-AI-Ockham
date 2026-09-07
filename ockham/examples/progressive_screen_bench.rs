@@ -282,6 +282,9 @@ fn run_arm(name: &'static str, ladder: &ScreenLadder, workspace: &Path) -> Arm {
             stems.insert(stem.clone(), *id);
             candidates.push(SweepCandidate {
                 merged_with: None,
+                from_uuid: None,
+                to_uuid: None,
+                weight: None,
                 members: vec![format!("h_{id}")],
                 uuid: format!("h_{id}"),
                 permutation_index: i,
