@@ -20,7 +20,9 @@ use crate::incumbent::{sha256_hex, validate_creature};
 use crate::scorer::{DirectoryScorer, ScoreResult, ScorerMode};
 use crate::signature::MergeIndex;
 use crate::stats::ActivationStats;
-use crate::sweep::{CandidateKind, SampledWinner, SweepCandidate, propose, propose_group};
+use crate::sweep::{
+    CandidateKind, SampledWinner, SweepCandidate, propose, propose_group, visit_present,
+};
 
 /// Most bundle plans one cohort may carry (Issue #55).
 ///
@@ -189,7 +191,7 @@ impl<'a> FullConfig<'a> {
 /// earlier batch join a bundle without being scored again (Issue #56).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BundleMember {
-    /// Hidden neuron UUID.
+    /// Hidden neuron UUID, or the synapse visit key of an edge cut (#136).
     pub uuid: String,
     /// How the cut was proposed.
     pub kind: CandidateKind,
@@ -322,7 +324,10 @@ pub fn apply_bundle(
 ) -> Result<CreatureExport, String> {
     let mut current = incumbent.clone();
     for uuid in uuids {
-        if current.neurons.iter().all(|n| n.uuid != *uuid) {
+        // A visit key, not necessarily a neuron: a synapse win names the edge
+        // it cut (Issue #136), and checked against the neuron list alone it
+        // would read as "already gone" on a creature that still carries it.
+        if !visit_present(&current, uuid) {
             return Err(format!("bundle: `{uuid}` already gone after a prior step"));
         }
         let proposed =
@@ -333,9 +338,11 @@ pub fn apply_bundle(
     Ok(current)
 }
 
-/// Apply every UUID that still proposes, skipping the rest.
+/// Apply every visit key that still proposes, skipping the rest.
 ///
-/// Used by known-win replay: a stale cut must not abort the whole bundle.
+/// Used by known-win replay: a stale cut must not abort the whole bundle. A key
+/// is a hidden neuron UUID or a synapse visit key (Issue #136) — a confirmed
+/// edge cut replays exactly as a confirmed neuron cut does.
 pub fn apply_available(
     incumbent: &CreatureExport,
     stats: &ActivationStats,
@@ -345,7 +352,10 @@ pub fn apply_available(
     let mut current = incumbent.clone();
     let mut applied = Vec::new();
     for uuid in uuids {
-        if current.neurons.iter().all(|n| n.uuid != *uuid) {
+        // Neurons and synapse visit keys alike (Issue #136): a confirmed
+        // synapse win replays like any other, and a neuron-only presence test
+        // would drop it silently before `propose` ever saw it.
+        if !visit_present(&current, uuid) {
             continue;
         }
         match propose(&current, stats, merges, uuid) {
@@ -982,6 +992,46 @@ mod tests {
         assert!(win.candidate.delta > 1e-6);
         assert!(best.exists());
         assert_eq!(win.candidate.kind, "individual");
+    }
+
+    /// Issue #136: a confirmed synapse win replays like any other. The key
+    /// names an edge rather than a neuron, so a neuron-only presence test would
+    /// drop it before `propose` ever saw it — silently, which is the failure
+    /// this asserts against.
+    #[test]
+    fn apply_available_replays_a_confirmed_synapse_win() {
+        let incumbent = three_hidden();
+        let stats = stats_for(&incumbent);
+        let key = crate::sweep::synapse_key("h1", "output-0");
+        let (applied, creature) = apply_available(
+            &incumbent,
+            &stats,
+            MergeIndex::empty(),
+            std::slice::from_ref(&key),
+        );
+        assert_eq!(applied, vec![key.clone()]);
+        assert!(
+            !creature
+                .synapses
+                .iter()
+                .any(|s| s.from_uuid == "h1" && s.to_uuid == "output-0"),
+            "the edge the verdict named is the edge that went"
+        );
+
+        // Replayed a second time against the creature the first cut left, the
+        // same key proposes nothing: the edge has gone, so it is skipped rather
+        // than aborting the replay.
+        let (again, _) = apply_available(
+            &creature,
+            &stats,
+            MergeIndex::empty(),
+            std::slice::from_ref(&key),
+        );
+        assert!(again.is_empty(), "a cut edge is not still present");
+        assert_eq!(
+            apply_bundle(&creature, &stats, MergeIndex::empty(), &[key]).unwrap_err(),
+            "bundle: `synapse\u{1F}h1\u{1F}output-0` already gone after a prior step"
+        );
     }
 
     #[test]

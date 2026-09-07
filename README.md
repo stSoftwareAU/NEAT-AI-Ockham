@@ -323,11 +323,12 @@ carries its `fromUuid`, `toUuid` and `weight` as provenance — no other kind
 serialises those fields — and its `uuid` is the visit key, headed as always by
 `members`.
 
-The pool is built; the **run loop** still walks neuron visits only. Screen
-records and the learnings cache, epoch coverage, and accepting and reporting a
-pure synapse win each land with their own work, and the sweep the run builds
-drops the edge half until they do — a visit a run cannot record is one it would
-make again every batch forever.
+The pool is built, and the **records** are ready for it: a screen record and a
+full-corpus verdict may both be keyed by a visit key, and every still-present
+filter in the learnings cache matches a synapse key against the creature's
+synapses (#136). Epoch coverage and accepting a pure synapse win land with their
+own work, and the sweep the run builds drops the edge half until they do — a
+visit a run cannot count is one it would make again every batch forever.
 
 That drop happens *after* `permutationIdentity` is hashed, so it is stated
 rather than silent: `Event::Start` carries `synapse_visits_deferred`, beside the
@@ -810,9 +811,16 @@ against:
 | Nothing could be proposed — no finite activation statistic, a candidate that would not validate | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
 | A standing full-corpus verdict suppressed the try | `known-failure` | 3 | checked |
 
-The `synapse` row is the kind the sweep produces, not one a run writes yet: the
-run walks neuron visits only, and states in `experiments.jsonl` how many edge
-visits it deferred (`synapse_visits_deferred`).
+A synapse visit files exactly what a neuron visit files (#136): the visit key in
+`uuid`, the same four kinds, the same `blockedReason` on a blocked visit — so an
+edge the razor can never cut is recorded as looked-at-and-blocked rather than
+sitting unchecked forever. The shape is unchanged, so no format version bump is
+needed and an older host reads a `synapse` record and ignores it rather than
+failing its load. The learnings cache reads those keys the same way: a standing
+rejection of an edge cut suppresses it, and a confirmed one replays. The run
+does not write them **yet** — it walks neuron visits only until the coverage
+denominator counts them, and states in `experiments.jsonl` how many edge visits
+it deferred (`synapse_visits_deferred`).
 
 A record for a visit that scored nothing is written at **version 3**, which a
 pre-#93 binary does not accept. The fleet runs mixed versions against one shared

@@ -698,6 +698,24 @@ fn standing_pool(
 
 /// Fold one cohort's individual verdicts into the carried-winner pool.
 ///
+/// The kind to assume for `visit` when the transform that built it is not to
+/// hand (Issue #136).
+///
+/// Two places file a record for a visit key without a candidate beside it: a
+/// pool member whose sampled winner is no longer in the batch, and a member of
+/// a winning bundle. Both have always assumed the single-neuron default. A
+/// synapse visit key is not a neuron cut, so assuming one there would file an
+/// edge key into the shared cache wearing a neuron transform's label — a cut
+/// replay would rebuild as the wrong thing, which is exactly what keying the
+/// cache by visit rather than by neuron is meant to prevent.
+fn assumed_kind(visit: &str) -> CandidateKind {
+    if crate::sweep::parse_synapse_key(visit).is_some() {
+        CandidateKind::Synapse
+    } else {
+        CandidateKind::Ablation
+    }
+}
+
 /// The latest verdict wins: a uuid measured at or below `min_improvement`
 /// leaves, and an applied cut leaves because it is no longer on the creature.
 fn update_pool(
@@ -725,7 +743,7 @@ fn update_pool(
         let kind = sampled
             .iter()
             .find(|w| !w.candidate.is_group() && w.candidate.uuid == *uuid)
-            .map_or(CandidateKind::Ablation, |w| w.candidate.kind);
+            .map_or_else(|| assumed_kind(uuid), |w| w.candidate.kind);
         pool.push(BundleMember {
             uuid: uuid.clone(),
             kind,
@@ -2337,8 +2355,8 @@ fn fresh_sweep(
     let deferred = sweep.retain_neuron_visits();
     if deferred > 0 {
         log::info(&format!(
-            "sweep: {deferred} synapse visit(s) deferred — record, coverage and accept parity \
-             land with #136/#137/#138 (#135)"
+            "sweep: {deferred} synapse visit(s) deferred — records and learnings are ready \
+             (#136); coverage and accept parity land with #137/#138 (#135)"
         ));
     }
     if unchecked_first {
@@ -2626,7 +2644,7 @@ fn file_full_outcome(
                 }
                 verdicts.push(Verdict {
                     uuid: uuid.as_str(),
-                    kind: crate::sweep::CandidateKind::Ablation,
+                    kind: assumed_kind(uuid),
                     outcome: Outcome::Accepted,
                     // Measured only inside the winning bundle, so its
                     // individual contribution is unknown — never guess it.
@@ -5891,6 +5909,54 @@ mod tests {
         );
     }
 
+    /// Issue #136: a visit key filed without the candidate that built it keeps
+    /// the kind its key names. An edge cut recorded as an `ablation` would be a
+    /// synapse key wearing a neuron transform's label, and replay would rebuild
+    /// it as a different cut entirely.
+    #[test]
+    fn a_synapse_key_filed_without_its_candidate_keeps_the_synapse_kind() {
+        let key = crate::sweep::synapse_key("h_a", "h_b");
+        assert_eq!(assumed_kind(&key), CandidateKind::Synapse);
+        assert_eq!(
+            assumed_kind("h_a"),
+            CandidateKind::Ablation,
+            "a neuron uuid keeps the single-neuron default"
+        );
+
+        // Through the pool: no sampled winner names this visit, so the kind is
+        // read off the key.
+        let mut pool = Vec::new();
+        update_pool(&mut pool, &[], &outcome_with(&[(&key, 9e-6)], None), 1e-6);
+        assert_eq!(pool.len(), 1, "{pool:?}");
+        assert_eq!(pool[0].kind, CandidateKind::Synapse);
+
+        // And through a winning bundle's member verdicts.
+        let mut known = Vec::new();
+        let winner = crate::promote::FullCandidate {
+            stem: "b000".into(),
+            kind: "bundle",
+            uuids: vec![key.clone()],
+            score: 0.9,
+            error: 0.5,
+            complexity_penalty: 0.0,
+            after: crate::ablation::StructureSnapshot::of(&hidden_creature(&["h_a", "h_b"])),
+            delta: 0.2,
+        };
+        let mut full = outcome_with(&[], None);
+        full.winner = Some(LocalWinner {
+            candidate: winner,
+            checksum: "c".into(),
+            creature: hidden_creature(&["h_a", "h_b"]),
+        });
+        file_full_outcome(None, &mut known, &[], &full);
+        let filed = known
+            .iter()
+            .find(|l| l.uuid == key)
+            .expect("the bundle member is filed");
+        assert_eq!(filed.kind, "synapse");
+        assert_eq!(filed.outcome, Outcome::Accepted);
+    }
+
     #[test]
     fn the_pool_keeps_confirmed_winners_and_forgets_the_rest() {
         let mut pool = Vec::new();
@@ -7050,6 +7116,50 @@ mod tests {
         let unexplained = skip_try(&unexplained);
         assert_eq!(unexplained.kind, crate::learnings::SCREEN_KIND_SKIPPED);
         assert_eq!(unexplained.blocked_reason, Some(BlockedReason::Other));
+    }
+
+    /// Issue #136: a synapse visit files exactly what a neuron visit files —
+    /// the visit key in `uuid`, the same two kinds, the same reason — so an
+    /// edge the razor can never cut is recorded as looked-at-and-blocked
+    /// rather than sitting unchecked forever.
+    #[test]
+    fn a_synapse_visit_files_the_same_screen_record_a_neuron_visit_does() {
+        use crate::blocked::BlockedReason;
+        use crate::learnings::{ScreenOutcomeKind, file_screens};
+        use crate::sweep::{SweepSkip, synapse_key};
+        let key = synapse_key("h_a", "h_b");
+        let blocked_skip = SweepSkip {
+            uuid: key.clone(),
+            permutation_index: 0,
+            reason: "aggregate target `h_b` (`MEAN`); skipped".into(),
+            blocked: Some(BlockedReason::AggregateSquash),
+        };
+        let blocked = skip_try(&blocked_skip);
+        assert_eq!(blocked.uuid, key, "the key is what was visited");
+        assert_eq!(blocked.kind, crate::learnings::SCREEN_KIND_SKIPPED);
+        assert_eq!(blocked.blocked_reason, Some(BlockedReason::AggregateSquash));
+        assert_eq!(blocked.outcome, ScreenOutcomeKind::Loser);
+
+        let known_skip = SweepSkip {
+            uuid: key.clone(),
+            permutation_index: 1,
+            reason: crate::sweep::KNOWN_FAILURE_REASON.into(),
+            blocked: None,
+        };
+        let known = skip_try(&known_skip);
+        assert_eq!(known.uuid, key);
+        assert_eq!(known.kind, crate::learnings::SCREEN_KIND_KNOWN_FAILURE);
+
+        // And filed, the blocked record answers `blocked_category()` with the
+        // reason the visit reported.
+        let mut filed = Vec::new();
+        file_screens(None, &[blocked, known], &mut filed);
+        assert_eq!(
+            filed[0].blocked_category(),
+            Some(BlockedReason::AggregateSquash)
+        );
+        assert_eq!(filed[1].blocked_category(), None);
+        assert!(filed.iter().all(|f| f.uuid == key));
     }
 
     /// Issue #77 point 3, the sizing rules, unit by unit. A measured screen is
