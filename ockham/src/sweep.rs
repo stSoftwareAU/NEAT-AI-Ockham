@@ -1,16 +1,20 @@
 //! Seeded random sweep and sampled scorer screening (Issue #6).
 //!
-//! Hidden-neuron UUIDs are ordered once from a recorded seed and named
-//! [`crate::ordering::Ordering`] and visited **without replacement**. Each visit
-//! tries an exact IDENTITY collapse, then a correlated-neuron merge
-//! ([`crate::merge`], Issue #109) when discovery proposed a partner, then a
-//! mean-activation ablation, then a constant substitution
-//! ([`crate::substitute`], Issue #103) for the structure the ablation fails
-//! closed on. Attempts that produce nothing are skipped with a
-//! [`crate::blocked::BlockedReason`] and the batch is refilled while unvisited
-//! neurons remain.
+//! **Visits** are ordered once from a recorded seed and named
+//! [`crate::ordering::Ordering`] and made **without replacement**. A visit is a
+//! hidden-neuron UUID, or a synapse visit key naming one edge (Issue #135).
 //!
-//! An ordering only changes *when* a neuron is tested (Issue #11). Every
+//! A neuron visit tries an exact IDENTITY collapse, then a correlated-neuron
+//! merge ([`crate::merge`], Issue #109) when discovery proposed a partner, then
+//! a mean-activation ablation, then a constant substitution
+//! ([`crate::substitute`], Issue #103) for the structure the ablation fails
+//! closed on. A synapse visit resolves its source's fold value
+//! ([`crate::stats::source_value`], Issue #134) and calls
+//! [`crate::ablation::ablate_synapse`] (Issue #133). Attempts that produce
+//! nothing are skipped with a [`crate::blocked::BlockedReason`] and the batch is
+//! refilled while unvisited visits remain.
+//!
+//! An ordering only changes *when* something is tested (Issue #11). Every
 //! candidate still passes `creature.validate()`, the sampled screen and full
 //! authoritative scoring.
 //!
@@ -118,7 +122,8 @@ pub enum CandidateKind {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SweepCandidate {
-    /// Hidden neuron that was visited; the first member of a group (#108).
+    /// Hidden neuron that was visited; the first member of a group (#108), or
+    /// the synapse visit key for a [`CandidateKind::Synapse`] (#135).
     pub uuid: String,
     /// Every hidden neuron this candidate was asked to cut (Issue #108).
     ///
@@ -227,7 +232,7 @@ pub const KNOWN_FAILURE_REASON: &str = "known-failure";
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SweepSkip {
-    /// Hidden neuron UUID.
+    /// Hidden neuron UUID, or the synapse visit key (Issue #135).
     pub uuid: String,
     /// Index in the permutation.
     pub permutation_index: usize,
@@ -240,7 +245,7 @@ pub struct SweepSkip {
     pub blocked: Option<BlockedReason>,
 }
 
-/// Seeded without-replacement walk over hidden neurons.
+/// Seeded without-replacement walk over every visit (Issue #135).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sweep {
@@ -273,7 +278,7 @@ pub struct Sweep {
 }
 
 impl Sweep {
-    /// Shuffle the incumbent's hidden UUIDs with `seed` (the random control).
+    /// Shuffle the incumbent's visits with `seed` (the random control).
     pub fn new(creature: &CreatureExport, seed: u64) -> Self {
         Self::with_ordering(
             creature,
@@ -779,7 +784,7 @@ pub struct SampledWinner {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenedLoser {
-    /// Hidden neuron that was screened.
+    /// Hidden neuron that was screened, or the synapse visit key (#135).
     pub uuid: String,
     /// How the candidate was built.
     pub kind: CandidateKind,
