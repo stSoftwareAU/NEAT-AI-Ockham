@@ -128,12 +128,15 @@ pub struct Report {
     pub corpus_identity: Option<String>,
     /// Complete sweeps over the creature, and the pass in progress (#140).
     ///
-    /// Read from the same coverage record as the figures above, so `report` and
+    /// Read from the same coverage record as the figures above — the **last**
+    /// one read, exactly like the epoch beside it — so `report` and
     /// `coverage.txt` / `coverage.json` can never disagree about how many
     /// passes an epoch has had. `sweep_restarts` counts the same restarts from
     /// the `sweepRestart` records themselves and agrees with
-    /// `passes.sweep_restarts_run` for a single run's journal. `None` on a
-    /// journal with no coverage record, and on one written before #140.
+    /// `passes.sweep_restarts_run` for a single run's journal; over several
+    /// journals it is a total across runs while this stays the last snapshot.
+    /// `None` on a journal with no coverage record, and on one written before
+    /// #140.
     pub passes: Option<Passes>,
     /// Whether the sweep had reached every hidden neuron of that epoch.
     ///
@@ -460,11 +463,12 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     report.sweep_complete = Some(cov.sweep_complete());
                     // The pass counters belong to the same snapshot (#140), so
                     // `report` and `coverage.json` name the same pass for the
-                    // same run. A journal written before they existed reports
-                    // none rather than a fabricated pass 1.
-                    if let Some(passes) = passes {
-                        report.passes = Some(passes);
-                    }
+                    // same run. Replaced with the snapshot exactly as the epoch
+                    // beside them is, absence included: a later record that
+                    // carries no counters is a run that reported none, and
+                    // holding an older run's pass count beside newer coverage
+                    // figures is the disagreement this field exists to prevent.
+                    report.passes = passes;
                 }
                 Event::Budget {
                     est_ms_per_creature,
@@ -846,6 +850,39 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"sweepsCompletedEpoch\":9"), "{json}");
         assert!(json.contains("\"currentPass\":10"), "{json}");
+    }
+
+    /// The counters move with the snapshot they belong to, absence included: a
+    /// pre-#140 run summarised after a #140 one must not leave the older run's
+    /// pass count standing beside the newer coverage figures.
+    #[test]
+    fn a_later_coverage_record_without_counters_clears_the_older_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let with_passes = tmp.path().join("a.jsonl");
+        let without = tmp.path().join("b.jsonl");
+        let coverage = |passes: Option<Passes>| Event::Coverage {
+            hidden: 40,
+            tagged: 0,
+            checkable: 40,
+            checked: 12,
+            blocked: 0,
+            blocked_by_reason: BlockedBreakdown::default(),
+            cut: 0,
+            corpus_identity: Some("corp-aaaa1111".into()),
+            passes,
+        };
+        journal::append(&with_passes, &coverage(Some(Passes::new(2, 9, 40, 30)))).unwrap();
+        journal::append(&without, &coverage(None)).unwrap();
+
+        assert_eq!(
+            summarise(&[&with_passes, &without]).unwrap().passes,
+            None,
+            "the last snapshot decides, exactly as it does for the epoch"
+        );
+        assert_eq!(
+            summarise(&[&without, &with_passes]).unwrap().passes,
+            Some(Passes::new(2, 9, 40, 30))
+        );
     }
 
     /// A journal written before the counters existed reports none rather than

@@ -873,7 +873,8 @@ stalest neurons. Four rules hold it up.
   `sweepRestart` record, because a creature screened end to end is fleet news,
   not noise. Since #140 it also files a pass marker in `passes/<host>.jsonl`, so
   the count of complete sweeps outlives the run that made them — see
-  [Unique coverage is not passes](#unique-coverage-is-not-passes). Before this an exhausted sweep ended the run then and there with
+  [Unique coverage is not passes](#unique-coverage-is-not-passes). Before this
+  an exhausted sweep ended the run then and there with
   the stop reason `exhausted`: whatever budget was left went unused, and a
   creature the fleet had worked all the way through simply stopped being
   screened instead of recycling its stalest neurons.
@@ -1031,8 +1032,8 @@ questions and are reported side by side, never merged (#140):
 |---|---|---|
 | `sweep X/Y checked (Z% of epoch)` | How many **unique** hidden neurons has this epoch visited at least once? | `checked` / `checkable` |
 | `progress: N newly checked this run` | How many uuids did this run visit for the **first** time? | `newlyScreened` |
-| `passes: N complete this epoch · pass M in progress` | How many times has the razor been all the way **round** the creature? | `passes` |
-| `visits: N visited this run · K revisited` | How many hidden neurons did this run's sweep reach, and how many of those had the fleet already checked before it opened? | `passes.visitedRun` / `revisitedRun` |
+| `passes: N complete this epoch · M this run · pass K in progress` | How many times has the razor been all the way **round** the creature? | `passes` |
+| `visits: N hidden neurons visited this run · K revisited` | How many did this run's sweep reach, and how many of those had the fleet already checked? | `passes.visitedRun` / `revisitedRun` |
 
 A **pass** is one complete sweep: the run visited every hidden neuron on the
 incumbent, the sweep was exhausted, and it was rebuilt to re-screen the stalest

@@ -282,9 +282,7 @@ impl ScreenProgress {
     /// so without this the run's own re-screening work is invisible to every
     /// reporting surface, and a fully covered creature reads as idle.
     pub(crate) fn visit(&mut self, uuid: &str) {
-        if !self.visited.contains(uuid) {
-            self.visited.insert(uuid.to_string());
-        }
+        self.visited.insert(uuid.to_string());
     }
 
     /// Distinct hidden UUIDs the sweep reached this run, revisits included.

@@ -1716,6 +1716,48 @@ mod tests {
         assert_eq!(epoch_passes(&all, "corp-a"), 3, "history is not rewritten");
     }
 
+    /// The safety claim the layout is built on, asserted rather than stated: a
+    /// corrupt pass log is loud on its own read and costs neither the verdicts
+    /// nor the screen coverage. A marker from a future format version is
+    /// **skipped**, so a newer host in a mixed-version fleet cannot turn a
+    /// forward-compatible record into a hard failure — or have it counted as a
+    /// pass whose meaning this binary does not know.
+    #[test]
+    fn a_corrupt_or_unknown_version_pass_marker_costs_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        store.append(&rec("h_a", Outcome::Accepted, 9)).unwrap();
+        store
+            .append_screen(&screen("h_b", ScreenOutcomeKind::Winner, 9))
+            .unwrap();
+        store.append_pass(&store.pass_marker(1, 4)).unwrap();
+
+        // A marker this binary's format does not know: read, skipped, and never
+        // counted as a completed pass.
+        let future = PassMarker {
+            version: PASSES_FORMAT_VERSION + 1,
+            ..store.pass_marker(2, 4)
+        };
+        store.append_pass(&future).unwrap();
+        let markers = store.load_passes().unwrap();
+        assert_eq!(markers.len(), 1, "{markers:?}");
+        assert_eq!(epoch_passes(&markers, "corp"), 1);
+
+        // A truncated line is loud on the pass log and silent everywhere else.
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(store.passes_host_path())
+            .unwrap();
+        writeln!(file, "{{not json").unwrap();
+        assert!(store.load_passes().is_err(), "corruption must be loud");
+        assert_eq!(store.load().unwrap().len(), 1, "verdicts are unaffected");
+        assert_eq!(
+            store.load_screens().unwrap().len(),
+            1,
+            "screen coverage is unaffected"
+        );
+    }
+
     /// The markers live beside the screen records, never inside them: a pass
     /// marker must not be readable as coverage, and neither log may break the
     /// other.
