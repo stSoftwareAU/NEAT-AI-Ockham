@@ -210,6 +210,18 @@ pub enum Event {
         /// `None` on a record written before this field existed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         passes: Option<crate::coverage::Passes>,
+        /// Screening throughput, its funnel and the rescan ETAs (Issue #162).
+        ///
+        /// Journalled beside the coverage figures for the same reason the pass
+        /// counters are: `report` reads the snapshot `coverage.json` carries,
+        /// so the two surfaces cannot disagree about a rate. `None` on a record
+        /// written before this field existed.
+        ///
+        /// Boxed so one wide record cannot set the size of every event in the
+        /// append-only journal: serde sees straight through the box, so the
+        /// written line is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        throughput: Option<Box<crate::throughput::Throughput>>,
     },
     /// Full-corpus cohort result.
     Full {

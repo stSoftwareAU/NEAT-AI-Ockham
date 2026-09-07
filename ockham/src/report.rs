@@ -147,6 +147,16 @@ pub struct Report {
     /// `None` on a journal with no coverage record, and on one written before
     /// #140.
     pub passes: Option<Passes>,
+    /// Screening throughput, its funnel and the rescan ETAs (Issue #162).
+    ///
+    /// Read from the same coverage record as the figures above, so `report`,
+    /// `coverage.json` and `coverage.txt` quote the same rates. Replaced by
+    /// each later snapshot exactly as the pass counters beside it are, absence
+    /// included: a run that measured no throughput reported none, and holding
+    /// an older run's rate beside newer coverage figures is the disagreement
+    /// this field exists to prevent. `None` on a journal with no coverage
+    /// record, and on one written before #162.
+    pub throughput: Option<crate::throughput::Throughput>,
     /// Whether the sweep had reached every hidden neuron of that epoch.
     ///
     /// Derived from the same record as the percentage, so `report` can never
@@ -332,6 +342,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         corpus_identity: None,
         sweep_complete: None,
         passes: None,
+        throughput: None,
         winners: None,
         est_ms_per_creature: None,
         budget_dropped: 0,
@@ -470,6 +481,7 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     cut,
                     corpus_identity,
                     passes,
+                    throughput,
                     ..
                 } => {
                     // Coverage is a snapshot of one incumbent, not a total:
@@ -531,6 +543,9 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                     // holding an older run's pass count beside newer coverage
                     // figures is the disagreement this field exists to prevent.
                     report.passes = passes;
+                    // The rates belong to the same snapshot (#162) — replaced
+                    // with it, absence included, for the same reason.
+                    report.throughput = throughput.map(|t| *t);
                 }
                 Event::Budget {
                     est_ms_per_creature,
@@ -906,6 +921,7 @@ mod tests {
                 cut: 1,
                 corpus_identity: Some("corp-aaaa1111".into()),
                 passes: Some(passes),
+                throughput: None,
             },
         )
         .unwrap();
@@ -937,6 +953,7 @@ mod tests {
             cut: 0,
             corpus_identity: Some("corp-aaaa1111".into()),
             passes,
+            throughput: None,
         };
         journal::append(&with_passes, &coverage(Some(Passes::new(2, 9, 40, 30)))).unwrap();
         journal::append(&without, &coverage(None)).unwrap();
@@ -1409,6 +1426,7 @@ mod tests {
                 cut: 0,
                 corpus_identity: None,
                 passes: None,
+                throughput: None,
             },
         )
         .unwrap();
@@ -1427,6 +1445,7 @@ mod tests {
                 cut: 2,
                 corpus_identity: None,
                 passes: None,
+                throughput: None,
             },
         )
         .unwrap();
@@ -1458,6 +1477,7 @@ mod tests {
                 cut: 7,
                 corpus_identity: None,
                 passes: None,
+                throughput: None,
             },
         )
         .unwrap();
@@ -1496,6 +1516,7 @@ mod tests {
                 cut: 7,
                 corpus_identity: None,
                 passes: None,
+                throughput: None,
             },
         )
         .unwrap();
@@ -1555,6 +1576,7 @@ mod tests {
                 cut: 0,
                 corpus_identity: Some("corp-aaaa1111".into()),
                 passes: None,
+                throughput: None,
             },
         )
         .unwrap();
@@ -1602,6 +1624,7 @@ mod tests {
                 cut: 0,
                 corpus_identity: Some(identity.into()),
                 passes: None,
+                throughput: None,
             };
         // Two runs under the old corpus, then one under the new: the first
         // epoch keeps its freshest figures rather than a second row.
@@ -1690,6 +1713,7 @@ mod tests {
                 cut: 1,
                 corpus_identity: Some("corp-aaaa1111".into()),
                 passes: None,
+                throughput: None,
             },
         )
         .unwrap();
@@ -1714,6 +1738,7 @@ mod tests {
                 cut: 0,
                 corpus_identity: Some("corp-bbbb2222".into()),
                 passes: None,
+                throughput: None,
             },
         )
         .unwrap();

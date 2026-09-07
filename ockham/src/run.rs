@@ -1013,6 +1013,10 @@ fn ockham_loop(
     // the ordering strategies — after the identity above is already fixed.
     let unchecked_first = config.unchecked_first_enabled();
     let mut progress = crate::coverage::ScreenProgress::new(&screens);
+    // How far each visit got, stage by stage (Issue #162). `progress` counts
+    // the visits themselves, so the funnel head is taken from it at the end
+    // rather than counted twice here.
+    let mut funnel = crate::throughput::Funnel::default();
     let mut sweep = fresh_sweep(
         &incumbent.creature,
         &activation,
@@ -1581,6 +1585,26 @@ fn ockham_loop(
         {
             progress.visit(uuid);
         }
+        // The same walk, split by how far it got (Issue #162): a visit the
+        // razor could build nothing from cost no scorer time and is counted
+        // apart from the candidates it did construct. Counted here, before the
+        // group proposals below join the batch, for the same reason the visits
+        // above are — a neighbourhood is not a sweep visit.
+        for skip in &skips {
+            let kind = crate::throughput::VisitKind::of_visit(&skip.uuid);
+            // The same split `skip_try` files below: a known failure was
+            // proposed, scored and judged on an earlier run, so it is skipped
+            // rather than blocked, and counting it as blocked would report
+            // proposable structure as unproposable (#162).
+            if skip.reason == crate::sweep::KNOWN_FAILURE_REASON && skip.blocked.is_none() {
+                funnel.record_judged(kind);
+            } else {
+                funnel.record_blocked(kind);
+            }
+        }
+        for candidate in &candidates {
+            funnel.record_proposed(crate::throughput::VisitKind::of_visit(&candidate.uuid));
+        }
         // Structural neighbourhood proposals ride the same batch (Issue #108):
         // a chain or a low-fan-out branch that no single-neuron cut can expose,
         // screened and scored exactly like every other candidate. They are
@@ -1687,6 +1711,18 @@ fn ockham_loop(
         }
 
         let batch_size = candidates.len();
+        // Candidates that entered the sampled screen (Issue #162), counted on
+        // entry so a screen the scorer lost still shows the wall clock it
+        // cost. With screening off there is no sampled stage to count: those
+        // candidates go straight to full scoring, and the full-scored stage is
+        // what moves.
+        if ladder.is_some() {
+            for candidate in candidates.iter().filter(|c| !c.is_group()) {
+                funnel.record_sample_screened(crate::throughput::VisitKind::of_visit(
+                    &candidate.uuid,
+                ));
+            }
+        }
         let sampled = match &ladder {
             Some(ladder) => {
                 match screen_progressive(
@@ -1748,6 +1784,11 @@ fn ockham_loop(
                                     },
                                 )?;
                             }
+                        }
+                        for w in screen.winners.iter().filter(|w| !w.candidate.is_group()) {
+                            funnel.record_sample_winner(crate::throughput::VisitKind::of_visit(
+                                &w.candidate.uuid,
+                            ));
                         }
                         let mut coverage = visits.clone();
                         // A sampled winner is a lead, and only full scoring
@@ -1978,6 +2019,8 @@ fn ockham_loop(
                     },
                 )?;
                 tally.observe(&full, config.min_improvement);
+                // The scored, confirmed and applied end of the funnel (#162).
+                funnel.observe_full(&full, config.min_improvement);
                 if let Some(log) = &candidate_log {
                     log.judged(
                         &incumbent.creature,
@@ -2153,6 +2196,18 @@ fn ockham_loop(
             progress.revisit_counts(),
             cov.checkable,
         );
+        // Rates over the run's **measured** wall clock (Issue #162), never the
+        // configured timeout: a run that stopped on its experiment cap, lost a
+        // cohort to the deadline or spent most of its budget in replay still
+        // reports the throughput it actually achieved.
+        let throughput = crate::throughput::Throughput::measured(
+            funnel,
+            progress.visit_counts(),
+            progress.revisit_counts(),
+            started.elapsed().as_millis() as u64,
+            cov.hidden,
+            cov.synapses,
+        );
         // The epoch travels with the figure, so a log read months later can
         // tell a fresh epoch from a collapse in coverage (Issue #102).
         log::info(&format!(
@@ -2177,6 +2232,7 @@ fn ockham_loop(
                 cut: cov.cut,
                 corpus_identity: Some(corpus.identity.clone()),
                 passes: Some(passes),
+                throughput: Some(Box::new(throughput)),
             },
         )?;
         // The GRQ-facing commit-description artefacts (Issues #40, #59). A
@@ -2195,6 +2251,7 @@ fn ockham_loop(
             })
             .filter(crate::coverage::History::has_any),
             passes: Some(passes),
+            throughput: Some(throughput),
         };
         match crate::coverage::write_files(&config.output_dir, &report, config.candidates) {
             Ok(()) => log::detail(&format!(
@@ -5216,6 +5273,119 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("(33.3% of epoch)"), "{text}");
+    }
+
+    /// End-to-end detector for Issue #162: a mixed neuron/synapse run must
+    /// report a funnel whose stages cannot be conflated, per-kind rates over
+    /// its measured wall clock, and both rescan ETAs — in `coverage.json`,
+    /// `coverage.txt` and `ockham report` alike.
+    #[test]
+    fn a_mixed_run_reports_its_screening_funnel_rates_and_rescan_eta() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let cfg = OckhamConfig {
+            candidates: 6,
+            max_experiments: Some(3),
+            ..coverage_files_cfg(
+                creature,
+                train,
+                tmp.path().join("out"),
+                Some(tmp.path().join("learnings")),
+            )
+        };
+        // A candidate that beats the incumbent, so the run reaches full
+        // scoring and the tail of the funnel has something to count.
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        establish_run(&cfg, &scorer).unwrap();
+
+        let report = coverage_report_json(&cfg.output_dir);
+        let t = report.throughput.expect("the run reports its throughput");
+        assert!(t.elapsed_ms > 0, "the rates are over measured wall clock");
+        // Both kinds were walked: this is the mixed run the funnel is for.
+        assert!(t.funnel.visits.neurons > 0, "{t:?}");
+        assert!(t.funnel.visits.synapses > 0, "{t:?}");
+        // Every visit either produced a candidate or produced nothing, and the
+        // two are counted apart — the conflation this issue is about.
+        assert_eq!(
+            t.funnel.blocked.total + t.funnel.judged.total + t.funnel.proposed.total,
+            t.funnel.visits.total,
+            "{t:?}"
+        );
+        assert!(
+            t.funnel.blocked.synapses > 0,
+            "the edges out of `input-0` are refused, so some visits are blocked: {t:?}"
+        );
+        assert!(
+            t.funnel.sample_screened.total > 0
+                && t.funnel.sample_screened.total <= t.funnel.proposed.total,
+            "a screened candidate was first a proposed one: {t:?}"
+        );
+        assert!(
+            t.funnel.full_scored.total > 0
+                && t.funnel.full_scored.total <= t.funnel.sample_winners.total,
+            "a full score follows a sampled win: {t:?}"
+        );
+        assert!(
+            t.funnel.applied.total > 0,
+            "the scripted winner was applied: {t:?}"
+        );
+        // The funnel head is the same measurement the `visits:` line renders,
+        // never a second count of the same walk (#140, #161).
+        let passes = report.passes.expect("the run reports its passes");
+        assert_eq!(t.funnel.visits.total, passes.visits_run, "{t:?}");
+        assert_eq!(
+            t.funnel.revisits.total, passes.revisit_attempts_run,
+            "{t:?}"
+        );
+        // Rates are the counts over the measured hours, per kind, never merged.
+        let hours = t.elapsed_ms as f64 / 3_600_000.0;
+        assert!(
+            (t.screened_per_hour.neurons - t.funnel.sample_screened.neurons as f64 / hours).abs()
+                < 1e-6,
+            "{t:?}"
+        );
+        assert!(
+            (t.visits_per_hour.synapses - t.funnel.visits.synapses as f64 / hours).abs() < 1e-6,
+            "{t:?}"
+        );
+        assert_eq!(t.hidden, report.coverage.hidden);
+        assert_eq!(t.synapses, report.coverage.synapses);
+        assert!(t.visit_rescan_hours.unwrap() > 0.0, "{t:?}");
+        assert!(t.scored_rescan_hours.unwrap() > 0.0, "{t:?}");
+
+        // `coverage.txt` renders the same figures, and names every stage.
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert_eq!(text, format!("{}\n", report.description(cfg.candidates)));
+        assert!(
+            text.contains(&format!(
+                "funnel:    neurons {} visits · {} blocked · {} judged · {} proposed · {} screened · {} scored",
+                t.funnel.visits.neurons,
+                t.funnel.blocked.neurons,
+                t.funnel.judged.neurons,
+                t.funnel.proposed.neurons,
+                t.funnel.sample_screened.neurons,
+                t.funnel.full_scored.neurons
+            )),
+            "{text}"
+        );
+        assert!(text.contains("funnel:    synapses "), "{text}");
+        assert!(text.contains(" screened/h · synapses "), "{text}");
+        assert!(text.contains("eta:       visit rescan ~"), "{text}");
+
+        // `ockham report` reads the same snapshot back off the journal.
+        let summary =
+            crate::report::summarise(&[cfg.output_dir.join("experiments.jsonl")]).unwrap();
+        assert_eq!(
+            summary.throughput,
+            Some(t),
+            "report, coverage.json and coverage.txt must agree"
+        );
     }
 
     /// End-to-end detector for Issue #74: a fully tagged creature must report

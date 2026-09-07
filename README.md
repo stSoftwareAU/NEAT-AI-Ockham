@@ -1268,6 +1268,86 @@ flowchart TD
     S --> B
 ```
 
+### Screening throughput and rescan ETA
+
+The optimisation target is not "walk UUIDs quickly". It is **find
+scorer-verified removable structure per wall-clock hour** (#162). A sweep can
+reach seven thousand entries in a run while only a few hundred of them ever
+become a candidate a scorer judges, so every stage of the walk is counted
+separately and none of them is a synonym for another:
+
+| Stage | What it counts | `coverage.json` |
+|---|---|---|
+| visits | Every visit attempt, revisits included | `throughput.funnel.visits` |
+| revisits | Visits over keys the fleet had already checked at open | `throughput.funnel.revisits` |
+| blocked | Visits the razor could propose no cut for — no scorer was paid | `throughput.funnel.blocked` |
+| proposed | Valid pruning candidates constructed | `throughput.funnel.proposed` |
+| sample-screened | Candidates that entered the sampled screen | `throughput.funnel.sampleScreened` |
+| sample winners | Candidates the sampled screen promoted | `throughput.funnel.sampleWinners` |
+| full-scored | Candidates the full corpus scored individually | `throughput.funnel.fullScored` |
+| confirmed | Full-scored candidates whose own Δ beat `--min-improvement` | `throughput.funnel.confirmed` |
+| applied | Candidates an accepted winner applied | `throughput.funnel.applied` |
+
+Every stage carries `neurons`, `synapses` and `total`, so a neuron rate and an
+edge rate are never averaged into one number. A visit key that parses as a
+[synapse visit](#synapse-visits) is an edge; everything else is a neuron, and
+the full-scoring stages classify by the cohort label the entry was scored
+under — `synapse` is the one that removes no hidden neuron (#138).
+
+Two things are deliberately **not** in the funnel:
+
+- **group proposals** (#108). A neighbourhood rides the batch as an extra
+  candidate; it is not a sweep visit, and counting it would credit the walk with
+  a visit the permutation never made;
+- **replayed known winners** (#52, #101). Their candidates came from the
+  learnings cache rather than from this run's screening pipeline. What a replay
+  accept removed is still reported, by `cut:` and `winners:`.
+
+Rates are per hour of **measured** wall clock — the optimisation loop's own
+elapsed time, never the configured `--timeout-seconds`. A run that stopped on its
+experiment cap after four minutes of a one-hour budget, or spent most of its
+budget in replay and full scoring, reports the whole-run rate it actually
+achieved.
+
+Two rescan ETAs are reported, because "checked" costs two very different
+amounts of work — a visit nothing can be proposed for files a record without
+paying a scorer (#93):
+
+| ETA | Question it answers |
+|---|---|
+| `visitRescanHours` | How long to walk every eligible visit once, at this run's measured visit rate? |
+| `scoredRescanHours` | How long to construct and sample-score every currently **proposable** candidate once, at this run's measured screen rate? |
+
+The proposable population is the current population scaled by the proposable
+fraction the run measured, per kind (`proposableEstimate`): a creature whose
+edges are mostly typed proposes few of them, so a rescan of it has
+correspondingly little to score. Both ETAs are `null` rather than `0.0` when
+nothing was measured to estimate from — a kind with a live population the run
+never visited leaves `scoredRescanHours` **unknown**, because a total that
+quietly omitted it would read as though it covered both kinds.
+
+The two agree whenever every proposed candidate was screened, and that agreement
+is a finding rather than a defect: finding the proposable candidates means
+walking the blocked visits too, so both ETAs pay for the blocked population.
+They diverge as soon as proposals go unscreened — a coverage tail (#91), a run
+with screening off, a cohort the wall-clock budget stopped — which is the case
+the two numbers exist to separate.
+
+```mermaid
+flowchart LR
+    V["visits<br/>(walk rate)"] --> B{"proposable?"}
+    B -->|no| K["blocked<br/>no scorer paid"]
+    B -->|yes| P["proposed"]
+    P --> S["sample-screened<br/>(screen rate)"]
+    S --> W["sample winners"]
+    W --> F["full-scored"]
+    F --> C["confirmed"]
+    C --> A["applied"]
+    K --> E1["visit rescan ETA<br/>population / visits per hour"]
+    V --> E1
+    S --> E2["scored rescan ETA<br/>proposable / screened per hour"]
+```
+
 ### The GRQ commit-description contract
 
 The `ockham` tag is one crowded line, so the readable answer to "how many
@@ -1301,6 +1381,10 @@ history:   4802 of 5013 ever checked across 3 corpus epochs
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
 bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped
 dropped:   12 entries over budget (est 18s/creature)
+funnel:    neurons 9100 visits · 8680 blocked · 420 proposed · 312 screened · 24 scored
+funnel:    synapses 31400 visits · 29295 blocked · 2105 proposed · 1840 screened · 60 scored
+rate:      neurons 312 screened/h · synapses 1840 screened/h · full rescan ~0.8h
+eta:       visit rescan ~0.2h · scored rescan ~0.8h · 5013 neurons + 2000 edges eligible
 ```
 
 - the runs-remaining estimate divides `unchecked` by the configured
@@ -1355,14 +1439,32 @@ dropped:   12 entries over budget (est 18s/creature)
 - the `winners:` / `bundles:` / `dropped:` lines are each omitted when they have
   nothing to report, so a run that screened nothing renders the coverage lines
   alone, exactly as it did before they existed;
+- the `funnel:` / `rate:` / `eta:` lines say how fast the sweep got there rather
+  than where it got to (#162), and the whole block is omitted when the run
+  measured no wall clock or reached no visit. There is one `funnel:` line per
+  kind — the synapse line is omitted when the run walked no edge, exactly as the
+  `visits:` line above it is — and each names every stage separately, so
+  `visited`, `proposed`, `screened` and `scored` can never be read as the same
+  figure. `rate:` is the compact GRQ line: the per-kind screened-per-hour
+  figures and the full rescan ETA — the same figure `eta:` names `scored
+  rescan`, carried alone so a reader of the subject line has it. `eta:` carries
+  both rescan estimates beside the eligible population they are over, renders
+  `unknown` — never a zero — for an estimate nothing was measured for, and
+  `none left` when there is genuinely nothing proposable to get through. See
+  [Screening throughput and rescan ETA](#screening-throughput-and-rescan-eta);
 - `coverage.json` carries the same per-run figure under `newlyScreened`, the
   epoch under `corpusIdentity` (in full), the cumulative figures under an
   additive `history` key, the pass counters under an additive `passes` key
   (`sweepRestartsRun`, `sweepsCompletedEpoch`, `currentPass`, `visitedRun`,
-  `revisitedRun`) and the winner figures under an additive
-  `winners` key, and
+  `revisitedRun`), the winner figures under an additive
+  `winners` key and the funnel, rates and ETAs under an additive `throughput`
+  key (`elapsedMs`, `funnel`, `hidden`, `synapses`, `visitsPerHour`,
+  `proposedPerHour`, `screenedPerHour`, `fullScoredPerHour`,
+  `proposableEstimate`, `visitRescanHours`, `scoredRescanHours`), and
   still deserialises straight into `Coverage` for a consumer that ignores them,
-  so nothing downstream needs to parse the prose.
+  so nothing downstream needs to parse the prose. `ockham report` reads the same
+  `throughput` snapshot back off the journal's `coverage` record, so the three
+  surfaces quote the same rates.
 
 Both files are written only when coverage exists: no `--learnings-dir` means no
 screen store, no coverage state, and neither file. A write fault warns and the
@@ -2427,6 +2529,7 @@ NEAT-AI-Ockham/
 │       ├── model.rs           # learned logistic ranker (ranking only)
 │       ├── neighbourhood.rs   # bounded chain/branch group-cut proposals
 │       ├── telemetry.rs       # candidate feature/outcome training rows
+│       ├── throughput.rs      # screening funnel, per-hour rates, rescan ETAs
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── log.rs
