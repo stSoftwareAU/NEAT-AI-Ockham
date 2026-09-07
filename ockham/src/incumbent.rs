@@ -213,6 +213,17 @@ impl Incumbent {
             .count()
     }
 
+    /// Whether the creature still carries a visit the razor could try (#138).
+    ///
+    /// A hidden neuron **or** a synapse: since Issue #138 an edge cut is a
+    /// candidate in its own right, so a creature whose last hidden neuron has
+    /// gone may still have redundant edges worth testing. Gating the loop on
+    /// hidden neurons alone would stop the razor at exactly the point the
+    /// finest cut it makes becomes the only one left.
+    pub fn has_visits(&self) -> bool {
+        self.hidden_neurons() > 0 || !self.creature.synapses.is_empty()
+    }
+
     /// Short checksum prefix for file names and logs.
     pub fn short_checksum(&self) -> &str {
         &self.checksum[..12]

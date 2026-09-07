@@ -316,11 +316,13 @@ pub struct Sweep {
     /// the sweep after the identity above is fixed. `0` when the priority is
     /// off, there is no cache, or nothing qualified.
     pub old_corpus_first: usize,
-    /// Synapse visits [`Self::retain_neuron_visits`] dropped (Issue #135).
+    /// Synapse visits dropped from the walk (Issue #135).
     ///
     /// Recorded for the same reason as the two above: it changes the walk after
     /// the identity is fixed, so a run is only reconstructable if what it put
-    /// aside is stated. `0` on a sweep that kept its edge half.
+    /// aside is stated. `0` on a sweep that kept its edge half, which since
+    /// Issue #138 is every sweep a **run** builds — only the test-only
+    /// `retain_neuron_visits` narrows one now.
     pub synapse_visits_deferred: usize,
 }
 
@@ -378,19 +380,19 @@ impl Sweep {
 
     /// Drop every synapse visit from the walk, returning how many went (#135).
     ///
-    /// The one place the edge half of the pool is removed. It exists because
-    /// the pool is built before the run can count or report an edge cut —
-    /// recording one is settled (Issue #136: a screen record and a verdict may
-    /// both be keyed by a visit key), epoch coverage counts one (Issue #137:
-    /// synapse visits are in the denominator, so an unwalked edge reads as
-    /// honestly unchecked), and accepting a pure synapse win is Issue #138,
-    /// which is what this deferral is now waiting on.
+    /// **Test-only.** No run calls it: since Issue #138 the razor screens,
+    /// scores and accepts an edge cut like any other visit, so the production
+    /// walk is the whole permutation. It stays, behind `cfg(test)`, for the
+    /// tests about the **neuron** ladder — identity → merge → ablation →
+    /// constant substitution — which narrow a sweep to the half they are about
+    /// rather than restating every edge key they never meant to exercise.
     ///
     /// The count is returned rather than discarded: this reorders the walk
     /// after [`Self::permutation_identity`] is hashed, exactly as
     /// [`Self::prefer_unchecked`] and [`Self::prefer`] do, so the caller has to
     /// be able to say what it dropped for the run to stay reconstructable.
-    pub fn retain_neuron_visits(&mut self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn retain_neuron_visits(&mut self) -> usize {
         let before = self.order.len();
         self.order
             .retain(|visit| parse_synapse_key(visit).is_none());

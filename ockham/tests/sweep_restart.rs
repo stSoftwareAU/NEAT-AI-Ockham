@@ -118,7 +118,18 @@ fn an_exhausted_sweep_restarts_rather_than_idling() {
         "the loop must keep filling batches: {batches:?}"
     );
     for b in &batches {
-        assert_eq!(b["candidates"], 2, "an exhausted sweep must refill: {b}");
+        // A full batch, or a short one only because the pass ran out of visits
+        // — which is exactly when the sweep restarts. A short batch with visits
+        // still remaining would be the idle spin #77 removed. The short one may
+        // be all skips: a tail of edge visits the razor refuses is work, not
+        // idling (#138).
+        let candidates = b["candidates"].as_u64().unwrap();
+        let reached = candidates + b["skipped"].as_u64().unwrap();
+        assert!(reached > 0, "an exhausted sweep must refill: {b}");
+        assert!(
+            candidates == 2 || b["remaining"] == 0,
+            "a short batch is only ever the end of a pass: {b}"
+        );
     }
     assert!(
         records.iter().any(|v| v["record"] == "sweepRestart"),

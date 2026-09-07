@@ -28,6 +28,32 @@ the breakdown is a partition of the blocked population rather than a sample of
 it. That invariant holds across a mix of blocked neuron and blocked synapse
 visits (#137).
 
+## What a synapse visit can report (Issue #138)
+
+Since #138 the run walks the edge half of the pool as well as the neuron half,
+so these codes are the ones an operator will actually see against a visit key
+rather than a neuron UUID. A synapse visit reports exactly four of the codes
+above, and no others:
+
+| Code | When a synapse visit reports it |
+|---|---|
+| `missing-activation` | The source resolved to no fold value — an unmeasured hidden source, an unparsable constant, or an output as a source. The resolver runs **first**, so an edge that is both unmeasured and structurally unsafe is filed here: the value the cut would have needed is the refusal nearest the razor. |
+| `unsafe-topology` | The pair is typed, the source is not a listed neuron or an input the creature carries, or the incumbent carries no such edge at all. |
+| `aggregate-squash` | The destination uses an aggregate squash, so the bias fold the cut compensates through is not a sum. |
+| `validation-failed` | The cut was built and NEAT-AI-core `creature.validate()` rejected the result. |
+
+An edge out of an implicit `input-N` is the common `unsafe-topology` case on a
+real creature: the razor cuts an edge only where the source is a **listed**
+neuron, so those visits are walked, refused and counted — which is what stops
+them being asked again on every pass. `no-output-path` and `other` are neuron
+paths and are never reported for an edge; `unrecorded` belongs to records filed
+before #103 and pre-dates synapse visits entirely.
+
+Nothing weighs the edge. No weight, magnitude or contribution threshold decides
+whether a synapse visit is proposed, because the full-corpus scorer is the sole
+acceptance gate — a refusal here is always structural or a missing value, never
+a judgement that the edge was too small to bother with.
+
 ## The dominant category, and the path built for it
 
 On a forest-heavy GRQ creature roughly four hidden neurons in five feed an

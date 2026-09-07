@@ -166,9 +166,15 @@ pub struct Report {
     pub first_win_ms: Option<u64>,
     /// Candidates screened before the first authoritative local win.
     pub candidates_before_first_win: Option<u64>,
-    /// Neurons cut by each accepted winner, in acceptance order.
+    /// **Visits** cut by each accepted winner, in acceptance order.
+    ///
+    /// A visit, not a neuron, since Issue #138: an accepted edge cut names one
+    /// synapse visit key and removes no hidden neuron of its own, and counting
+    /// it as a neuron would credit the razor with structure it never took.
+    /// `synapse_hidden_removed` below is what says how many neurons an edge cut
+    /// actually stranded.
     pub accepted_cut_sizes: Vec<usize>,
-    /// Total neurons cut across every accepted winner.
+    /// Total visits cut across every accepted winner.
     pub accepted_cuts: usize,
     /// Wall-clock milliseconds spent in the optimisation loop.
     pub elapsed_ms: Option<u64>,
@@ -180,7 +186,8 @@ pub struct Report {
     pub final_growth_units: Option<f64>,
     /// `opening - final` growth units; positive means structure was removed.
     pub growth_units_saved: Option<f64>,
-    /// Hidden neurons cut per hour of loop wall-clock (Issue #106).
+    /// Visits cut per hour of loop wall-clock (#106), as `accepted_cuts` counts
+    /// them — a hidden neuron, a group's neuron, or an edge (#138).
     pub cuts_per_hour: Option<f64>,
     /// Growth units removed per hour of loop wall-clock (Issue #106).
     pub growth_units_saved_per_hour: Option<f64>,
@@ -238,6 +245,27 @@ pub struct Report {
     pub group_accepts_per_hour: Option<f64>,
     /// Growth units accepted groups removed per wall-clock hour (Issue #108).
     pub group_growth_units_removed_per_hour: Option<f64>,
+    /// Single-synapse candidates the full corpus accepted (Issue #138).
+    ///
+    /// The finest cut the razor makes, counted apart from the neuron accepts:
+    /// a lone edge is 0.1 growth units, so a run whose accepts are all edges
+    /// reports a saving that would otherwise look like rounding. Zero on a run
+    /// that accepted no edge cut.
+    pub synapse_accepts: u64,
+    /// Visits those accepted synapse cuts were asked to remove.
+    pub synapse_cuts_accepted: usize,
+    /// Synapses those accepted synapse cuts actually removed, cascade included.
+    ///
+    /// Signed, like every other actual figure: a cut whose cleanup rewires
+    /// structure may add an edge while its growth units still fall.
+    pub synapse_synapses_removed: i64,
+    /// Hidden neurons those accepted synapse cuts actually removed.
+    ///
+    /// `0` for a **pure** edge cut, which is the point of reporting it: a
+    /// non-zero figure says the cut stranded neurons the cleanup then took.
+    pub synapse_hidden_removed: i64,
+    /// Growth units those accepted synapse cuts actually removed.
+    pub synapse_growth_units_removed: f64,
     /// Last stop reason.
     pub stop_reason: Option<String>,
     /// Effective seed from the first start record.
@@ -337,6 +365,11 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
         group_growth_units_per_accept: None,
         group_accepts_per_hour: None,
         group_growth_units_removed_per_hour: None,
+        synapse_accepts: 0,
+        synapse_cuts_accepted: 0,
+        synapse_synapses_removed: 0,
+        synapse_hidden_removed: 0,
+        synapse_growth_units_removed: 0.0,
         stop_reason: None,
         seed: None,
     };
@@ -402,6 +435,16 @@ pub fn summarise(paths: &[impl AsRef<Path>]) -> Result<Report, String> {
                         report.group_hidden_removed += actual_hidden;
                         report.group_synapses_removed += actual_synapses;
                         report.group_growth_units_removed += actual_growth_units;
+                    }
+                    // Read off the same series for the same reason (#138): the
+                    // accept record is where an edge cut's economics live, and
+                    // a second event would let the two figures drift.
+                    if kind == "synapse" {
+                        report.synapse_accepts += 1;
+                        report.synapse_cuts_accepted += cuts;
+                        report.synapse_hidden_removed += actual_hidden;
+                        report.synapse_synapses_removed += actual_synapses;
+                        report.synapse_growth_units_removed += actual_growth_units;
                     }
                 }
                 Event::CoverageTail { batches, .. } => report.coverage_tail_batches += batches,
@@ -1108,6 +1151,99 @@ mod tests {
         // four accepts and twenty units an hour.
         assert_eq!(report.group_accepts_per_hour, Some(4.0));
         assert_eq!(report.group_growth_units_removed_per_hour, Some(20.0));
+    }
+
+    /// Issue #138: a run whose only accept is a lone edge cut reports it as
+    /// one synapse accept worth 0.1 growth units, and `growth_units_saved`
+    /// reconciles with the opening and final structure.
+    #[test]
+    fn a_synapse_only_run_reports_its_accepts_and_reconciles_its_saving() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        journal::append(
+            &path,
+            &Event::Cascade {
+                kind: "synapse".into(),
+                cuts: 1,
+                estimated_hidden: 0,
+                estimated_synapses: 1,
+                estimated_growth_units: 0.1,
+                actual_hidden: 0,
+                actual_synapses: 1,
+                actual_growth_units: 0.1,
+            },
+        )
+        .unwrap();
+        // The opening structure is 3 hidden and 10 synapses; the run cut one
+        // edge and no neuron.
+        journal::append(
+            &path,
+            &Event::Stop {
+                reason: "timeout".into(),
+                accepts: 1,
+                experiments: 1,
+                final_score: 0.51,
+                cumulative_delta: 0.01,
+                final_hidden: 3,
+                final_synapses: 9,
+                elapsed_ms: 1_800_000,
+                newly_screened: 0,
+            },
+        )
+        .unwrap();
+        let report = summarise(&[&path]).unwrap();
+
+        assert_eq!(report.synapse_accepts, 1);
+        assert_eq!(report.synapse_cuts_accepted, 1);
+        assert_eq!(report.synapse_synapses_removed, 1);
+        assert_eq!(
+            report.synapse_hidden_removed, 0,
+            "a pure edge cut takes no neuron with it"
+        );
+        assert!((report.synapse_growth_units_removed - 0.1).abs() < 1e-9);
+        assert_eq!(report.group_accepts, 0, "an edge cut is not a group");
+        assert_eq!(report.cascade_accepts, 1, "the accept is still audited");
+        assert_eq!(report.cascade_estimate_ratio, Some(1.0));
+        let saved = report.growth_units_saved.expect("both ends are journalled");
+        assert!(
+            (saved - 0.1).abs() < 1e-9,
+            "the saving must reconcile with the opening and final structure: {saved}"
+        );
+        assert!((saved - report.synapse_growth_units_removed).abs() < 1e-9);
+    }
+
+    /// A run that accepted no edge cut reports zeroes, never a synapse accept
+    /// borrowed from another kind (Issue #138).
+    #[test]
+    fn a_run_with_no_synapse_accept_reports_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("experiments.jsonl");
+        journal::append(&path, &start(Ordering::Random)).unwrap();
+        for kind in ["individual", "group", "bundle"] {
+            journal::append(
+                &path,
+                &Event::Cascade {
+                    kind: kind.into(),
+                    cuts: 1,
+                    estimated_hidden: 1,
+                    estimated_synapses: 2,
+                    estimated_growth_units: 1.2,
+                    actual_hidden: 1,
+                    actual_synapses: 2,
+                    actual_growth_units: 1.2,
+                },
+            )
+            .unwrap();
+        }
+        journal::append(&path, &stop(0.51, 0.01, 1_800_000)).unwrap();
+        let report = summarise(&[&path]).unwrap();
+        assert_eq!(report.synapse_accepts, 0);
+        assert_eq!(report.synapse_cuts_accepted, 0);
+        assert_eq!(report.synapse_synapses_removed, 0);
+        assert_eq!(report.synapse_hidden_removed, 0);
+        assert_eq!(report.synapse_growth_units_removed, 0.0);
+        assert_eq!(report.cascade_accepts, 3);
     }
 
     #[test]

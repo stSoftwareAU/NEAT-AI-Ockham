@@ -32,7 +32,13 @@ The current Rust implementation includes:
 - mean-activation neuron ablation with downstream bias compensation;
 - recursive removal/folding of newly redundant structure;
 - exact, cost-aware `IDENTITY` neuron collapse;
-- seeded random-without-replacement neuron sweeps;
+- single-synapse ablation with bias compensation, screened, scored and accepted
+  as its own candidate kind: a cut that removes **one edge and no hidden
+  neuron** — 0.1 growth units — is accepted on the full-corpus scorer alone
+  (#138), and the journal, `report`, the bundle plans and the candidate-log
+  tally all account for it;
+- seeded random-without-replacement sweeps over every visit — hidden neurons
+  and synapses alike;
 - default batches of 100 candidates screened on a 5% scorer sample;
 - full-corpus scoring of every sampled winner plus grouped pruning bundles —
   combination plans built over **every** winner, not one nested prefix chain;
@@ -125,6 +131,7 @@ seeded ordering of visits — hidden neurons and synapses (random control by def
 ~100 pruning candidates
         │
         ├── mean-activation bias compensation
+        ├── single-synapse ablation with bias compensation
         ├── mean-valued constant substitution where the fold cannot reach
         ├── exact deterministic cleanup where possible
         ├── cascading dead-structure removal
@@ -324,20 +331,44 @@ carries its `fromUuid`, `toUuid` and `weight` as provenance — no other kind
 serialises those fields — and its `uuid` is the visit key, headed as always by
 `members`.
 
-The pool is built, and the **records** are ready for it: a screen record and a
-full-corpus verdict may both be keyed by a visit key, and every still-present
-filter in the learnings cache matches a synapse key against the creature's
-synapses (#136), and epoch coverage counts one (#137): a synapse visit is in
-the denominator, so an edge the run has not reached reads as honestly unchecked.
-Accepting a pure synapse win lands with its own work, and the sweep the run
-builds drops the edge half until it does — a visit a run cannot *act on* is one
-it would make again every batch forever.
+The pool is walked in full, and the **records** are ready for it: a screen
+record and a full-corpus verdict may both be keyed by a visit key, and every
+still-present filter in the learnings cache matches a synapse key against the
+creature's synapses (#136), and epoch coverage counts one (#137): a synapse
+visit is in the denominator, so an edge the run has not reached reads as
+honestly unchecked.
 
-That drop happens *after* `permutationIdentity` is hashed, so it is stated
-rather than silent: `Event::Start` carries `synapse_visits_deferred`, beside the
-`unchecked_first` and `old_corpus_first` fields that record the other two
-post-hash reorderings. A run whose walk was not the permutation its identity
-names always says so.
+`Event::Start` still carries `synapse_visits_deferred`, beside the
+`unchecked_first` and `old_corpus_first` fields that record the two post-hash
+reorderings. Since #138 it is `0` on every run — nothing is dropped from the
+walk — and a non-zero figure names a journal written before it.
+
+### Accepting a pure synapse win
+
+A candidate that removes **one synapse and no hidden neuron** is accepted on the
+full-corpus scorer alone (#138). Nothing in the accept path asks for a hidden
+removal, a minimum growth-unit saving, or any threshold beyond the
+`--min-improvement` the scorer comparison already applies; the sampled screen
+stays a cheap pre-filter and the full-corpus scorer stays the sole acceptance
+authority. `growth_units` is `hidden + synapses / 10`, so a lone edge is worth
+**0.1 units** — small enough that any incidental minimum-saving gate would
+silently discard every pure synapse win, which is exactly what the end-to-end
+CLI test is there to catch.
+
+The accept is accounted for everywhere a neuron accept is:
+
+| surface | what an edge cut reports |
+| --- | --- |
+| cohort kind | `synapse`, beside `individual`, `group` and `bundle` |
+| `Event::Cascade` | `kind: "synapse"`, with the estimated and actual hidden, synapse and growth-unit figures the estimate-vs-actual audit reads |
+| `report` | `synapseAccepts`, `synapseCutsAccepted`, `synapseSynapsesRemoved`, `synapseHiddenRemoved` and `synapseGrowthUnitsRemoved`, and `growthUnitsSaved` reconciles with the opening and final structure |
+| bundle plans | a batch of confirmed edge cuts is bundled as its own per-kind plan, exactly as the identity and ablation batches are |
+| candidate log | a per-kind tally of proposals, accepts and logged rows — an edge names no hidden neuron, so it carries no feature vector and no training row, and the tally is where its proposals and accepts are said out loud rather than swallowed |
+
+The cascade dry-run estimates an edge cut too, so the accept is audited against a
+prediction rather than against zero: `estimate_cut` reads a synapse visit key,
+cuts that edge and drains the same two cleanup rules, and predicts the refusal
+for a typed edge or an aggregate fold target.
 
 ### Benchmark
 
@@ -820,12 +851,11 @@ edge the razor can never cut is recorded as looked-at-and-blocked rather than
 sitting unchecked forever. The shape is unchanged, so no format version bump is
 needed and an older host reads a `synapse` record and ignores it rather than
 failing its load. The learnings cache reads those keys the same way: a standing
-rejection of an edge cut suppresses it, and a confirmed one replays. The run
-does not write them **yet** — it walks neuron visits only until accepting a pure
-synapse win lands (#138), and states in `experiments.jsonl` how many edge visits
-it deferred (`synapse_visits_deferred`). Coverage counts them from #137
-regardless, so the epoch stays honestly open rather than reporting a sweep that
-never reached the edges.
+rejection of an edge cut suppresses it, and a confirmed one replays. Since #138
+the run writes them: it walks the whole permutation, edges included, so a batch
+spends its slots on whichever visits the ordering reached — and the coverage
+counted since #137 is coverage the run actually made rather than a denominator
+it never touched.
 
 A record for a visit that scored nothing is written at **version 3**, which a
 pre-#93 binary does not accept. The fleet runs mixed versions against one shared
@@ -1068,7 +1098,11 @@ stalest neurons. Four rules hold it up.
 
 Two stop reasons move with this: `no-candidates` is new, and `exhausted` is
 retired — an exhausted sweep can no longer end a run, so the only way the loop
-falls out on its own is having no hidden neurons left (`no-hidden`).
+falls out on its own is the creature having no **visit** left at all: no hidden
+neuron and no synapse (`no-hidden`). Since #138 the razor cuts edges as well as
+neurons, so a creature whose last hidden neuron has gone is still searched while
+it carries edges; a run that then reaches a pass proposing nothing stops with
+`no-candidates`, which is the reason a real creature almost always ends on.
 
 ```mermaid
 flowchart TD
@@ -1955,11 +1989,23 @@ scorer made of it:
 Written **after** a verdict and never read during one. A candidate the screen
 threw out is logged too, with its sampled Δ and no full Δ: it is the only
 evidence the ranker gets about what does *not* work. `kind` is always the
-sweep's — `identity`, `ablation`, `constant`, `merge` or `synapse`. A `merge`
-row also carries `mergedWith`, the survivor that absorbed the neuron, and a
-`synapse` candidate carries `fromUuid`, `toUuid` and `weight`, the edge it cut.
-No `synapse` row is written yet: the run defers those visits, as
-[synapse visits](#synapse-visits) says.
+sweep's — `identity`, `ablation`, `constant` or `merge`. A `merge` row also
+carries `mergedWith`, the survivor that absorbed the neuron.
+
+A **synapse** candidate writes no row at all. Every feature in the vector is a
+hidden neuron's — fan-in, outgoing weight, depth, cascade estimate — and an edge
+cut names no neuron of its own, so there is nothing to key a row on and a row
+keyed on either endpoint would teach the ranker about a cut nobody made. That is
+not a silent drop (#138): the log reports a per-kind tally of what each run
+judged, so a `synapse` line names its proposals and its accepts beside the kinds
+that did reach the training set —
+
+```text
+candidate log: ablation 6 proposed, 0 accepted, 6 logged · synapse 3 proposed, 1 accepted, 0 logged
+```
+
+— and the unlogged total is warned about rather than left to be inferred from a
+row count.
 
 Three exclusions, each for the same reason — a row must carry only what the
 scorer actually said about that neuron:
@@ -2195,10 +2241,22 @@ it actually bought:
 
 `report` reads those off the `cascade` journal records an accept writes — the
 same series that audits the cascade estimate — so `kind: "group"` accepts are
-counted beside `individual` and `bundle` ones rather than in a series of their
-own. A control run without `--group-cuts` reports `groupAccepts: 0` and every derived
-figure as `null` rather than as a rate it never measured, which is what makes the
-comparison a comparison.
+counted beside `individual`, `bundle` and `synapse` ones rather than in a series
+of their own. A control run without `--group-cuts` reports `groupAccepts: 0` and
+every derived figure as `null` rather than as a rate it never measured, which is
+what makes the comparison a comparison.
+
+Edge cuts are read off that same series (#138):
+
+```json
+{"synapseAccepts":4,"synapseCutsAccepted":4,"synapseSynapsesRemoved":6,
+ "synapseHiddenRemoved":1,"synapseGrowthUnitsRemoved":0.7}
+```
+
+`synapseHiddenRemoved` is `0` for a run of purely structural edge cuts and
+non-zero only where a cut stranded a neuron the cleanup then took, so the two
+cases are distinguishable rather than averaged together. A run that accepted no
+edge cut reports zeroes here, never a figure borrowed from another kind.
 
 ## Outputs
 

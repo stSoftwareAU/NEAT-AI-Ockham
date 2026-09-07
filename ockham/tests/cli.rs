@@ -665,3 +665,170 @@ fn learned_ordering_without_a_model_names_the_flag() {
         stderr(&out)
     );
 }
+
+/// Scorer that reads the structure it is handed: fewer synapses score a little
+/// better, a lost hidden neuron scores far worse (Issue #138).
+///
+/// The shape a pure synapse win needs. Every candidate is judged against the
+/// `baseline.json` written beside it in the same cohort directory, so the
+/// script encodes a rule — "the redundant edge costs nothing, the neuron
+/// carries signal" — rather than the fixture's own numbers.
+fn structural_scorer(dir: &Path) -> PathBuf {
+    let path = dir.join("structural_scorer");
+    let script = r#"#!/bin/sh
+set -eu
+cohort=""
+for arg in "$@"; do
+  if [ -d "$arg" ] && [ -f "$arg/baseline.json" ]; then cohort="$arg"; fi
+done
+if [ -z "$cohort" ]; then
+  echo "structural_scorer: no cohort directory with a baseline.json in: $*" >&2
+  exit 1
+fi
+count() { grep -o "$2" "$1" | wc -l | tr -d ' \n'; }
+base_syn=$(count "$cohort/baseline.json" '"fromUUID"')
+base_hid=$(count "$cohort/baseline.json" '"type": *"hidden"')
+# Fail loud on a miscount: a zero here would silently price every candidate the
+# same and turn a broken fixture into a passing test.
+if [ "$base_syn" -eq 0 ] || [ "$base_hid" -eq 0 ]; then
+  echo "structural_scorer: read $base_syn synapses and $base_hid hidden neurons from $cohort/baseline.json" >&2
+  exit 1
+fi
+printf '{'
+sep=''
+for f in "$cohort"/*.json; do
+  stem=$(basename "$f" .json)
+  syn=$(count "$f" '"fromUUID"')
+  hid=$(count "$f" '"type": *"hidden"')
+  score=$(awk -v bs="$base_syn" -v s="$syn" -v bh="$base_hid" -v h="$hid" \
+    'BEGIN { printf "%.8f", 0.9 + 0.0001 * (bs - s) - 0.2 * (bh - h) }')
+  err=$(awk -v s="$score" 'BEGIN { printf "%.8f", 1 - s }')
+  printf '%s"%s":{"score":%s,"error":%s,"complexityPenalty":0,"recordCount":4,"costName":"MSE","timeTaken":0.01}' \
+    "$sep" "$stem" "$score" "$err"
+  sep=','
+done
+printf '}\n'
+"#;
+    std::fs::write(&path, script).unwrap();
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+    path
+}
+
+fn structure_of(path: &Path) -> (usize, usize) {
+    let creature = neat_core::parse_creature_json(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let hidden = creature
+        .neurons
+        .iter()
+        .filter(|n| n.neuron_type == "hidden")
+        .count();
+    (hidden, creature.synapses.len())
+}
+
+/// Issue #138: a candidate that removes one synapse and no hidden neuron is
+/// accepted on the full-corpus scorer alone, and every surface accounts for it.
+#[test]
+fn a_pure_synapse_win_is_accepted_and_reported_end_to_end() {
+    let tmp = tempfile::tempdir().unwrap();
+    let creature = tmp.path().join("creature.json");
+    std::fs::write(
+        &creature,
+        neat_core::creature_to_json_pretty(&neat_ai_ockham::fixtures::shortcut_edge_creature())
+            .unwrap(),
+    )
+    .unwrap();
+    let train = tmp.path().join("train");
+    std::fs::create_dir(&train).unwrap();
+    write_training(&train, 4);
+    let out_dir = tmp.path().join("out");
+    let learnings = tmp.path().join("learnings");
+    let scorer = structural_scorer(tmp.path());
+
+    let out = bin()
+        .arg(&creature)
+        .arg(&train)
+        .arg("--output-dir")
+        .arg(&out_dir)
+        .arg("--scorer")
+        .arg(&scorer)
+        .arg("--learnings-dir")
+        .arg(&learnings)
+        .arg("--seed")
+        .arg("7")
+        .arg("--max-experiments")
+        .arg("2")
+        .arg("--timeout-seconds")
+        .arg("60")
+        .arg("--candidate-log")
+        .arg(out_dir.join("candidates.jsonl"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // The accept itself: one synapse fewer, every neuron still in place.
+    let (hidden, synapses) = structure_of(&out_dir.join("best.json"));
+    assert_eq!(hidden, 2, "no hidden neuron may be cut: {}", stderr(&out));
+    assert_eq!(synapses, 3, "one synapse must go: {}", stderr(&out));
+
+    // The journal files it as a synapse accept beside the other kinds.
+    let journal = std::fs::read_to_string(out_dir.join("experiments.jsonl")).unwrap();
+    let cascade: serde_json::Value = journal
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|v| v["record"] == "cascade")
+        .expect("an accept writes a cascade record");
+    assert_eq!(cascade["kind"], "synapse", "{cascade}");
+    assert_eq!(cascade["actual_hidden"], 0, "{cascade}");
+    assert_eq!(cascade["actual_synapses"], 1, "{cascade}");
+    // The dry run predicted the edge, so the estimate-vs-actual audit compares
+    // like with like rather than 0.1 removed against a promise of nothing.
+    assert_eq!(cascade["estimated_hidden"], 0, "{cascade}");
+    assert_eq!(cascade["estimated_synapses"], 1, "{cascade}");
+    assert!(
+        (cascade["estimated_growth_units"].as_f64().unwrap() - 0.1).abs() < 1e-9,
+        "{cascade}"
+    );
+
+    // Coverage counts the edge visit as checked.
+    let coverage: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out_dir.join("coverage.json")).unwrap())
+            .unwrap();
+    assert!(
+        coverage["synapsesChecked"].as_u64().unwrap() >= 1,
+        "{coverage}"
+    );
+
+    // `report` accounts for the 0.1 growth units the cut removed.
+    let report = bin()
+        .arg("report")
+        .arg(out_dir.join("experiments.jsonl"))
+        .output()
+        .unwrap();
+    assert!(report.status.success(), "{}", stderr(&report));
+    let summary: serde_json::Value = serde_json::from_str(&stdout(&report)).unwrap();
+    assert_eq!(summary["synapseAccepts"], 1, "{summary}");
+    assert_eq!(summary["synapseCutsAccepted"], 1, "{summary}");
+    assert_eq!(summary["synapseSynapsesRemoved"], 1, "{summary}");
+    assert_eq!(summary["synapseHiddenRemoved"], 0, "{summary}");
+    assert!(
+        (summary["cascadeEstimateRatio"].as_f64().unwrap() - 1.0).abs() < 1e-9,
+        "the estimate audit reconciles with a synapse accept in it: {summary}"
+    );
+    let removed = summary["synapseGrowthUnitsRemoved"].as_f64().unwrap();
+    assert!((removed - 0.1).abs() < 1e-9, "{summary}");
+    let saved = summary["growthUnitsSaved"].as_f64().unwrap();
+    assert!(
+        (saved - 0.1).abs() < 1e-9,
+        "growth units saved must reconcile with the opening and final structure: {summary}"
+    );
+
+    // The candidate log names the edge cut it could not hold a row for: an edge
+    // carries no hidden-neuron feature vector, so the per-kind tally is where
+    // its proposal and its accept are reported rather than swallowed.
+    assert!(
+        stderr(&out).contains("synapse 1 proposed, 1 accepted, 0 logged"),
+        "the telemetry must report the synapse accept: {}",
+        stderr(&out)
+    );
+}
