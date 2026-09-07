@@ -538,19 +538,20 @@ pub fn ablate_synapse(
     // NEAT-AI-core rule 26 allows a pair to repeat only with distinct roles, so
     // every ordinary pair matches at most once — but the whole pair is checked,
     // so a typed edge alongside is reported rather than stepped over.
-    let edges: Vec<SynapseExport> = incumbent
+    let edges: Vec<(usize, SynapseExport)> = incumbent
         .synapses
         .iter()
-        .filter(|s| s.from_uuid == from_uuid && s.to_uuid == to_uuid)
-        .cloned()
+        .enumerate()
+        .filter(|(_, s)| s.from_uuid == from_uuid && s.to_uuid == to_uuid)
+        .map(|(i, s)| (i, s.clone()))
         .collect();
-    let Some(removed) = edges.first() else {
+    let Some((index, removed)) = edges.first() else {
         return Err(AblationSkip::UnknownSynapse {
             from_uuid: from_uuid.to_string(),
             to_uuid: to_uuid.to_string(),
         });
     };
-    for syn in &edges {
+    for (_, syn) in &edges {
         require_ordinary(syn)?;
     }
     reject_aggregate_neuron(target)?;
@@ -568,9 +569,11 @@ pub fn ablate_synapse(
         "mean",
         &mut compensations,
     )?;
-    working
-        .synapses
-        .retain(|s| !(s.from_uuid == from_uuid && s.to_uuid == to_uuid));
+    // Exactly the edge that was folded, by position: a clone preserves the
+    // incumbent's synapse order, and removing by `(from, to)` would also drop a
+    // second edge on the same pair — structure nothing compensated, gone from a
+    // candidate reporting one removal.
+    working.synapses.remove(*index);
 
     cleanup_cascade(&mut working, &mut compensations, &mut removed_neurons)?;
     sort_synapses_canonically(&mut working);
@@ -1520,6 +1523,39 @@ mod tests {
             shared_output_fan_out(),
             "a skip must not mutate the source"
         );
+    }
+
+    #[test]
+    fn only_the_folded_edge_is_removed_when_a_pair_repeats() {
+        // NEAT-AI-core rule 26 forbids a repeated ordinary pair, but this
+        // transform reads any `CreatureExport` it is handed: removing by
+        // `(from, to)` would drop the second edge too, uncompensated, in a
+        // candidate that reports one removal and one bias fold.
+        let repeated = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_a", 1.0),
+                synapse("h_a", "output-0", 3.0),
+                synapse("h_a", "output-0", 0.5),
+            ],
+        );
+        let result = ablate_synapse(&repeated, "h_a", "output-0", 1.0).unwrap();
+        assert_eq!(result.after.synapses, result.before.synapses - 1);
+        assert_eq!(result.compensations.len(), 1);
+        assert_eq!(result.weight, 3.0);
+        let survivors: Vec<f64> = result
+            .creature
+            .synapses
+            .iter()
+            .filter(|s| s.from_uuid == "h_a" && s.to_uuid == "output-0")
+            .map(|s| s.weight)
+            .collect();
+        assert_eq!(survivors, vec![0.5], "the uncompensated edge must survive");
     }
 
     #[test]

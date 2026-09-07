@@ -2098,7 +2098,7 @@ NEAT-AI-Ockham/
 │       ├── corpus.rs          # training-data identity / streaming
 │       ├── baseline.rs        # full-corpus scorer baseline
 │       ├── stats.rs           # hidden-neuron activation statistics
-│       ├── ablation.rs        # mean-activation ablation + cleanup
+│       ├── ablation.rs        # mean-activation + single-synapse ablation + cleanup
 │       ├── collapse.rs        # exact IDENTITY neuron collapse
 │       ├── canonical.rs       # exact zero-risk cleanup pre-pass
 │       ├── substitute.rs      # mean-valued constant substitution
