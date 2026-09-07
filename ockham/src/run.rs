@@ -2146,20 +2146,22 @@ fn ockham_loop(
                 }
             })
             .unwrap_or(epoch_passes_at_open + passes_filed);
-        let passes = crate::coverage::Passes::new(
+        let passes = crate::coverage::Passes::measured(
             restarts,
             completed_epoch,
-            progress.visited(),
-            progress.revisited(),
+            progress.visit_counts(),
+            progress.revisit_counts(),
+            cov.checkable,
         );
         // The epoch travels with the figure, so a log read months later can
         // tell a fresh epoch from a collapse in coverage (Issue #102).
         log::info(&format!(
-            "{} · epoch corpus {} · pass {} ({} complete this epoch)",
+            "{} · epoch corpus {} · pass {} ({} strict complete; {:.2} equivalent this run)",
             cov.summary(),
             crate::coverage::short_epoch(&corpus.identity),
             passes.current_pass,
-            passes.sweeps_completed_epoch
+            passes.sweeps_completed_epoch,
+            passes.equivalent_passes_run
         ));
         journal::append(
             &journal_path,
@@ -7010,10 +7012,19 @@ mod tests {
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            text.contains("passes:    3 complete this epoch · 3 this run · pass 4 in progress"),
+            text.contains(
+                "passes:    3 strict complete this epoch · 3 strict this run · pass 4 in progress"
+            ),
             "{text}"
         );
-        assert!(text.contains("visits:"), "{text}");
+        assert!(
+            text.contains("rescan:    3.33 creature-equivalent this run · 20 visit attempts"),
+            "{text}"
+        );
+        assert!(
+            text.contains("visits:    neurons 8 (0 revisits) · synapses 12 (0 revisits)"),
+            "{text}"
+        );
 
         // `report` reads the same counters out of the journal, so the two
         // GRQ-facing surfaces cannot disagree about which pass this was.

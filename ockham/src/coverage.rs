@@ -333,11 +333,39 @@ impl Coverage {
 /// Since #93 a visit the razor could propose nothing for files a record too, so
 /// this counts every uuid the run reached — which is why the rendered line says
 /// *newly checked* and [`Coverage::blocked`] says how many were never scored.
+/// Run-level visit counts, split by the kind of thing the sweep reached.
+///
+/// Unlike coverage, these are **attempts**, not distinct keys. Reaching the same
+/// neuron twice after an accepted cut rebuilt the sweep counts twice: that is
+/// precisely the topology-tolerant work #161 needs to keep visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisitCounts {
+    /// Every visit attempt.
+    pub total: usize,
+    /// Hidden-neuron visit attempts.
+    pub neurons: usize,
+    /// Synapse visit attempts.
+    pub synapses: usize,
+}
+
+impl VisitCounts {
+    fn observe(&mut self, visit: &str) {
+        self.total += 1;
+        if crate::sweep::parse_synapse_key(visit).is_some() {
+            self.synapses += 1;
+        } else {
+            self.neurons += 1;
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ScreenProgress {
     opening: HashSet<String>,
     added: HashSet<String>,
-    visited: HashSet<String>,
+    visits: VisitCounts,
+    revisits: VisitCounts,
 }
 
 impl ScreenProgress {
@@ -346,7 +374,8 @@ impl ScreenProgress {
         Self {
             opening: screens.iter().map(|s| s.uuid.clone()).collect(),
             added: HashSet::new(),
-            visited: HashSet::new(),
+            visits: VisitCounts::default(),
+            revisits: VisitCounts::default(),
         }
     }
 
@@ -357,23 +386,20 @@ impl ScreenProgress {
     /// so without this the run's own re-screening work is invisible to every
     /// reporting surface, and a fully covered creature reads as idle.
     pub(crate) fn visit(&mut self, uuid: &str) {
-        self.visited.insert(uuid.to_string());
+        self.visits.observe(uuid);
+        if self.opening.contains(uuid) {
+            self.revisits.observe(uuid);
+        }
     }
 
-    /// Distinct hidden UUIDs the sweep reached this run, revisits included.
-    pub(crate) fn visited(&self) -> usize {
-        self.visited.len()
+    /// Every visit attempt this run, including repeats after sweep rebuilds.
+    pub(crate) fn visit_counts(&self) -> VisitCounts {
+        self.visits
     }
 
-    /// How many of those the fleet had already checked when the run opened.
-    ///
-    /// Useful work that added no unique coverage — reported beside `progress:`,
-    /// never inside it.
-    pub(crate) fn revisited(&self) -> usize {
-        self.visited
-            .iter()
-            .filter(|uuid| self.opening.contains(*uuid))
-            .count()
+    /// Visit attempts over keys already checked when this run opened.
+    pub(crate) fn revisit_counts(&self) -> VisitCounts {
+        self.revisits
     }
 
     /// Record one filed screen record; only a first-ever record counts.
@@ -560,7 +586,7 @@ impl History {
 /// markers rather than from the creature in hand. A **corpus change** does open
 /// a new epoch — [`Self::sweeps_completed_epoch`] counts markers filed under the
 /// corpus in hand — for the same reason coverage does (Issue #100).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Passes {
     /// Exhausted-sweep restarts during **this** Ockham invocation (Issue #77).
@@ -599,6 +625,29 @@ pub struct Passes {
     /// batches: what it answers is how much of the run's work went over ground
     /// the fleet had already covered.
     pub revisited_run: usize,
+    /// Every visit attempt this run, including repeat visits caused by accepted
+    /// cuts rebuilding the sweep (#161).
+    #[serde(default)]
+    pub visits_run: usize,
+    /// Hidden-neuron share of [`Self::visits_run`] (#163).
+    #[serde(default)]
+    pub neuron_visits_run: usize,
+    /// Synapse share of [`Self::visits_run`] (#163).
+    #[serde(default)]
+    pub synapse_visits_run: usize,
+    /// Revisit attempts over keys that were already checked when the run opened.
+    #[serde(default)]
+    pub revisit_attempts_run: usize,
+    /// Hidden-neuron share of [`Self::revisit_attempts_run`].
+    #[serde(default)]
+    pub neuron_revisits_run: usize,
+    /// Synapse share of [`Self::revisit_attempts_run`].
+    #[serde(default)]
+    pub synapse_revisits_run: usize,
+    /// Creature-equivalent work this invocation performed: total visit attempts
+    /// divided by the final current-incumbent visit population (#161).
+    #[serde(default)]
+    pub equivalent_passes_run: f64,
 }
 
 impl Passes {
@@ -615,10 +664,51 @@ impl Passes {
             current_pass: sweeps_completed_epoch + 1,
             visited_run,
             revisited_run,
+            visits_run: 0,
+            neuron_visits_run: 0,
+            synapse_visits_run: 0,
+            revisit_attempts_run: 0,
+            neuron_revisits_run: 0,
+            synapse_revisits_run: 0,
+            equivalent_passes_run: 0.0,
         }
     }
 
-    /// The description lines: the pass counters, then this run's visits.
+    /// Build pass telemetry from attempt counters rather than distinct keys.
+    ///
+    /// This is the topology-tolerant measurement path (#161): an accepted cut
+    /// may rebuild a permutation before `Sweep::exhausted()` ever fires, but it
+    /// cannot erase visit attempts already counted here. The strict restart
+    /// counters remain beside it, explicitly separate.
+    pub fn measured(
+        sweep_restarts_run: u64,
+        sweeps_completed_epoch: u64,
+        visits: VisitCounts,
+        revisits: VisitCounts,
+        population: usize,
+    ) -> Self {
+        Self {
+            sweep_restarts_run,
+            sweeps_completed_epoch,
+            current_pass: sweeps_completed_epoch + 1,
+            visited_run: visits.total,
+            revisited_run: revisits.total,
+            visits_run: visits.total,
+            neuron_visits_run: visits.neurons,
+            synapse_visits_run: visits.synapses,
+            revisit_attempts_run: revisits.total,
+            neuron_revisits_run: revisits.neurons,
+            synapse_revisits_run: revisits.synapses,
+            equivalent_passes_run: if population == 0 {
+                0.0
+            } else {
+                visits.total as f64 / population as f64
+            },
+        }
+    }
+
+    /// The description lines: strict sweep counters, topology-tolerant rescan
+    /// work, then the neuron/synapse visit split.
     ///
     /// ```text
     /// passes:    3 complete this epoch · 1 this run · pass 4 in progress
@@ -631,10 +721,30 @@ impl Passes {
     /// `visits:` line is omitted when the run reached nothing.
     fn lines(&self) -> Vec<String> {
         let mut out = vec![format!(
-            "{:<11}{} complete this epoch · {} this run · pass {} in progress",
+            "{:<11}{} strict complete this epoch · {} strict this run · pass {} in progress",
             "passes:", self.sweeps_completed_epoch, self.sweep_restarts_run, self.current_pass
         )];
-        if self.visited_run > 0 {
+        if self.visits_run > 0 {
+            out.push(format!(
+                "{:<11}{:.2} creature-equivalent this run · {} visit attempts",
+                "rescan:", self.equivalent_passes_run, self.visits_run
+            ));
+            if self.synapse_visits_run > 0 {
+                out.push(format!(
+                    "{:<11}neurons {} ({} revisits) · synapses {} ({} revisits)",
+                    "visits:",
+                    self.neuron_visits_run,
+                    self.neuron_revisits_run,
+                    self.synapse_visits_run,
+                    self.synapse_revisits_run
+                ));
+            } else {
+                out.push(format!(
+                    "{:<11}neurons {} ({} revisits)",
+                    "visits:", self.neuron_visits_run, self.neuron_revisits_run
+                ));
+            }
+        } else if self.visited_run > 0 {
             out.push(format!(
                 "{:<11}{} hidden neurons visited this run · {} revisited",
                 "visits:", self.visited_run, self.revisited_run
@@ -2169,7 +2279,7 @@ mod tests {
         let block = report.description(100);
         assert!(
             block.contains(
-                "passes:    7 complete this epoch · 1 this run · pass 8 in progress\n\
+                "passes:    7 strict complete this epoch · 1 strict this run · pass 8 in progress\n\
                  visits:    120 hidden neurons visited this run · 118 revisited"
             ),
             "{block}"
@@ -2216,7 +2326,9 @@ mod tests {
         };
         let block = opening.description(100);
         assert!(
-            block.contains("passes:    0 complete this epoch · 0 this run · pass 1 in progress"),
+            block.contains(
+                "passes:    0 strict complete this epoch · 0 strict this run · pass 1 in progress"
+            ),
             "{block}"
         );
         assert!(
@@ -2333,21 +2445,25 @@ mod tests {
     /// Issue #140: a revisit is work, not new coverage. Both figures are kept,
     /// and neither is allowed to stand in for the other.
     #[test]
-    fn visits_count_every_uuid_reached_while_progress_counts_only_new_ones() {
+    fn visit_attempts_count_repeat_work_while_progress_counts_only_new_keys() {
         let existing = vec![screen("h_a", 10), screen("h_b", 11)];
         let mut progress = ScreenProgress::new(&existing);
-        assert_eq!(progress.visited(), 0);
+        assert_eq!(progress.visit_counts().total, 0);
 
         progress.visit("h_a");
         progress.visit("h_a");
         progress.visit("h_b");
         progress.visit("h_new");
         assert_eq!(
-            progress.visited(),
-            3,
-            "a uuid is visited once, however often"
+            progress.visit_counts().total,
+            4,
+            "repeat visits are real work and stay counted"
         );
-        assert_eq!(progress.revisited(), 2, "h_a and h_b were already checked");
+        assert_eq!(
+            progress.revisit_counts().total,
+            3,
+            "two h_a visits plus h_b were revisits"
+        );
         assert_eq!(
             progress.count(),
             0,
@@ -2356,7 +2472,11 @@ mod tests {
 
         progress.observe("h_new");
         assert_eq!(progress.count(), 1);
-        assert_eq!(progress.revisited(), 2, "the new uuid is not a revisit");
+        assert_eq!(
+            progress.revisit_counts().total,
+            3,
+            "the new uuid is not a revisit"
+        );
     }
 
     #[test]
