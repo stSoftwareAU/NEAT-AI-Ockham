@@ -2147,12 +2147,20 @@ fn ockham_loop(
         log::warn(&warning);
     }
 
-    // The accept published `best.json` before the tail screened anything, so
-    // its `sweep X/Y` is the figure at the cut rather than the one the run
-    // finished on. Re-stamp it, or the check-in subject would still report the
-    // stalled coverage this issue is about (#91). Only the tag changes: the
-    // creature published is the one the accept produced.
-    if coverage_tail && let Some(stamp) = &last_accept {
+    // The one snapshot every final figure is rendered from (#171): the
+    // coverage just measured, over the creature the run finished on.
+    let snapshot = crate::coverage::Snapshot::final_over(incumbent.checksum.clone());
+
+    // An accept publishes `best.json` the moment it lands, so the `sweep X/Y`
+    // in its check-in subject is the figure at the cut — and the run keeps
+    // screening afterwards, whether in a coverage tail (#91) or in the rebuilt
+    // sweep a search accept restarts. Re-stamp the subject from the same final
+    // snapshot the commit description is written from, or the two disagree:
+    // one GRQ-sampler commit reported 10338/55649 in its subject and
+    // 13481/55649 in its body (#171). Only the tag changes: the creature
+    // published is the one the accept produced, which is the creature the
+    // snapshot was measured over.
+    if let Some(stamp) = &last_accept {
         meta.stamp_acceptance(&OckhamProgress {
             accepts: stamp.accepts,
             experiments: stamp.experiments,
@@ -2166,7 +2174,10 @@ fn ockham_loop(
             epoch: store.map(|_| corpus.identity.as_str()),
         });
         publish_best(config, &meta, &incumbent.creature, &stamp.checksum)?;
-        log::detail("coverage: re-stamped the check-in tag with the run's final coverage");
+        log::detail(&format!(
+            "coverage: re-stamped the check-in tag from the final snapshot (creature {})",
+            crate::coverage::short_id(&snapshot.creature)
+        ));
     }
 
     // Coverage is only meaningful with the screen store behind it; without one
@@ -2252,6 +2263,7 @@ fn ockham_loop(
             .filter(crate::coverage::History::has_any),
             passes: Some(passes),
             throughput: Some(throughput),
+            snapshot: Some(snapshot),
         };
         match crate::coverage::write_files(&config.output_dir, &report, config.candidates) {
             Ok(()) => log::detail(&format!(
@@ -4557,6 +4569,198 @@ mod tests {
             journal.contains(r#""record":"coverageTail""#) && journal.contains(r#""ended":"#),
             "the tail's own end is journalled, not folded into the accept's stop reason: \
              {journal}"
+        );
+    }
+
+    /// A creature whose one hidden neuron fans in from `inputs` inputs.
+    ///
+    /// Cutting the neuron rewires every input straight to the output, so the
+    /// accept both **changes the denominator** and mints visit keys the fleet
+    /// has never screened — the topology rebuild Issue #171 has to stay
+    /// consistent across. The razor refuses an input-sourced edge, so those new
+    /// visits are reached, blocked and counted as checked after the cut.
+    fn fan_in_paths(
+        tmp: &std::path::Path,
+        inputs: usize,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        use crate::fixtures::{neuron, synapse};
+        let mut synapses: Vec<neat_core::SynapseExport> = (0..inputs)
+            .map(|i| synapse(&format!("input-{i}"), "h_a", 1.0))
+            .collect();
+        synapses.push(synapse("h_a", "output-0", 1.0));
+        let c = crate::fixtures::creature(
+            inputs,
+            1,
+            vec![
+                neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            synapses,
+        );
+        let creature = tmp.join("creature.json");
+        std::fs::write(&creature, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[
+                (vec![1.0f32; inputs], vec![1.0f32]),
+                (vec![2.0f32; inputs], vec![2.0f32]),
+            ],
+        )
+        .unwrap();
+        (creature, train)
+    }
+
+    /// `(checked, checkable, percent)` from the `sweep X/Y (Z% …)` clause of
+    /// the check-in subject held in `best.json`'s `ockham` tag.
+    fn subject_sweep(best: &str) -> (usize, usize, String) {
+        let value: serde_json::Value = serde_json::from_str(best).unwrap();
+        let subject = value["tags"]
+            .as_array()
+            .expect("creature tags")
+            .iter()
+            .find(|t| t["name"] == "ockham")
+            .and_then(|t| t["value"].as_str())
+            .expect("ockham tag")
+            .to_string();
+        let clause = subject
+            .split_once("sweep ")
+            .unwrap_or_else(|| panic!("no sweep clause in the subject: {subject}"))
+            .1;
+        let (figures, rest) = clause.split_once(" (").expect("sweep figures");
+        let (checked, checkable) = figures.split_once('/').expect("checked/checkable");
+        let percent = rest.split_once('%').expect("percentage").0;
+        (
+            checked.trim().parse().expect("checked"),
+            checkable.trim().parse().expect("checkable"),
+            percent.to_string(),
+        )
+    }
+
+    /// The same three figures from the `sweep:` line of `coverage.txt`.
+    fn description_sweep(text: &str) -> (usize, usize, String) {
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("sweep:"))
+            .unwrap_or_else(|| panic!("no sweep line in the description: {text}"));
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let percent = fields
+            .iter()
+            .find(|f| f.starts_with('('))
+            .expect("percentage")
+            .trim_start_matches('(')
+            .trim_end_matches('%');
+        (
+            fields[1].parse().expect("checked"),
+            fields[3].parse().expect("checkable"),
+            percent.to_string(),
+        )
+    }
+
+    /// Issue #171: one snapshot behind the subject and the description alike.
+    ///
+    /// The check-in tag was stamped at the accept and re-stamped only when a
+    /// **coverage tail** ran, so a search accept — which rebuilds the sweep and
+    /// keeps screening — left the subject reporting the coverage at the cut
+    /// while `coverage.txt`, written when the run ended, reported everything
+    /// screened after it. That is the GRQ-sampler commit reporting
+    /// `sweep 10338/55649 (18.6%)` in its subject and `13481/55649 (24.2%)` in
+    /// its body.
+    #[test]
+    fn a_search_accept_reports_one_snapshot_in_the_subject_and_the_description() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = fan_in_paths(tmp.path(), 6);
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(8),
+            seed: Some(1),
+            candidates: 8,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            ..test_defaults()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert!(run.accepts >= 1, "the run must publish an accept to stamp");
+
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert_eq!(
+            subject_sweep(&best),
+            description_sweep(&text),
+            "the subject and the description must render one snapshot\nbest: {best}\n\
+             coverage.txt: {text}"
+        );
+        // The cut rewired six input edges onto the output, so the accept both
+        // shrank the denominator and minted visit keys nothing had screened.
+        // The published figures are the ones measured after that rebuild.
+        assert_eq!(
+            description_sweep(&text),
+            (6, 6, "100.0".to_string()),
+            "the figures are the final snapshot's, not the accept's: {text}"
+        );
+        assert!(
+            text.contains("snapshot:  final · creature "),
+            "the description names the snapshot every figure came from: {text}"
+        );
+        let json =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_JSON_FILE))
+                .unwrap();
+        let report: crate::coverage::CoverageReport = serde_json::from_str(&json).unwrap();
+        let (checked, checkable, percent) = description_sweep(&text);
+        assert_eq!(
+            (report.coverage.checked, report.coverage.checkable),
+            (checked, checkable)
+        );
+        assert_eq!(format!("{:.1}", report.coverage.percent()), percent);
+        assert_eq!(
+            report.snapshot.as_ref().map(|s| s.stage),
+            Some(crate::coverage::SnapshotStage::Final),
+            "the JSON names the same snapshot the text does: {json}"
+        );
+    }
+
+    /// The replay/rebase path publishes the same one snapshot (Issue #171).
+    ///
+    /// A replayed win opens a coverage tail, and the tail keeps screening after
+    /// `best.json` was published — the case #91 first re-stamped for. The
+    /// subject and the description must still agree figure for figure.
+    #[test]
+    fn a_replay_accept_reports_one_snapshot_in_the_subject_and_the_description() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d", "h_e"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        seed_verdicts(&store, &[("h_a", Outcome::Accepted, None, 10)]);
+        let cfg = coverage_tail_cfg(creature, train, tmp.path().join("out"), learnings_dir, 2, 4);
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.stop_reason, "replay-accepts");
+
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert_eq!(
+            subject_sweep(&best),
+            description_sweep(&text),
+            "the tail screened after the accept published, so both surfaces must \
+             report what it finished on\nbest: {best}\ncoverage.txt: {text}"
         );
     }
 

@@ -66,19 +66,27 @@ pub const COVERAGE_JSON_FILE: &str = "coverage.json";
 /// Characters of a corpus identity a human-readable epoch clause carries.
 pub const EPOCH_SHORT_LEN: usize = 8;
 
-/// Compact epoch id for a commit subject or a log line (Issue #102).
+/// Compact form of any identity for a one-line surface (Issue #171).
 ///
-/// The first [`EPOCH_SHORT_LEN`] characters of the corpus identity — enough to
-/// see that the epoch changed, short enough for a commit subject. The full
-/// identity is never dropped: `coverage.json` and the journal `coverage` record
-/// both carry it, so a reset stays diagnosable exactly.
+/// The first [`EPOCH_SHORT_LEN`] characters — enough to see that the identity
+/// changed, short enough for a commit subject. The full identity is never
+/// dropped: `coverage.json` carries it, so a change stays diagnosable exactly.
 ///
 /// Truncation is on a character boundary, so a non-hex identity cannot panic.
-pub fn short_epoch(identity: &str) -> &str {
+pub fn short_id(identity: &str) -> &str {
     match identity.char_indices().nth(EPOCH_SHORT_LEN) {
         Some((end, _)) => &identity[..end],
         None => identity,
     }
+}
+
+/// Compact epoch id for a commit subject or a log line (Issue #102).
+///
+/// [`short_id`] over the corpus identity: one truncation rule serves the epoch
+/// and the creature alike, so two identities rendered beside each other are
+/// never shortened on different terms.
+pub fn short_epoch(identity: &str) -> &str {
+    short_id(identity)
 }
 
 /// Screening coverage of one incumbent at one moment.
@@ -204,6 +212,33 @@ impl Coverage {
             out.push_str(&format!(", {} tagged", self.tagged));
         }
         out
+    }
+
+    /// The compact `sweep X/Y (Z% of epoch <id>)` clause (Issue #171).
+    ///
+    /// What the GRQ-sampler commit **subject** carries. It is rendered here,
+    /// beside [`Self::summary`] and [`Self::description`], so the subject reads
+    /// its numerator, its denominator and its percentage from the same
+    /// [`Coverage`] value and the same arithmetic as the body: a subject that
+    /// disagreed with the description was two different snapshots rendered by
+    /// two different pieces of code, and this removes the second of those.
+    ///
+    /// `of epoch` is not decoration (Issue #102): `sweep 7284/7284 (100.0%)`
+    /// reads as "Ockham has finished", and the next corpus makes that reading
+    /// false, so the scope travels with the figure. `epoch` is the full corpus
+    /// identity — it is rendered in [`short_epoch`] form here — and `None`
+    /// leaves the clause reading `of epoch` with no id: still scoped, just
+    /// unnamed.
+    pub fn subject_clause(&self, epoch: Option<&str>) -> String {
+        let epoch = epoch
+            .map(|id| format!(" {}", short_epoch(id)))
+            .unwrap_or_default();
+        format!(
+            "sweep {}/{} ({:.1}% of epoch{epoch})",
+            self.checked,
+            self.checkable,
+            self.percent()
+        )
     }
 
     /// Visits with no screen record yet — neurons and synapses alike (#137).
@@ -842,6 +877,89 @@ impl ScreenHistory {
     }
 }
 
+/// When one set of coverage figures was measured (Issue #171).
+///
+/// Every figure a run publishes has to come from **one** measurement, and the
+/// reader has to be able to see which. Before this, the check-in subject was
+/// stamped as an accept published `best.json` and `coverage.txt` was written
+/// when the run ended, so one commit could report `sweep 10338/55649 (18.6%)`
+/// in its subject and `13481/55649 (24.2%)` in its body with nothing to say
+/// which was which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotStage {
+    /// Measured as an accept published its creature, mid-run.
+    ///
+    /// A working figure, superseded by the [`Self::Final`] snapshot the same
+    /// run stamps over it before it exits. It is never the stage a published
+    /// artefact carries.
+    Accept,
+    /// Measured after the final accepted creature was selected.
+    ///
+    /// The one snapshot the subject, the description, `coverage.txt` and
+    /// `coverage.json` are all rendered from.
+    Final,
+}
+
+impl SnapshotStage {
+    /// The word the description line carries.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Final => "final",
+        }
+    }
+}
+
+/// The measurement every figure in one [`CoverageReport`] came from (#171).
+///
+/// Immutable by construction: it is built once, from the creature the counts
+/// were taken over, and carried into the report rather than re-derived per
+/// surface. Naming the creature is what ties the neuron count, the synapse
+/// count and their combined total together — all three are of *this* creature,
+/// so a topology change between two surfaces is visible as a different
+/// creature id rather than as figures that quietly fail to add up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snapshot {
+    /// Which measurement this is.
+    pub stage: SnapshotStage,
+    /// Checksum of the creature every count in the report was measured over.
+    pub creature: String,
+}
+
+impl Snapshot {
+    /// The snapshot taken after the final accepted creature was selected.
+    pub fn final_over(creature_checksum: impl Into<String>) -> Self {
+        Self {
+            stage: SnapshotStage::Final,
+            creature: creature_checksum.into(),
+        }
+    }
+
+    /// The description line, naming the stage, the creature and the population.
+    ///
+    /// ```text
+    /// snapshot:  final · creature 6fc028da · 4 hidden + 9 synapses = 13 visits
+    /// ```
+    ///
+    /// The arithmetic is spelled out because the three counts are the ones a
+    /// reader most needs to know are of one creature: `hidden + synapses`
+    /// **is** the `sweep:` denominator, so a line that did not add up would be
+    /// two snapshots mixed rather than one reported.
+    fn line(&self, coverage: &Coverage) -> String {
+        format!(
+            "{:<11}{} · creature {} · {} hidden + {} synapses = {} visits",
+            "snapshot:",
+            self.stage.label(),
+            short_id(&self.creature),
+            coverage.hidden,
+            coverage.synapses,
+            coverage.checkable
+        )
+    }
+}
+
 /// The commit-description artefact: coverage, plus the run's winner economics.
 ///
 /// [`Coverage`] is flattened, so a consumer that deserialises `coverage.json`
@@ -906,6 +1024,15 @@ pub struct CoverageReport {
     /// still deserialises.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub throughput: Option<crate::throughput::Throughput>,
+    /// The one measurement every figure above was taken from (Issue #171).
+    ///
+    /// Named rather than implied: the check-in subject, `coverage.txt` and
+    /// `coverage.json` are rendered from this report, so stamping the report
+    /// with its own snapshot is what lets a reader confirm the three surfaces
+    /// describe one creature at one moment. `#[serde(default)]` so an artefact
+    /// written before this field existed still deserialises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Snapshot>,
 }
 
 impl CoverageReport {
@@ -919,7 +1046,19 @@ impl CoverageReport {
             history: None,
             passes: None,
             throughput: None,
+            snapshot: None,
         }
+    }
+
+    /// The commit-subject coverage clause for this report (Issue #171).
+    ///
+    /// The subject and [`Self::description`] are two renderings of one report,
+    /// so they read the same numerator, denominator, epoch and percentage. A
+    /// caller that stamps a subject from anything else is the bug this exists
+    /// to prevent.
+    pub fn subject_clause(&self) -> String {
+        self.coverage
+            .subject_clause(self.corpus_identity.as_deref())
     }
 
     /// The full commit-description block: coverage, epoch, progress, winners.
@@ -938,6 +1077,10 @@ impl CoverageReport {
         let mut out = self
             .coverage
             .description(candidates, self.corpus_identity.as_deref());
+        if let Some(snapshot) = &self.snapshot {
+            out.push('\n');
+            out.push_str(&snapshot.line(&self.coverage));
+        }
         out.push_str(&format!(
             "\n{:<11}{} newly checked this run",
             "progress:", self.newly_screened
@@ -1829,6 +1972,7 @@ mod tests {
             history: None,
             passes: None,
             throughput: None,
+            snapshot: None,
         };
         assert_eq!(
             report.description(100),
@@ -1884,6 +2028,7 @@ mod tests {
                 5013,
                 2000,
             )),
+            snapshot: None,
         };
         let block = report.description(100);
         assert!(
@@ -1961,6 +2106,7 @@ mod tests {
             history: None,
             passes: None,
             throughput: None,
+            snapshot: None,
         };
         let block = report.description(100);
         assert!(block.ends_with("winners:   4 screened · 0 confirmed · 0 applied · 0 carried"));
@@ -1982,6 +2128,7 @@ mod tests {
             history: None,
             passes: None,
             throughput: None,
+            snapshot: None,
         };
         let block = report.description(100);
         assert!(
@@ -2002,6 +2149,7 @@ mod tests {
             history: None,
             passes: None,
             throughput: None,
+            snapshot: None,
         };
         write_files(&dir, &report, 100).unwrap();
 
@@ -2811,6 +2959,94 @@ mod tests {
             "the stored denominator is not re-derived"
         );
         assert!(!cov.description(100, None).contains("synapses:"));
+    }
+
+    /// Issue #171: the subject and the body are two renderings of one report.
+    #[test]
+    fn the_subject_clause_and_the_description_report_one_set_of_figures() {
+        let report = CoverageReport {
+            coverage: Coverage {
+                synapses: 2000,
+                synapses_checked: 330,
+                checkable: 7013,
+                ..fleet_coverage()
+            },
+            corpus_identity: Some("6fc028daffffffff".into()),
+            snapshot: Some(Snapshot::final_over("9ab3c1d2e3f40506")),
+            ..CoverageReport::new(fleet_coverage())
+        };
+
+        let subject = report.subject_clause();
+        assert_eq!(subject, "sweep 1204/7013 (17.2% of epoch 6fc028da)");
+
+        let description = report.description(100);
+        let sweep = description
+            .lines()
+            .find(|l| l.starts_with("sweep:"))
+            .expect("sweep line");
+        assert_eq!(sweep, "sweep:     1204 of 7013 visits (17.2% of epoch)");
+        assert!(
+            description.contains("epoch:     corpus 6fc028da"),
+            "one epoch identity, shortened the same way: {description}"
+        );
+    }
+
+    /// The snapshot line ties the two populations to one named creature.
+    #[test]
+    fn the_snapshot_line_names_the_creature_and_adds_the_populations_up() {
+        let report = CoverageReport {
+            coverage: Coverage {
+                hidden: 4,
+                tagged: 0,
+                checkable: 13,
+                checked: 6,
+                synapses: 9,
+                synapses_checked: 5,
+                blocked: 0,
+                blocked_by_reason: Default::default(),
+                cut: 1,
+            },
+            snapshot: Some(Snapshot::final_over("6fc028da1234567890")),
+            ..CoverageReport::new(fleet_coverage())
+        };
+
+        assert!(
+            report.description(100).contains(
+                "snapshot:  final · creature 6fc028da · 4 hidden + 9 synapses = 13 visits"
+            ),
+            "{}",
+            report.description(100)
+        );
+    }
+
+    /// Issue #171: an artefact written before the snapshot existed still reads,
+    /// and a report that names no snapshot renders the block as it always did.
+    #[test]
+    fn a_pre_171_coverage_json_reads_and_renders_as_it_did() {
+        let json = r#"{
+            "hidden": 5013,
+            "tagged": 42,
+            "checkable": 5013,
+            "checked": 1204,
+            "cut": 7,
+            "newlyScreened": 100
+        }"#;
+        let old: CoverageReport =
+            serde_json::from_str(json).expect("a pre-#171 artefact must still read");
+        assert_eq!(old.snapshot, None);
+        assert!(
+            !old.description(100).contains("snapshot:"),
+            "the line is omitted rather than rendered empty: {}",
+            old.description(100)
+        );
+        assert_eq!(
+            old.description(100),
+            CoverageReport {
+                newly_screened: 100,
+                ..CoverageReport::new(fleet_coverage())
+            }
+            .description(100)
+        );
     }
 
     /// A synapse's history must be visible to the cumulative line — and so to
