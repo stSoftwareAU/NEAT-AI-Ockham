@@ -1379,7 +1379,7 @@ unchecked: 3809 remaining this epoch (~39 runs at 100/run)
 blocked:   412 checked with no cut proposed
 reasons:   missing-activation 380 (92.2%) · validation-failed 32 (7.8%)
 tagged:    42 carry tags, screened like any other
-snapshot:  final · creature 4b1d90c7 · 5013 hidden + 2000 synapses = 7013 visits
+snapshot:  final · creature 4b1d90c7 · 3013 hidden + 2000 synapses = 5013 visits
 progress:  100 newly checked this run
 passes:    7 complete this epoch · 1 this run · pass 8 in progress
 visits:    120 hidden neurons visited this run · 118 revisited
@@ -1462,7 +1462,10 @@ eta:       visit rescan ~0.2h · scored rescan ~0.8h · 5013 neurons + 2000 edge
   from (#171): the stage (`final` — after the last accepted creature was
   selected), the creature the counts were taken over, and the two populations
   that add up to the `sweep:` denominator. It sits directly under those figures
-  and is omitted only by an artefact written before it existed. See
+  and is omitted only by an artefact written before it existed. It scopes the
+  **current-epoch** figures and the run's own counts; the `history:` line below
+  it stays cumulative across every epoch and says so in its own words, so the
+  two are never read as one number. See
   [One snapshot, four surfaces](#one-snapshot-four-surfaces);
 - `coverage.json` carries the same per-run figure under `newlyScreened`, the
   epoch under `corpusIdentity` (in full), the cumulative figures under an
@@ -1472,9 +1475,8 @@ eta:       visit rescan ~0.2h · scored rescan ~0.8h · 5013 neurons + 2000 edge
   `winners` key and the funnel, rates and ETAs under an additive `throughput`
   key (`elapsedMs`, `funnel`, `hidden`, `synapses`, `visitsPerHour`,
   `proposedPerHour`, `screenedPerHour`, `fullScoredPerHour`,
-  `proposableEstimate`, `visitRescanHours`, `scoredRescanHours`), the
-  measurement itself under an additive `snapshot` key (`stage`, `creature`),
-  and
+  `proposableEstimate`, `visitRescanHours`, `scoredRescanHours`) and the
+  measurement itself under an additive `snapshot` key (`stage`, `creature`), and
   still deserialises straight into `Coverage` for a consumer that ignores them,
   so nothing downstream needs to parse the prose. `ockham report` reads the same
   `throughput` snapshot back off the journal's `coverage` record, so the three
@@ -1536,7 +1538,7 @@ flowchart TD
     R --> S["subject_clause<br/>→ re-stamped ockham tag"]
     R --> D["description<br/>→ coverage.txt"]
     R --> J["serialised<br/>→ coverage.json"]
-    R --> V["journal coverage record<br/>→ ockham report"]
+    F --> V["journal coverage record<br/>→ ockham report"]
 ```
 
 ### Unchecked-first selection

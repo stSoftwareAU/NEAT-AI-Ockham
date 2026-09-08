@@ -2147,10 +2147,6 @@ fn ockham_loop(
         log::warn(&warning);
     }
 
-    // The one snapshot every final figure is rendered from (#171): the
-    // coverage just measured, over the creature the run finished on.
-    let snapshot = crate::coverage::Snapshot::final_over(incumbent.checksum.clone());
-
     // An accept publishes `best.json` the moment it lands, so the `sweep X/Y`
     // in its check-in subject is the figure at the cut — and the run keeps
     // screening afterwards, whether in a coverage tail (#91) or in the rebuilt
@@ -2160,7 +2156,15 @@ fn ockham_loop(
     // 13481/55649 in its body (#171). Only the tag changes: the creature
     // published is the one the accept produced, which is the creature the
     // snapshot was measured over.
-    if let Some(stamp) = &last_accept {
+    //
+    // Guarded on the screen store because that is the only thing the re-stamp
+    // can change: without one there is no coverage to carry, so the tag the
+    // accept wrote is already the tag the run finishes on, and re-publishing
+    // `best.json` to say nothing new would be a write that claims work it did
+    // not do.
+    if store.is_some()
+        && let Some(stamp) = &last_accept
+    {
         meta.stamp_acceptance(&OckhamProgress {
             accepts: stamp.accepts,
             experiments: stamp.experiments,
@@ -2174,10 +2178,7 @@ fn ockham_loop(
             epoch: store.map(|_| corpus.identity.as_str()),
         });
         publish_best(config, &meta, &incumbent.creature, &stamp.checksum)?;
-        log::detail(&format!(
-            "coverage: re-stamped the check-in tag from the final snapshot (creature {})",
-            crate::coverage::short_id(&snapshot.creature)
-        ));
+        log::detail("coverage: re-stamped the check-in tag from the run's final snapshot");
     }
 
     // Coverage is only meaningful with the screen store behind it; without one
@@ -2263,7 +2264,12 @@ fn ockham_loop(
             .filter(crate::coverage::History::has_any),
             passes: Some(passes),
             throughput: Some(throughput),
-            snapshot: Some(snapshot),
+            // The one snapshot every final figure is rendered from (#171):
+            // `cov`, measured above over the creature the run finished on, and
+            // the same value the re-stamped check-in subject carries.
+            snapshot: Some(crate::coverage::Snapshot::final_over(
+                incumbent.checksum.clone(),
+            )),
         };
         match crate::coverage::write_files(&config.output_dir, &report, config.candidates) {
             Ok(()) => log::detail(&format!(

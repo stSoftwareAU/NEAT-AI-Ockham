@@ -66,14 +66,15 @@ pub const COVERAGE_JSON_FILE: &str = "coverage.json";
 /// Characters of a corpus identity a human-readable epoch clause carries.
 pub const EPOCH_SHORT_LEN: usize = 8;
 
-/// Compact form of any identity for a one-line surface (Issue #171).
+/// One truncation rule, shared by every identity this module shortens.
 ///
-/// The first [`EPOCH_SHORT_LEN`] characters — enough to see that the identity
-/// changed, short enough for a commit subject. The full identity is never
-/// dropped: `coverage.json` carries it, so a change stays diagnosable exactly.
+/// Private on purpose: [`short_epoch`] is the public spelling, and the creature
+/// identity a [`Snapshot`] renders goes through the same helper (Issue #171),
+/// so two identities printed beside each other are never shortened on different
+/// terms.
 ///
 /// Truncation is on a character boundary, so a non-hex identity cannot panic.
-pub fn short_id(identity: &str) -> &str {
+fn short_id(identity: &str) -> &str {
     match identity.char_indices().nth(EPOCH_SHORT_LEN) {
         Some((end, _)) => &identity[..end],
         None => identity,
@@ -82,9 +83,12 @@ pub fn short_id(identity: &str) -> &str {
 
 /// Compact epoch id for a commit subject or a log line (Issue #102).
 ///
-/// [`short_id`] over the corpus identity: one truncation rule serves the epoch
-/// and the creature alike, so two identities rendered beside each other are
-/// never shortened on different terms.
+/// The first [`EPOCH_SHORT_LEN`] characters of the corpus identity — enough to
+/// see that the epoch changed, short enough for a commit subject. The full
+/// identity is never dropped: `coverage.json` and the journal `coverage` record
+/// both carry it, so a reset stays diagnosable exactly.
+///
+/// Truncation is on a character boundary, so a non-hex identity cannot panic.
 pub fn short_epoch(identity: &str) -> &str {
     short_id(identity)
 }
@@ -885,15 +889,13 @@ impl ScreenHistory {
 /// when the run ended, so one commit could report `sweep 10338/55649 (18.6%)`
 /// in its subject and `13481/55649 (24.2%)` in its body with nothing to say
 /// which was which.
+/// The vocabulary is deliberately one word: every published artefact carries
+/// `final`, and a stage that is not `final` is not something Ockham writes. It
+/// is an enum rather than a free-text field so an unknown stage fails the parse
+/// loudly instead of being read as a measurement this binary understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SnapshotStage {
-    /// Measured as an accept published its creature, mid-run.
-    ///
-    /// A working figure, superseded by the [`Self::Final`] snapshot the same
-    /// run stamps over it before it exits. It is never the stage a published
-    /// artefact carries.
-    Accept,
     /// Measured after the final accepted creature was selected.
     ///
     /// The one snapshot the subject, the description, `coverage.txt` and
@@ -905,7 +907,6 @@ impl SnapshotStage {
     /// The word the description line carries.
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Accept => "accept",
             Self::Final => "final",
         }
     }
@@ -2978,6 +2979,11 @@ mod tests {
 
         let subject = report.subject_clause();
         assert_eq!(subject, "sweep 1204/7013 (17.2% of epoch 6fc028da)");
+        assert_eq!(
+            report.coverage.subject_clause(None),
+            "sweep 1204/7013 (17.2% of epoch)",
+            "an unnamed epoch is still scoped, just unnamed"
+        );
 
         let description = report.description(100);
         let sweep = description
@@ -3010,12 +3016,18 @@ mod tests {
             ..CoverageReport::new(fleet_coverage())
         };
 
-        assert!(
-            report.description(100).contains(
-                "snapshot:  final · creature 6fc028da · 4 hidden + 9 synapses = 13 visits"
-            ),
-            "{}",
-            report.description(100)
+        assert_eq!(
+            report.description(100),
+            concat!(
+                "🪒 Ockham neuron screening coverage\n",
+                "sweep:     6 of 13 visits (46.2% of epoch)\n",
+                "synapses:  5 of 9 edges checked this epoch\n",
+                "cut:       1 this run\n",
+                "unchecked: 7 remaining this epoch (~1 run at 100/run)\n",
+                // Directly under the figures it identifies, above `progress:`.
+                "snapshot:  final · creature 6fc028da · 4 hidden + 9 synapses = 13 visits\n",
+                "progress:  0 newly checked this run",
+            )
         );
     }
 
