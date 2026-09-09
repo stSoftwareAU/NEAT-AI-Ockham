@@ -4,9 +4,9 @@ Issue #172 is the design reference for a decision that was already taken:
 canonical pruning rewrites belong in
 [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core), and Ockham owns
 candidate choice, screening and scoring. The engine was built under core
-project #587 (#588–#592, all closed) and Ockham's consumption of it is issue
-#182. Until now that boundary and its eight preserved principles lived only in
-a GitHub issue: nothing in this repository stopped a new structural-rewrite
+project #587 (#588–#592, all closed) and Ockham's consumption of it is
+issue #182. Until now that boundary and its eight preserved principles lived
+only in a GitHub issue: nothing in this repository stopped a new structural-rewrite
 implementation landing in Ockham, and nothing checked that the core engine
 still upholds the principles #182 will depend on.
 
