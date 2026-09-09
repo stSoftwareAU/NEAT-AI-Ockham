@@ -291,7 +291,7 @@ at all, so no cut is proposed for that edge rather than a scalar nothing
 measured being folded.
 
 The resolver is the value side of the single-synapse cut: it is what supplies
-`ablate_synapse`'s scalar. The sweep that walks a creature's edges and asks for
+the statistical hint `prune_edge` hands the shared engine. The sweep that walks a creature's edges and asks for
 one is the [synapse visit pool](#synapse-visits) below.
 
 ## Synapse visits
@@ -322,15 +322,16 @@ flowchart LR
     S["synapse visit keys<br/>shuffled from the seed"] --> M
     M --> O["Sweep::order<br/>one permutation of every visit"]
     O -->|neuron visit| N["identity → merge →<br/>ablation → constant"]
-    O -->|synapse visit| E["source value → ablate_synapse"]
+    O -->|synapse visit| E["source value → core prune_synapse"]
     N --> C["candidate, or a skip with its blocked reason"]
     E --> C
 ```
 
 A synapse visit resolves its
-[source fold value](#synapse-source-fold-values) and calls `ablate_synapse`. A
+[source fold value](#synapse-source-fold-values) and calls `prune::prune_edge`,
+which asks NEAT-AI-core to remove that `(from, to, role)` triple (Issue #182). A
 source that resolves to nothing is `missing-activation`; every other refusal
-carries the reason the transform itself reported. Either way the visit files a
+carries the reason core itself reported. Either way the visit files a
 skip and the walk advances, exactly as a neuron visit does. A synapse candidate
 carries its `fromUuid`, `toUuid` and `weight` as provenance — no other kind
 serialises those fields — and its `uuid` is the visit key, headed as always by
@@ -2037,7 +2038,7 @@ The benchmark builds a creature carrying exactly the failure mode above: 60
 loud four-neuron chains whose last edge into the output carries weight zero,
 beside 600 quiet neurons wired straight into an output with a heavy weight and
 600 ordinary contributors. Every visited neuron goes through the real
-`ablate_mean` and its recursive cleanup, and the candidate is judged by a
+core prune and its cleanup fixed point, and the candidate is judged by a
 compiled forward pass over 64 fixed probes — **not** by the ranking key. A cut
 is *confirmed* when the outputs are unchanged within `1e-6`.
 
@@ -2226,7 +2227,7 @@ neurons as 1,500 lone neurons and 150 five-neuron chains, with the loud neurons
 carrying the heavy outgoing weights they earned. A quiet neuron is confirmable,
 except that one in ten is not and one loud neuron in twenty is anyway: a ground
 truth that *is* one of the ranking signals would score that signal against
-itself. Growth units are what the real `ablate_mean` and its recursive cleanup
+itself. Growth units are what the real core prune and its cleanup fixed point
 remove, not the ranking key. The budget is deliberately smaller than the sweep,
 because an ordering only matters when the budget cannot reach everything:
 
@@ -2298,7 +2299,7 @@ flowchart LR
     CH --> R{"rank: loudest<br/>mean_abs x importance<br/>÷ cascade saving"}
     BR --> R
     CL --> R
-    R --> G["ablate_group: fold every member's<br/>own mean, then the exact cleanup"]
+    R --> G["core prune_neuron per member,<br/>each on the last one's result"]
     G --> V["creature.validate()"]
     V --> S[sampled screen]
     S --> F[full-corpus scorer]
