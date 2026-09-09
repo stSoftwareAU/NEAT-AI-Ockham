@@ -10,7 +10,22 @@
 # uniqueness by (fromUUID, toUUID, type)). Ockham issue #1 does not yet mutate
 # creatures; the pin documents the sibling we compile against.
 #
-# 0.10.6 -> 0.13.0: acknowledge neat-core #633 (Issue #625, 0.12.0), which made
+# 0.10.6 -> 0.11.4: acknowledge neat-core #619 (0.11.0), the Pruning milestone
+# roll-up (Issues #588, #589 and their siblings). It is additive: it adds the
+# `prune_cleanup`, `prune_fixtures`, `prune_json`, `prune_neuron` and
+# `prune_synapse` modules and their re-exports, and removes or renames nothing
+# Ockham names (`CreatureExport`, `NeuronExport`, `SynapseExport`, `SquashType`,
+# `compile_creature`, `apply_squash`, `parse_creature_json`, `creature_to_json*`,
+# `parse_squash_name`, `parse_synapse_type`, `validate_no_duplicate_synapses`,
+# `training_data`). The minor bump is the milestone policy in neat-core's
+# RELEASING.md, not a signature change. Within the line, 0.11.2 (#626, Issue
+# #613) withdrew the `weighted_sum_*_simd` kernels whose `get_unchecked`
+# preconditions were caller-upheld; Ockham calls none of them. 0.11.1, 0.11.3
+# and 0.11.4 are bump-deps.sh fixes with no library change. No Ockham source
+# change was required; as Issue #183 reports, `cargo build`, clippy with `-D warnings`
+# and the full test suite were green against 0.11.1 with no edit.
+#
+# 0.11.4 -> 0.13.0: acknowledge neat-core #633 (Issue #625, 0.12.0), which made
 # every `CompiledNetwork` field private behind borrow-only accessors so safe
 # code can no longer edit a validated network into an out-of-bounds SIMD read,
 # and 0.13.0 (#637, the security-scan milestone roll-up; nothing Ockham names
