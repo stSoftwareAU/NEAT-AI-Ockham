@@ -208,7 +208,7 @@ fn cascade_dead_sources(working: &mut CreatureExport) -> Vec<RemovedNeuron> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ablation::{AblationSkip, ablate_mean};
+    use crate::prune::prune_hidden_neuron;
     use crate::fixtures::{creature, neuron, synapse, typed_synapse};
     use neat_core::compile_creature;
 
@@ -258,18 +258,18 @@ mod tests {
         xs.iter().map(|&x| net.activate(&[x], 1)[0]).collect()
     }
 
-    /// The point of the whole exercise: a neuron the ablation path blocks is
-    /// proposable here, and the candidate is one NEAT-AI-core accepts.
+    /// The point of the whole exercise: the substitution keeps the **edge**
+    /// the prune removes, so a role-carrying neuron has a second candidate the
+    /// scorer can weigh against losing its structure entirely.
     #[test]
-    fn a_typed_edge_the_ablation_path_blocks_substitutes_a_constant() {
+    fn a_typed_edge_the_prune_removes_can_substitute_a_constant_instead() {
         let incumbent = typed_if_fixture();
         validate_creature(&incumbent).expect("fixture is a valid incumbent");
+        let pruned = prune_hidden_neuron(&incumbent, "h_cond", 0.5, None)
+            .expect("the shared engine rewrites a typed role rather than refusing it");
         assert!(
-            matches!(
-                ablate_mean(&incumbent, "h_cond", 0.5, None),
-                Err(AblationSkip::TypedSynapse { .. })
-            ),
-            "the fixture must be blocked for the ablation path"
+            pruned.creature.neurons.iter().all(|n| n.uuid != "h_cond"),
+            "the prune removes the neuron and the role with it"
         );
 
         let result = substitute_constant(&incumbent, "h_cond", 0.5).expect("substitution");
@@ -316,11 +316,8 @@ mod tests {
     fn the_aggregate_neuron_itself_substitutes_and_its_upstream_cascades() {
         let incumbent = typed_if_fixture();
         assert!(
-            matches!(
-                ablate_mean(&incumbent, "h_if", 0.5, None),
-                Err(AblationSkip::AggregateNeuron { .. } | AblationSkip::AggregateTarget { .. })
-            ),
-            "the aggregate neuron must be blocked for the ablation path"
+            prune_hidden_neuron(&incumbent, "h_if", 0.5, None).is_ok(),
+            "the shared engine builds a candidate for an aggregate neuron too"
         );
 
         let result = substitute_constant(&incumbent, "h_if", -0.75).expect("substitution");

@@ -314,7 +314,7 @@ pub fn group_batch(
             Ok(built) => {
                 let stem = format!("g{:03}", batch.candidates.len());
                 batch.candidates.push(BuiltGroup {
-                    cascade: built.cascade_uuids(),
+                    cascade: built.detail.cascade_uuids(),
                     candidate: SweepCandidate {
                         uuid: group.members[0].clone(),
                         members: group.members,
@@ -615,7 +615,7 @@ impl<'a> Topology<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ablation::{GroupMember, ablate_group};
+    use crate::prune::{GroupMember, prune_hidden_group, prune_hidden_neuron};
     use crate::fixtures::{creature, neuron, synapse, typed_synapse};
     use crate::stats::{NeuronStats, STATS_FORMAT_VERSION, SampleSpec};
     use neat_core::CreatureExport;
@@ -823,7 +823,7 @@ mod tests {
                         mean: stats.by_uuid(uuid).unwrap().mean,
                     })
                     .collect();
-                let built = ablate_group(&creature, &members)
+                let built = prune_hidden_group(&creature, &members)
                     .unwrap_or_else(|e| panic!("{:?} must build: {e}", group.members));
                 // What the dry run predicted is what the transform removed.
                 assert_eq!(
@@ -905,11 +905,11 @@ mod tests {
                 mean: stats.by_uuid(uuid).unwrap().mean,
             })
             .collect();
-        let grouped = ablate_group(&creature, &members).unwrap();
+        let grouped = prune_hidden_group(&creature, &members).unwrap();
         let group_saving = grouped.before.growth_units - grouped.after.growth_units;
         for uuid in &cluster.members {
             let mean = stats.by_uuid(uuid).unwrap().mean;
-            let single = crate::ablation::ablate_mean(&creature, uuid, mean, None).unwrap();
+            let single = prune_hidden_neuron(&creature, uuid, mean, None).unwrap();
             let single_saving = single.before.growth_units - single.after.growth_units;
             assert!(
                 group_saving > single_saving,

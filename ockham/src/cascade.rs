@@ -8,8 +8,8 @@
 //! much it would remove.
 //!
 //! The dry run never touches the incumbent. It walks an index of the creature
-//! and counts, applying the same two exact rules the cleanup cascade of
-//! [`crate::ablation::ablate_mean`] applies, in the same priority order:
+//! and counts, applying the two exact cleanup rules Ockham has always modelled
+//! here, in the same priority order:
 //!
 //! 1. a listed non-output neuron with no outgoing synapse is removed;
 //! 2. a hidden neuron with no incoming synapse folds to a constant and is
@@ -19,10 +19,13 @@
 //! is considered, so the estimate for a given creature and cut is the same on
 //! every run and under any listing order.
 //!
-//! Structure the transform refuses is predicted too: an aggregate or unknown
-//! squash, an aggregate fold target and a typed edge each make the ablation
-//! fail closed, and a cut the razor could never build is reported as saving
-//! nothing rather than as the largest cascade on the creature.
+//! Structure this index cannot reason about is reported as saving **nothing**
+//! rather than as the largest cascade on the creature: an aggregate or unknown
+//! squash, an aggregate fold target and a typed edge are all rewritten by the
+//! shared NEAT-AI-core engine ([`crate::prune`], Issue #182) in ways a
+//! topology-only walk does not model. The razor still attempts those cuts —
+//! the estimate simply declines to price them, so it is a floor on what a cut
+//! saves and never a promise the run cannot keep.
 //!
 //! The estimate is still a prioritisation signal only. It reasons about
 //! topology and knows nothing of behaviour, so a candidate it ranks first can
@@ -178,10 +181,9 @@ impl<'a> CascadeIndex<'a> {
     /// Every synapse from `from_uuid` to `to_uuid`, by index.
     ///
     /// The **whole** pair, not the first match: NEAT-AI-core rule 26 lets a
-    /// pair repeat with distinct roles, and `ablation::ablate_synapse` requires
-    /// every edge on the pair to be ordinary before it will cut any of them. An
-    /// ordinary edge listed ahead of a typed one would otherwise be predicted
-    /// as cuttable and refused in practice.
+    /// pair repeat with distinct roles, and a pair carrying one is rewritten
+    /// rather than plainly cut. An ordinary edge listed ahead of a typed one
+    /// would otherwise be priced as a simple cut it is not.
     fn synapses_between(&self, from_uuid: &str, to_uuid: &str) -> Vec<usize> {
         let (Some(&from), Some(&to)) = (self.slots.get(from_uuid), self.slots.get(to_uuid)) else {
             return Vec::new();
@@ -244,16 +246,12 @@ impl<'a> CascadeIndex<'a> {
             if state.cut_synapse[syn] {
                 continue;
             }
-            // The structural refusals `ablation::ablate_synapse` makes, mirrored
-            // here so the estimate never promises a cut the razor cannot take:
-            // any typed edge on the pair carries a role a bias cannot absorb, an
-            // aggregate target is not a sum a fold can reach, and a source the
-            // neuron list does not carry — an implicit `input-N` — has no
-            // activation the transform may fold away.
-            //
-            // The one refusal not modelled is a source whose activation the
-            // corpus scan never measured: that is a fact about the statistics,
-            // not about the topology this index holds.
+            // Structure this index does not model, priced at nothing rather
+            // than guessed at: a typed role, an aggregate target and an
+            // implicit `input-N` source are each rewritten by the shared engine
+            // (Issue #182) in ways a topology-only walk cannot follow. The
+            // razor attempts them; the estimate declines to price them, so it
+            // stays a floor on what a cut saves.
             if edges.iter().any(|&e| self.typed[e])
                 || self.aggregate[self.syn_to[syn]]
                 || self.kind[self.syn_from[syn]] == Kind::External
@@ -432,7 +430,8 @@ pub fn estimate_cut(creature: &CreatureExport, uuids: &[String]) -> CascadeEstim
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ablation::{StructureSnapshot, ablate_mean};
+    use crate::ablation::StructureSnapshot;
+    use crate::prune::prune_hidden_neuron;
     use crate::fixtures::{creature, neuron, synapse};
 
     /// `input-0 → f1 → f2 → hub → output-0`, plus a lone `keep → output-0`.
@@ -535,9 +534,11 @@ mod tests {
         assert_eq!(got.synapses, 0, "a refused cut saves nothing: {got:?}");
     }
 
-    /// The whole pair decides, not the first edge on it: `ablate_synapse`
-    /// requires **every** edge on the pair to be ordinary, so an ordinary edge
-    /// listed ahead of a typed one must still be predicted as refused (#138).
+    /// The whole pair decides, not the first edge on it: a pair carrying a
+    /// typed role is rewritten rather than simply cut since Issue #182, and the
+    /// rewrite is not one this topology-only index models — so the estimate
+    /// credits it with nothing rather than with a saving it cannot stand behind
+    /// (#138).
     #[test]
     fn an_ordinary_edge_beside_a_typed_one_on_the_same_pair_is_predicted_as_refused() {
         let mut creature = crate::fixtures::shortcut_edge_creature();
@@ -551,25 +552,27 @@ mod tests {
         let key = crate::sweep::synapse_key("a", "output-0");
         let got = estimate_cut(&creature, std::slice::from_ref(&key));
         assert!(got.blocked, "{got:?}");
-        // The transform agrees, which is the whole point of mirroring it.
+        // The razor itself now takes this cut through core, so the estimate is
+        // a floor on what the run saves, never a promise it cannot keep.
         assert!(
-            crate::ablation::ablate_synapse(&creature, "a", "output-0", 0.0).is_err(),
-            "the razor refuses this pair, so the estimate must too"
+            crate::prune::prune_edge(&creature, "a", "output-0", 0.0, None).is_ok(),
+            "the shared engine cuts a typed pair rather than refusing it"
         );
     }
 
-    /// The razor cuts an edge only where the source is a **listed** neuron, so
-    /// an edge out of an implicit `input-N` is predicted as refused rather than
-    /// as the largest cascade on the creature (Issue #138).
+    /// An edge out of an implicit `input-N` is predicted as saving nothing
+    /// rather than as the largest cascade on the creature (Issue #138). The
+    /// razor cuts it through core since Issue #182; this index has no
+    /// observation neuron to walk, so it declines to estimate it.
     #[test]
     fn an_edge_out_of_an_input_is_predicted_as_refused() {
         let creature = crate::fixtures::shortcut_edge_creature();
         let got = estimate_cut(&creature, &[crate::sweep::synapse_key("input-0", "a")]);
         assert!(got.blocked, "{got:?}");
-        assert_eq!(got.synapses, 0, "a refused cut saves nothing: {got:?}");
+        assert_eq!(got.synapses, 0, "an unestimated cut saves nothing: {got:?}");
         assert!(
-            crate::ablation::ablate_synapse(&creature, "input-0", "a", 0.0).is_err(),
-            "the razor refuses an unlisted source, so the estimate must too"
+            crate::prune::prune_edge(&creature, "input-0", "a", 0.0, None).is_ok(),
+            "the shared engine cuts an observation-incident edge"
         );
     }
 
@@ -627,8 +630,8 @@ mod tests {
                 .map(|n| n.uuid.clone())
                 .collect();
             for uuid in &hidden {
-                let ablation = ablate_mean(&fixture, uuid, 0.1, None)
-                    .unwrap_or_else(|e| panic!("{uuid} must be ablatable on this fixture: {e}"));
+                let ablation = prune_hidden_neuron(&fixture, uuid, 0.1, None)
+                    .unwrap_or_else(|e| panic!("{uuid} must be prunable on this fixture: {e}"));
                 compared += 1;
                 let got = estimate(&fixture, uuid);
                 let removed_hidden = ablation.before.hidden_neurons - ablation.after.hidden_neurons;
@@ -710,12 +713,11 @@ mod tests {
             let got = estimate(&fixture, "src");
             assert!(got.blocked, "{squash} typed={typed}: {got:?}");
             assert_eq!(got.growth_units, 0.0, "{squash} typed={typed}: {got:?}");
-            // The transform really does refuse it, which is what the estimate
-            // is predicting rather than guessing at.
-            assert!(
-                ablate_mean(&fixture, "src", 0.1, None).is_err(),
-                "{squash} typed={typed} must block the real ablation too"
-            );
+            // The estimate is deliberately conservative here: since Issue #182
+            // the shared engine *rewrites* an aggregate target or a typed role
+            // rather than refusing it, in ways this topology-only index does
+            // not model, so a cut it cannot predict is credited with nothing
+            // rather than with a saving it cannot stand behind.
         }
     }
 
@@ -736,7 +738,9 @@ mod tests {
         let got = estimate(&fixture, "agg");
         assert!(got.blocked, "{got:?}");
         assert_eq!(got.growth_units, 0.0, "{got:?}");
-        assert!(ablate_mean(&fixture, "agg", 0.1, None).is_err());
+        // Conservative, not a mirror: the shared engine builds a candidate for
+        // an aggregate neuron since Issue #182, and this index does not model
+        // what its rewrite leaves behind.
     }
 
     #[test]
