@@ -2521,7 +2521,7 @@ done
 ## Related repositories
 
 - [NEAT-AI](https://github.com/stSoftwareAU/NEAT-AI) — evolutionary neural-network library and trainer.
-- [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) — canonical Rust creature/network implementation.
+- [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) — canonical Rust creature/network implementation, and the canonical pruning rewrite engine: see [docs/pruning-ownership.md](docs/pruning-ownership.md) for the boundary between what core rewrites and what Ockham chooses.
 - [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) — authoritative scorer used by Ockham.
 - [NEAT-AI-Forests](https://github.com/stSoftwareAU/NEAT-AI-Forests) — experimental search for useful structure to add.
 - [NEAT-AI-Lamarck](https://github.com/stSoftwareAU/NEAT-AI-Lamarck) — experimental acquired-information optimisation.
@@ -2597,6 +2597,7 @@ NEAT-AI-Ockham/
 ├── docs/
 │   ├── grq-integration.md   # audit: how GRQ invokes Ockham and reads it back
 │   ├── blocked-reasons.md   # blocked codes, and the path built for the largest
+│   ├── pruning-ownership.md # design reference: rewrites belong in NEAT-AI-core
 │   ├── population-entry.md  # how cuts actually enter the live population
 │   └── incident-response.md # emergency dependency fast lane (SECURITY.md)
 ├── quality.sh
