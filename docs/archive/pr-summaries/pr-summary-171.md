@@ -65,14 +65,16 @@ Full gate: `cargo fmt --check`, `cargo clippy --workspace --all-targets
 56 integration tests, all green), `cargo doc -D warnings`, codespell,
 markdownlint-cli2 and `cargo deny check` all pass.
 
-<!-- vibe-quality-gate-skipped stage="check-neat-core-version" reason="pre-existing, unrelated to this diff" -->
-`./quality.sh` stops before those checks on one **pre-existing** stage:
-`scripts/check-neat-core-version.sh` fails because `neat-core.expected-version`
-records `0.10.6` while NEAT-AI-core `Develop` now presents `0.11.1`. That gate
-compares a checked-in baseline against the sibling clone and is untouched by
-this diff — clearing it is a deliberate bump PR of its own, filed as
-stSoftwareAU/NEAT-AI-Ockham#183. Every other stage of the gate was run
-individually, in the foreground, and passed.
+`scripts/check-neat-core-version.sh` — the **Project Validation** gate — is now
+green too. It had been failing on every branch because `neat-core.expected-version`
+recorded `0.13.0` while NEAT-AI-core `Develop` presents `0.14.1`. The bump is
+handled here rather than deferred again: neat-core #640 (Issue #622, `0.14.0`)
+bounds a creature's declared observation width before it is walked, refusing a
+declared `input` above `MAX_NODE_COUNT` with `CreatureError::TooManyNodes`;
+`0.14.1` (#641) is a `bump-deps.sh` fix with no library change. Ockham names none
+of the affected items, so the baseline bump carries no Ockham source change —
+verified by building, clippying and running the whole suite against a `Develop`
+worktree at `255b06e` (`0.14.1`), all green.
 
 ## Reproduction
 
