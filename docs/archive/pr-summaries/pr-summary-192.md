@@ -142,3 +142,15 @@ the reason code that this change retires, and now assert `other`:
 - **Nothing was removed from the wire format.** `BlockedReason::UnsafeTopology`,
   its `unsafe-topology` code and the `unsafeTopology` key in `coverage.json` all
   stay, so every artefact and every mixed-version fleet host still reads.
+
+## CI follow-up on this branch: neat-core baseline 0.14.4 → 0.15.4
+
+`Project Validation` went red after neat-core Develop published 0.15.0
+(`NetworkError::InvalidInputCount`, Issue #601) — a pre-1.0 minor is a breaking
+bump, so `scripts/check-neat-core-version.sh` held the branch until Ockham
+acknowledged it. Ockham names `NetworkError` nowhere and reaches a network only
+through `compile_creature`, never `CompiledNetwork::new` on a serialised buffer,
+so no source change was needed: clippy (`-D warnings`) and the full suite are
+green against the head clone at 0.15.4. The baseline and the `Cargo.lock`
+`neat-core` entry move to 0.15.4, with the rationale recorded in
+`neat-core.expected-version`.

@@ -56,4 +56,25 @@
 # against its `prune_neuron` / `prune_synapse` surface (neat-core #587's
 # Pruning milestone), so the recorded baseline moves with it.
 
-0.14.4
+# 0.14.4 -> 0.15.4: acknowledge neat-core #653 (Issue #601, 0.15.0), which adds
+# the `NetworkError::InvalidInputCount { num_inputs, num_neurons }` variant.
+# `CompiledNetwork::new` computed `num_neurons - num_inputs` straight from the
+# 8-byte header, so a malformed buffer declaring more inputs than nodes wrapped
+# that usize subtraction (release builds carry Cargo's default
+# `overflow-checks = false`) and aborted the module in `Vec::with_capacity`; the
+# header is now validated first and such a buffer returns the new variant.
+# Pre-1.0 that is a breaking bump only because `NetworkError` is not
+# `#[non_exhaustive]`, so a downstream exhaustive `match` must gain an arm.
+# Ockham names `NetworkError` nowhere (no reference in `ockham/src` or
+# `ockham/tests`): it reaches a network only through `compile_creature`, never
+# through `CompiledNetwork::new` on a serialised buffer, and renders the error it
+# does see with `to_string()` rather than matching it. No Ockham source change
+# was required. 0.14.5-0.14.7 and 0.15.1-0.15.4 are patch releases
+# (a CI exit-status fix, `MemeticExport::prune_to` bounding the declared
+# observation width, a `propagate_codec` overflow fix, and bats/Deno workflow
+# work) with no library change Ockham names. Verified against the Develop head
+# clone at 0.15.4 (ed3165a): `cargo clippy --workspace --all-targets
+# --all-features -- -D warnings` and `cargo test --workspace --all-features`
+# (675 lib + 70 integration tests) are green with no edit.
+
+0.15.4
