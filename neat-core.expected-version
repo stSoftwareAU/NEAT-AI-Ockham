@@ -9,4 +9,15 @@
 # 0.10.6: bootstrap against the current family pin (NEAT-AI-core #577 synapse
 # uniqueness by (fromUUID, toUUID, type)). Ockham issue #1 does not yet mutate
 # creatures; the pin documents the sibling we compile against.
-0.10.6
+#
+# 0.10.6 -> 0.13.0: acknowledge neat-core #633 (Issue #625, 0.12.0), which made
+# every `CompiledNetwork` field private behind borrow-only accessors so safe
+# code can no longer edit a validated network into an out-of-bounds SIMD read,
+# and 0.13.0 (#637, the security-scan milestone roll-up; nothing Ockham names
+# changed). Ockham read `num_inputs` and `activations` directly in `stats.rs`;
+# those reads now go through `num_inputs()` and `activations()`. Unhandled, the
+# same bump took the GRQ fleet down through rust_scorer (GRQ#4724); Ockham was
+# next in line because GRQ builds it from the same sibling neat-core at head.
+# Verified by `cargo clippy --all-targets -- -D warnings` and the full test
+# suite against the sibling clone at 0.13.0 (59eb6e6).
+0.13.0

@@ -486,12 +486,12 @@ pub fn compute_activation_stats(
         .iter()
         .enumerate()
         .filter(|(_, n)| n.neuron_type == "hidden")
-        .map(|(i, n)| Accumulator::new(n.uuid.clone(), i, net.num_inputs + i, sample.probes))
+        .map(|(i, n)| Accumulator::new(n.uuid.clone(), i, net.num_inputs() + i, sample.probes))
         .collect();
     // The export form leaves inputs implicit, so they are keyed by the wire
     // uuid the synapses use and read from the head of the activation buffer.
     // No probes: signatures select merge candidates, and an input is not one.
-    let mut input_acc: Vec<Accumulator> = (0..net.num_inputs)
+    let mut input_acc: Vec<Accumulator> = (0..net.num_inputs())
         .map(|i| Accumulator::new(input_uuid(i), i, i, 0))
         .collect();
     if acc.is_empty() && input_acc.is_empty() {
@@ -535,14 +535,14 @@ pub fn compute_activation_stats(
                 let _ = net.activate(inputs, creature.output);
                 let probe = probe_slots.get(next_probe) == Some(&(seen + r as u64));
                 for a in &mut acc {
-                    let x = net.activations[a.activation_index];
+                    let x = net.activations()[a.activation_index];
                     a.push(x);
                     if probe {
                         a.probes.push(x);
                     }
                 }
                 for a in &mut input_acc {
-                    a.push(net.activations[a.activation_index]);
+                    a.push(net.activations()[a.activation_index]);
                 }
                 if probe {
                     next_probe += 1;
