@@ -16,11 +16,11 @@ in `screens/<host>.jsonl`, and every reporting surface counts by it.
 | Code | What it means | Can the razor build a candidate? |
 |---|---|---|
 | `aggregate-squash` | The neuron, or something a bias fold would touch, uses an aggregate squash (`IF`, `MEAN`, `MINIMUM`, …) that does not sum its inputs. Since #135 a synapse visit into an aggregate target is counted here: the bias fold is not a sum. | **Yes, since #103** — constant substitution. The code is still recorded where no substitution was reachable, chiefly an IDENTITY collapse blocked by an aggregate target with no activation statistic to fall back on. |
-| `unsafe-topology` | The transform cannot treat the neuron as an ordinary hidden unit — it is not hidden, or not on the creature at all. Since #103 the typed-synapse case this code used to cover is proposed rather than blocked, because constant substitution keeps the role-carrying edge. Since #108 an empty group cut is counted here too: a group with no members would remove nothing, and a candidate identical to the incumbent is refused rather than scored. Since #109 a refused merge lands here as well — a survivor that does not already precede the target, a merge that would connect a neuron to itself, or a removed neuron feeding its own survivor. Since #133 a single-synapse ablation asked for an edge the incumbent does not carry is counted here: there is no such edge to cut, and no constant to substitute for one. Since #135 a **synapse visit** on a typed pair, or on a pair whose source is not a listed neuron, lands here too: the edge is visited and fails closed rather than being filtered out of the pool, because a blocked visit is still coverage. The source's fold value is resolved first, so an edge that is *both* structurally unsafe and unmeasured is filed under `missing-activation` — the value the cut would have needed is the refusal nearest the razor. | Case by case; the recorded cases are structural faults, not categories to build a path for. |
+| `unsafe-topology` | **Retired (Issue #192) — no current binary files it.** It meant "the transform cannot treat the neuron as an ordinary hidden unit", and on a real creature it was almost the whole blocked population: an edge out of an implicit `input-N`, and a typed role into an `IF`, were refused outright by Ockham's own rewrite. There is no such thing. Every hidden neuron the incumbent carries and every edge it lists is a target the shared NEAT-AI-core engine builds (#182), so what stops a visit is either the value the razor was missing (`missing-activation`) or a request naming structure the incumbent does not carry — a defect, counted under `other`. The code is still **read**, so fleet history deserialises; a **blocked** record carrying it is dropped at load, because it was filed by a razor that no longer exists and the visit deserves to be tried again. | Yes — it is an ordinary candidate now. |
 | `missing-activation` | No finite sampled activation statistic for the neuron. Since #135 a synapse visit whose source resolves to no fold value is counted here — the resolver failed closed rather than guessing a scalar. | No — there is no value to substitute. See below. |
 | `validation-failed` | A candidate was built and NEAT-AI-core `creature.validate()` rejected it. | No — failing closed is the point. |
 | `no-output-path` | The neuron feeds nothing, so no candidate could be built around it. | Not reachable on a valid incumbent (rule 18). |
-| `other` | An explicit reason outside the codes above, including a code written by a newer binary than the one reading it. Since #109 a merge that failed its own growth-unit invariant is counted here: it is a fault to report, not a category to build a path for. | Case by case. |
+| `other` | An explicit reason outside the codes above, including a code written by a newer binary than the one reading it. Since #109 a merge that failed its own growth-unit invariant is counted here: it is a fault to report, not a category to build a path for. Since #192 the same is true of a request naming structure the incumbent does not carry — an unknown neuron, a protected one, an edge that is not there — and of a shape one particular transform does not model (a typed edge out of an IDENTITY collapse, a merge that would run backwards) where the neuron itself is still prunable. | Case by case. |
 | `unrecorded` | The record was filed before #103 and carries no reason. | Unknown — it is counted separately rather than guessed at. |
 
 The counts are over visit keys and **sum to the `blocked` total exactly**, so
@@ -38,7 +38,7 @@ above, and no others:
 | Code | When a synapse visit reports it |
 |---|---|
 | `missing-activation` | The source resolved to no fold value — an unmeasured hidden source, an unparsable constant, or an output as a source. The resolver runs **first**, so an edge that is both unmeasured and structurally unsafe is filed here: the value the cut would have needed is the refusal nearest the razor. |
-| `unsafe-topology` | The incumbent carries no such edge at all, or the request named structure that is not a caller's to remove. |
+| `unsafe-topology` | Never. Retired by Issue #192 — see the table above. A request naming an edge the incumbent does not carry is a defect, counted under `other`. |
 | `aggregate-squash` | Reserved for a neuron visit. An aggregate destination no longer refuses an **edge** cut: since Issue #182 the shared engine removes the term and names the target on the core report as uncompensated, and the scorer judges the result. |
 | `validation-failed` | The cleanup could not repair the cut into a valid canonical form, or the creature it returned failed Ockham's own validation. Following a *supported* core prune that is a rewrite-engine defect, not a normal outcome — see [pruning-ownership.md](pruning-ownership.md). |
 
@@ -46,14 +46,58 @@ Since Issue #182 an edge out of an implicit `input-N`, and a typed role into an
 `IF`, are **ordinary candidates**: the shared engine names an edge by its
 `(from, to, role)` triple, so an observation-incident edge is cut rather than
 refused, and typed structure is rewritten rather than failed closed. Both used
-to be the common `unsafe-topology` case on a real creature. `no-output-path` and
-`other` are neuron paths and are never reported for an edge; `unrecorded`
+to be the common `unsafe-topology` case on a real creature, which is why that
+code is retired (#192). `no-output-path` is a neuron path and is never reported
+for an edge; `other` is reported for an edge only as a defect — a request naming
+a pair the incumbent does not carry — and never as a category; `unrecorded`
 belongs to records filed before #103 and pre-dates synapse visits entirely.
 
 Nothing weighs the edge. No weight, magnitude or contribution threshold decides
 whether a synapse visit is proposed, because the full-corpus scorer is the sole
 acceptance gate — a refusal here is always structural or a missing value, never
 a judgement that the edge was too small to bother with.
+
+## Retired codes, and why a retired record is not coverage (Issue #192)
+
+A code is **retired** when no current binary can file it. `unsafe-topology` is
+the first, and so far the only one.
+
+It was the dominant category on a live GRQ creature. A check-in on 9 September
+2026 reported `blocked: 44046 checked with no cut proposed` with
+`unsafe-topology 44003 (99.9%)` against a creature of 7576 hidden neurons and
+48515 edges — almost every edge in the pool refused. Every one of those refusals
+came from Ockham's own rewrite failing closed on an `input-N` source or a typed
+role, and every one of them is a candidate the shared engine builds. Runs on the
+same creature after Issue #182 landed blocked **nothing**: `funnel: neurons …
+0 blocked · synapses … 0 blocked`.
+
+That leaves a record problem. A blocked screen record is what makes a visit
+*checked*, and 44003 of them were filed by a razor that no longer exists — so
+the epoch read 100% checked while tens of thousands of candidates sat untried
+and the `reasons:` line kept reporting a category the binary could no longer
+produce.
+
+```mermaid
+flowchart LR
+    R["screens/&lt;host&gt;.jsonl"] --> L{"load_screens"}
+    L -- "blocked, retired code" --> D["dropped — not coverage"]
+    D --> U["visit reads unchecked"]
+    U --> S["sweep visits it again"]
+    S --> C["shared engine builds a candidate"]
+    L -- "everything else" --> K["counted as it always was"]
+```
+
+So [`LearningsStore::load_screens`] drops a **blocked** record carrying a retired
+code. The file is untouched — nothing rewrites fleet history — the record simply
+stops being evidence about the razor in hand, and the visit goes back in front of
+the sweep. A real screen on the same visit is unaffected: it clears the blocked
+state permanently, exactly as it always did.
+
+`BlockedReason::from_code` still reads `unsafe-topology`, so a journal, a
+`coverage.json` or a `blockedEpochs` row from before the retirement deserialises
+unchanged and still says what that epoch measured.
+
+[`LearningsStore::load_screens`]: ../ockham/src/learnings.rs
 
 ## The dominant category, and the path built for it
 
@@ -66,6 +110,9 @@ rewrite (`ablation::ablate_mean`, retired by Issue #182). A run against live GRQ
 under the codes themselves — the `reasons:` line — which is the first time the
 split is measured rather than reasoned about. Those were the neurons worth a new
 proposal path, and `ockham/src/substitute.rs` is it.
+
+The half of that population filed under `unsafe-topology` no longer exists at
+all: the shared engine takes those visits, and the code is retired (#192).
 
 The mean-activation ablation removes the neuron and folds its mean into every
 downstream **bias**. That is only valid where the target sums its inputs. An
@@ -131,7 +178,13 @@ screened are ones nothing was ever going to prune before.
 ## The categories with no path yet
 
 - **`missing-activation`** — there is no finite measured mean, so neither the
-  bias fold nor a constant has a value to stand in for the neuron. A safe path
+  bias fold nor a constant has a value to stand in for the neuron. Since #192 it
+  is also what an **unmeasured** hidden neuron reports when the exact IDENTITY
+  collapse refused on its own terms — a typed edge out, a bypass that would
+  self-connect — because the shared engine would have taken the neuron and only
+  the absent value stopped it. The collapse's own message stays in the record's
+  detail; the reason nearest the razor is the one counted, the same rule a
+  synapse visit follows (#135). A safe path
   would need a different statistic (a median, or a scan that reaches the neuron
   at all), and inventing a substitute value would be exactly the guess the razor
   must not make. Note that NEAT-AI-core clamps every activation to a finite

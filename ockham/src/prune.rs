@@ -318,11 +318,13 @@ fn reason_for(error: &PruneError) -> BlockedReason {
         | PruneError::UnknownProxy { .. }
         | PruneError::MissingProxyEdge { .. } => BlockedReason::MissingActivation,
         // The request named structure that is not a caller's to remove, or is
-        // not there at all.
+        // not there at all. Every hidden neuron the incumbent carries and every
+        // edge it lists is a target core builds, so this is a caller defect to
+        // report rather than a topology category (Issue #192).
         PruneError::UnknownNeuron { .. }
         | PruneError::UnknownSynapse { .. }
         | PruneError::Protected { .. }
-        | PruneError::UnknownNeuronType { .. } => BlockedReason::UnsafeTopology,
+        | PruneError::UnknownNeuronType { .. } => BlockedReason::Other,
         // Core promised a canonical validated creature or none at all, so a
         // cleanup failure is a rewrite-engine defect, not a normal outcome
         // (`docs/pruning-ownership.md`).
@@ -454,7 +456,7 @@ pub fn prune_hidden_group(
     // proposal the razor tried.
     if requested.is_empty() {
         return Err(PruneRefusal {
-            reason: BlockedReason::UnsafeTopology,
+            reason: BlockedReason::Other,
             detail: "group cut requested with no members".to_string(),
         });
     }
@@ -482,7 +484,7 @@ pub fn prune_hidden_group(
     }
     if !cut_any {
         return Err(PruneRefusal {
-            reason: BlockedReason::UnsafeTopology,
+            reason: BlockedReason::Other,
             detail: "group cut requested with no members the incumbent carries".to_string(),
         });
     }
@@ -520,7 +522,7 @@ pub fn prune_edge(
         .map(|s| parse_synapse_type(s.synapse_type.as_deref()))
     else {
         return Err(PruneRefusal {
-            reason: BlockedReason::UnsafeTopology,
+            reason: BlockedReason::Other,
             detail: format!("no synapse `{from_uuid}`→`{to_uuid}`"),
         });
     };
@@ -904,9 +906,9 @@ mod tests {
     fn a_protected_or_unknown_target_is_refused_with_no_creature() {
         let incumbent = hidden_identity_creature(0.0, 1.0);
         let unknown = prune_hidden_neuron(&incumbent, "nope", 0.0, None).unwrap_err();
-        assert_eq!(unknown.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert_eq!(unknown.blocked_reason(), BlockedReason::Other);
         let output = prune_hidden_neuron(&incumbent, "output-0", 0.0, None).unwrap_err();
-        assert_eq!(output.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert_eq!(output.blocked_reason(), BlockedReason::Other);
         assert!(output.to_string().contains("protected"), "{output}");
         let nan = prune_hidden_neuron(&incumbent, "h1", f64::NAN, None).unwrap_err();
         assert_eq!(nan.blocked_reason(), BlockedReason::MissingActivation);
@@ -1055,13 +1057,13 @@ mod tests {
             assert!(
                 matches!(
                     err.blocked_reason(),
-                    BlockedReason::UnsafeTopology | BlockedReason::MissingActivation
+                    BlockedReason::Other | BlockedReason::MissingActivation
                 ),
                 "{err}"
             );
         }
         let err = prune_hidden_group(&incumbent, &[]).unwrap_err();
-        assert_eq!(err.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert_eq!(err.blocked_reason(), BlockedReason::Other);
         assert_eq!(
             incumbent,
             chain_plus_keep(),
@@ -1207,7 +1209,7 @@ mod tests {
         }
         for (from, to) in [("nope", "output-0"), ("h_a", "nope"), ("h_a", "h_b")] {
             let err = prune_edge(&incumbent, from, to, 1.0, None).unwrap_err();
-            assert_eq!(err.blocked_reason(), BlockedReason::UnsafeTopology, "{err}");
+            assert_eq!(err.blocked_reason(), BlockedReason::Other, "{err}");
         }
         assert_eq!(
             incumbent,

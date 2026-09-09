@@ -31,7 +31,7 @@ use neat_core::{CreatureExport, SquashType, creature_to_json, parse_squash_name}
 use serde::Serialize;
 
 use crate::blocked::BlockedReason;
-use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
+use crate::collapse::{CollapseOptions, collapse_identity};
 use crate::incumbent::sha256_hex;
 use crate::merge::{MergeSkip, merge_correlated};
 use crate::ordering::{Ordering, OrderingConfig, hidden_order, synapse_order};
@@ -796,14 +796,17 @@ pub(crate) fn propose(
                         Err(skip) => skip,
                     };
                     // Without a measured mean there is no fallback to take, so
-                    // a collapse the razor could otherwise have retried is
-                    // blocked on the missing statistic rather than on itself.
-                    let reason = match e {
-                        CollapseSkip::CostIncrease { .. } => BlockedReason::MissingActivation,
-                        ref skip => skip.blocked_reason(),
-                    };
+                    // the visit is blocked on the missing statistic rather than
+                    // on the rung the collapse happened to refuse at. The
+                    // collapse's own shape — a typed edge, a self-loop, an
+                    // aggregate target — is no longer the razor's answer for a
+                    // hidden neuron: the shared engine rewrites all three since
+                    // #182, and only the absent value stops it (Issue #192).
+                    // The refusal nearest the razor is the one reported, the
+                    // same rule a synapse visit follows (#135), and the
+                    // collapse's message stays in the detail.
                     return Err(with_merge_detail(
-                        Blocked::new(reason, e.to_string()),
+                        Blocked::new(BlockedReason::MissingActivation, e.to_string()),
                         merge,
                     ));
                 }
@@ -2104,7 +2107,9 @@ mod tests {
             "{blocked}"
         );
 
-        // An edge the incumbent does not carry names no structure to cut.
+        // An edge the incumbent does not carry names no structure to cut. The
+        // sweep never asks for one, so a request that does is a defect to
+        // report rather than a topology category (Issue #192).
         let blocked = propose(
             &creature,
             &stats,
@@ -2112,7 +2117,7 @@ mod tests {
             &synapse_key("h_a", "h_b"),
         )
         .unwrap_err();
-        assert_eq!(blocked.reason, BlockedReason::UnsafeTopology, "{blocked}");
+        assert_eq!(blocked.reason, BlockedReason::Other, "{blocked}");
     }
 
     /// The edge visits Issue #133 failed closed on are candidates the shared
@@ -2146,6 +2151,43 @@ mod tests {
         let detail = proposed.prune.expect("the core report travels with it");
         assert_eq!(detail.uncompensated.len(), 1, "{detail:?}");
         assert_eq!(detail.uncompensated[0].target_uuid, "h_mean");
+    }
+
+    /// A hidden neuron the incumbent carries is always a pruning target, so
+    /// `unsafe-topology` is never what stops a visit to one (Issue #192).
+    ///
+    /// `h_cond` is IDENTITY with a `condition` edge out of it, which the exact
+    /// collapse refuses as [`CollapseSkip::TypedSynapse`]; before #192 that
+    /// structural refusal was reported as the visit's reason even though the
+    /// shared engine rewrites typed roles perfectly well since #182. What
+    /// actually stopped the razor is the absent statistic, and that is the
+    /// reason nearest the razor — the same rule a synapse visit follows (#135).
+    #[test]
+    fn an_unmeasured_identity_with_a_typed_edge_is_not_unsafe_topology() {
+        let creature = typed_edge_creature();
+        let mut stats = stats_with_inputs(&creature);
+        stats.neurons.retain(|n| n.uuid != "h_cond");
+        let blocked = propose(&creature, &stats, MergeIndex::empty(), "h_cond").unwrap_err();
+        assert_ne!(
+            blocked.reason,
+            BlockedReason::UnsafeTopology,
+            "a present hidden neuron is never unsafe topology: {blocked}"
+        );
+        assert_eq!(
+            blocked.reason,
+            BlockedReason::MissingActivation,
+            "the missing mean is what stopped the razor: {blocked}"
+        );
+        assert!(
+            blocked.detail.contains("condition"),
+            "the collapse refusal stays in the detail: {blocked}"
+        );
+
+        // Measured, the same neuron is an ordinary candidate.
+        let stats = stats_with_inputs(&creature);
+        let proposed = propose(&creature, &stats, MergeIndex::empty(), "h_cond")
+            .expect("a measured hidden neuron is prunable");
+        crate::incumbent::validate_creature(&proposed.creature).unwrap();
     }
 
     /// Every refused visit is filed as a skip, so the walk always advances.

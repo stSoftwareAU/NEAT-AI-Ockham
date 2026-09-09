@@ -193,11 +193,14 @@ impl AblationSkip {
             | Self::AggregateTarget { .. }
             | Self::UnknownSquash { .. } => BlockedReason::AggregateSquash,
             Self::NonFiniteMean(_) => BlockedReason::MissingActivation,
+            // Requests naming structure the incumbent does not carry, and
+            // shapes this transform does not model. Not a topology the razor
+            // cannot prune (Issue #192).
             Self::UnknownNeuron(_)
             | Self::NotHidden { .. }
             | Self::TypedSynapse { .. }
             | Self::UnknownSynapse { .. }
-            | Self::EmptyGroup => BlockedReason::UnsafeTopology,
+            | Self::EmptyGroup => BlockedReason::Other,
             Self::Invalid(_) => BlockedReason::ValidationFailed,
         }
     }
@@ -562,7 +565,7 @@ mod tests {
         working.synapses.retain(|s| s.to_uuid != "h_src");
         let err = cleanup_cascade(&mut working, &mut Vec::new(), &mut Vec::new()).unwrap_err();
         assert!(matches!(err, AblationSkip::TypedSynapse { .. }), "{err}");
-        assert_eq!(err.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert_eq!(err.blocked_reason(), BlockedReason::Other);
     }
 
     #[test]
@@ -577,7 +580,7 @@ mod tests {
             "aggregate target `h_mean` (`MEAN`); skipped"
         );
         let skip = AblationSkip::UnknownNeuron("nope".into());
-        assert_eq!(skip.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert_eq!(skip.blocked_reason(), BlockedReason::Other);
         assert_eq!(skip.to_string(), "no neuron `nope`");
     }
 }

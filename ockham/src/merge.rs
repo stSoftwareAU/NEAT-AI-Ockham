@@ -144,12 +144,17 @@ impl MergeSkip {
             Self::AggregateTarget { .. } => BlockedReason::AggregateSquash,
             Self::NonFiniteRelation(_) => BlockedReason::MissingActivation,
             Self::NoOutgoing(_) => BlockedReason::NoOutputPath,
+            // Shapes a *merge* cannot make sense of, and requests naming
+            // structure the incumbent does not carry. The neuron itself is
+            // still prunable — the shared engine takes it (#182) — so these
+            // are findings about this transform rather than a topology
+            // category (Issue #192).
             Self::UnknownNeuron(_)
             | Self::NotHidden { .. }
             | Self::SameNeuron(_)
             | Self::TypedSynapse { .. }
             | Self::SelfLoop { .. }
-            | Self::NotForward { .. } => BlockedReason::UnsafeTopology,
+            | Self::NotForward { .. } => BlockedReason::Other,
             Self::Invalid(_) => BlockedReason::ValidationFailed,
             // A merge that grew the creature broke the structural invariant
             // above; nothing the razor could have built a path for.
@@ -642,7 +647,7 @@ mod tests {
         let err =
             merge_correlated(&incumbent, "h_b", "h_a", LinearRelation::IDENTICAL).unwrap_err();
         assert!(matches!(err, MergeSkip::TypedSynapse { .. }), "{err}");
-        assert_eq!(err.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert_eq!(err.blocked_reason(), BlockedReason::Other);
         // `h_b`'s ordinary edge still lands on an aggregate that does not sum.
         let err =
             merge_correlated(&incumbent, "h_a", "h_b", LinearRelation::IDENTICAL).unwrap_err();
@@ -741,7 +746,7 @@ mod tests {
         let err =
             merge_correlated(&incumbent, "h_a", "h_b", LinearRelation::IDENTICAL).unwrap_err();
         assert!(matches!(err, MergeSkip::SelfLoop { .. }), "{err}");
-        assert_eq!(err.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert_eq!(err.blocked_reason(), BlockedReason::Other);
     }
 
     #[test]

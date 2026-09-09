@@ -95,10 +95,16 @@ impl CollapseSkip {
     pub fn blocked_reason(&self) -> BlockedReason {
         match self {
             Self::AggregateTarget { .. } => BlockedReason::AggregateSquash,
+            // Shapes the *exact collapse* does not model — a typed edge out,
+            // a bypass that would self-connect — and requests naming structure
+            // the incumbent does not carry. Neither is a topology the razor
+            // cannot prune: the shared engine rewrites both since #182, so
+            // these are findings about this transform, not a category
+            // (Issue #192).
             Self::UnknownNeuron(_)
             | Self::NotHidden { .. }
             | Self::TypedSynapse { .. }
-            | Self::SelfLoop { .. } => BlockedReason::UnsafeTopology,
+            | Self::SelfLoop { .. } => BlockedReason::Other,
             Self::Invalid(_) => BlockedReason::ValidationFailed,
             // An IDENTITY that costs more to collapse than to keep, and a
             // neuron that was never IDENTITY, are both explicit findings

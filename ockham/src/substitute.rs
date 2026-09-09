@@ -67,7 +67,10 @@ impl SubstitutionSkip {
     /// The reason code this skip is counted under (Issue #103).
     pub fn blocked_reason(&self) -> BlockedReason {
         match self {
-            Self::UnknownNeuron(_) | Self::NotHidden { .. } => BlockedReason::UnsafeTopology,
+            // A request naming a neuron the incumbent does not carry as a
+            // hidden unit is a caller defect to report, not a topology the
+            // razor could build a path for (Issue #192).
+            Self::UnknownNeuron(_) | Self::NotHidden { .. } => BlockedReason::Other,
             Self::NonFiniteMean(_) => BlockedReason::MissingActivation,
             Self::NoOutgoing(_) => BlockedReason::NoOutputPath,
             Self::Invalid(_) => BlockedReason::ValidationFailed,
@@ -383,14 +386,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_or_non_hidden_neuron_is_an_unsafe_topology_skip() {
+    fn an_unknown_or_non_hidden_neuron_is_a_reported_defect() {
         let incumbent = typed_if_fixture();
         let err = substitute_constant(&incumbent, "nope", 0.5).unwrap_err();
         assert!(matches!(err, SubstitutionSkip::UnknownNeuron(_)), "{err}");
-        assert_eq!(err.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert_eq!(err.blocked_reason(), BlockedReason::Other);
         let err = substitute_constant(&incumbent, "output-0", 0.5).unwrap_err();
         assert!(matches!(err, SubstitutionSkip::NotHidden { .. }), "{err}");
-        assert_eq!(err.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert_eq!(err.blocked_reason(), BlockedReason::Other);
     }
 
     /// A constant that feeds nothing is dead weight NEAT-AI-core rejects, so

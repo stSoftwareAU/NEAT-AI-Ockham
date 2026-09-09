@@ -5469,7 +5469,7 @@ mod tests {
                     unix_secs: 1,
                     host: "t".into(),
                     corpus_identity: Some(identity.clone()),
-                    blocked_reason: Some(crate::blocked::BlockedReason::UnsafeTopology),
+                    blocked_reason: Some(crate::blocked::BlockedReason::MissingActivation),
                 })
                 .unwrap();
         }
@@ -7845,7 +7845,7 @@ mod tests {
             skip(
                 "h_d",
                 "typed synapse `h_d`→`h_if` (condition); skipped".into(),
-                Some(BlockedReason::UnsafeTopology),
+                Some(BlockedReason::Other),
             ),
             skip("h_e", crate::sweep::KNOWN_FAILURE_REASON.into(), None),
             skip(
@@ -7856,7 +7856,7 @@ mod tests {
         ];
         assert_eq!(
             skip_reason_tally(&skips),
-            "aggregate-squash: 3, known-failure: 1, missing-activation: 1, unsafe-topology: 1",
+            "aggregate-squash: 3, known-failure: 1, missing-activation: 1, other: 1",
             "commonest first, then alphabetical, and no uuid in sight"
         );
     }
