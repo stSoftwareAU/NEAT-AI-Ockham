@@ -111,6 +111,14 @@ pub struct CandidateRecord {
     pub full_delta: Option<f64>,
     /// How far it got.
     pub outcome: CandidateOutcome,
+    /// What the NEAT-AI-core pruning engine did to build this candidate (#182).
+    ///
+    /// Core owns the rewrite, so this is core's own report of it — exact or
+    /// approximate, the cascade it ran, the `IF` structure it rewrote, the
+    /// targets it could not compensate. `None` for a candidate Ockham built
+    /// itself, and for every row written before Issue #182.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune: Option<crate::prune::PruneDetail>,
     /// Growth units the accepted transform actually removed; `0` when nothing
     /// was applied, because nothing was removed.
     pub growth_units_removed: f64,
@@ -145,6 +153,7 @@ impl CandidateRecord {
                 .collect(),
             sample_delta: None,
             full_delta: None,
+            prune: None,
             outcome,
             growth_units_removed: 0.0,
             scorer_ms: 0,
@@ -437,6 +446,7 @@ impl CandidateLog<'_> {
             );
             record.creature_checksum = checksum.to_string();
             record.merged_with = loser.merged_with.clone();
+            record.prune = loser.prune.clone();
             record.sample_delta = Some(loser.delta);
             record.scorer_ms = each_ms;
             records.push(record);
@@ -529,6 +539,7 @@ impl CandidateLog<'_> {
             );
             record.creature_checksum = checksum.to_string();
             record.merged_with = candidate.candidate.merged_with.clone();
+            record.prune = candidate.candidate.prune.clone();
             record.sample_delta = Some(candidate.delta);
             record.full_delta = Some(scored.delta);
             // Nothing is removed by a candidate that was not applied, so a
@@ -703,6 +714,7 @@ mod tests {
             "checksum-1",
             &[
                 ScreenedLoser {
+                    prune: None,
                     uuid: "h0".into(),
                     kind: CandidateKind::Merge,
                     merged_with: Some("h1".into()),
@@ -711,6 +723,7 @@ mod tests {
                     reason: ScreenRejection::BelowThreshold,
                 },
                 ScreenedLoser {
+                    prune: None,
                     uuid: "h1".into(),
                     kind: CandidateKind::Ablation,
                     merged_with: None,

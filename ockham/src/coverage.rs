@@ -121,12 +121,12 @@ pub struct Coverage {
     pub checked: usize,
     /// Synapse visits on the current incumbent: one per ordered edge pair.
     ///
-    /// The edge half of [`Self::checkable`] (Issue #137). An **ordinary**
-    /// (untyped) edge is what [`crate::ablation::ablate_synapse`] can actually
-    /// cut, and a **typed** edge is counted here beside it: the sweep visits
-    /// one and files the blocked record that stops it being asked again, so
-    /// leaving typed edges out would strand a creature full of them on a sweep
-    /// that could never complete.
+    /// The edge half of [`Self::checkable`] (Issue #137). Every ordered pair
+    /// is counted, typed or not: since Issue #182 the shared engine
+    /// ([`crate::prune::prune_edge`]) cuts a typed role as readily as an
+    /// untyped one, and a pair it still refuses is visited and filed as a
+    /// blocked record that stops it being asked again — so leaving any pair
+    /// out would strand the sweep on visits it could never complete.
     ///
     /// `#[serde(default)]` so a pre-#137 `coverage.json` still deserialises,
     /// reading as no synapse visits rather than as a failed parse.

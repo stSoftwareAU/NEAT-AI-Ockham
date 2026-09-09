@@ -203,9 +203,13 @@ mod tests {
     #[test]
     fn the_shortcut_fixture_offers_a_cut_that_removes_no_neuron() {
         let before = shortcut_edge_creature();
-        let cut = crate::ablation::ablate_synapse(&before, "a", "output-0", 0.0)
+        let cut = crate::prune::prune_edge(&before, "a", "output-0", 0.0, None)
             .expect("the shortcut must be cuttable");
-        assert_eq!(cut.removed_neurons, vec![], "no neuron may go with it");
+        assert!(
+            cut.detail.cascade_uuids().is_empty(),
+            "no neuron may go with it: {:?}",
+            cut.detail
+        );
         assert_eq!(cut.before.hidden_neurons, 2);
         assert_eq!(cut.after.hidden_neurons, 2);
         assert_eq!(cut.after.synapses, cut.before.synapses - 1);

@@ -486,6 +486,7 @@ mod tests {
 
     fn candidate(stem: &str, uuid: &str) -> SweepCandidate {
         SweepCandidate {
+            prune: None,
             merged_with: None,
             from_uuid: None,
             to_uuid: None,

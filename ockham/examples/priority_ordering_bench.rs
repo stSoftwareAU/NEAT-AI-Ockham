@@ -23,17 +23,17 @@
 //! default until real runs say otherwise.
 //!
 //! The growth units are **not** the ranking key: every visited neuron goes
-//! through the real [`ablate_mean`], recursive cleanup and all, and what that
+//! through the real [`prune_hidden_neuron`], recursive cleanup and all, and what that
 //! transform actually removes is what is summed.
 
 use std::time::Instant;
 
-use neat_ai_ockham::ablate_mean;
 use neat_ai_ockham::features::{CandidateFeatures, PriorEvidence};
 use neat_ai_ockham::fixtures::{creature, neuron, synapse};
 use neat_ai_ockham::model::{PriorityModel, TrainingConfig, TrainingRow};
 use neat_ai_ockham::ordering::{Ordering, OrderingConfig, hidden_order};
 use neat_ai_ockham::priority::PriorityContext;
+use neat_ai_ockham::prune_hidden_neuron;
 use neat_ai_ockham::stats::{ActivationStats, NeuronStats};
 use neat_core::CreatureExport;
 
@@ -236,7 +236,7 @@ fn simulate(creature: &CreatureExport, stats: &ActivationStats, order: &[String]
         // A confirmed cut: what the razor really removes is what it is worth.
         // A refusal is counted, never swallowed: a visit the razor can propose
         // nothing for is a cost the ranking paid and bought nothing with.
-        match ablate_mean(creature, uuid, 0.1, None) {
+        match prune_hidden_neuron(creature, uuid, 0.1, None) {
             Ok(ablation) => {
                 economics.cuts += 1;
                 economics.growth_units +=

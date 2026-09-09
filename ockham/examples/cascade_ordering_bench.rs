@@ -7,7 +7,7 @@
 //!
 //! The score is **not** the cascade estimate — scoring a ranking by its own
 //! ranking key proves nothing. Each visited neuron is put through the real
-//! [`neat_ai_ockham::ablate_mean`], recursive cleanup and all, and what that
+//! [`neat_ai_ockham::prune_hidden_neuron`], recursive cleanup and all, and what that
 //! transform actually removes is what is summed.
 //!
 //! Building the order is timed too, because a ranking nobody can afford is not
@@ -16,9 +16,9 @@
 
 use std::time::Instant;
 
-use neat_ai_ockham::ablate_mean;
 use neat_ai_ockham::fixtures::{creature, neuron, synapse};
 use neat_ai_ockham::ordering::{Ordering, OrderingConfig, hidden_order};
+use neat_ai_ockham::prune_hidden_neuron;
 use neat_ai_ockham::stats::{ActivationStats, NeuronStats};
 use neat_core::CreatureExport;
 
@@ -97,7 +97,7 @@ fn main() {
         creature.neurons.len(),
         creature.synapses.len()
     );
-    println!("first {VISITS} visits, scored by what ablate_mean really removes:");
+    println!("first {VISITS} visits, scored by what prune_hidden_neuron really removes:");
 
     for strategy in [
         Ordering::Random,
@@ -110,7 +110,7 @@ fn main() {
         let build_ms = started.elapsed().as_secs_f64() * 1000.0;
         let (mut saving, mut hidden, mut blocked) = (0.0f64, 0usize, 0usize);
         for uuid in order.iter().take(VISITS) {
-            match ablate_mean(&creature, uuid, 0.1, None) {
+            match prune_hidden_neuron(&creature, uuid, 0.1, None) {
                 Ok(ablation) => {
                     saving += ablation.before.growth_units - ablation.after.growth_units;
                     hidden += ablation.before.hidden_neurons - ablation.after.hidden_neurons;

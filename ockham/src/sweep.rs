@@ -6,11 +6,11 @@
 //!
 //! A neuron visit tries an exact IDENTITY collapse, then a correlated-neuron
 //! merge ([`crate::merge`], Issue #109) when discovery proposed a partner, then
-//! a mean-activation ablation, then a constant substitution
-//! ([`crate::substitute`], Issue #103) for the structure the ablation fails
-//! closed on. A synapse visit resolves its source's fold value
+//! the shared NEAT-AI-core prune ([`crate::prune`], Issue #182), then a constant
+//! substitution ([`crate::substitute`], Issue #103) for a target the prune
+//! could not compensate. A synapse visit resolves its source's fold value
 //! ([`crate::stats::source_value`], Issue #134) and calls
-//! [`crate::ablation::ablate_synapse`] (Issue #133). Attempts that produce
+//! [`crate::prune::prune_edge`] (Issues #133, #182). Attempts that produce
 //! nothing are skipped with a [`crate::blocked::BlockedReason`] and the batch is
 //! refilled while unvisited visits remain.
 //!
@@ -30,12 +30,15 @@ use std::time::Instant;
 use neat_core::{CreatureExport, SquashType, creature_to_json, parse_squash_name};
 use serde::Serialize;
 
-use crate::ablation::{GroupMember, ablate_group, ablate_mean, ablate_synapse};
 use crate::blocked::BlockedReason;
 use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
 use crate::incumbent::sha256_hex;
 use crate::merge::{MergeSkip, merge_correlated};
 use crate::ordering::{Ordering, OrderingConfig, hidden_order, synapse_order};
+use crate::prune::{
+    GroupMember, PruneDetail, PrunedCandidate, prune_edge, prune_hidden_group, prune_hidden_neuron,
+    removed_weight,
+};
 use crate::scorer::{DirectoryScorer, ScorerMode};
 use crate::signature::MergeIndex;
 use crate::stats::{ActivationStats, source_value};
@@ -65,8 +68,9 @@ pub const SYNAPSE_KEY_TAG: &str = "synapse";
 /// The canonical visit key for the edge `from_uuid`→`to_uuid` (Issue #135).
 ///
 /// One key per ordered pair, because NEAT-AI-core rule 26 lets a pair repeat
-/// only with distinct roles and [`crate::ablation::ablate_synapse`] judges the
-/// whole pair at once. Round-trips through [`parse_synapse_key`].
+/// only with distinct roles, and the role of the first edge the incumbent lists
+/// for the pair is what [`crate::prune::prune_edge`] then requests.
+/// Round-trips through [`parse_synapse_key`].
 pub fn synapse_key(from_uuid: &str, to_uuid: &str) -> String {
     format!("{SYNAPSE_KEY_TAG}{SYNAPSE_KEY_SEPARATOR}{from_uuid}{SYNAPSE_KEY_SEPARATOR}{to_uuid}")
 }
@@ -207,6 +211,13 @@ pub struct SweepCandidate {
     /// Weight the cut edge carried, for a [`CandidateKind::Synapse`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub weight: Option<f64>,
+    /// What the NEAT-AI-core engine did to build this candidate (#182).
+    ///
+    /// `None` for a candidate Ockham still builds itself — an identity
+    /// collapse, a constant substitution, a correlated merge — so a reader can
+    /// tell a core rewrite from an Ockham one without guessing at the kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune: Option<PruneDetail>,
     /// Cohort file stem (`c000`, …).
     pub stem: String,
     /// Candidate creature.
@@ -519,6 +530,7 @@ impl Sweep {
                         from_uuid: proposed.from_uuid,
                         to_uuid: proposed.to_uuid,
                         weight: proposed.weight,
+                        prune: proposed.prune,
                         stem,
                         creature: proposed.creature,
                     });
@@ -610,6 +622,8 @@ pub(crate) struct Proposed {
     pub to_uuid: Option<String>,
     /// Weight the cut edge carried, for a [`CandidateKind::Synapse`].
     pub weight: Option<f64>,
+    /// What the core engine did, for a candidate it built (#182).
+    pub prune: Option<PruneDetail>,
     /// Validated candidate creature.
     pub creature: CreatureExport,
 }
@@ -622,7 +636,16 @@ impl Proposed {
             from_uuid: None,
             to_uuid: None,
             weight: None,
+            prune: None,
             creature,
+        }
+    }
+
+    /// A candidate the NEAT-AI-core pruning engine built, with its report (#182).
+    fn pruned(kind: CandidateKind, built: PrunedCandidate) -> Self {
+        Self {
+            prune: Some(built.detail),
+            ..Self::of(kind, built.creature)
         }
     }
 }
@@ -642,12 +665,8 @@ fn propose_merge(
         match merge_correlated(incumbent, &proposal.survivor_uuid, uuid, proposal.relation) {
             Ok(merge) => {
                 return Ok(Proposed {
-                    kind: CandidateKind::Merge,
                     merged_with: Some(proposal.survivor_uuid.clone()),
-                    from_uuid: None,
-                    to_uuid: None,
-                    weight: None,
-                    creature: merge.creature,
+                    ..Proposed::of(CandidateKind::Merge, merge.creature)
                 });
             }
             // Kept, not dropped: a run where every merge proposal fails on the
@@ -707,14 +726,15 @@ fn with_merge_detail(mut blocked: Blocked, merge: Option<MergeRefusal>) -> Block
 /// ([`crate::stats::source_value`]), so a hidden, `constant` or input source is
 /// asked for its value the same way. A source that resolves to nothing is a
 /// fold this run cannot justify — [`BlockedReason::MissingActivation`] — and
-/// every other refusal is the one [`ablate_synapse`] reports, under its own
-/// reason code. The value is resolved **first**, so an edge that is both
-/// unmeasured and structurally unsafe is filed under the missing value.
+/// every other refusal is the one [`crate::prune::prune_edge`] reports from
+/// core, under its own reason code. The value is resolved **first**, so an edge
+/// that is both unmeasured and structurally unsafe is filed under the missing
+/// value.
 ///
-/// Resolving a value is not the same as being cuttable: an `input-N` source
-/// resolves a mean and is then refused by [`ablate_synapse`], because an input
-/// is not a listed neuron the transform can fold through (Issue #133). Those
-/// edges are visited and blocked, never filtered out of the pool.
+/// An `input-N`-sourced edge is an ordinary candidate since Issue #182: the
+/// shared engine names an edge by its `(from, to, role)` triple, so an edge out
+/// of an observation — and a typed role into an `IF` — is cut rather than
+/// refused as it was under Issue #133.
 ///
 /// Nothing here weighs the edge: no weight, magnitude or contribution threshold
 /// decides eligibility, because only the full-corpus scorer accepts.
@@ -730,14 +750,15 @@ fn propose_synapse(
             format!("no source value for `{from_uuid}` (synapse `{from_uuid}`→`{to_uuid}`)"),
         ));
     };
-    match ablate_synapse(incumbent, from_uuid, to_uuid, source.value) {
-        Ok(a) => Ok(Proposed {
-            kind: CandidateKind::Synapse,
-            merged_with: None,
-            from_uuid: Some(a.from_uuid),
-            to_uuid: Some(a.to_uuid),
-            weight: Some(a.weight),
-            creature: a.creature,
+    let measured = stats
+        .by_uuid(from_uuid)
+        .or_else(|| stats.input_by_uuid(from_uuid));
+    match prune_edge(incumbent, from_uuid, to_uuid, source.value, measured) {
+        Ok(built) => Ok(Proposed {
+            from_uuid: Some(from_uuid.to_string()),
+            to_uuid: Some(to_uuid.to_string()),
+            weight: Some(removed_weight(incumbent, &built.detail.removed_synapses)),
+            ..Proposed::pruned(CandidateKind::Synapse, built)
         }),
         Err(e) => Err(Blocked::new(e.blocked_reason(), e.to_string())),
     }
@@ -805,26 +826,38 @@ pub(crate) fn propose(
             merge,
         ));
     };
-    let ablation = match ablate_mean(incumbent, uuid, mean, stats.by_uuid(uuid)) {
-        Ok(a) => return Ok(Proposed::of(CandidateKind::Ablation, a.creature)),
+    let refusal = match prune_hidden_neuron(incumbent, uuid, mean, stats.by_uuid(uuid)) {
+        // Every target that read the neuron got the removal back as a bias
+        // fold, so there is nothing an edge-preserving substitution would
+        // improve on.
+        Ok(built) if built.fully_compensated() => {
+            return Ok(Proposed::pruned(CandidateKind::Ablation, built));
+        }
+        // A target that aggregates its inward terms cannot absorb a fold: core
+        // still builds a valid candidate, but it loses the term outright.
+        // Keeping the edge and constant-folding the source preserves the
+        // target's arity (Issue #103), so it is the candidate the razor prefers
+        // — and the core prune stands when there is no substitution to make.
+        // Neither is a fallback rewrite: they are two different candidates, one
+        // engine each, and the scorer alone accepts.
+        Ok(built) => {
+            return Ok(match substitute_constant(incumbent, uuid, mean) {
+                Ok(s) => Proposed::of(CandidateKind::Constant, s.creature),
+                Err(_) => Proposed::pruned(CandidateKind::Ablation, built),
+            });
+        }
         Err(e) => e,
     };
-    // The bias fold cannot express an aggregate target or a role-carrying edge,
-    // and that is most of a forest-heavy creature. Keeping the edge and
-    // constant-folding the source can (Issue #103) — and when it cannot either,
-    // the reason reported is the one that actually stopped the razor.
-    if !ablation.substitution_may_help() {
-        return Err(with_merge_detail(
-            Blocked::new(ablation.blocked_reason(), ablation.to_string()),
-            merge,
-        ));
-    }
+    // Core returned no creature at all, so there is nothing to screen. The
+    // constant substitution is still worth trying — it removes no neuron the
+    // engine refused to remove — and when it cannot be built either, the
+    // reason reported is the one that actually stopped the razor.
     match substitute_constant(incumbent, uuid, mean) {
         Ok(s) => Ok(Proposed::of(CandidateKind::Constant, s.creature)),
         Err(substitution) => Err(with_merge_detail(
             Blocked::new(
                 substitution.blocked_reason(),
-                format!("{ablation}; constant substitution: {substitution}"),
+                format!("{refusal}; constant substitution: {substitution}"),
             ),
             merge,
         )),
@@ -833,15 +866,16 @@ pub(crate) fn propose(
 
 /// Build the group candidate that cuts every neuron of `members` (Issue #108).
 ///
-/// The whole [`crate::ablation::GroupAblation`] comes back, not just the
-/// creature: it names every neuron the transform removed and says which were
-/// the requested group cuts and which the cleanup cascade stranded, which is
-/// what a run has to record about a group it proposes.
+/// The whole [`crate::prune::PrunedCandidate`] comes back, not just the
+/// creature: its [`crate::prune::PruneDetail`] names every neuron the transform
+/// removed and says which were the requested group cuts and which the cleanup
+/// cascade stranded, which is what a run has to record about a group it
+/// proposes.
 ///
-/// The same substitution [`propose`] applies to one neuron, applied to the
-/// whole neighbourhood on one clone before the exact cleanup runs. A member
-/// without a measured mean blocks the group rather than being guessed at, and
-/// every other refusal is the one [`crate::ablation::ablate_group`] reports.
+/// The same request [`propose`] makes for one neuron, made for each member in
+/// turn against the creature the last one returned. A member without a measured
+/// mean blocks the group rather than being guessed at, and every other refusal
+/// is the one [`crate::prune::prune_hidden_group`] reports from core.
 ///
 /// Building a group is not accepting one: the candidate goes through the same
 /// sampled screen and the same full-corpus scoring as every other proposal.
@@ -849,7 +883,7 @@ pub(crate) fn propose_group(
     incumbent: &CreatureExport,
     stats: &ActivationStats,
     members: &[String],
-) -> Result<crate::ablation::GroupAblation, Blocked> {
+) -> Result<PrunedCandidate, Blocked> {
     let mut cuts = Vec::with_capacity(members.len());
     for uuid in members {
         let mean = stats.by_uuid(uuid).map(|s| s.mean).ok_or_else(|| {
@@ -863,7 +897,7 @@ pub(crate) fn propose_group(
             mean,
         });
     }
-    ablate_group(incumbent, &cuts)
+    prune_hidden_group(incumbent, &cuts)
         .map_err(|e| Blocked::new(e.blocked_reason(), format!("group: {e}")))
 }
 
@@ -898,6 +932,9 @@ pub struct ScreenedLoser {
     pub merged_with: Option<String>,
     /// Sampled Δ against the incumbent scored in the same call.
     pub delta: f64,
+    /// What the NEAT-AI-core engine did to build it (#182), when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune: Option<PruneDetail>,
     /// Ladder stage that ended it; `0` for the fixed-rate control (#104).
     pub stage: usize,
     /// Why it ended (#104).
@@ -1030,6 +1067,7 @@ pub fn screen_batch(
                 uuid: c.uuid,
                 kind: c.kind,
                 merged_with: c.merged_with,
+                prune: c.prune,
                 delta,
                 stage: 0,
                 reason: ScreenRejection::BelowThreshold,
@@ -2066,28 +2104,48 @@ mod tests {
             "{blocked}"
         );
 
+        // An edge the incumbent does not carry names no structure to cut.
+        let blocked = propose(
+            &creature,
+            &stats,
+            MergeIndex::empty(),
+            &synapse_key("h_a", "h_b"),
+        )
+        .unwrap_err();
+        assert_eq!(blocked.reason, BlockedReason::UnsafeTopology, "{blocked}");
+    }
+
+    /// The edge visits Issue #133 failed closed on are candidates the shared
+    /// engine builds (Issue #182): a typed role into an `IF` is rewritten, and
+    /// an aggregate target is left named on the core report rather than
+    /// refused. Both still face the screen and the scorer.
+    #[test]
+    fn a_typed_role_and_an_aggregate_target_are_edge_candidates_now() {
         let typed = typed_edge_creature();
         let typed_stats = stats_with_inputs(&typed);
-        let blocked = propose(
+        let proposed = propose(
             &typed,
             &typed_stats,
             MergeIndex::empty(),
             &synapse_key("h_cond", "h_if"),
         )
-        .unwrap_err();
-        assert_eq!(blocked.reason, BlockedReason::UnsafeTopology, "{blocked}");
+        .expect("a typed role is cut, not refused");
+        assert_eq!(proposed.kind, CandidateKind::Synapse);
+        crate::incumbent::validate_creature(&proposed.creature).unwrap();
 
         let aggregate = aggregate_target_creature();
         validate_creature(&aggregate).unwrap();
         let aggregate_stats = stats_with_inputs(&aggregate);
-        let blocked = propose(
+        let proposed = propose(
             &aggregate,
             &aggregate_stats,
             MergeIndex::empty(),
             &synapse_key("h_src", "h_mean"),
         )
-        .unwrap_err();
-        assert_eq!(blocked.reason, BlockedReason::AggregateSquash, "{blocked}");
+        .expect("an aggregate target loses the term rather than refusing it");
+        let detail = proposed.prune.expect("the core report travels with it");
+        assert_eq!(detail.uncompensated.len(), 1, "{detail:?}");
+        assert_eq!(detail.uncompensated[0].target_uuid, "h_mean");
     }
 
     /// Every refused visit is filed as a skip, so the walk always advances.
@@ -2269,34 +2327,40 @@ mod tests {
         }
     }
 
-    /// Issue #133: an `input-N` source resolves a fold value and is then refused
-    /// by the transform, because an input is not a listed neuron to fold
-    /// through. The commonest refusal on a real creature, so it is pinned: the
-    /// edge is visited and blocked, never quietly filtered out of the pool.
+    /// Issue #133 refused an `input-N`-sourced edge because an input is not a
+    /// listed neuron to fold through; Issue #182 cuts it, because the shared
+    /// engine names an edge by its `(from, to, role)` triple and an
+    /// observation-incident edge is an ordinary candidate. The commonest edge
+    /// on a real creature, so the capability is pinned here.
     #[test]
-    fn an_input_sourced_edge_resolves_a_value_and_still_fails_closed() {
+    fn an_input_sourced_edge_resolves_a_value_and_is_cut() {
         let creature = two_hidden();
         let stats = stats_with_inputs(&creature);
         assert!(
             crate::stats::source_value(&creature, &stats, "input-0").is_some(),
-            "the fixture must measure the input, or this tests the wrong refusal"
+            "the fixture must measure the input, or this tests the wrong path"
         );
-        let blocked = propose(
+        let proposed = propose(
             &creature,
             &stats,
             MergeIndex::empty(),
             &synapse_key("input-0", "h_a"),
         )
-        .unwrap_err();
-        assert_eq!(blocked.reason, BlockedReason::UnsafeTopology, "{blocked}");
-        // And it is a *visit*, filed as a skip rather than dropped from the walk.
+        .expect("an observation-incident edge is a candidate");
+        assert_eq!(proposed.kind, CandidateKind::Synapse);
+        assert_eq!(proposed.from_uuid.as_deref(), Some("input-0"));
+        let detail = proposed.prune.expect("the core report travels with it");
+        assert_eq!(detail.removed_synapses.len(), 1, "{detail:?}");
+        assert_eq!(detail.removed_synapses[0].from_uuid, "input-0");
+        // And it is a *visit*: the walk offers it, rather than filtering it out.
         let mut sweep = Sweep::new(&creature, 4);
         let visits = sweep.order.len();
         let (batch, skips) = sweep.fill_batch(&creature, &stats, visits);
         assert_eq!(batch.len() + skips.len(), visits);
         assert!(
-            skips.iter().any(|s| s.uuid == synapse_key("input-0", "h_a")
-                && s.blocked == Some(BlockedReason::UnsafeTopology)),
+            batch
+                .iter()
+                .any(|c| c.uuid == synapse_key("input-0", "h_a")),
             "{skips:?}"
         );
     }

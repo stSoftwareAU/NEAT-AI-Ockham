@@ -1262,6 +1262,7 @@ fn ockham_loop(
                             from_uuid: proposed.from_uuid,
                             to_uuid: proposed.to_uuid,
                             weight: proposed.weight,
+                            prune: proposed.prune,
                             stem: "r000".into(),
                             creature: proposed.creature,
                         },
@@ -1333,6 +1334,7 @@ fn ockham_loop(
                                         from_uuid: proposed.from_uuid,
                                         to_uuid: proposed.to_uuid,
                                         weight: proposed.weight,
+                                        prune: proposed.prune,
                                         stem: "r000".into(),
                                         creature: proposed.creature,
                                     },
@@ -2973,14 +2975,19 @@ mod tests {
     #[test]
     fn baseline_gate_writes_workspace_and_does_not_prune() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg = config(tmp.path());
+        // One experiment: the creature has no hidden neuron to cut, and since
+        // Issue #182 the one edge it carries — out of `input-0`, which the
+        // razor used to refuse — is a candidate the shared engine builds. A
+        // flat scorer never accepts it, so without the cap the run would spend
+        // its whole budget recycling that single visit (#77).
+        let cfg = OckhamConfig {
+            max_experiments: Some(1),
+            ..config(tmp.path())
+        };
         let before = std::fs::read(&cfg.creature).unwrap();
         let run = establish_run(&cfg, &ScriptedScorer::ok(0.9, 0.1)).unwrap();
         assert_eq!(run.optimisation, "complete");
-        // No hidden neuron to cut, and the one edge the creature carries is out
-        // of `input-0`, which the razor refuses — so the pass proposes nothing
-        // and stops with a reason rather than looping (#138).
-        assert_eq!(run.stop_reason, "no-candidates");
+        assert_eq!(run.stop_reason, "max-experiments");
         assert_eq!(run.baseline.score, 0.9);
         assert!(cfg.output_dir.join("best.json").exists());
         assert!(run.workspace.join("incumbent.json").exists());
@@ -3378,8 +3385,11 @@ mod tests {
         let run = establish_run(&cfg, &scorer).unwrap();
         assert!(run.accepts > 1, "accepts={}", run.accepts);
         assert_eq!(
-            run.stop_reason, "no-candidates",
-            "the search runs on until the creature has nothing left to cut"
+            run.stop_reason, "no-hidden",
+            "the search runs on until the creature has nothing left to cut — \
+             every edge is cuttable through the shared engine now (#182), so \
+             the walk ends by running out of visits rather than by being \
+             refused one"
         );
     }
 
@@ -3518,12 +3528,21 @@ mod tests {
         assert!(journal.contains(r#""groups":1"#), "{journal}");
         assert!(journal.contains(r#""kind":"group""#), "{journal}");
 
-        // The accepted creature lost the whole chain and kept the neuron that
-        // was never in the group.
+        // The accepted creature lost the chain's hidden neurons and kept the
+        // neuron that was never in the group. `a1` is gone outright; `a2` lost
+        // its only source with it, so core folded it into the constant support
+        // its average contribution is worth (#182) rather than leaving a hidden
+        // neuron with nothing to sum.
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        let best_creature: neat_core::CreatureExport = serde_json::from_str(&best).unwrap();
+        let hidden: Vec<&str> = best_creature
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .map(|n| n.uuid.as_str())
+            .collect();
+        assert_eq!(hidden, vec!["z"], "{best}");
         assert!(!best.contains("\"a1\""), "{best}");
-        assert!(!best.contains("\"a2\""), "{best}");
-        assert!(best.contains("\"z\""), "{best}");
 
         // Both members carry the whole membership, so replay can rebuild it.
         let filed: Vec<crate::learnings::Learning> = store
@@ -3627,9 +3646,19 @@ mod tests {
         let run = establish_run(&cfg, &scorer).unwrap();
         assert_eq!(run.accepts, 1, "stop={}", run.stop_reason);
         assert_eq!(run.stop_reason, "replay-accepts");
+        // `a1` is gone outright, and `a2` — which lost its only source with it
+        // — is the constant support core folded it into rather than a hidden
+        // neuron with nothing to sum (#182).
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        let best_creature: neat_core::CreatureExport = serde_json::from_str(&best).unwrap();
         assert!(!best.contains("\"a1\""), "{best}");
-        assert!(!best.contains("\"a2\""), "{best}");
+        assert!(
+            !best_creature
+                .neurons
+                .iter()
+                .any(|n| n.neuron_type == "hidden" && n.uuid == "a2"),
+            "{best}"
+        );
     }
 
     /// Issue #108: a replayed group the corpus now rejects must be filed as
@@ -3880,24 +3909,19 @@ mod tests {
                 "{uuid} must reach the screen: {screened:?}"
             );
         }
-        // Proposed: the batch emitted both tagged neurons beside the two edge
-        // visits out of them (#138). The only skips are the edges whose source
-        // is `input-0`, which the razor never cuts — neither tagged neuron is
-        // among them.
+        // Proposed: the batch emitted both tagged neurons beside every edge
+        // visit out of them (#138), and nothing was skipped — an edge out of
+        // `input-0` is a candidate the shared engine builds now (#182).
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
-            journal.contains(r#""candidates":4,"skipped":2"#),
+            journal.contains(r#""candidates":6,"skipped":0"#),
             "both tagged neurons must be proposed: {journal}"
         );
-        let skipped: Vec<&crate::learnings::Screened> = store_records
-            .iter()
-            .filter(|r| r.kind == crate::learnings::SCREEN_KIND_SKIPPED)
-            .collect();
         assert!(
-            skipped
+            !store_records
                 .iter()
-                .all(|r| crate::sweep::parse_synapse_key(&r.uuid).is_some()),
-            "only edge visits are skipped: {skipped:?}"
+                .any(|r| r.kind == crate::learnings::SCREEN_KIND_SKIPPED),
+            "nothing this creature carries is refused: {store_records:?}"
         );
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
         assert!(
@@ -4177,12 +4201,12 @@ mod tests {
 
         let store = screens_store(&learnings_dir, &train);
         let records = store.load_screens().unwrap();
-        // Two batches of two candidates, plus the edge visits each batch
-        // walked past and filed a skip for (#138): every visit the run made
-        // leaves exactly one record.
+        // Two batches of two candidates, and nothing walked past: every visit
+        // is a candidate the shared engine builds (#182), so every visit the
+        // run made leaves exactly one record.
         assert_eq!(
             records.len(),
-            8,
+            4,
             "one record per visit made, no duplicates: {records:?}"
         );
         let mut uuids: Vec<&str> = records.iter().map(|r| r.uuid.as_str()).collect();
@@ -4204,7 +4228,31 @@ mod tests {
             "one screened record per batch: {journal}"
         );
         let report = crate::report::summarise(&[&journal_path]).unwrap();
-        assert_eq!(report.screened, 8);
+        assert_eq!(report.screened, 4);
+    }
+
+    /// Seed an already-screened record for every **edge** of a
+    /// [`hidden_paths`] fixture, dated `unix_secs`.
+    ///
+    /// Since Issue #182 an edge is an ordinary candidate, so a test about
+    /// which *neuron* the walk reaches first has to say that the edge half of
+    /// the pool is already checked — otherwise the unchecked-first ordering is
+    /// answering a different question.
+    fn seed_synapse_screens(store: &LearningsStore, uuids: &[&str], unix_secs: u64) {
+        for syn in &hidden_creature(uuids).synapses {
+            store
+                .append_screen(&Screened {
+                    blocked_reason: Default::default(),
+                    version: crate::learnings::SCREENS_FORMAT_VERSION,
+                    uuid: crate::sweep::synapse_key(&syn.from_uuid, &syn.to_uuid),
+                    kind: "synapse".into(),
+                    outcome: ScreenOutcomeKind::Loser,
+                    unix_secs,
+                    host: "t".into(),
+                    corpus_identity: Some(store.corpus_identity().to_string()),
+                })
+                .unwrap();
+        }
     }
 
     /// Seed one already-screened record per uuid, dated `unix_secs`.
@@ -4336,19 +4384,36 @@ mod tests {
             .unwrap();
     }
 
-    /// The one uuid a control run — same seed, no old-corpus hint — screens.
+    /// The first **neuron** a control run — same seed, no old-corpus hint —
+    /// reaches.
+    ///
+    /// Every visit is a candidate the shared engine builds now (#182), so a
+    /// batch of one no longer walks past its edges to a neuron: the run is
+    /// given batches enough to reach one, and the first neuron in visit order
+    /// is the answer.
     fn control_screened(tmp: &std::path::Path, uuids: &[&str]) -> String {
         let (creature, train) = hidden_paths(tmp, uuids);
         let learnings_dir = tmp.join("learnings");
         let store = screens_store(&learnings_dir, &train);
-        let cfg = old_corpus_cfg(creature, train, tmp.join("out"), learnings_dir, None);
+        let cfg = OckhamConfig {
+            max_experiments: Some(visit_budget(uuids.len())),
+            ..old_corpus_cfg(creature, train, tmp.join("out"), learnings_dir, None)
+        };
         establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
-        // The neuron half of what the batch walked. A batch of one candidate
-        // also files a record for every edge visit it walked past (#138), and
-        // this helper answers which **neuron** the seeded permutation reached.
-        let screened = neurons_screened_this_run(&store, 0);
-        assert_eq!(screened.len(), 1, "one batch of one neuron: {screened:?}");
-        screened.into_iter().next().unwrap()
+        first_neuron_visited(&store).expect("the walk must reach a hidden neuron")
+    }
+
+    /// Batches of one enough to walk every visit of a `hidden`-neuron fixture
+    /// from [`hidden_paths`]: the neuron itself and its two edges.
+    fn visit_budget(hidden: usize) -> u64 {
+        hidden as u64 * 3
+    }
+
+    /// The first hidden-neuron visit in the order the records were filed.
+    fn first_neuron_visited(store: &LearningsStore) -> Option<String> {
+        visits_in_order(store)
+            .into_iter()
+            .find(|v| crate::sweep::parse_synapse_key(v).is_none())
     }
 
     /// [`screened_this_run`] narrowed to hidden-neuron visits (#138).
@@ -4440,11 +4505,15 @@ mod tests {
             learnings_dir,
             Some(false),
         );
+        let cfg = OckhamConfig {
+            max_experiments: Some(visit_budget(uuids.len())),
+            ..cfg
+        };
         establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
 
         assert_eq!(
-            neurons_screened_this_run(&store, 0),
-            vec![reached],
+            first_neuron_visited(&store).as_deref(),
+            Some(reached.as_str()),
             "with the priority off the seeded permutation stands"
         );
     }
@@ -4542,7 +4611,7 @@ mod tests {
         screened.dedup();
         assert_eq!(
             screened.len(),
-            9,
+            6,
             "the accept ends the search, not the run's coverage duty: {screened:?}"
         );
         assert!(
@@ -4554,21 +4623,21 @@ mod tests {
                 .iter()
                 .filter(|v| crate::sweep::parse_synapse_key(v).is_none())
                 .collect::<Vec<_>>(),
-            vec!["h_b", "h_c", "h_e"],
+            vec!["h_b", "h_c"],
             "the tail advances neuron coverage too: {screened:?}"
         );
-        assert_eq!(run.newly_screened, 9);
+        assert_eq!(run.newly_screened, 6);
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
         assert!(
             // 4 hidden neurons and the 9 ordered synapse pairs left after the
             // cut are one visit population since Issue #137.
-            best.contains("sweep 9/13"),
+            best.contains("sweep 6/13"),
             "the check-in tag must report the coverage the run finished on, not the \
              coverage at the cut: {best}"
         );
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
-            journal.contains(r#""newly_screened":9"#),
+            journal.contains(r#""newly_screened":6"#),
             "the stop record carries the coverage the run advanced: {journal}"
         );
         assert!(
@@ -4683,7 +4752,7 @@ mod tests {
             training_data: train,
             output_dir: tmp.path().join("out"),
             timeout: Duration::from_secs(30),
-            max_experiments: Some(8),
+            max_experiments: Some(2),
             seed: Some(1),
             candidates: 8,
             learnings_dir: Some(learnings_dir),
@@ -4708,12 +4777,15 @@ mod tests {
             "the subject and the description must render one snapshot\nbest: {best}\n\
              coverage.txt: {text}"
         );
-        // The cut rewired six input edges onto the output, so the accept both
-        // shrank the denominator and minted visit keys nothing had screened.
-        // The published figures are the ones measured after that rebuild.
+        // The cut rewired the fan-in's input edges onto the output, so the
+        // accept both shrank the denominator and minted visit keys nothing had
+        // screened. The published figures are the ones measured after that
+        // rebuild — and the experiment cap stops the run while the creature
+        // still carries visits, so they are a real snapshot rather than the
+        // empty creature an unbounded scripted winner grinds down to (#182).
         assert_eq!(
             description_sweep(&text),
-            (6, 6, "100.0".to_string()),
+            (5, 5, "100.0".to_string()),
             "the figures are the final snapshot's, not the accept's: {text}"
         );
         assert!(
@@ -4780,6 +4852,9 @@ mod tests {
         let store = screens_store(&learnings_dir, &train);
         seed_verdicts(&store, &[("h_a", Outcome::Accepted, None, 10)]);
         seed_screens(&store, &[("h_c", 10), ("h_d", 20), ("h_e", 30)]);
+        // The edge half of the pool is already checked, so h_b is the only
+        // never-screened visit and the ordering question is about neurons.
+        seed_synapse_screens(&store, &["h_a", "h_b", "h_c", "h_d", "h_e"], 10);
         let cfg = coverage_tail_cfg(creature, train, tmp.path().join("out"), learnings_dir, 1, 2);
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -4819,11 +4894,15 @@ mod tests {
         let run = establish_run(&cfg, &scorer).unwrap();
         assert_eq!(run.stop_reason, "replay-accepts");
         // Both hidden neurons were cut. The collapse rewired `input-0` straight
-        // to the output, and that one edge is the only visit left — the razor
-        // refuses it (the source is not a listed neuron), so the tail files its
-        // blocked record and has nothing else to screen (#138).
+        // to the output, and that one edge is the only visit left: the tail
+        // screens it — a candidate the shared engine builds now (#182) — and
+        // then has nothing else, so it recycles that same visit until the
+        // experiment budget ends (#77). Deduplicated, because what this test
+        // pins is *which* visits were left, not how often #77 recycled them.
+        let mut screened = screened_this_run(&store, 20);
+        screened.dedup();
         assert_eq!(
-            screened_this_run(&store, 20),
+            screened,
             vec![crate::sweep::synapse_key("input-0", "output-0")],
             "no neuron is left to screen"
         );
@@ -4903,9 +4982,10 @@ mod tests {
             "the search runs on past its first accept: {run:?}"
         );
         assert_eq!(
-            run.stop_reason, "no-candidates",
+            run.stop_reason, "max-experiments",
             "no accept stops it: the search runs on until nothing is left to \
-             cut, or the budget ends: {run:?}"
+             cut, or the budget ends — and with every edge cuttable through \
+             the shared engine (#182) this creature outlasts the budget: {run:?}"
         );
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
@@ -5021,17 +5101,18 @@ mod tests {
         assert_eq!(report.hidden, Some(4));
         assert_eq!(
             report.checked,
-            Some(4),
-            "one batch of two candidates, plus the edge visits walked past (#138)"
+            Some(2),
+            "one batch of two candidates, and no visit walked past: every edge the
+             batch offered is a candidate the shared engine builds (#182)"
         );
         assert_eq!(report.synapses, Some(8), "the edge half of the population");
-        assert_eq!(report.synapses_checked, Some(3));
+        assert_eq!(report.synapses_checked, Some(1));
         assert_eq!(
             report.checkable,
             Some(12),
             "hidden neurons plus synapse visits (#137)"
         );
-        assert_eq!(report.coverage_percent, Some(4.0f64 / 12.0 * 100.0));
+        assert_eq!(report.coverage_percent, Some(2.0f64 / 12.0 * 100.0));
     }
 
     /// A **repacked** corpus: the same records written to a fresh directory,
@@ -5102,8 +5183,9 @@ mod tests {
         establish_run(&first, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(
             coverage_json(&first.output_dir).checked,
-            4,
-            "one batch of two candidates, plus the edge visits walked past (#138)"
+            2,
+            "one batch of two candidates, and no visit walked past: every edge the
+             batch offered is a candidate the shared engine builds (#182)"
         );
 
         let repacked = repacked_corpus(tmp.path());
@@ -5121,7 +5203,7 @@ mod tests {
         establish_run(&second, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(
             coverage_json(&second.output_dir).checked,
-            8,
+            4,
             "a repack is the same epoch: both batches must be counted"
         );
     }
@@ -5145,8 +5227,9 @@ mod tests {
         establish_run(&first, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         let first_cov = coverage_json(&first.output_dir);
         assert_eq!(
-            first_cov.checked, 4,
-            "one batch of two candidates, plus the edge visits walked past (#138)"
+            first_cov.checked, 2,
+            "one batch of two candidates, and no visit walked past: every edge the
+             batch offered is a candidate the shared engine builds (#182)"
         );
 
         let extended = extended_corpus(tmp.path());
@@ -5165,7 +5248,7 @@ mod tests {
 
         let second_cov = coverage_json(&second.output_dir);
         assert_eq!(
-            second_cov.checked, 4,
+            second_cov.checked, 2,
             "the new epoch counts its own batch alone, not the old corpus's"
         );
         assert_eq!(
@@ -5173,7 +5256,7 @@ mod tests {
             "every hidden neuron and every synapse visit is checkable (#137)"
         );
         assert_eq!(
-            second_run.newly_screened, 4,
+            second_run.newly_screened, 2,
             "a visit checked under the old corpus is new coverage under the new one"
         );
 
@@ -5181,7 +5264,7 @@ mod tests {
         assert_eq!(epochs.len(), 2, "{epochs:?}");
         let old = &epochs[&corpus_identity(&train)];
         let new = &epochs[&corpus_identity(&extended)];
-        assert_eq!(old.len(), 4, "the previous epoch's records are still there");
+        assert_eq!(old.len(), 2, "the previous epoch's records are still there");
         assert_eq!(
             old, new,
             "the neurons the old epoch checked are eligible again: {epochs:?}"
@@ -5253,7 +5336,7 @@ mod tests {
             std::fs::read_to_string(second.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            fresh.contains("sweep:     4 of 12 visits (33.3% of epoch)"),
+            fresh.contains("sweep:     2 of 12 visits (16.7% of epoch)"),
             "the new epoch reports its own coverage: {fresh}"
         );
         assert!(
@@ -5274,7 +5357,7 @@ mod tests {
         );
 
         let report = coverage_report_json(&second.output_dir);
-        assert_eq!(report.coverage.percent(), 4.0f64 / 12.0 * 100.0);
+        assert_eq!(report.coverage.percent(), 2.0f64 / 12.0 * 100.0);
         assert_eq!(
             report.history.expect("cumulative figures").checked_ever,
             12,
@@ -5448,8 +5531,9 @@ mod tests {
         let cov: Coverage = serde_json::from_str(&json).unwrap();
         assert_eq!(cov.hidden, 4);
         assert_eq!(
-            cov.checked, 4,
-            "one batch of two candidates, plus the edge visits walked past (#138)"
+            cov.checked, 2,
+            "one batch of two candidates, and no visit walked past: every edge the
+             batch offered is a candidate the shared engine builds (#182)"
         );
         assert_eq!(cov.synapses, 8);
         assert_eq!(
@@ -5457,7 +5541,7 @@ mod tests {
             "hidden neurons plus synapse visits (#137)"
         );
         let report: crate::coverage::CoverageReport = serde_json::from_str(&json).unwrap();
-        assert_eq!(report.newly_screened, 4, "the run's own progress (#77)");
+        assert_eq!(report.newly_screened, 2, "the run's own progress (#77)");
         assert_eq!(
             text,
             format!("{}\n", report.description(cfg.candidates)),
@@ -5468,7 +5552,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("unchecked: 8 remaining this epoch (~4 runs at 2/run)"),
+            text.contains("unchecked: 10 remaining this epoch (~5 runs at 2/run)"),
             "{text}"
         );
         // Issue #102: the run names the epoch its percentage belongs to, in
@@ -5482,7 +5566,7 @@ mod tests {
             )),
             "{text}"
         );
-        assert!(text.contains("(33.3% of epoch)"), "{text}");
+        assert!(text.contains("(16.7% of epoch)"), "{text}");
     }
 
     /// End-to-end detector for Issue #162: a mixed neuron/synapse run must
@@ -5525,9 +5609,11 @@ mod tests {
             t.funnel.visits.total,
             "{t:?}"
         );
-        assert!(
-            t.funnel.blocked.synapses > 0,
-            "the edges out of `input-0` are refused, so some visits are blocked: {t:?}"
+        assert_eq!(
+            t.funnel.blocked.total, 0,
+            "nothing this creature carries is refused any more — the edges out \
+             of `input-0` are candidates the shared engine builds (#182), so \
+             the blocked stage is empty and every visit is a proposal: {t:?}"
         );
         assert!(
             t.funnel.sample_screened.total > 0
@@ -5628,8 +5714,8 @@ mod tests {
             "tagged neurons stay in the denominator, beside the synapse visits"
         );
         assert_eq!(cov.checkable, 12);
-        assert_eq!(cov.checked, 4, "screened tagged UUIDs count as checked");
-        assert_eq!(cov.percent(), 4.0f64 / 12.0 * 100.0);
+        assert_eq!(cov.checked, 2, "screened tagged UUIDs count as checked");
+        assert_eq!(cov.percent(), 2.0f64 / 12.0 * 100.0);
 
         let text =
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
@@ -5705,7 +5791,9 @@ mod tests {
             timeout: Duration::from_secs(30),
             max_experiments: Some(1),
             seed: Some(1),
-            candidates: 8,
+            // One batch wide enough for every visit: three neurons and six
+            // edges, all of them candidates the shared engine builds (#182).
+            candidates: 9,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
             ..test_defaults()
@@ -5771,7 +5859,9 @@ mod tests {
             timeout: Duration::from_secs(30),
             max_experiments: Some(1),
             seed: Some(1),
-            candidates: 8,
+            // One batch wide enough for every visit: three neurons and six
+            // edges, all of them candidates the shared engine builds (#182).
+            candidates: 9,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
             ..test_defaults()
@@ -5791,15 +5881,17 @@ mod tests {
             "a neuron feeding an aggregate is proposable now, not blocked"
         );
         assert_eq!(
-            kinds["h_agg"], "constant",
-            "the aggregate neuron itself is proposable now, not blocked"
+            kinds["h_agg"], "ablation",
+            "the aggregate neuron itself is proposable now, not blocked — and \
+             its only reader can absorb the fold, so the shared engine removes \
+             it outright rather than standing a constant in its place (#182)"
         );
 
         let cov = coverage_json(&cfg.output_dir);
         assert_eq!(cov.checked, 9, "three neurons and six edge visits (#138)");
-        // No **neuron** is blocked any more, which is what #103 changed. The
-        // blocked population left is entirely edge visits the razor refuses —
-        // an edge out of `input-0`, or one into the aggregate neuron (#138).
+        // No **neuron** is blocked any more, which is what #103 changed, and
+        // since #182 no edge is either: every visit this creature carries is a
+        // candidate the shared engine builds.
         let blocked: Vec<String> = store
             .load_screens()
             .unwrap()
@@ -6282,27 +6374,20 @@ mod tests {
         let run = establish_run(&cfg, &scorer).unwrap();
         assert_eq!(run.stop_reason, "scorer-failures");
 
-        // Only the visits the razor refused outright are filed: an edge whose
-        // source is not a listed neuron never reaches the screen (#138). Not
-        // one candidate the failed screen was asked about is among them.
+        // Nothing is filed at all. Every visit of this creature is a candidate
+        // the shared engine builds (#182), so none is refused outright, and a
+        // candidate whose screen errored was never checked.
         let store = screens_store(&learnings_dir, &train);
         let filed = store.load_screens().unwrap();
         assert!(
-            filed
-                .iter()
-                .all(|s| s.kind == crate::learnings::SCREEN_KIND_SKIPPED),
+            filed.is_empty(),
             "candidates whose screen errored were never checked: {filed:?}"
-        );
-        assert_eq!(
-            filed.len(),
-            1,
-            "one refused edge visit, and no screened candidate: {filed:?}"
         );
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert_eq!(
             journal.matches(r#""record":"screened""#).count(),
-            1,
-            "the only coverage filed is that refused visit: {journal}"
+            0,
+            "a failed screen is not coverage: {journal}"
         );
     }
 
@@ -7249,6 +7334,10 @@ mod tests {
         let learnings_dir = tmp.path().join("learnings");
         let cfg = OckhamConfig {
             exact_cleanup: true,
+            // One batch wide enough for every visit the pre-pass leaves: the
+            // surviving neuron and its three edges, all of them candidates the
+            // shared engine builds (#182).
+            candidates: 4,
             ..restart_cfg(
                 creature,
                 train.clone(),
@@ -7687,11 +7776,14 @@ mod tests {
         let learnings_dir = tmp.path().join("learnings");
         let store = screens_store(&learnings_dir, &train);
         let now = crate::incumbent::now_unix();
-        // Every visit is a fresh known failure — the two neurons and the two
-        // edges the razor could otherwise cut (#138). The edges out of
-        // `input-0` need no verdict: the razor refuses them structurally.
+        // Every visit is a fresh known failure — the two neurons and all four
+        // edges. Since Issue #182 the edges out of `input-0` are candidates
+        // the shared engine builds, so they need a verdict too: nothing on
+        // this creature is refused structurally any more.
         let out_a = crate::sweep::synapse_key("h_a", "output-0");
         let out_b = crate::sweep::synapse_key("h_b", "output-0");
+        let in_a = crate::sweep::synapse_key("input-0", "h_a");
+        let in_b = crate::sweep::synapse_key("input-0", "h_b");
         seed_verdicts(
             &store,
             &[
@@ -7699,6 +7791,8 @@ mod tests {
                 ("h_b", Outcome::Rejected, Some(-1.0), now),
                 (out_a.as_str(), Outcome::Rejected, Some(-1.0), now),
                 (out_b.as_str(), Outcome::Rejected, Some(-1.0), now),
+                (in_a.as_str(), Outcome::Rejected, Some(-1.0), now),
+                (in_b.as_str(), Outcome::Rejected, Some(-1.0), now),
             ],
         );
         let cfg = restart_cfg(
@@ -8034,17 +8128,18 @@ mod tests {
         let run = establish_run(&cfg, &losing_scorer()).unwrap();
 
         assert_eq!(
-            run.newly_screened, 4,
-            "one batch of two candidates, plus the edge visits walked past (#138)"
+            run.newly_screened, 2,
+            "one batch of two candidates, and no visit walked past: every edge the
+             batch offered is a candidate the shared engine builds (#182)"
         );
         let stops = journal_records(&cfg.output_dir, "stop");
         assert_eq!(stops.len(), 1);
-        assert_eq!(stops[0]["newly_screened"], 4, "{:?}", stops[0]);
+        assert_eq!(stops[0]["newly_screened"], 2, "{:?}", stops[0]);
         let text =
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            text.contains("progress:  4 newly checked this run"),
+            text.contains("progress:  2 newly checked this run"),
             "{text}"
         );
     }
@@ -8098,10 +8193,11 @@ mod tests {
         );
         let first_run = establish_run(&first, &losing_scorer()).unwrap();
         assert_eq!(
-            first_run.newly_screened, 3,
-            "a full batch, plus the edge visit it walked past (#138)"
+            first_run.newly_screened, 2,
+            "a full batch, and no visit walked past: every edge the batch \
+             offered is a candidate the shared engine builds (#182)"
         );
-        assert_eq!(coverage_json(&first.output_dir).checked, 3);
+        assert_eq!(coverage_json(&first.output_dir).checked, 2);
 
         let second = restart_cfg(
             creature,
@@ -8116,10 +8212,10 @@ mod tests {
             "bounded by the unchecked remainder, not the batch size"
         );
         let cov = coverage_json(&second.output_dir);
-        assert_eq!(cov.checked, 5);
+        assert_eq!(cov.checked, 4);
         assert_eq!(
             cov.unchecked(),
-            4,
+            5,
             "the four visits neither run reached: {cov:?}"
         );
     }

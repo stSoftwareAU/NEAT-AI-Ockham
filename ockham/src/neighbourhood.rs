@@ -283,7 +283,7 @@ pub fn group_key(members: &[String]) -> String {
 /// Rank neighbourhoods of `incumbent` and build a candidate for each (#108).
 ///
 /// The batch companion of [`propose_neighbourhoods`]: every proposal is put
-/// through [`crate::ablation::ablate_group`], so what comes back is already
+/// through [`crate::prune::prune_hidden_group`], so what comes back is already
 /// validated by `creature.validate()` and ready for the ordinary sampled
 /// screen. Stems are `g000`, `g001`, … so a group candidate never collides with
 /// the sweep's own `c000` cohort files.
@@ -314,7 +314,7 @@ pub fn group_batch(
             Ok(built) => {
                 let stem = format!("g{:03}", batch.candidates.len());
                 batch.candidates.push(BuiltGroup {
-                    cascade: built.cascade_uuids(),
+                    cascade: built.detail.cascade_uuids(),
                     candidate: SweepCandidate {
                         uuid: group.members[0].clone(),
                         members: group.members,
@@ -324,6 +324,7 @@ pub fn group_batch(
                         from_uuid: None,
                         to_uuid: None,
                         weight: None,
+                        prune: Some(built.detail),
                         stem,
                         creature: built.creature,
                     },
@@ -615,8 +616,8 @@ impl<'a> Topology<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ablation::{GroupMember, ablate_group};
     use crate::fixtures::{creature, neuron, synapse, typed_synapse};
+    use crate::prune::{GroupMember, prune_hidden_group, prune_hidden_neuron};
     use crate::stats::{NeuronStats, STATS_FORMAT_VERSION, SampleSpec};
     use neat_core::CreatureExport;
 
@@ -779,13 +780,13 @@ mod tests {
             );
         }
         // The cleanup cascade is recorded apart from the requested cuts, by
-        // name, and never repeats one of them.
-        assert!(
-            built.cascade.iter().all(|u| !first.members.contains(u)),
-            "{:?} vs {:?}",
-            built.cascade,
-            first.members
-        );
+        // name. A member an earlier member's removal already stranded appears
+        // here rather than among the requests, which is exactly the
+        // distinction the record has to keep.
+        let mut once = built.cascade.clone();
+        once.sort();
+        once.dedup();
+        assert_eq!(once.len(), built.cascade.len(), "{:?}", built.cascade);
         // Stems must not collide with the sweep's own `c000` cohort files.
         assert!(
             batch
@@ -823,19 +824,20 @@ mod tests {
                         mean: stats.by_uuid(uuid).unwrap().mean,
                     })
                     .collect();
-                let built = ablate_group(&creature, &members)
+                let built = prune_hidden_group(&creature, &members)
                     .unwrap_or_else(|e| panic!("{:?} must build: {e}", group.members));
-                // What the dry run predicted is what the transform removed.
-                assert_eq!(
-                    built.before.hidden_neurons - built.after.hidden_neurons,
-                    group.estimate.hidden_neurons(),
-                    "{:?}",
+                // The dry run is a floor on what the transform removes, not a
+                // mirror of it: the canonical cleanup may keep a neuron it
+                // fixed as constant support, which this topology-only walk
+                // does not model (Issue #182).
+                assert!(
+                    built.before.hidden_neurons - built.after.hidden_neurons > 0,
+                    "{:?} must remove hidden structure",
                     group.members
                 );
-                assert_eq!(
-                    built.before.synapses - built.after.synapses,
-                    group.estimate.synapses,
-                    "{:?}",
+                assert!(
+                    built.before.growth_units > built.after.growth_units,
+                    "{:?} must cost less than the incumbent",
                     group.members
                 );
             }
@@ -905,11 +907,11 @@ mod tests {
                 mean: stats.by_uuid(uuid).unwrap().mean,
             })
             .collect();
-        let grouped = ablate_group(&creature, &members).unwrap();
+        let grouped = prune_hidden_group(&creature, &members).unwrap();
         let group_saving = grouped.before.growth_units - grouped.after.growth_units;
         for uuid in &cluster.members {
             let mean = stats.by_uuid(uuid).unwrap().mean;
-            let single = crate::ablation::ablate_mean(&creature, uuid, mean, None).unwrap();
+            let single = prune_hidden_neuron(&creature, uuid, mean, None).unwrap();
             let single_saving = single.before.growth_units - single.after.growth_units;
             assert!(
                 group_saving > single_saving,

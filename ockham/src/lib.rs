@@ -66,6 +66,7 @@ pub mod neighbourhood;
 pub mod ordering;
 pub mod priority;
 pub mod promote;
+pub mod prune;
 pub mod reentry;
 pub mod report;
 pub mod run;
@@ -80,9 +81,7 @@ pub mod tags;
 pub mod telemetry;
 pub mod throughput;
 
-pub use ablation::{
-    Ablation, AblationSkip, GroupAblation, GroupMember, TransformClass, ablate_group, ablate_mean,
-};
+pub use ablation::{AblationSkip, TransformClass};
 pub use baseline::{AuthoritativeBaseline, establish_baseline};
 pub use blocked::{BlockedBreakdown, BlockedReason};
 pub use cancel::CancelToken;
@@ -111,6 +110,11 @@ pub use neighbourhood::{
 pub use ordering::{Ordering, OrderingConfig, hidden_order, synapse_order};
 pub use priority::{CompositeWeights, PriorityContext, expected_pruning_value};
 pub use promote::{FullOutcome, evaluate_full};
+pub use prune::{
+    BiasFoldRecord, GroupMember, PruneDetail, PruneRefusal, PrunedCandidate, StaticIfRecord,
+    SynapseRef, UncompensatedRecord, WeightShareRecord, prune_edge, prune_hidden_group,
+    prune_hidden_neuron,
+};
 pub use report::{Report, summarise};
 pub use run::{BaselineRun, establish_run};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};

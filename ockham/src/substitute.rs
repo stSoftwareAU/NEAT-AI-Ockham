@@ -1,11 +1,11 @@
 //! Constant substitution — a candidate for the blocked majority (Issue #103).
 //!
-//! [`crate::ablation::ablate_mean`] removes a hidden neuron and folds its mean
-//! activation into every downstream **bias**. That only works where the target
-//! sums its inputs, so it fails closed on the structure a forest-heavy creature
-//! is mostly made of: an aggregate target (`IF`, `MEAN`, `MINIMUM`, …) does not
-//! sum, and a typed synapse carries a role a bias cannot stand in for. Those
-//! neurons were visited, counted as `blocked`, and never tested.
+//! [`crate::prune::prune_hidden_neuron`] removes a hidden neuron and folds its
+//! mean activation into every downstream **bias**. That only stands in for the
+//! removal where the target sums its inputs: an aggregate target (`IF`,
+//! `MEAN`, `MINIMUM`, …) does not, so the core engine names it on
+//! [`crate::prune::PruneDetail::uncompensated`] and the candidate simply loses
+//! the term. That is the structure a forest-heavy creature is mostly made of.
 //!
 //! This module tests them. The substitution keeps the **edge** and replaces the
 //! **source**: the hidden neuron becomes a `constant` neuron emitting its
@@ -208,13 +208,13 @@ fn cascade_dead_sources(working: &mut CreatureExport) -> Vec<RemovedNeuron> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ablation::{AblationSkip, ablate_mean};
     use crate::fixtures::{creature, neuron, synapse, typed_synapse};
+    use crate::prune::prune_hidden_neuron;
     use neat_core::compile_creature;
 
     /// `h_cond` feeds an `IF` neuron through a typed `condition` synapse, and
-    /// `h_if` is the aggregate itself: the two shapes `ablate_mean` fails
-    /// closed on, and the bulk of a forest-heavy creature.
+    /// `h_if` is the aggregate itself: the two shapes a bias fold cannot stand
+    /// in for, and the bulk of a forest-heavy creature.
     fn typed_if_fixture() -> CreatureExport {
         creature(
             1,
@@ -258,18 +258,18 @@ mod tests {
         xs.iter().map(|&x| net.activate(&[x], 1)[0]).collect()
     }
 
-    /// The point of the whole exercise: a neuron the ablation path blocks is
-    /// proposable here, and the candidate is one NEAT-AI-core accepts.
+    /// The point of the whole exercise: the substitution keeps the **edge**
+    /// the prune removes, so a role-carrying neuron has a second candidate the
+    /// scorer can weigh against losing its structure entirely.
     #[test]
-    fn a_typed_edge_the_ablation_path_blocks_substitutes_a_constant() {
+    fn a_typed_edge_the_prune_removes_can_substitute_a_constant_instead() {
         let incumbent = typed_if_fixture();
         validate_creature(&incumbent).expect("fixture is a valid incumbent");
+        let pruned = prune_hidden_neuron(&incumbent, "h_cond", 0.5, None)
+            .expect("the shared engine rewrites a typed role rather than refusing it");
         assert!(
-            matches!(
-                ablate_mean(&incumbent, "h_cond", 0.5, None),
-                Err(AblationSkip::TypedSynapse { .. })
-            ),
-            "the fixture must be blocked for the ablation path"
+            pruned.creature.neurons.iter().all(|n| n.uuid != "h_cond"),
+            "the prune removes the neuron and the role with it"
         );
 
         let result = substitute_constant(&incumbent, "h_cond", 0.5).expect("substitution");
@@ -316,11 +316,8 @@ mod tests {
     fn the_aggregate_neuron_itself_substitutes_and_its_upstream_cascades() {
         let incumbent = typed_if_fixture();
         assert!(
-            matches!(
-                ablate_mean(&incumbent, "h_if", 0.5, None),
-                Err(AblationSkip::AggregateNeuron { .. } | AblationSkip::AggregateTarget { .. })
-            ),
-            "the aggregate neuron must be blocked for the ablation path"
+            prune_hidden_neuron(&incumbent, "h_if", 0.5, None).is_ok(),
+            "the shared engine builds a candidate for an aggregate neuron too"
         );
 
         let result = substitute_constant(&incumbent, "h_if", -0.75).expect("substitution");

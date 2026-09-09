@@ -8,7 +8,7 @@
 //!
 //! Nothing here is scored. Every proposal goes through the real
 //! [`neat_ai_ockham::Sweep`], the real source-value resolver and the real
-//! [`neat_ai_ockham::ablation::ablate_synapse`], recursive cleanup and
+//! [`neat_ai_ockham::prune_edge`], recursive cleanup and
 //! `creature.validate()` and all, and what those transforms actually removed is
 //! what is reported. Whether a candidate is any *good* is the full-corpus
 //! scorer's verdict, and only a real run can report that.
