@@ -2566,7 +2566,8 @@ NEAT-AI-Ockham/
 │       ├── corpus.rs          # training-data identity / streaming
 │       ├── baseline.rs        # full-corpus scorer baseline
 │       ├── stats.rs           # activation statistics + synapse-source values
-│       ├── ablation.rs        # mean-activation + single-synapse ablation + cleanup
+│       ├── ablation.rs        # growth units, structure snapshots + exact cleanup
+│       ├── prune.rs           # NEAT-AI-core prune requests + their reports
 │       ├── collapse.rs        # exact IDENTITY neuron collapse
 │       ├── canonical.rs       # exact zero-risk cleanup pre-pass
 │       ├── substitute.rs      # mean-valued constant substitution
