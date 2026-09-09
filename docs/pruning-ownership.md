@@ -71,14 +71,30 @@ here rather than in a reviewer's memory:
 
 ## What this means for Ockham today
 
-Ockham still carries its own rewrite code — `ablation.rs`, `canonical.rs`,
-`collapse.rs`, `substitute.rs` and `merge.rs`. That code predates the core
-engine, and #182 retires it one capability at a time: prove core parity for a
-capability, cut that capability over, delete the Ockham implementation in the
-same migration. There are to be no runtime fallbacks and no dual ownership of
-the same semantics.
+Issue #182 cut the first three capabilities over and deleted the Ockham
+implementation of each in the same migration:
 
-Until then, the rule for new work is the simple half of the boundary: **a
+| Capability | Where it lives now |
+|---|---|
+| Hidden-neuron prune | `prune::prune_hidden_neuron` → core `prune_neuron`. `ablation::ablate_mean` is gone. |
+| Neighbourhood group cut (#108) | `prune::prune_hidden_group` → core `prune_neuron`, one member at a time against the creature the last request returned. `ablation::ablate_group` is gone. |
+| Synapse prune (#133, #135) | `prune::prune_edge` → core `prune_synapse`, naming the `(from, to, role)` triple. `ablation::ablate_synapse` is gone. |
+
+Ockham keeps what core does not own: which candidate to try, the statistics it
+measures, the sampled screen, the full-corpus scoring, bundling and replay, the
+reports — and the candidate kinds that are not prunes at all (the exact identity
+collapse, the correlated merge, the Issue #103 constant substitution). Those
+three still carry their own rewrites through `ablation::cleanup_cascade`; they
+are the capabilities not yet migrated, and the same rule applies to them when
+their turn comes.
+
+Core's report travels with every candidate it built: `prune::PruneDetail` is
+written into the sweep candidate, the screened-out record and the telemetry row,
+so a run's evidence says whether a rewrite was exact or approximate, what its
+cascade took, which `IF` structure it rewrote, and which targets it left
+uncompensated.
+
+The rule for new work is the simple half of the boundary: **a
 change to what a prune does structurally belongs in core**, and a change to
 which candidate is tried, how it is screened, scored, bundled, replayed or
 reported belongs here. If core cannot yet express a rewrite Ockham needs,

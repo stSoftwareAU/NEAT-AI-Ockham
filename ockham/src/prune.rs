@@ -1,7 +1,7 @@
 //! Ockham's request path into the canonical NEAT-AI-core pruning engine (#182).
 //!
 //! Ockham does not own what a structural rewrite does. `NEAT-AI-core`'s
-//! [`prune_neuron`] and [`prune_synapse`] own the removal, the compensation,
+//! [`prune_neuron()`] and [`prune_synapse()`] own the removal, the compensation,
 //! the `IF`/typed-role rewrites, the cleanup fixed point and the validation;
 //! this module is the request Ockham makes of them and the record it keeps of
 //! what came back. `docs/pruning-ownership.md` is the checked-in contract.

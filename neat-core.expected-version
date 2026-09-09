@@ -51,4 +51,9 @@
 # --all-features -D warnings` and `cargo test --workspace --all-features`
 # (665 lib + 56 integration tests) are all green.
 
-0.14.1
+# 0.14.1 -> 0.14.4: patch releases with no library change Ockham names. The
+# sibling clone this branch builds against is 0.14.4, and Issue #182 compiles
+# against its `prune_neuron` / `prune_synapse` surface (neat-core #587's
+# Pruning milestone), so the recorded baseline moves with it.
+
+0.14.4

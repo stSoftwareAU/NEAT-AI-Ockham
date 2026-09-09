@@ -30,7 +30,7 @@ use std::time::Instant;
 use neat_ai_ockham::fixtures::{creature, neuron, synapse};
 use neat_ai_ockham::signature::{DiscoveryConfig, discover};
 use neat_ai_ockham::stats::{ActivationStats, NeuronProbes};
-use neat_ai_ockham::{ablate_mean, merge_correlated};
+use neat_ai_ockham::{merge_correlated, prune_hidden_neuron};
 use neat_core::{CreatureExport, compile_creature};
 
 /// Outputs must stay within this of the incumbent for the judge to confirm.
@@ -349,7 +349,7 @@ fn main() {
             .probes_of(uuid)
             .map(|v| f64::from(v.iter().sum::<f32>()) / v.len() as f64)
             .unwrap_or(0.0);
-        let built = match ablate_mean(&incumbent, uuid, mean, None) {
+        let built = match prune_hidden_neuron(&incumbent, uuid, mean, None) {
             Ok(built) => built,
             Err(blocked) => {
                 *ablation

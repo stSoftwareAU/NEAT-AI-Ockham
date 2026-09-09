@@ -1,11 +1,11 @@
 //! Constant substitution — a candidate for the blocked majority (Issue #103).
 //!
-//! [`crate::ablation::ablate_mean`] removes a hidden neuron and folds its mean
-//! activation into every downstream **bias**. That only works where the target
-//! sums its inputs, so it fails closed on the structure a forest-heavy creature
-//! is mostly made of: an aggregate target (`IF`, `MEAN`, `MINIMUM`, …) does not
-//! sum, and a typed synapse carries a role a bias cannot stand in for. Those
-//! neurons were visited, counted as `blocked`, and never tested.
+//! [`crate::prune::prune_hidden_neuron`] removes a hidden neuron and folds its
+//! mean activation into every downstream **bias**. That only stands in for the
+//! removal where the target sums its inputs: an aggregate target (`IF`,
+//! `MEAN`, `MINIMUM`, …) does not, so the core engine names it on
+//! [`crate::prune::PruneDetail::uncompensated`] and the candidate simply loses
+//! the term. That is the structure a forest-heavy creature is mostly made of.
 //!
 //! This module tests them. The substitution keeps the **edge** and replaces the
 //! **source**: the hidden neuron becomes a `constant` neuron emitting its
@@ -213,8 +213,8 @@ mod tests {
     use neat_core::compile_creature;
 
     /// `h_cond` feeds an `IF` neuron through a typed `condition` synapse, and
-    /// `h_if` is the aggregate itself: the two shapes `ablate_mean` fails
-    /// closed on, and the bulk of a forest-heavy creature.
+    /// `h_if` is the aggregate itself: the two shapes a bias fold cannot stand
+    /// in for, and the bulk of a forest-heavy creature.
     fn typed_if_fixture() -> CreatureExport {
         creature(
             1,

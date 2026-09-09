@@ -281,6 +281,7 @@ fn run_arm(name: &'static str, ladder: &ScreenLadder, workspace: &Path) -> Arm {
             let stem = format!("c{i:03}");
             stems.insert(stem.clone(), *id);
             candidates.push(SweepCandidate {
+                prune: None,
                 merged_with: None,
                 from_uuid: None,
                 to_uuid: None,

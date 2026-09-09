@@ -1,31 +1,27 @@
-//! Mean-activation neuron ablation with recursive exact cleanup (Issue #4).
+//! Structure snapshots and the exact cleanup cascade (Issue #4).
 //!
-//! All work happens on a **clone** of the incumbent. The requested removal
-//! replaces a hidden neuron's downstream contribution with its measured mean:
+//! The mean-activation neuron and edge transforms this module used to own were
+//! retired in Issue #182: the canonical rewrite engine lives in NEAT-AI-core
+//! and Ockham reaches it through [`crate::prune`]. What is left here is what
+//! the capabilities not yet migrated still share:
 //!
-//! ```text
-//! bias_j' = bias_j + mean_i * w_ij
-//! ```
+//! - [`growth_units`] and [`StructureSnapshot`], the unitless cost proxy every
+//!   candidate is measured by;
+//! - `cleanup_cascade`, the recursive exact cleanup behind the identity
+//!   collapse ([`crate::collapse`]), the correlated merge ([`crate::merge`])
+//!   and the canonicalisation pre-pass ([`crate::canonical`]). Two exact rules,
+//!   in priority order: a listed non-output neuron feeding nothing is removed,
+//!   and a hidden neuron with nothing to sum folds to its constant.
 //!
-//! That step is deliberately approximate. The recursive cleanup that follows
-//! (dead hidden/constant neurons, constant folding of known squashes) is exact.
-//! Neither distinction grants acceptance: the full-corpus scorer still decides.
+//! The cleanup is exact — it never stands a statistic in for something the
+//! creature computes — and it fails closed on structure a bias cannot absorb:
+//! an aggregate target does not sum its inputs, and a typed synapse carries a
+//! role no bias stands in for. Being exact grants nothing: the full-corpus
+//! scorer still decides.
 //!
-//! [`ablate_synapse`] is the same family one step finer (Issue #133): the unit
-//! removed is the **edge**, not the neuron. The removed synapse's contribution
-//! is folded into the target's bias,
-//!
-//! ```text
-//! bias_j' = bias_j + source_value * w_ij
-//! ```
-//!
-//! which is the same approximate step, and the same exact cleanup cascade then
-//! removes whatever that edge stranded. No weight or contribution threshold
-//! decides which edges are eligible — every ordinary synapse is, and the
-//! full-corpus scorer remains the only acceptance authority.
-//!
-//! Unsupported aggregate/typed-synapse cases are skipped, never guessed. The
-//! final candidate must pass NEAT-AI-core `creature.validate()`.
+//! New rewrite semantics do not belong here. `docs/pruning-ownership.md` is the
+//! checked-in contract: a change to what a prune *does* structurally belongs in
+//! NEAT-AI-core.
 
 use std::collections::HashSet;
 use std::fmt;

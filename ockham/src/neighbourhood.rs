@@ -283,7 +283,7 @@ pub fn group_key(members: &[String]) -> String {
 /// Rank neighbourhoods of `incumbent` and build a candidate for each (#108).
 ///
 /// The batch companion of [`propose_neighbourhoods`]: every proposal is put
-/// through [`crate::ablation::ablate_group`], so what comes back is already
+/// through [`crate::prune::prune_hidden_group`], so what comes back is already
 /// validated by `creature.validate()` and ready for the ordinary sampled
 /// screen. Stems are `g000`, `g001`, … so a group candidate never collides with
 /// the sweep's own `c000` cohort files.

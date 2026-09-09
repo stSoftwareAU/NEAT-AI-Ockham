@@ -8,7 +8,7 @@
 //!
 //! The score is **not** the ranking key — scoring a ranking by its own key
 //! proves nothing. Each visited neuron goes through the real
-//! [`neat_ai_ockham::ablate_mean`], recursive cleanup and all, and the candidate
+//! [`neat_ai_ockham::prune_hidden_neuron`], recursive cleanup and all, and the candidate
 //! is then judged by a **proxy scorer**: the NEAT-AI-core compiled forward pass,
 //! run over a fixed probe set, comparing the candidate's outputs against the
 //! incumbent's. A cut is *confirmed* when the outputs are unchanged within
@@ -26,7 +26,7 @@ use std::time::Instant;
 use neat_ai_ockham::fixtures::{creature, neuron, synapse};
 use neat_ai_ockham::ordering::{Ordering, OrderingConfig, hidden_order};
 use neat_ai_ockham::stats::{ActivationStats, NeuronStats};
-use neat_ai_ockham::{SensitivityIndex, ablate_mean};
+use neat_ai_ockham::{SensitivityIndex, prune_hidden_neuron};
 use neat_core::{CreatureExport, compile_creature};
 
 /// Outputs stay within this of the incumbent for the proxy judge to confirm.
@@ -129,7 +129,7 @@ fn probes(inputs: usize) -> Vec<Vec<f32>> {
 
 /// Outputs of `creature` over every probe; the compile error is not swallowed.
 ///
-/// `ablate_mean` only returns a candidate it has validated, so a candidate that
+/// `prune_hidden_neuron` only returns a candidate it has validated, so a candidate that
 /// will not compile is a fault to surface — never a quiet "not confirmed" that
 /// reads in the table exactly like a judge rejecting the cut on behaviour.
 fn outputs(creature: &CreatureExport, probes: &[Vec<f32>]) -> Result<Vec<Vec<f32>>, String> {
@@ -200,7 +200,7 @@ fn main() {
         let (mut calls, mut cuts, mut units, mut blocked) = (0u64, 0u64, 0.0f64, 0u64);
         let mut first_ms: Option<f64> = None;
         for uuid in order.iter().take(VISITS) {
-            let Ok(ablation) = ablate_mean(&creature, uuid, 0.1, None) else {
+            let Ok(ablation) = prune_hidden_neuron(&creature, uuid, 0.1, None) else {
                 // A visit the razor cannot propose for buys nothing and never
                 // reaches a judge, so it is reported rather than dropped.
                 blocked += 1;

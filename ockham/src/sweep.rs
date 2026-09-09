@@ -726,14 +726,15 @@ fn with_merge_detail(mut blocked: Blocked, merge: Option<MergeRefusal>) -> Block
 /// ([`crate::stats::source_value`]), so a hidden, `constant` or input source is
 /// asked for its value the same way. A source that resolves to nothing is a
 /// fold this run cannot justify — [`BlockedReason::MissingActivation`] — and
-/// every other refusal is the one [`ablate_synapse`] reports, under its own
-/// reason code. The value is resolved **first**, so an edge that is both
-/// unmeasured and structurally unsafe is filed under the missing value.
+/// every other refusal is the one [`crate::prune::prune_edge`] reports from
+/// core, under its own reason code. The value is resolved **first**, so an edge
+/// that is both unmeasured and structurally unsafe is filed under the missing
+/// value.
 ///
-/// Resolving a value is not the same as being cuttable: an `input-N` source
-/// resolves a mean and is then refused by [`ablate_synapse`], because an input
-/// is not a listed neuron the transform can fold through (Issue #133). Those
-/// edges are visited and blocked, never filtered out of the pool.
+/// An `input-N`-sourced edge is an ordinary candidate since Issue #182: the
+/// shared engine names an edge by its `(from, to, role)` triple, so an edge out
+/// of an observation — and a typed role into an `IF` — is cut rather than
+/// refused as it was under Issue #133.
 ///
 /// Nothing here weighs the edge: no weight, magnitude or contribution threshold
 /// decides eligibility, because only the full-corpus scorer accepts.
