@@ -606,6 +606,14 @@ impl LearningsStore {
     /// fleet's pre-#76 coverage as belonging to no corpus at all, and a host
     /// that had not run since would re-screen a creature it had already
     /// finished under the very corpus in hand.
+    ///
+    /// A **blocked** record filed under a retired reason code
+    /// ([`BlockedReason::is_retired`]) is dropped whatever its version: it was
+    /// filed by a razor that no longer exists, against a visit the shared
+    /// engine now builds a candidate for, so counting it would leave the epoch
+    /// reading checked while the candidate goes untried (Issue #192). The
+    /// record stays on disk — nothing rewrites these files — it simply is not
+    /// coverage, and the visit goes back in front of the sweep.
     pub fn load_screens(&self) -> Result<Vec<Screened>, String> {
         let keep = |s: &Screened| {
             matches!(
@@ -613,7 +621,7 @@ impl LearningsStore {
                 LEGACY_SCREENS_FORMAT_VERSION
                     | SCREENS_FORMAT_VERSION
                     | SCREENS_VISIT_FORMAT_VERSION
-            )
+            ) && !s.blocked_category().is_some_and(BlockedReason::is_retired)
         };
         let mut out = load_jsonl(&self.screens_dir(), keep)?;
         for legacy in self.legacy_screens_dirs()? {
@@ -1794,6 +1802,55 @@ mod tests {
             store.load_screens().unwrap().len(),
             1,
             "screen coverage is unaffected"
+        );
+    }
+
+    /// A blocked record filed under a retired reason code is not coverage
+    /// (Issue #192).
+    ///
+    /// `unsafe-topology` was filed in bulk by the razor that predated the
+    /// shared pruning engine, against visits it can now cut. Counting those
+    /// records leaves an epoch reading 100% checked while tens of thousands of
+    /// candidates the engine builds sit untried, so the record is dropped and
+    /// the visit goes back in front of the sweep. Every other record on the
+    /// same file — a real screen, a blocked visit under a live code — is
+    /// untouched.
+    #[test]
+    fn a_blocked_record_under_a_retired_reason_is_not_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        let blocked = |uuid: &str, reason: BlockedReason| Screened {
+            kind: SCREEN_KIND_SKIPPED.into(),
+            blocked_reason: Some(reason),
+            ..screen(uuid, ScreenOutcomeKind::Loser, 7)
+        };
+        store
+            .append_screen(&blocked("h_retired", BlockedReason::UnsafeTopology))
+            .unwrap();
+        store
+            .append_screen(&blocked("h_live", BlockedReason::MissingActivation))
+            .unwrap();
+        store
+            .append_screen(&screen("h_screened", ScreenOutcomeKind::Winner, 8))
+            .unwrap();
+        // The same visit, screened for real as well: the retired record goes,
+        // the screen that clears it stays.
+        store
+            .append_screen(&screen("h_retired", ScreenOutcomeKind::Loser, 9))
+            .unwrap();
+
+        let loaded = store.load_screens().unwrap();
+        let uuids: Vec<&str> = loaded.iter().map(|s| s.uuid.as_str()).collect();
+        assert_eq!(
+            uuids,
+            vec!["h_live", "h_screened", "h_retired"],
+            "{loaded:?}"
+        );
+        assert!(
+            loaded
+                .iter()
+                .all(|s| !s.blocked_category().is_some_and(BlockedReason::is_retired)),
+            "{loaded:?}"
         );
     }
 

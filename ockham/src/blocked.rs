@@ -36,8 +36,20 @@ pub enum BlockedReason {
     AggregateSquash,
     /// No usable activation statistic: none sampled, or a non-finite mean.
     MissingActivation,
-    /// The topology cannot be compensated safely — a typed synapse, or a
-    /// neuron the transform cannot treat as an ordinary hidden unit.
+    /// **Retired (Issue #192).** No current binary files this code.
+    ///
+    /// It meant "the topology cannot be compensated safely" — a typed synapse,
+    /// or a neuron the transform could not treat as an ordinary hidden unit.
+    /// There is no such thing: every hidden neuron the incumbent carries, and
+    /// every edge it lists, is a pruning target the shared NEAT-AI-core engine
+    /// rewrites (#182). What remains is either the value the razor was missing
+    /// ([`Self::MissingActivation`]) or a request naming structure the
+    /// incumbent does not carry, which is a defect to report under
+    /// [`Self::Other`] rather than a category to build a path for.
+    ///
+    /// The variant stays so fleet history still deserialises, and
+    /// [`Self::is_retired`] is what tells a reader that a record carrying it
+    /// describes a razor that no longer exists.
     UnsafeTopology,
     /// A candidate was built and `creature.validate()` rejected it.
     ValidationFailed,
@@ -97,6 +109,18 @@ impl BlockedReason {
             Self::Other => "an explicit reason outside the known codes",
             Self::Unrecorded => "filed before blocked reasons were recorded (#103)",
         }
+    }
+
+    /// Whether this code is one no current binary can file (Issue #192).
+    ///
+    /// A retired code is still read — the variant exists so fleet history
+    /// deserialises — but a **blocked** record carrying one was filed by a
+    /// razor that no longer exists, so it is no evidence about the razor in
+    /// hand. [`crate::learnings::LearningsStore::load_screens`] drops those
+    /// records, which is what puts the visit back in front of the sweep
+    /// instead of leaving it counted as checked-and-refused forever.
+    pub fn is_retired(self) -> bool {
+        matches!(self, Self::UnsafeTopology)
     }
 
     /// Read a code back off a record.

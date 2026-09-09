@@ -389,15 +389,18 @@ the pool reports:
 | Figure | Value |
 | --- | --- |
 | pool | 2386 visits (799 neuron, 1587 synapse) |
-| synapse proposals built and validated | 1129 |
-| refused | 458 — 270 `aggregate-squash`, 188 `unsafe-topology` |
-| removed per accepted proposal | 2.03 synapses, 0.89 neurons cascaded |
-| cost | ~2.3–2.6ms per synapse visit, ~3.2–3.6ms per proposal built |
+| synapse proposals built and validated | 1587 |
+| refused | 0 |
+| removed per accepted proposal | 1.46 synapses, 0.32 neurons cascaded |
+| cost | ~3.5ms per synapse visit, ~3.5ms per proposal built |
 
-Two thirds of the edges yield a candidate, and the average accepted proposal
-takes more than the one synapse it asked for — the cleanup cascade takes the
-structure the cut stranded with it. The refusals are the aggregate collectors
-and the typed gates, both failing closed as they should.
+**Every** edge yields a candidate. The aggregate collectors and the typed gates
+used to fail closed here — 458 refusals, 188 of them under the retired
+`unsafe-topology` code — but since Issue #182 the shared NEAT-AI-core engine
+rewrites both, so there is no topology the razor refuses to try (Issue #192);
+the full-corpus scorer is the only thing that turns a candidate down. The
+average proposal still takes more than the one synapse it asked for, because the
+cleanup cascade takes the structure the cut stranded with it.
 
 ## Mean-activation ablation
 
