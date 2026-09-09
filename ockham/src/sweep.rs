@@ -2089,28 +2089,48 @@ mod tests {
             "{blocked}"
         );
 
+        // An edge the incumbent does not carry names no structure to cut.
+        let blocked = propose(
+            &creature,
+            &stats,
+            MergeIndex::empty(),
+            &synapse_key("h_a", "h_b"),
+        )
+        .unwrap_err();
+        assert_eq!(blocked.reason, BlockedReason::UnsafeTopology, "{blocked}");
+    }
+
+    /// The edge visits Issue #133 failed closed on are candidates the shared
+    /// engine builds (Issue #182): a typed role into an `IF` is rewritten, and
+    /// an aggregate target is left named on the core report rather than
+    /// refused. Both still face the screen and the scorer.
+    #[test]
+    fn a_typed_role_and_an_aggregate_target_are_edge_candidates_now() {
         let typed = typed_edge_creature();
         let typed_stats = stats_with_inputs(&typed);
-        let blocked = propose(
+        let proposed = propose(
             &typed,
             &typed_stats,
             MergeIndex::empty(),
             &synapse_key("h_cond", "h_if"),
         )
-        .unwrap_err();
-        assert_eq!(blocked.reason, BlockedReason::UnsafeTopology, "{blocked}");
+        .expect("a typed role is cut, not refused");
+        assert_eq!(proposed.kind, CandidateKind::Synapse);
+        crate::incumbent::validate_creature(&proposed.creature).unwrap();
 
         let aggregate = aggregate_target_creature();
         validate_creature(&aggregate).unwrap();
         let aggregate_stats = stats_with_inputs(&aggregate);
-        let blocked = propose(
+        let proposed = propose(
             &aggregate,
             &aggregate_stats,
             MergeIndex::empty(),
             &synapse_key("h_src", "h_mean"),
         )
-        .unwrap_err();
-        assert_eq!(blocked.reason, BlockedReason::AggregateSquash, "{blocked}");
+        .expect("an aggregate target loses the term rather than refusing it");
+        let detail = proposed.prune.expect("the core report travels with it");
+        assert_eq!(detail.uncompensated.len(), 1, "{detail:?}");
+        assert_eq!(detail.uncompensated[0].target_uuid, "h_mean");
     }
 
     /// Every refused visit is filed as a skip, so the walk always advances.
@@ -2292,34 +2312,40 @@ mod tests {
         }
     }
 
-    /// Issue #133: an `input-N` source resolves a fold value and is then refused
-    /// by the transform, because an input is not a listed neuron to fold
-    /// through. The commonest refusal on a real creature, so it is pinned: the
-    /// edge is visited and blocked, never quietly filtered out of the pool.
+    /// Issue #133 refused an `input-N`-sourced edge because an input is not a
+    /// listed neuron to fold through; Issue #182 cuts it, because the shared
+    /// engine names an edge by its `(from, to, role)` triple and an
+    /// observation-incident edge is an ordinary candidate. The commonest edge
+    /// on a real creature, so the capability is pinned here.
     #[test]
-    fn an_input_sourced_edge_resolves_a_value_and_still_fails_closed() {
+    fn an_input_sourced_edge_resolves_a_value_and_is_cut() {
         let creature = two_hidden();
         let stats = stats_with_inputs(&creature);
         assert!(
             crate::stats::source_value(&creature, &stats, "input-0").is_some(),
-            "the fixture must measure the input, or this tests the wrong refusal"
+            "the fixture must measure the input, or this tests the wrong path"
         );
-        let blocked = propose(
+        let proposed = propose(
             &creature,
             &stats,
             MergeIndex::empty(),
             &synapse_key("input-0", "h_a"),
         )
-        .unwrap_err();
-        assert_eq!(blocked.reason, BlockedReason::UnsafeTopology, "{blocked}");
-        // And it is a *visit*, filed as a skip rather than dropped from the walk.
+        .expect("an observation-incident edge is a candidate");
+        assert_eq!(proposed.kind, CandidateKind::Synapse);
+        assert_eq!(proposed.from_uuid.as_deref(), Some("input-0"));
+        let detail = proposed.prune.expect("the core report travels with it");
+        assert_eq!(detail.removed_synapses.len(), 1, "{detail:?}");
+        assert_eq!(detail.removed_synapses[0].from_uuid, "input-0");
+        // And it is a *visit*: the walk offers it, rather than filtering it out.
         let mut sweep = Sweep::new(&creature, 4);
         let visits = sweep.order.len();
         let (batch, skips) = sweep.fill_batch(&creature, &stats, visits);
         assert_eq!(batch.len() + skips.len(), visits);
         assert!(
-            skips.iter().any(|s| s.uuid == synapse_key("input-0", "h_a")
-                && s.blocked == Some(BlockedReason::UnsafeTopology)),
+            batch
+                .iter()
+                .any(|c| c.uuid == synapse_key("input-0", "h_a")),
             "{skips:?}"
         );
     }

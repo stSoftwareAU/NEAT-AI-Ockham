@@ -225,9 +225,14 @@ impl PruneDetail {
     /// what that choice stranded. A learning that conflated them could not
     /// reconstruct the proposal it came from.
     pub fn cascade_uuids(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
         self.cascade_neurons
             .iter()
             .chain(self.folded_neurons.iter())
+            // A group cut can fold a neuron into constant support on one
+            // request and strand it on a later one, so the same uuid reaches
+            // here twice; it names one neuron either way.
+            .filter(|uuid| seen.insert(uuid.as_str()))
             .cloned()
             .collect()
     }

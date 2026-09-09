@@ -448,8 +448,11 @@ mod tests {
     use crate::fixtures::{creature, neuron, synapse, typed_synapse};
     use crate::incumbent::validate_creature;
 
+    /// The folded constants come back through an `f32` activation, so the
+    /// tolerance is `f32`-sized rather than the `f64` one exact arithmetic
+    /// would use.
     fn close(a: f64, b: f64) -> bool {
-        (a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0)
+        (a - b).abs() <= 1e-6 * a.abs().max(b.abs()).max(1.0)
     }
 
     /// input → h_up → h_leaf → output, plus input → h_keep → output.
