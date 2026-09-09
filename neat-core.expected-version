@@ -20,4 +20,20 @@
 # next in line because GRQ builds it from the same sibling neat-core at head.
 # Verified by `cargo clippy --all-targets -- -D warnings` and the full test
 # suite against the sibling clone at 0.13.0 (59eb6e6).
-0.13.0
+
+# 0.13.0 -> 0.14.1: acknowledge neat-core #640 (Issue #622, 0.14.0), which bounds
+# a creature's DECLARED observation width before it is walked:
+# `validate_creature_width` now refuses a declared `input` above MAX_NODE_COUNT
+# with `CreatureError::TooManyNodes`, so `compile_creature`,
+# `validate_creature_topology` and `cleanup_creature_with` no longer size an
+# allocation by an unbounded literal. Pre-1.0 that is a minor bump because input
+# previously accepted is now refused; 0.14.1 (#641) is a bump-deps.sh fix with no
+# library change. Ockham names none of the affected items (no `TooManyNodes`,
+# `validate_creature_width` or MAX_NODE_COUNT reference in `ockham/src`), and the
+# creatures it screens are real exports far below the ceiling, so no Ockham
+# source change was required. Verified against the sibling clone at Develop
+# 0.14.1 (255b06e): `cargo build`, `cargo clippy --workspace --all-targets
+# --all-features -D warnings` and `cargo test --workspace --all-features`
+# (665 lib + 56 integration tests) are all green.
+
+0.14.1

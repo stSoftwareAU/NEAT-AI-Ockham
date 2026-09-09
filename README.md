@@ -70,6 +70,11 @@ The current Rust implementation includes:
   surfaced by `report`, and carried into the `ockham` check-in tag (the
   GRQ-sampler commit subject) in the compact `sweep X/Y (Z% of epoch <id>)`
   form whenever a learnings dir is configured;
+- one snapshot behind every published figure (#171): the subject, the commit
+  description, `coverage.txt` and `coverage.json` are all rendered from the
+  coverage measured **after** the final accepted creature is selected, and the
+  `snapshot:` line names the measurement and the creature it was taken over —
+  see [One snapshot, four surfaces](#one-snapshot-four-surfaces);
 - epoch-aware reporting throughout (#102): every percentage says what it is a
   percentage *of*, a finished sweep reads `sweep complete for this epoch`
   rather than as Ockham finishing, the short corpus id travels with the figure,
@@ -1374,6 +1379,7 @@ unchecked: 3809 remaining this epoch (~39 runs at 100/run)
 blocked:   412 checked with no cut proposed
 reasons:   missing-activation 380 (92.2%) · validation-failed 32 (7.8%)
 tagged:    42 carry tags, screened like any other
+snapshot:  final · creature 4b1d90c7 · 3013 hidden + 2000 synapses = 5013 visits
 progress:  100 newly checked this run
 passes:    7 complete this epoch · 1 this run · pass 8 in progress
 visits:    120 hidden neurons visited this run · 118 revisited
@@ -1452,6 +1458,15 @@ eta:       visit rescan ~0.2h · scored rescan ~0.8h · 5013 neurons + 2000 edge
   `unknown` — never a zero — for an estimate nothing was measured for, and
   `none left` when there is genuinely nothing proposable to get through. See
   [Screening throughput and rescan ETA](#screening-throughput-and-rescan-eta);
+- the `snapshot:` line names the one measurement every figure above it came
+  from (#171): the stage (`final` — after the last accepted creature was
+  selected), the creature the counts were taken over, and the two populations
+  that add up to the `sweep:` denominator. It sits directly under those figures
+  and is omitted only by an artefact written before it existed. It scopes the
+  **current-epoch** figures and the run's own counts; the `history:` line below
+  it stays cumulative across every epoch and says so in its own words, so the
+  two are never read as one number. See
+  [One snapshot, four surfaces](#one-snapshot-four-surfaces);
 - `coverage.json` carries the same per-run figure under `newlyScreened`, the
   epoch under `corpusIdentity` (in full), the cumulative figures under an
   additive `history` key, the pass counters under an additive `passes` key
@@ -1460,7 +1475,8 @@ eta:       visit rescan ~0.2h · scored rescan ~0.8h · 5013 neurons + 2000 edge
   `winners` key and the funnel, rates and ETAs under an additive `throughput`
   key (`elapsedMs`, `funnel`, `hidden`, `synapses`, `visitsPerHour`,
   `proposedPerHour`, `screenedPerHour`, `fullScoredPerHour`,
-  `proposableEstimate`, `visitRescanHours`, `scoredRescanHours`), and
+  `proposableEstimate`, `visitRescanHours`, `scoredRescanHours`) and the
+  measurement itself under an additive `snapshot` key (`stage`, `creature`), and
   still deserialises straight into `Coverage` for a consumer that ignores them,
   so nothing downstream needs to parse the prose. `ockham report` reads the same
   `throughput` snapshot back off the journal's `coverage` record, so the three
@@ -1479,6 +1495,50 @@ flowchart LR
     C --> S["coverage.json — Coverage struct"]
     T --> G["GRQ: git commit description"]
     S --> G
+```
+
+### One snapshot, four surfaces
+
+A GRQ-sampler commit once reported `sweep 10338/55649 (18.6%)` in its subject
+and `13481/55649 (24.2%)` in its body, with nothing to say which was which
+(#171). Neither figure was wrong: they were **two snapshots**. The `ockham`
+check-in tag is stamped the moment an accept publishes `best.json`, and the run
+keeps screening afterwards — in the coverage tail a replay accept opens (#91),
+or in the sweep a search accept rebuilds over the changed creature — so the
+description written when the run ended counted everything screened after the
+cut, and the subject still carried the figure at the cut.
+
+Ockham now measures coverage **once**, after the final accepted creature is
+selected, and renders every published figure from that one snapshot:
+
+- the subject clause comes from `Coverage::subject_clause`, so the subject and
+  the description share one numerator, one denominator, one epoch identity and
+  one percentage calculation — the only way they could disagree is by being
+  handed different snapshots;
+- the check-in tag is re-stamped from the final snapshot before the run exits,
+  whatever ended the search. It was previously re-stamped only after a coverage
+  tail, which left every **search** accept publishing the figure at its cut;
+- the snapshot names the creature it was measured over, so the hidden count,
+  the synapse count and the `sweep:` denominator they add up to are provably of
+  one creature — an accept that rewires the topology changes both the
+  denominator and the visit keys inside it, and the `snapshot:` line is what
+  makes that one legible state rather than two mixed.
+
+Distinct semantics stay distinct: `sweep:` is **unique** visit coverage of the
+current epoch, `passes:` counts **strict** sweep completions, `rescan:` counts
+**visit attempts** and the creature-equivalent passes they add up to, and
+`history:` is cumulative across every epoch. One snapshot means one moment, not
+one number.
+
+```mermaid
+flowchart TD
+    A["accept publishes best.json<br/>(working figure, superseded)"] --> K["run keeps screening<br/>coverage tail or rebuilt sweep"]
+    K --> F["final snapshot:<br/>coverage over the creature<br/>the run finished on"]
+    F --> R["CoverageReport"]
+    R --> S["subject_clause<br/>→ re-stamped ockham tag"]
+    R --> D["description<br/>→ coverage.txt"]
+    R --> J["serialised<br/>→ coverage.json"]
+    F --> V["journal coverage record<br/>→ ockham report"]
 ```
 
 ### Unchecked-first selection
