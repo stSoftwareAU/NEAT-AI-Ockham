@@ -140,7 +140,10 @@ screened are ones nothing was ever going to prune before.
   This is the razor failing closed, and it is reported rather than retried: a
   candidate that cannot validate must never be silently replaced by a different
   transform, because the rejection is information about a shape the razor does
-  not model.
+  not model. That reading covers Ockham's **own** rewrites; once a capability
+  moves to the canonical NEAT-AI-core engine (#182), the same code after a
+  supported core prune is an engine bug to raise there rather than a category
+  to count — see [pruning-ownership.md](pruning-ownership.md).
 - **`no-output-path`** — NEAT-AI-core rejects a hidden neuron with no outgoing
   edge (rule 18), so a validated incumbent never holds one. The code exists so a
   transform that would leave one refuses rather than emitting a candidate that
