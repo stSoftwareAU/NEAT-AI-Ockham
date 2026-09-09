@@ -324,6 +324,7 @@ pub fn group_batch(
                         from_uuid: None,
                         to_uuid: None,
                         weight: None,
+                        prune: Some(built.detail),
                         stem,
                         creature: built.creature,
                     },
@@ -615,8 +616,8 @@ impl<'a> Topology<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prune::{GroupMember, prune_hidden_group, prune_hidden_neuron};
     use crate::fixtures::{creature, neuron, synapse, typed_synapse};
+    use crate::prune::{GroupMember, prune_hidden_group, prune_hidden_neuron};
     use crate::stats::{NeuronStats, STATS_FORMAT_VERSION, SampleSpec};
     use neat_core::CreatureExport;
 

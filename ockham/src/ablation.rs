@@ -576,7 +576,10 @@ mod tests {
             squash: "MEAN".into(),
         };
         assert_eq!(skip.blocked_reason(), BlockedReason::AggregateSquash);
-        assert_eq!(skip.to_string(), "aggregate target `h_mean` (`MEAN`); skipped");
+        assert_eq!(
+            skip.to_string(),
+            "aggregate target `h_mean` (`MEAN`); skipped"
+        );
         let skip = AblationSkip::UnknownNeuron("nope".into());
         assert_eq!(skip.blocked_reason(), BlockedReason::UnsafeTopology);
         assert_eq!(skip.to_string(), "no neuron `nope`");

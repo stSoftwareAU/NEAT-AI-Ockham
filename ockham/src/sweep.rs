@@ -30,13 +30,15 @@ use std::time::Instant;
 use neat_core::{CreatureExport, SquashType, creature_to_json, parse_squash_name};
 use serde::Serialize;
 
-use crate::prune::{GroupMember, PruneDetail, PrunedCandidate, prune_edge, prune_hidden_group,
-    prune_hidden_neuron, removed_weight};
 use crate::blocked::BlockedReason;
 use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
 use crate::incumbent::sha256_hex;
 use crate::merge::{MergeSkip, merge_correlated};
 use crate::ordering::{Ordering, OrderingConfig, hidden_order, synapse_order};
+use crate::prune::{
+    GroupMember, PruneDetail, PrunedCandidate, prune_edge, prune_hidden_group, prune_hidden_neuron,
+    removed_weight,
+};
 use crate::scorer::{DirectoryScorer, ScorerMode};
 use crate::signature::MergeIndex;
 use crate::stats::{ActivationStats, source_value};
@@ -209,6 +211,13 @@ pub struct SweepCandidate {
     /// Weight the cut edge carried, for a [`CandidateKind::Synapse`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub weight: Option<f64>,
+    /// What the NEAT-AI-core engine did to build this candidate (#182).
+    ///
+    /// `None` for a candidate Ockham still builds itself — an identity
+    /// collapse, a constant substitution, a correlated merge — so a reader can
+    /// tell a core rewrite from an Ockham one without guessing at the kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune: Option<PruneDetail>,
     /// Cohort file stem (`c000`, …).
     pub stem: String,
     /// Candidate creature.
@@ -521,6 +530,7 @@ impl Sweep {
                         from_uuid: proposed.from_uuid,
                         to_uuid: proposed.to_uuid,
                         weight: proposed.weight,
+                        prune: proposed.prune,
                         stem,
                         creature: proposed.creature,
                     });
@@ -921,6 +931,9 @@ pub struct ScreenedLoser {
     pub merged_with: Option<String>,
     /// Sampled Δ against the incumbent scored in the same call.
     pub delta: f64,
+    /// What the NEAT-AI-core engine did to build it (#182), when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune: Option<PruneDetail>,
     /// Ladder stage that ended it; `0` for the fixed-rate control (#104).
     pub stage: usize,
     /// Why it ended (#104).
@@ -1053,6 +1066,7 @@ pub fn screen_batch(
                 uuid: c.uuid,
                 kind: c.kind,
                 merged_with: c.merged_with,
+                prune: c.prune,
                 delta,
                 stage: 0,
                 reason: ScreenRejection::BelowThreshold,

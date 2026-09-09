@@ -431,8 +431,8 @@ pub fn estimate_cut(creature: &CreatureExport, uuids: &[String]) -> CascadeEstim
 mod tests {
     use super::*;
     use crate::ablation::StructureSnapshot;
-    use crate::prune::prune_hidden_neuron;
     use crate::fixtures::{creature, neuron, synapse};
+    use crate::prune::prune_hidden_neuron;
 
     /// `input-0 → f1 → f2 → hub → output-0`, plus a lone `keep → output-0`.
     ///

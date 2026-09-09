@@ -381,7 +381,11 @@ fn hint(mean: f64, stats: Option<&NeuronStats>) -> PruneStats {
 /// The [`validate_creature`] guard is Ockham's fail-loud boundary: core
 /// promises a canonical validated creature, and a creature that is not one is
 /// reported as [`BlockedReason::ValidationFailed`] rather than screened.
-fn candidate(before: StructureSnapshot, detail: PruneDetail, creature: CreatureExport) -> Result<PrunedCandidate, PruneRefusal> {
+fn candidate(
+    before: StructureSnapshot,
+    detail: PruneDetail,
+    creature: CreatureExport,
+) -> Result<PrunedCandidate, PruneRefusal> {
     validate_creature(&creature).map_err(|e| PruneRefusal {
         reason: BlockedReason::ValidationFailed,
         detail: format!("core prune returned a creature validation rejects: {e}"),
@@ -413,8 +417,8 @@ pub fn prune_hidden_neuron(
     stats: Option<&NeuronStats>,
 ) -> Result<PrunedCandidate, PruneRefusal> {
     let before = StructureSnapshot::of(incumbent);
-    let result =
-        prune_neuron(incumbent, uuid, Some(&hint(mean, stats))).map_err(|e| PruneRefusal::of(&e))?;
+    let result = prune_neuron(incumbent, uuid, Some(&hint(mean, stats)))
+        .map_err(|e| PruneRefusal::of(&e))?;
     let mut detail = PruneDetail::default();
     detail.absorb(&result);
     candidate(before, detail, result.creature)
@@ -865,7 +869,11 @@ mod tests {
         let condition = prune_hidden_neuron(&typed, "h_cond", 0.5, None).unwrap();
         validate_creature(&condition.creature).unwrap();
         assert!(
-            condition.creature.neurons.iter().all(|n| n.uuid != "h_cond"),
+            condition
+                .creature
+                .neurons
+                .iter()
+                .all(|n| n.uuid != "h_cond"),
             "{:?}",
             uuids(&condition.creature)
         );

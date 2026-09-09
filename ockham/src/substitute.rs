@@ -208,8 +208,8 @@ fn cascade_dead_sources(working: &mut CreatureExport) -> Vec<RemovedNeuron> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prune::prune_hidden_neuron;
     use crate::fixtures::{creature, neuron, synapse, typed_synapse};
+    use crate::prune::prune_hidden_neuron;
     use neat_core::compile_creature;
 
     /// `h_cond` feeds an `IF` neuron through a typed `condition` synapse, and
