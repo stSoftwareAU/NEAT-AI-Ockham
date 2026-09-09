@@ -454,7 +454,7 @@ fn stats_measured(creature: &CreatureExport, samples: usize) -> ActivationStats 
     for x in inputs(samples) {
         net.activate(&[x], 1);
         for (slot, (index, _)) in hidden.iter().enumerate() {
-            let value = f64::from(net.activations[net.num_inputs + index]);
+            let value = f64::from(net.activations()[net.num_inputs() + index]);
             sums[slot].0 += value;
             sums[slot].1 += value.abs();
         }
