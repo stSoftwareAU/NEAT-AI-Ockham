@@ -77,4 +77,25 @@
 # --all-features -- -D warnings` and `cargo test --workspace --all-features`
 # (675 lib + 70 integration tests) are green with no edit.
 
-0.15.4
+# 0.15.4 -> 0.16.0: acknowledge Ockham #196 (neat-core 0.16.0), which widens the
+# pruning compensation rule. `prune_neuron` and `prune_synapse` used to refuse a
+# bias fold to **every** aggregate target and name it on
+# `PruneResult::uncompensated`; a target the cut leaves with **no inward edge**
+# now takes the fold, because the forward pass evaluates a zero-edge MINIMUM,
+# MAXIMUM, MEAN or HYPOT from its bias alone. HYPOT folds the magnitude `|W.mu|`,
+# and a bare HYPOTv2 target — whose bias lives inside a per-synapse square that
+# no longer exists — is rewritten to ABSOLUTE over the folded bias. `IF` is
+# excluded: what it lost is a role, and IfRepair owns that. Pre-1.0 that is a
+# minor bump because documented pruning behaviour callers rely on changed, not
+# because any public item did: no signature, type or name Ockham compiles
+# against moved. Ockham only *reports* what a `PruneResult` carries
+# (`ockham/src/prune.rs::PruneDetail::absorb` copies `bias_folds`,
+# `uncompensated`, `transform` and the rest into its journal records), so what
+# it sees is a better-compensated candidate — fewer `aggregate-target` entries,
+# and a `TransformClass::Exact` where the source's value was fixed — with no
+# Ockham source change required. Verified against the sibling clone at 0.16.0
+# (bc80140): `cargo test --workspace --all-features` (675 lib + 70 integration
+# tests) and `cargo clippy --workspace --all-targets --all-features -- -D
+# warnings` are green with no edit.
+
+0.16.0
