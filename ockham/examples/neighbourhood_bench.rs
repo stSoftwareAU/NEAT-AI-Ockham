@@ -284,7 +284,7 @@ fn main() {
                 .filter_map(|uuid| {
                     stats.by_uuid(uuid).map(|s| GroupMember {
                         uuid: uuid.clone(),
-                        mean: s.mean,
+                        mean: Some(s.mean),
                     })
                 })
                 .collect();
@@ -303,7 +303,7 @@ fn main() {
                 let Some(mean) = stats.by_uuid(uuid).map(|s| s.mean) else {
                     continue;
                 };
-                match prune_hidden_neuron(&creature, uuid, mean, None) {
+                match prune_hidden_neuron(&creature, uuid, Some(mean), None) {
                     Ok(built) => {
                         let saved = built.before.growth_units - built.after.growth_units;
                         let better = best.as_ref().is_none_or(|(before, after)| {
@@ -383,7 +383,7 @@ fn fidelity() {
         .iter()
         .map(|uuid| GroupMember {
             uuid: uuid.clone(),
-            mean: stats.by_uuid(uuid).expect("measured").mean,
+            mean: Some(stats.by_uuid(uuid).expect("measured").mean),
         })
         .collect();
     let grouped = prune_hidden_group(&creature, &members).expect("the chain must build");
@@ -400,7 +400,8 @@ fn fidelity() {
     );
     for uuid in &proposal.members {
         let mean = stats.by_uuid(uuid).expect("measured").mean;
-        let single = prune_hidden_neuron(&creature, uuid, mean, None).expect("member must build");
+        let single =
+            prune_hidden_neuron(&creature, uuid, Some(mean), None).expect("member must build");
         println!(
             "  {:<26} {:.6} mean |Δoutput|, {} hidden removed",
             format!("single cut of {uuid}"),

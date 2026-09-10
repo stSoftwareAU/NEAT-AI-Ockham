@@ -555,7 +555,7 @@ mod tests {
         // The razor itself now takes this cut through core, so the estimate is
         // a floor on what the run saves, never a promise it cannot keep.
         assert!(
-            crate::prune::prune_edge(&creature, "a", "output-0", 0.0, None).is_ok(),
+            crate::prune::prune_edge(&creature, "a", "output-0", Some(0.0), None).is_ok(),
             "the shared engine cuts a typed pair rather than refusing it"
         );
     }
@@ -571,7 +571,7 @@ mod tests {
         assert!(got.blocked, "{got:?}");
         assert_eq!(got.synapses, 0, "an unestimated cut saves nothing: {got:?}");
         assert!(
-            crate::prune::prune_edge(&creature, "input-0", "a", 0.0, None).is_ok(),
+            crate::prune::prune_edge(&creature, "input-0", "a", Some(0.0), None).is_ok(),
             "the shared engine cuts an observation-incident edge"
         );
     }
@@ -630,7 +630,7 @@ mod tests {
                 .map(|n| n.uuid.clone())
                 .collect();
             for uuid in &hidden {
-                let ablation = prune_hidden_neuron(&fixture, uuid, 0.1, None)
+                let ablation = prune_hidden_neuron(&fixture, uuid, Some(0.1), None)
                     .unwrap_or_else(|e| panic!("{uuid} must be prunable on this fixture: {e}"));
                 compared += 1;
                 let got = estimate(&fixture, uuid);

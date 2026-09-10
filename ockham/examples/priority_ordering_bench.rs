@@ -236,7 +236,7 @@ fn simulate(creature: &CreatureExport, stats: &ActivationStats, order: &[String]
         // A confirmed cut: what the razor really removes is what it is worth.
         // A refusal is counted, never swallowed: a visit the razor can propose
         // nothing for is a cost the ranking paid and bought nothing with.
-        match prune_hidden_neuron(creature, uuid, 0.1, None) {
+        match prune_hidden_neuron(creature, uuid, Some(0.1), None) {
             Ok(ablation) => {
                 economics.cuts += 1;
                 economics.growth_units +=

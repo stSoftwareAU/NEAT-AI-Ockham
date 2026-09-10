@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn the_shortcut_fixture_offers_a_cut_that_removes_no_neuron() {
         let before = shortcut_edge_creature();
-        let cut = crate::prune::prune_edge(&before, "a", "output-0", 0.0, None)
+        let cut = crate::prune::prune_edge(&before, "a", "output-0", Some(0.0), None)
             .expect("the shortcut must be cuttable");
         assert!(
             cut.detail.cascade_uuids().is_empty(),

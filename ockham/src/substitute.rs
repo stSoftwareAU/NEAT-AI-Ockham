@@ -268,7 +268,7 @@ mod tests {
     fn a_typed_edge_the_prune_removes_can_substitute_a_constant_instead() {
         let incumbent = typed_if_fixture();
         validate_creature(&incumbent).expect("fixture is a valid incumbent");
-        let pruned = prune_hidden_neuron(&incumbent, "h_cond", 0.5, None)
+        let pruned = prune_hidden_neuron(&incumbent, "h_cond", Some(0.5), None)
             .expect("the shared engine rewrites a typed role rather than refusing it");
         assert!(
             pruned.creature.neurons.iter().all(|n| n.uuid != "h_cond"),
@@ -319,7 +319,7 @@ mod tests {
     fn the_aggregate_neuron_itself_substitutes_and_its_upstream_cascades() {
         let incumbent = typed_if_fixture();
         assert!(
-            prune_hidden_neuron(&incumbent, "h_if", 0.5, None).is_ok(),
+            prune_hidden_neuron(&incumbent, "h_if", Some(0.5), None).is_ok(),
             "the shared engine builds a candidate for an aggregate neuron too"
         );
 

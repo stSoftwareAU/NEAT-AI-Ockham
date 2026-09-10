@@ -17,7 +17,7 @@ in `screens/<host>.jsonl`, and every reporting surface counts by it.
 |---|---|---|
 | `aggregate-squash` | The neuron, or something a bias fold would touch, uses an aggregate squash (`IF`, `MEAN`, `MINIMUM`, …) that does not sum its inputs. Since #135 a synapse visit into an aggregate target is counted here: the bias fold is not a sum. | **Yes, since #103** — constant substitution. The code is still recorded where no substitution was reachable, chiefly an IDENTITY collapse blocked by an aggregate target with no activation statistic to fall back on. |
 | `unsafe-topology` | **Retired (Issue #192) — no current binary files it.** It meant "the transform cannot treat the neuron as an ordinary hidden unit", and on a real creature it was almost the whole blocked population: an edge out of an implicit `input-N`, and a typed role into an `IF`, were refused outright by Ockham's own rewrite. There is no such thing. Every hidden neuron the incumbent carries and every edge it lists is a target the shared NEAT-AI-core engine builds (#182), so what stops a visit is either the value the razor was missing (`missing-activation`) or a request naming structure the incumbent does not carry — a defect, counted under `other`. The code is still **read**, so fleet history deserialises; a **blocked** record carrying it is dropped at load, because it was filed by a razor that no longer exists and the visit deserves to be tried again. | Yes — it is an ordinary candidate now. |
-| `missing-activation` | No finite sampled activation statistic for the neuron. Since #135 a synapse visit whose source resolves to no fold value is counted here — the resolver failed closed rather than guessing a scalar. | No — there is no value to substitute. See below. |
+| `missing-activation` | A statistic Ockham handed core is not a number core can use — a non-finite mean, a negative variance, a proxy that does not hold up. Since Issue #199 an **absent** statistic is no longer one of these: an unmeasured neuron, and an edge whose source resolves to no fold value, go to core carrying no statistics at all, are pruned uncompensated under `no-statistics` and are screened as ordinary scored candidates. What is left under this code is a caller defect. | Not applicable — a run should never file it. A record carrying it names a fault to fix, not a category to build a path for. |
 | `validation-failed` | A candidate was built and NEAT-AI-core `creature.validate()` rejected it. | No — failing closed is the point. |
 | `no-output-path` | The neuron feeds nothing, so no candidate could be built around it. | Not reachable on a valid incumbent (rule 18). |
 | `other` | An explicit reason outside the codes above, including a code written by a newer binary than the one reading it. Since #109 a merge that failed its own growth-unit invariant is counted here: it is a fault to report, not a category to build a path for. Since #192 the same is true of a request naming structure the incumbent does not carry — an unknown neuron, a protected one, an edge that is not there — and of a shape one particular transform does not model (a typed edge out of an IDENTITY collapse, a merge that would run backwards) where the neuron itself is still prunable. | Case by case. |
@@ -37,7 +37,7 @@ above, and no others:
 
 | Code | When a synapse visit reports it |
 |---|---|
-| `missing-activation` | The source resolved to no fold value — an unmeasured hidden source, an unparsable constant, or an output as a source. The resolver runs **first**, so an edge that is both unmeasured and structurally unsafe is filed here: the value the cut would have needed is the refusal nearest the razor. |
+| `missing-activation` | Never in normal operation. Since Issue #199 a source that resolves to no fold value — an unmeasured hidden source, an unparsable constant, an output as a source — no longer stops the visit: the request goes to core with no statistic, the edge is cut, and the target core could not compensate is named `no-statistics` on the candidate's own report. The code is reachable only when Ockham hands core a statistic that is not a usable number, which is a defect to fix. |
 | `unsafe-topology` | Never. Retired by Issue #192 — see the table above. A request naming an edge the incumbent does not carry is a defect, counted under `other`. |
 | `aggregate-squash` | Reserved for a neuron visit. An aggregate destination no longer refuses an **edge** cut: since Issue #182 the shared engine removes the term and the scorer judges the result. Since Issue #196 it also *compensates* a destination the cut leaves with **no inward edge** — a zero-edge `MINIMUM`, `MAXIMUM`, `MEAN` or `HYPOT` evaluates to its bias, so the term folds there like any point-wise one; a destination that keeps an inward edge is still named on the core report as uncompensated. `IF` is never folded, whatever it is left with. |
 | `validation-failed` | The cleanup could not repair the cut into a valid canonical form, or the creature it returned failed Ockham's own validation. Following a *supported* core prune that is a rewrite-engine defect, not a normal outcome — see [pruning-ownership.md](pruning-ownership.md). |
@@ -175,21 +175,48 @@ more useful work. That is the trade Issue #103 asks for: coverage per hour buys
 less, and scorer-verified cuts per hour buys more, because the neurons being
 screened are ones nothing was ever going to prune before.
 
+## The unmeasured visit (Issue #199)
+
+An absent statistic used to be a wall. If the sampled scan never reached a
+hidden neuron, or an edge's source resolved to no fold value, Ockham filed
+`missing-activation` and the visit was recorded as checked-and-blocked forever
+— on a creature whose statistics cache did not cover it, that was the whole
+razor stopping on a number it did not have.
+
+It is not a wall, because the compensation was never Ockham's to withhold.
+NEAT-AI-core's `prune_neuron` and `prune_synapse` both take `stats: None`: they
+run every rewrite provable from the structure alone, fold what a source the
+creature itself fixes is worth, and name whatever target is left carrying the
+removal on `PruneResult::uncompensated` with the reason `NO_STATISTICS`. The
+result is a valid canonical creature — an **approximate** transform, honestly
+labelled — and the full-corpus scorer is what says whether losing that term was
+worth it.
+
+```mermaid
+flowchart LR
+    V["visit: neuron or edge"] --> S{"finite statistic?"}
+    S -- yes --> H["hint: mean, variance"]
+    S -- "no (Issue #199)" --> N["no statistics"]
+    H --> C["core prune_neuron / prune_synapse"]
+    N --> C
+    C --> U["uncompensated: no-statistics<br/>transform: Approximate"]
+    C --> P["candidate"]
+    U --> P
+    P --> R["screen · full-corpus scorer"]
+```
+
+So no Ockham code path files `missing-activation` for an **absent** statistic
+any more. The neuron ladder still tries the exact IDENTITY collapse and the
+correlated merge first — both are better candidates when they are available —
+and it skips only the constant-substitution rung, which needs a mean to write
+into the constant it creates. The code itself stays live for the one thing it
+still means: a statistic Ockham supplied that core refused as unusable, which
+is a caller defect rather than a category.
+
 ## The categories with no path yet
 
-- **`missing-activation`** — there is no finite measured mean, so neither the
-  bias fold nor a constant has a value to stand in for the neuron. Since #192 it
-  is also what an **unmeasured** hidden neuron reports when the exact IDENTITY
-  collapse refused on its own terms — a typed edge out, a bypass that would
-  self-connect — because the shared engine would have taken the neuron and only
-  the absent value stopped it. The collapse's own message stays in the record's
-  detail; the reason nearest the razor is the one counted, the same rule a
-  synapse visit follows (#135). A safe path
-  would need a different statistic (a median, or a scan that reaches the neuron
-  at all), and inventing a substitute value would be exactly the guess the razor
-  must not make. Note that NEAT-AI-core clamps every activation to a finite
-  range, so this is rare in practice; it is what a visit reports when a cached
-  statistics scan does not cover the neuron.
+- **`validation-failed`** and **`no-output-path`** are below. **`missing-activation`
+  is no longer one of them** — see [The unmeasured visit](#the-unmeasured-visit-issue-199).
 - **`validation-failed`** — a candidate was built and NEAT-AI-core rejected it.
   This is the razor failing closed, and it is reported rather than retried: a
   candidate that cannot validate must never be silently replaced by a different
