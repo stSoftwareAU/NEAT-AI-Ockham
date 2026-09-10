@@ -215,8 +215,10 @@ is a caller defect rather than a category.
 
 ## The categories with no path yet
 
-- **`validation-failed`** and **`no-output-path`** are below. **`missing-activation`
-  is no longer one of them** — see [The unmeasured visit](#the-unmeasured-visit-issue-199).
+`missing-activation` used to head this list. It does not any more — an
+unmeasured visit is a scored candidate, see
+[The unmeasured visit](#the-unmeasured-visit-issue-199).
+
 - **`validation-failed`** — a candidate was built and NEAT-AI-core rejected it.
   This is the razor failing closed, and it is reported rather than retried: a
   candidate that cannot validate must never be silently replaced by a different
