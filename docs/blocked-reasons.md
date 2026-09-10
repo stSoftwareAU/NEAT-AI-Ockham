@@ -39,7 +39,7 @@ above, and no others:
 |---|---|
 | `missing-activation` | The source resolved to no fold value — an unmeasured hidden source, an unparsable constant, or an output as a source. The resolver runs **first**, so an edge that is both unmeasured and structurally unsafe is filed here: the value the cut would have needed is the refusal nearest the razor. |
 | `unsafe-topology` | Never. Retired by Issue #192 — see the table above. A request naming an edge the incumbent does not carry is a defect, counted under `other`. |
-| `aggregate-squash` | Reserved for a neuron visit. An aggregate destination no longer refuses an **edge** cut: since Issue #182 the shared engine removes the term and names the target on the core report as uncompensated, and the scorer judges the result. |
+| `aggregate-squash` | Reserved for a neuron visit. An aggregate destination no longer refuses an **edge** cut: since Issue #182 the shared engine removes the term and the scorer judges the result. Since Issue #196 it also *compensates* a destination the cut leaves with **no inward edge** — a zero-edge `MINIMUM`, `MAXIMUM`, `MEAN` or `HYPOT` evaluates to its bias, so the term folds there like any point-wise one; a destination that keeps an inward edge is still named on the core report as uncompensated. `IF` is never folded, whatever it is left with. |
 | `validation-failed` | The cleanup could not repair the cut into a valid canonical form, or the creature it returned failed Ockham's own validation. Following a *supported* core prune that is a rewrite-engine defect, not a normal outcome — see [pruning-ownership.md](pruning-ownership.md). |
 
 Since Issue #182 an edge out of an implicit `input-N`, and a typed role into an
