@@ -341,10 +341,10 @@ source that resolves to nothing is **not** a refusal since Issue #199: the
 request goes to core carrying no statistic, the edge is cut, and the target core
 could not compensate is named `no-statistics` on an `Approximate` candidate the
 scorer judges like any other. A refusal carries the reason core itself reported,
-the visit files a skip and the walk advances, exactly as a neuron visit does. A synapse candidate
-carries its `fromUuid`, `toUuid` and `weight` as provenance — no other kind
-serialises those fields — and its `uuid` is the visit key, headed as always by
-`members`.
+the visit files a skip and the walk advances, exactly as a neuron visit does. A
+synapse candidate carries its `fromUuid`, `toUuid` and `weight` as provenance —
+no other kind serialises those fields — and its `uuid` is the visit key, headed
+as always by `members`.
 
 The pool is walked in full, and the **records** are ready for it: a screen
 record and a full-corpus verdict may both be keyed by a visit key, and every
