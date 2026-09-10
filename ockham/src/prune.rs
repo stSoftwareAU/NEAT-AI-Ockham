@@ -141,6 +141,13 @@ pub struct PruneDetail {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub folded_neurons: Vec<String>,
     /// `IF` neurons downgraded to `IDENTITY` — the one inexact cleanup rewrite.
+    ///
+    /// **Always empty since neat-core 0.16.0** (Issue #198): both core entry
+    /// points ask cleanup for `IfRepair::Rewrite`, so an `IF` short a role is
+    /// rewritten exactly and named on [`Self::static_if_neurons`] or
+    /// [`Self::restored_if_roles`] instead. The field stays because a
+    /// non-empty list here would mean core had gone back to the inexact
+    /// repair, and the journal should record that loudly rather than lose it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub downgraded_if_neurons: Vec<String>,
     /// `IF` neurons flattened to the branch their condition always takes.
