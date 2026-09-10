@@ -98,4 +98,21 @@
 # tests) and `cargo clippy --workspace --all-targets --all-features -- -D
 # warnings` are green with no edit.
 
+# Within the same 0.16.0 line, Ockham #198 makes `prune_neuron` ask cleanup for
+# `IfRepair::Rewrite` — the exact `IF` repair `prune_synapse` already used —
+# instead of the TypeScript-parity `IfRepair::Downgrade`. An `IF` a neuron
+# removal leaves short of a role is now flattened onto the arm a statically
+# decided condition always takes, or given back the emptied arm on a zero-weight
+# support edge, so `PruneResult::downgraded_if_neurons` is always empty on both
+# entry points and `static_if_neurons` / `restored_if_roles` carry what happened.
+# `PruneResult::transform` also reaches `Exact` where the rewrite proves the lost
+# term cost nothing. Pre-1.0 that is a minor bump because documented pruning
+# behaviour callers rely on changed, not because any public item did. Ockham only
+# *reports* what a `PruneResult` carries (`ockham/src/prune.rs::PruneDetail::absorb`),
+# so what it sees is a better-rewritten candidate; the one edit is the doc comment
+# on `PruneDetail::downgraded_if_neurons`, which now records that the list can no
+# longer fill. Verified against the sibling clone on
+# `ockham-198-prune-neuron-if-rewrite` (0.16.0): `./quality.sh` is green here,
+# including `scripts/check-neat-core-version.sh` and the full suite.
+
 0.16.0
