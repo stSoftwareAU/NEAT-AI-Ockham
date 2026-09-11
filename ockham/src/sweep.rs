@@ -31,7 +31,7 @@ use neat_core::{CreatureExport, SquashType, creature_to_json, parse_squash_name}
 use serde::Serialize;
 
 use crate::blocked::BlockedReason;
-use crate::collapse::{CollapseOptions, collapse_identity};
+use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
 use crate::incumbent::sha256_hex;
 use crate::merge::{MergeSkip, merge_correlated};
 use crate::ordering::{Ordering, OrderingConfig, hidden_order, synapse_order};
@@ -708,12 +708,20 @@ impl fmt::Display for MergeRefusal {
     }
 }
 
-/// Append the merge refusal to `blocked`, when discovery proposed one at all.
+/// Append the rungs the neuron ladder skipped to `blocked`, when it skipped any.
 ///
-/// The fallback path's own reason still classifies the visit — it is the one
-/// that actually stopped the razor — but the merge attempt is named beside it
-/// so a merge-enabled run can see why its proposals went nowhere.
-fn with_merge_detail(mut blocked: Blocked, merge: Option<MergeRefusal>) -> Blocked {
+/// The reason that classifies the visit is the one that actually stopped the
+/// razor — never a rung the shape simply did not suit — but the exact collapse
+/// and the merge are named beside it so a blocked record says what else was
+/// tried rather than silently losing it.
+fn with_skipped_rungs(
+    mut blocked: Blocked,
+    collapse: Option<CollapseSkip>,
+    merge: Option<MergeRefusal>,
+) -> Blocked {
+    if let Some(refusal) = collapse {
+        blocked.detail = format!("{}; collapse: {refusal}", blocked.detail);
+    }
     if let Some(refusal) = merge {
         blocked.detail = format!("{}; merge: {refusal}", blocked.detail);
     }
@@ -781,11 +789,16 @@ pub(crate) fn propose(
     // refusal — a cost increase, a typed edge out, a self-loop, an aggregate
     // target — ends this rung and no more: the ladder below does not need the
     // exact rewrite, and since Issue #199 it does not need a measured mean
-    // either, so the visit carries on down it rather than stopping here.
-    if is_identity(incumbent, uuid)
-        && let Ok(c) = collapse_identity(incumbent, uuid, CollapseOptions::default())
-    {
-        return Ok(Proposed::of(CandidateKind::Identity, c.creature));
+    // either, so the visit carries on down it rather than stopping here. The
+    // refusal is kept rather than dropped: if the whole ladder ends in a
+    // blocked visit, the record should still say which rungs were refused and
+    // why.
+    let mut collapse = None;
+    if is_identity(incumbent, uuid) {
+        match collapse_identity(incumbent, uuid, CollapseOptions::default()) {
+            Ok(c) => return Ok(Proposed::of(CandidateKind::Identity, c.creature)),
+            Err(skip) => collapse = Some(skip),
+        }
     }
     // A merge removes a whole neuron and compensates through a partner that is
     // already carrying the same behaviour, so it is tried ahead of folding this
@@ -800,7 +813,16 @@ pub(crate) fn propose(
     // candidate that comes back is screened like any other. Only the
     // constant-substitution rung below still needs a mean, because a constant
     // is a value and there is none to write.
-    let mean = stats.by_uuid(uuid).map(|s| s.mean);
+    //
+    // A mean that is not finite is no statistic either, and is filtered here
+    // for the same reason [`crate::stats::source_value`] filters one on the
+    // edge ladder: one measurement must not give a neuron visit and an edge
+    // visit opposite outcomes. What is left for core to refuse as
+    // `NonFiniteStatistic` is a direct caller defect, never a sweep visit.
+    let mean = stats
+        .by_uuid(uuid)
+        .map(|s| s.mean)
+        .filter(|mean| mean.is_finite());
     let substitute = || mean.map(|m| substitute_constant(incumbent, uuid, m));
     let refusal = match prune_hidden_neuron(incumbent, uuid, mean, stats.by_uuid(uuid)) {
         // Every target that read the neuron got the removal back as a bias
@@ -830,17 +852,19 @@ pub(crate) fn propose(
     // reason reported is the one that actually stopped the razor.
     match substitute() {
         Some(Ok(s)) => Ok(Proposed::of(CandidateKind::Constant, s.creature)),
-        Some(Err(substitution)) => Err(with_merge_detail(
+        Some(Err(substitution)) => Err(with_skipped_rungs(
             Blocked::new(
                 substitution.blocked_reason(),
                 format!("{refusal}; constant substitution: {substitution}"),
             ),
+            collapse,
             merge,
         )),
         // No mean, so there was no substitution rung to take: what core
         // reported is the whole story.
-        None => Err(with_merge_detail(
+        None => Err(with_skipped_rungs(
             Blocked::new(refusal.blocked_reason(), refusal.to_string()),
+            collapse,
             merge,
         )),
     }
@@ -872,7 +896,13 @@ pub(crate) fn propose_group(
         .iter()
         .map(|uuid| GroupMember {
             uuid: uuid.clone(),
-            mean: stats.by_uuid(uuid).map(|s| s.mean),
+            // Absent, or measured but not a finite number — the same filter
+            // [`propose`] applies, so one measurement cannot give a lone cut
+            // and a group cut opposite outcomes (Issue #199).
+            mean: stats
+                .by_uuid(uuid)
+                .map(|s| s.mean)
+                .filter(|mean| mean.is_finite()),
         })
         .collect();
     prune_hidden_group(incumbent, &cuts)
@@ -2209,6 +2239,89 @@ mod tests {
             .find(|u| u.target_uuid == "output-0")
             .unwrap_or_else(|| panic!("the target is named: {detail:?}"));
         assert_eq!(named.reason, "no-statistics");
+    }
+
+    /// A measured mean that is not a finite number is no statistic at all, and
+    /// a neuron visit treats it exactly as the edge ladder's resolver does —
+    /// as absent (Issue #199). One corrupt measurement must not block a neuron
+    /// visit while the edge out of the same neuron prunes uncompensated.
+    #[test]
+    fn a_non_finite_measured_mean_is_treated_as_no_statistic_at_all() {
+        let identity = two_hidden();
+        let mut stats = stats_with_inputs(&identity);
+        for n in &mut stats.neurons {
+            if n.uuid == "h_a" {
+                n.mean = f64::NAN;
+            }
+        }
+        // `h_a` is IDENTITY here, so the exact collapse would take it before
+        // the statistic ever mattered; the edge out of it is the visit that
+        // reads the corrupt mean.
+        let edge = propose(
+            &identity,
+            &stats,
+            MergeIndex::empty(),
+            &synapse_key("h_a", "output-0"),
+        )
+        .expect("a corrupt source mean prunes uncompensated, as an absent one does");
+        validate_creature(&edge.creature).unwrap();
+
+        // And the neuron visit reaches the same verdict rather than the
+        // opposite one: `h_t` is TANH, so no collapse rung intercepts it.
+        let tanh = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_t", 0.0, Some("TANH")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_t", 1.0),
+                synapse("h_t", "output-0", 1.0),
+            ],
+        );
+        let mut stats = stats_with_inputs(&tanh);
+        for n in &mut stats.neurons {
+            n.mean = f64::NAN;
+        }
+        let proposed = propose(&tanh, &stats, MergeIndex::empty(), "h_t")
+            .expect("a corrupt mean is absent, not a block");
+        assert_eq!(proposed.kind, CandidateKind::Ablation);
+        let detail = proposed.prune.expect("the core report travels with it");
+        assert_eq!(
+            detail.uncompensated[0].reason, "no-statistics",
+            "{detail:?}"
+        );
+    }
+
+    /// Issue #199: a group member the scan never measured no longer blocks the
+    /// whole group — it is cut carrying no statistic, like a lone neuron.
+    #[test]
+    fn an_unmeasured_group_member_no_longer_blocks_the_group() {
+        let creature = two_hidden();
+        let mut stats = stats_with_inputs(&creature);
+        stats.neurons.retain(|n| n.uuid != "h_b");
+        assert!(stats.by_uuid("h_a").is_some() && stats.by_uuid("h_b").is_none());
+
+        let built = propose_group(&creature, &stats, &["h_a".into(), "h_b".into()])
+            .expect("an unmeasured member is cut, not a block");
+        validate_creature(&built.creature).unwrap();
+        for uuid in ["h_a", "h_b"] {
+            assert!(
+                built.creature.neurons.iter().all(|n| n.uuid != uuid),
+                "{uuid} must be gone: {:?}",
+                built.creature.neurons
+            );
+        }
+        assert!(
+            built
+                .detail
+                .uncompensated
+                .iter()
+                .any(|u| u.reason == "no-statistics"),
+            "the unmeasured member is named: {:?}",
+            built.detail
+        );
     }
 
     /// A hidden neuron the incumbent carries is always a pruning target, so
