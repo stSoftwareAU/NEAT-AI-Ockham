@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use neat_core::CreatureExport;
 use serde::Serialize;
 
+use crate::clock::Clock;
 use crate::scorer::DirectoryScorer;
 use crate::sweep::{
     SampledWinner, ScreenConfig, ScreenRejection, ScreenedLoser, SweepCandidate, screen_batch,
@@ -304,7 +305,12 @@ pub struct ProgressiveConfig<'a> {
 /// of the ladder is that the larger samples are never paid for. Any scorer
 /// failure aborts the batch, exactly as the single-stage screen does: a partial
 /// ladder is not a verdict.
+///
+/// `clock` is the run's time source (#214); every stage is timed on it, so
+/// what the batch reports costing is measured the same way the budget it is
+/// spending is.
 pub fn screen_progressive(
+    clock: &dyn Clock,
     scorer: &dyn DirectoryScorer,
     training_dir: &Path,
     incumbent: &CreatureExport,
@@ -337,6 +343,7 @@ pub fn screen_progressive(
         };
         let phase = cfg.ladder.phase(cfg.batch, index);
         let outcome = screen_batch(
+            clock,
             scorer,
             training_dir,
             incumbent,
@@ -400,6 +407,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::clock::SystemClock;
     use crate::fixtures::{creature, neuron, synapse};
     use crate::scorer::{ScoreResult, ScorerError, ScorerMode};
     use crate::sweep::CandidateKind;
@@ -575,6 +583,7 @@ mod tests {
         let scorer = scorer_with(&[("baseline", 0.90), ("c000", 0.50), ("c001", 0.9001)]);
         let l = ladder();
         let out = screen_progressive(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent(),
@@ -630,6 +639,7 @@ mod tests {
         let scorer = scorer_with(&[("baseline", 0.90), ("c000", 0.8999)]);
         let l = ladder();
         let out = screen_progressive(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent(),
@@ -660,6 +670,7 @@ mod tests {
         let scorer = scorer_with(&[("baseline", 0.90), ("c000", 0.10)]);
         let l = ladder();
         let out = screen_progressive(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent(),
@@ -692,6 +703,7 @@ mod tests {
         let scorer = scorer_with(&[("baseline", 0.90), ("c000", 0.95), ("c001", 0.80)]);
         let l = ScreenLadder::single(0.05).unwrap();
         let out = screen_progressive(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent(),
@@ -725,6 +737,7 @@ mod tests {
         scorer.fail_call = Some(1);
         let l = ladder();
         let err = screen_progressive(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent(),

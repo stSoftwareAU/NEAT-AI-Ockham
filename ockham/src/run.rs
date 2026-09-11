@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use crate::baseline::{AuthoritativeBaseline, establish_baseline};
 use crate::cancel::CancelToken;
+use crate::clock::{Clock, SystemClock};
 use crate::config::OckhamConfig;
 use crate::corpus::corpus_info;
 use crate::incumbent::{Incumbent, IncumbentMeta, load_incumbent};
@@ -86,9 +87,27 @@ pub struct BaselineRun {
 ///
 /// Returns an error (fail closed) on invalid creatures, scorer failure or
 /// checksum drift. Never writes to [`OckhamConfig::creature`].
+///
+/// Runs on the real clock; [`establish_run_with_clock`] is the same run with
+/// its time source injected.
 pub fn establish_run(
     config: &OckhamConfig,
     scorer: &dyn DirectoryScorer,
+) -> Result<BaselineRun, String> {
+    establish_run_with_clock(config, scorer, &SystemClock)
+}
+
+/// [`establish_run`] with the run's budget clock injected (Issue #214).
+///
+/// Every duration the run's budget arithmetic reads comes from `clock`: its
+/// deadline, and the scorer costs the cohort sizing of Issue #58 and the
+/// screening reserve of Issue #77 are estimated from. A test can therefore
+/// assert what a run *decides* with a given budget left, instead of racing a
+/// wall-clock deadline against real sleeps.
+pub fn establish_run_with_clock(
+    config: &OckhamConfig,
+    scorer: &dyn DirectoryScorer,
+    clock: &dyn Clock,
 ) -> Result<BaselineRun, String> {
     let source = config.creature.clone();
     let source_before = std::fs::read(&source).map_err(|e| format!("{}: {e}", source.display()))?;
@@ -136,6 +155,7 @@ pub fn establish_run(
     let canonicalised = exact_cleanup.as_ref().is_some_and(|r| r.changed);
 
     let baseline = establish_baseline(
+        clock,
         &incumbent,
         &config.training_data,
         &corpus,
@@ -201,6 +221,7 @@ pub fn establish_run(
     let cancel = CancelToken::new();
     let loop_out = ockham_loop(
         config,
+        clock,
         scorer,
         &corpus,
         incumbent,
@@ -812,6 +833,7 @@ fn build_merge_index(config: &OckhamConfig, activation: &ActivationStats) -> Mer
 #[allow(clippy::too_many_arguments)]
 fn ockham_loop(
     config: &OckhamConfig,
+    clock: &dyn Clock,
     scorer: &dyn DirectoryScorer,
     corpus: &crate::corpus::CorpusInfo,
     mut incumbent: Incumbent,
@@ -825,7 +847,7 @@ fn ockham_loop(
     let journal_path = config.output_dir.join("experiments.jsonl");
     let seed = config.seed.unwrap_or_else(draw_seed);
     let ordering = config.ordering_config();
-    let started = Instant::now();
+    let started = clock.now();
     let opening_hidden = incumbent.hidden_neurons();
     log::info(&format!(
         "loop seed={seed}  ordering={}  randomQuota={}  hidden={}  budget={}s  candidates={}",
@@ -1042,7 +1064,7 @@ fn ockham_loop(
         },
     )?;
 
-    let deadline = Instant::now() + config.timeout;
+    let deadline = clock.now() + config.timeout;
     let mut accepts = 0u64;
     let mut experiments = 0u64;
     let mut consecutive_fail = 0u32;
@@ -1118,7 +1140,7 @@ fn ockham_loop(
         // ended the search. What ended the tail is not lost — it is journalled
         // as its own `coverageTail` record. A fault — cancellation, a broken
         // scorer — overrides the stop reason as well.
-        if Instant::now() >= deadline {
+        if clock.now() >= deadline {
             if coverage_tail {
                 tail_end = "timeout".into();
             } else {
@@ -1145,7 +1167,7 @@ fn ockham_loop(
         let reserving = reserve_stands(
             &cost,
             config,
-            deadline.saturating_duration_since(Instant::now()),
+            deadline.saturating_duration_since(clock.now()),
             screened_batches,
         );
         // Silent in a coverage tail: the replay stage is already standing down
@@ -1295,6 +1317,7 @@ fn ockham_loop(
                 ));
             }
             match evaluate_full(
+                clock,
                 scorer,
                 &config.training_data,
                 &incumbent.creature,
@@ -1316,7 +1339,7 @@ fn ockham_loop(
                     consecutive_fail = 0;
                     cost.observe_full(full.full_ms, full.entries());
                     tally.observe(&full, config.min_improvement);
-                    journal_full(&journal_path, &full, started)?;
+                    journal_full(&journal_path, &full, clock, started)?;
                     if full.winner.is_none() && sampled.is_empty() && applied.len() > 1 {
                         log::info(&format!(
                             "replay: every plan missed; probing {probe_n} known win(s) individually"
@@ -1354,6 +1377,7 @@ fn ockham_loop(
                         experiments += 1;
                         extra_plans = Vec::new();
                         match evaluate_full(
+                            clock,
                             scorer,
                             &config.training_data,
                             &incumbent.creature,
@@ -1375,7 +1399,7 @@ fn ockham_loop(
                                 consecutive_fail = 0;
                                 cost.observe_full(probe_full.full_ms, probe_full.entries());
                                 tally.observe(&probe_full, config.min_improvement);
-                                journal_full(&journal_path, &probe_full, started)?;
+                                journal_full(&journal_path, &probe_full, clock, started)?;
                                 // The probes are the honest per-uuid measurement
                                 // of a replayed win: one that has stopped paying
                                 // files a negative delta here and stops being
@@ -1409,6 +1433,7 @@ fn ockham_loop(
                                         unchecked_first,
                                         &screens,
                                         &prior,
+                                        clock,
                                         deadline,
                                         store.is_some(),
                                         ladder.is_some(),
@@ -1463,6 +1488,7 @@ fn ockham_loop(
                             unchecked_first,
                             &screens,
                             &prior,
+                            clock,
                             deadline,
                             store.is_some(),
                             ladder.is_some(),
@@ -1660,7 +1686,7 @@ fn ockham_loop(
             }
         }
         let candidates = candidates;
-        let remaining_s = deadline.saturating_duration_since(Instant::now()).as_secs();
+        let remaining_s = deadline.saturating_duration_since(clock.now()).as_secs();
         log::info(&format!(
             "batch {batch_idx}: {} candidates ({group_candidates} group), {} skipped, \
              {} hidden left, {remaining_s}s remaining",
@@ -1728,6 +1754,7 @@ fn ockham_loop(
         let sampled = match &ladder {
             Some(ladder) => {
                 match screen_progressive(
+                    clock,
                     scorer,
                     &config.training_data,
                     &incumbent.creature,
@@ -1949,7 +1976,7 @@ fn ockham_loop(
             pool.len(),
         ));
 
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(clock.now());
         let max_entries = match cost.cohort_budget(remaining) {
             CohortBudget::Unmeasured => None,
             CohortBudget::Entries(n) => Some(n),
@@ -1967,6 +1994,7 @@ fn ockham_loop(
             }
         };
         match evaluate_full(
+            clock,
             scorer,
             &config.training_data,
             &incumbent.creature,
@@ -2009,7 +2037,7 @@ fn ockham_loop(
                         crate::promote::MAX_BUNDLE_PLANS
                     ));
                 }
-                journal_full(&journal_path, &full, started)?;
+                journal_full(&journal_path, &full, clock, started)?;
                 journal::append(
                     &journal_path,
                     &Event::Budget {
@@ -2218,7 +2246,7 @@ fn ockham_loop(
             funnel,
             progress.visit_counts(),
             progress.revisit_counts(),
-            started.elapsed().as_millis() as u64,
+            clock.ms_since(started),
             cov.hidden,
             cov.synapses,
         );
@@ -2293,7 +2321,7 @@ fn ockham_loop(
             cumulative_delta: current_score - opening_score,
             final_hidden: incumbent.hidden_neurons(),
             final_synapses: incumbent.creature.synapses.len(),
-            elapsed_ms: started.elapsed().as_millis() as u64,
+            elapsed_ms: clock.ms_since(started),
             newly_screened,
         },
     )?;
@@ -2349,6 +2377,7 @@ fn open_coverage_tail(
     unchecked_first: bool,
     screens: &[Screened],
     prior: &PriorHint<'_>,
+    clock: &dyn Clock,
     deadline: Instant,
     has_store: bool,
     has_screen: bool,
@@ -2357,7 +2386,7 @@ fn open_coverage_tail(
     pool: &mut Vec<BundleMember>,
     pass_candidates: &mut usize,
 ) -> bool {
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    let remaining = deadline.saturating_duration_since(clock.now());
     if !incumbent.has_visits() || remaining.is_zero() || !has_store || !has_screen {
         return false;
     }
@@ -2586,6 +2615,7 @@ fn prefer_unchecked(sweep: &mut Sweep, screens: &[Screened], creature: &Creature
 fn journal_full(
     path: &std::path::Path,
     full: &FullOutcome,
+    clock: &dyn Clock,
     started: Instant,
 ) -> Result<(), String> {
     journal::append(
@@ -2598,7 +2628,7 @@ fn journal_full(
             score: full.winner.as_ref().map(|w| w.candidate.score),
             delta: full.winner.as_ref().map(|w| w.candidate.delta),
             cuts: full.winner.as_ref().map_or(0, |w| w.candidate.uuids.len()),
-            elapsed_ms: started.elapsed().as_millis() as u64,
+            elapsed_ms: clock.ms_since(started),
         },
     )
 }
@@ -2933,6 +2963,7 @@ fn apply_local_win(
 mod tests {
     use super::*;
     use crate::baseline::fake::ScriptedScorer;
+    use crate::clock::ManualClock;
     use crate::corpus::write_bin_file;
     use crate::coverage::Coverage;
     use crate::fixtures::identity_creature_json;
@@ -7190,13 +7221,17 @@ mod tests {
             screen_sample_rate: Some(0.01),
             ..test_defaults()
         };
+        // Spent on an injected clock, not slept (Issue #214): this asserts a
+        // budget decision, so it must not race a real deadline either.
+        let clock = ManualClock::new();
         let scorer = ScriptedScorer {
             delay_per_creature: Duration::from_millis(100),
+            clock: Some(clock.clone()),
             baseline_score: 0.50,
             candidate_score: Some(0.80),
             ..ScriptedScorer::ok(0.50, 0.50)
         };
-        let run = establish_run(&cfg, &scorer).unwrap();
+        let run = establish_run_with_clock(&cfg, &scorer, &clock).unwrap();
         assert_eq!(run.stop_reason, "budget");
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
@@ -8054,12 +8089,13 @@ mod tests {
     /// The behaviour those rules buy, end to end: a run whose budget has fallen
     /// to its last batch stands the replay stage down and screens instead.
     ///
-    /// The one test here that depends on the wall clock, unavoidably: the
-    /// reserve is a statement about time left, and the scorer's per-creature
-    /// delay is how a test spends a budget. The margin is deliberately wide —
-    /// the replay stage's 15 scored creatures nominally spend 1.5s of the 2s
-    /// budget, so it takes better than 30% jitter to reach the deadline first.
-    /// The assertions themselves are on what was screened and on record order,
+    /// Driven by an injected [`ManualClock`] rather than the wall clock (Issue
+    /// #214). The budget is spent only where the run really spends it — in the
+    /// scorer — because the scripted scorer advances that same clock by its
+    /// per-creature delay instead of sleeping. Nothing here races a real
+    /// deadline, so the decision under test is reached identically on a loaded
+    /// CI runner, a shared laptop and ARM — and it spends no real time
+    /// sleeping. The assertions are on what was screened and on record order,
     /// never on elapsed time.
     #[test]
     fn a_run_down_to_its_last_batch_screens_it_rather_than_replaying() {
@@ -8089,12 +8125,20 @@ mod tests {
                 None,
             )
         };
+        let clock = ManualClock::new();
+        let opened = clock.now();
         let scorer = ScriptedScorer {
             delay_per_creature: Duration::from_millis(100),
+            clock: Some(clock.clone()),
             ..losing_scorer()
         };
-        let run = establish_run(&cfg, &scorer).unwrap();
+        let run = establish_run_with_clock(&cfg, &scorer, &clock).unwrap();
 
+        assert!(
+            clock.since(opened) >= Duration::from_millis(1_500),
+            "the run must have spent its budget on the injected clock rather than              the wall clock: {:?}",
+            clock.since(opened)
+        );
         assert!(
             run.newly_screened > 0,
             "the reserve must buy this run a screening batch: {}",
