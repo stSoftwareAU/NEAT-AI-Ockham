@@ -553,6 +553,42 @@ mod tests {
         validate_creature(&forced.creature).unwrap();
     }
 
+    /// An IDENTITY feeding an aggregate target is refused by the *exact*
+    /// collapse — the bypass would change what the aggregate reduces — and that
+    /// refusal is a finding about this transform, not a blocked category
+    /// (Issue #200). The ladder falls through to the core prune, which converts,
+    /// folds or approximates the same target.
+    #[test]
+    fn an_aggregate_target_is_a_finding_about_the_collapse_not_a_category() {
+        let incumbent = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h1", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_mean", 0.0, Some("MEAN")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h1", 1.0),
+                synapse("input-0", "h_mean", 1.0),
+                synapse("h1", "h_mean", 1.0),
+                synapse("h_mean", "output-0", 1.0),
+            ],
+        );
+        let err = collapse_identity(&incumbent, "h1", CollapseOptions::default())
+            .expect_err("the exact collapse cannot bypass into an aggregate");
+        assert!(matches!(err, CollapseSkip::AggregateTarget { .. }), "{err}");
+        assert_eq!(err.blocked_reason(), BlockedReason::Other);
+        assert!(
+            !err.blocked_reason().is_retired(),
+            "a live code, never the retired `aggregate-squash`"
+        );
+        assert_eq!(
+            err.to_string(),
+            "aggregate target `h_mean` (`MEAN`); skipped"
+        );
+    }
+
     #[test]
     fn non_identity_is_skipped() {
         let incumbent = creature(

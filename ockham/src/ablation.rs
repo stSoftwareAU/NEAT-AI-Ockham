@@ -197,10 +197,12 @@ impl AblationSkip {
             // An aggregate squash is one of those shapes since Issue #200: core
             // converts a target left holding one inward edge, folds one left
             // holding none into its bias, and otherwise drops the term as an
-            // approximate transform the scorer judges. This ablation is an
-            // alternate rung whose refusal falls through to the core prune, so
-            // the message is a finding about *this* transform rather than a
-            // category — `aggregate-squash` is retired.
+            // approximate transform the scorer judges. No sweep path reads this
+            // enum's code today — `ablate_mean` went to core in #182, and the
+            // cleanup cascade's failures reach a screen as the *calling*
+            // transform's skip — so what this mapping has to get right is that
+            // an aggregate is a finding about a transform, never a category:
+            // `aggregate-squash` is retired.
             Self::AggregateNeuron { .. }
             | Self::AggregateTarget { .. }
             | Self::UnknownSquash { .. }

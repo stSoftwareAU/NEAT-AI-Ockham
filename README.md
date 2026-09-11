@@ -902,7 +902,7 @@ reached that way, so the percentage never claims a screen that never happened.
 
 Since #103 a blocked visit also records **why**, as a reason code on the record
 (`blockedReason`), and each batch logs its skips by the same codes
-(`validation-failed: 6, known-failure: 3`). One number could not be attacked; a
+(`other: 6, known-failure: 3`). One number could not be attacked; a
 breakdown can be, and the dominant category — aggregate and typed structure the
 bias fold cannot express — is now *proposed* as a
 [constant substitution](docs/blocked-reasons.md) rather than blocked. Since
@@ -1396,7 +1396,7 @@ epoch:     corpus 6fc028da — coverage counts this corpus only
 cut:       7 this run
 unchecked: 3809 remaining this epoch (~39 runs at 100/run)
 blocked:   412 checked with no cut proposed
-reasons:   validation-failed 380 (92.2%) · missing-activation 32 (7.8%)
+reasons:   other 380 (92.2%) · missing-activation 32 (7.8%)
 tagged:    42 carry tags, screened like any other
 snapshot:  final · creature 4b1d90c7 · 3013 hidden + 2000 synapses = 5013 visits
 progress:  100 newly checked this run

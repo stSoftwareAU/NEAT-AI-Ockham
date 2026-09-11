@@ -33,6 +33,25 @@ const CREATURE: &str = r#"{
   ]
 }"#;
 
+/// Two hidden neurons feeding a `MEAN`, which does not sum its inputs — the
+/// shape `aggregate-squash` was filed against before Issue #200.
+const AGGREGATE_CREATURE: &str = r#"{
+  "input":1,"output":1,"forwardOnly":true,
+  "neurons":[
+    {"type":"hidden","uuid":"h-1","bias":0.1,"squash":"LOGISTIC"},
+    {"type":"hidden","uuid":"h-2","bias":0.1,"squash":"TANH"},
+    {"type":"hidden","uuid":"h-mean","bias":0.0,"squash":"MEAN"},
+    {"type":"output","uuid":"output-0","bias":0.25,"squash":"IDENTITY"}
+  ],
+  "synapses":[
+    {"weight":1.0,"fromUUID":"input-0","toUUID":"h-1"},
+    {"weight":1.0,"fromUUID":"input-0","toUUID":"h-2"},
+    {"weight":1.0,"fromUUID":"h-1","toUUID":"h-mean"},
+    {"weight":1.0,"fromUUID":"h-2","toUUID":"h-mean"},
+    {"weight":0.2,"fromUUID":"h-mean","toUUID":"output-0"}
+  ]
+}"#;
+
 // ---------------------------------------------------------------------------
 // The principles, asserted against the engine that owns them.
 // ---------------------------------------------------------------------------
@@ -107,6 +126,41 @@ fn pruning_a_synapse_out_of_an_observation_returns_a_validated_creature() {
         "the observation width itself survives the cut"
     );
     validate_creature_topology(&result.creature).expect("no invalid candidate reaches the scorer");
+}
+
+/// "every hidden neuron and synapse prunes to a valid, closest creature"
+/// (Issue #200).
+///
+/// The principle core was built to, asserted against core: an aggregate target
+/// — the shape Ockham used to refuse outright as `aggregate-squash` — is not a
+/// refusal. The cut returns a validated creature; whatever core could not
+/// compensate is **named** on `uncompensated` and the candidate is labelled
+/// `Approximate`, so the scorer judges the approximation rather than the razor
+/// pre-judging it.
+#[test]
+fn an_aggregate_target_prunes_to_a_valid_creature_rather_than_refusing() {
+    let creature = parse_creature_json(AGGREGATE_CREATURE).expect("fixture parses");
+    let stats = PruneStats::mean(0.5);
+    for uuid in ["h-1", "h-2"] {
+        let result = prune_neuron(&creature, uuid, Some(&stats))
+            .unwrap_or_else(|e| panic!("`{uuid}` feeds a MEAN and must still prune, got {e:?}"));
+        validate_creature_topology(&result.creature)
+            .unwrap_or_else(|e| panic!("`{uuid}` produced an invalid candidate: {e}"));
+        assert!(
+            !result.creature.neurons.iter().any(|n| n.uuid == uuid),
+            "`{uuid}` is gone from the result"
+        );
+        // Closest, not exact: anything the fold could not carry is named, never
+        // silently dropped and never a reason to refuse the cut.
+        if !result.uncompensated.is_empty() {
+            assert_eq!(
+                result.transform,
+                TransformClass::Approximate,
+                "`{uuid}` left {:?} uncompensated but did not say so",
+                result.uncompensated
+            );
+        }
+    }
 }
 
 /// "invalid candidates never reach the scorer" — an unsupported request returns

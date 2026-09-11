@@ -2530,7 +2530,7 @@ fn skip_try(skip: &crate::sweep::SweepSkip) -> ScreenTry<'_> {
     )
 }
 
-/// `validation-failed: 41, known-failure: 3` — one batch's skips, by reason.
+/// `other: 41, known-failure: 3` — one batch's skips, by reason.
 ///
 /// The kind filed against a skipped visit is only two buckets wide, so the
 /// reason itself would otherwise be discarded: an unexpected skip — a

@@ -15,7 +15,7 @@ in `screens/<host>.jsonl`, and every reporting surface counts by it.
 
 | Code | What it means | Can the razor build a candidate? |
 |---|---|---|
-| `aggregate-squash` | **Retired (Issue #200) — no current binary files it.** It meant "the neuron, or something a bias fold would touch, uses an aggregate squash (`IF`, `MEAN`, `MINIMUM`, …) that does not sum its inputs", and on a forest-heavy creature it was the dominant category. There is no such refusal left: NEAT-AI-core **converts** an aggregate target a cut leaves holding one inward edge to `IDENTITY`/`ABSOLUTE` (#197), **folds** one left holding none into its bias (#196), and otherwise **drops** the term and labels the candidate `Approximate`, naming the target on `uncompensated`. Ockham's three aggregate refusals — the ablation's aggregate neuron, aggregate target and unknown squash, the exact collapse's aggregate target, the merge's aggregate target — are alternate rungs whose refusal falls through to the core prune, so each is a finding about that transform, counted under `other`. The code is still **read**, so fleet history deserialises; a **blocked** record carrying it is dropped at load, because the visit deserves to be tried again. | Yes — it is an ordinary candidate now. |
+| `aggregate-squash` | **Retired (Issue #200) — no current binary files it.** It meant "the neuron, or something a bias fold would touch, uses an aggregate squash (`IF`, `MEAN`, `MINIMUM`, …) that does not sum its inputs", and on a forest-heavy creature it was the dominant category. There is no such refusal left: NEAT-AI-core **converts** an aggregate target a cut leaves holding one inward edge to `IDENTITY`/`ABSOLUTE` (#197), **folds** one left holding none into its bias (#196), and otherwise **drops** the term and labels the candidate `Approximate`, naming the target on `uncompensated`. The aggregate refusals Ockham keeps — the ablation's aggregate neuron, aggregate target and unknown squash, the exact collapse's aggregate target, the merge's aggregate target — are alternate rungs whose refusal falls through to the core prune, so each is a finding about that transform, counted under `other`. The code is still **read**, so fleet history deserialises; a **blocked** record carrying it is dropped at load, because the visit deserves to be tried again. | Yes — it is an ordinary candidate now. |
 | `unsafe-topology` | **Retired (Issue #192) — no current binary files it.** It meant "the transform cannot treat the neuron as an ordinary hidden unit", and on a real creature it was almost the whole blocked population: an edge out of an implicit `input-N`, and a typed role into an `IF`, were refused outright by Ockham's own rewrite. There is no such thing. Every hidden neuron the incumbent carries and every edge it lists is a target the shared NEAT-AI-core engine builds (#182), so what stops a visit is a request naming structure the incumbent does not carry — a defect, counted under `other`. Since Issue #199 an unmeasured visit is not one either: it is pruned uncompensated rather than blocked. The code is still **read**, so fleet history deserialises; a **blocked** record carrying it is dropped at load, because it was filed by a razor that no longer exists and the visit deserves to be tried again. | Yes — it is an ordinary candidate now. |
 | `missing-activation` | A statistic that is present but not a usable number — a non-finite mean, a negative variance, a proxy that does not hold up. NEAT-AI-core refuses such a request outright, and Ockham's own rewrites refuse one the same way (a merge whose fitted relation is non-finite, a constant substitution or an ablation with a non-finite mean). Since Issue #199 an **absent** statistic is no longer one of these: an unmeasured neuron, and an edge whose source resolves to no fold value, go to core carrying no statistics at all, are pruned uncompensated under `no-statistics` and are screened as ordinary scored candidates. | No — but a sweep visit should not reach it either. NEAT-AI-core clamps every activation to a finite range, so a record carrying this code names a corrupt statistic to fix rather than a category to build a path for. |
 | `validation-failed` | A candidate was built and NEAT-AI-core `creature.validate()` rejected it. | No — failing closed is the point. |
@@ -121,14 +121,18 @@ now answers every aggregate case:
   and labels the candidate `TransformClass::Approximate`, so the full-corpus
   scorer judges the approximation instead of the razor pre-judging it.
 
-Ockham keeps three refusals that mention an aggregate — the ablation's
-`AggregateNeuron`, `AggregateTarget` and `UnknownSquash`, the exact collapse's
-`AggregateTarget`, and the merge's `AggregateTarget` — but none of them ends a
-visit. They are **alternate rungs**: a better candidate when they are available,
-and when they refuse the ladder falls through to the core prune, which takes the
-visit. So the refusal is a finding about that one transform, filed under `other`
-with the skip's own message in the detail, and `aggregate-squash` is filed by
-nothing.
+Ockham keeps the refusals that mention an aggregate — across three transforms:
+the ablation's `AggregateNeuron`, `AggregateTarget` and `UnknownSquash`, the
+exact collapse's `AggregateTarget`, and the merge's `AggregateTarget` — but none
+of them ends a visit. The collapse and the merge are **alternate rungs**: a
+better candidate when they are available, and when they refuse the ladder falls
+through to the core prune, which takes the visit. `AblationSkip` is the skip type
+of the rewrite Issue #182 retired (`ablate_mean`) and of the cleanup cascade the
+other transforms still run through, so no sweep path reads its code today; its
+mapping is kept correct so a future reader of that enum is not told an aggregate
+is a category. Either way the refusal is a finding about one transform, filed
+under `other` with the skip's own message in the detail, and `aggregate-squash`
+is filed by nothing.
 
 The record problem is the same one #192 had, and so is the remedy: a **blocked**
 record carrying `aggregate-squash` is dropped at load, the visit reads unchecked,
@@ -151,9 +155,11 @@ worth a new proposal path, and `ockham/src/substitute.rs` is it.
 Neither half of that population is a blocked category any more. The visits filed
 under `unsafe-topology` are ordinary candidates the shared engine takes (#192),
 and the aggregate half is converted, folded or approximated by core
-(Issues #196, #197 and #200). Both codes are retired, and constant substitution stands on its
-own merits as an **alternate candidate**, tried before the core prune because it
-keeps the edge rather than approximating it away.
+(Issues #196, #197 and #200). Both codes are retired, and constant substitution
+stands on its own merits as an **alternate candidate**: the neuron ladder asks
+core for the prune first and returns it when every target got the removal back as
+a bias fold, and only where the prune could *not* compensate the cut does the
+substitution win — it keeps the edge rather than approximating the term away.
 
 The mean-activation ablation removes the neuron and folds its mean into every
 downstream **bias**. That is only valid where the target sums its inputs. An

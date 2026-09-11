@@ -39,9 +39,10 @@ pub enum BlockedReason {
     /// target a cut leaves holding one inward edge (#197), **folds** one left
     /// holding none into its bias (#196), and otherwise drops the term and
     /// labels the candidate approximate — so every visit this code was filed
-    /// against is a candidate the scorer judges. Ockham's three aggregate
-    /// refusals are alternate rungs whose message is a finding about that
-    /// transform, reported under [`Self::Other`].
+    /// against is a candidate the scorer judges. The aggregate refusals Ockham
+    /// still carries, across three transforms, name a shape that one transform
+    /// will not rewrite; each is a finding about that transform, reported under
+    /// [`Self::Other`].
     ///
     /// The variant stays so fleet history still deserialises, and
     /// [`Self::is_retired`] is what tells a reader that a record carrying it
@@ -250,7 +251,7 @@ impl BlockedBreakdown {
         self.entries().first().copied()
     }
 
-    /// `validation-failed 380 (92.2%) · missing-activation 20 (4.9%)`, or `None`.
+    /// `other 380 (92.2%) · missing-activation 20 (4.9%)`, or `None`.
     ///
     /// Percentages are of the blocked total, not of the creature: this line
     /// answers "what is blocking the sweep?", and the `blocked:` line beside it

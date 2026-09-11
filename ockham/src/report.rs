@@ -298,7 +298,7 @@ pub struct EpochBlocked {
     pub blocked_by_reason: BlockedBreakdown,
     /// The same split rendered with each category's share of the total.
     ///
-    /// `validation-failed 380 (92.2%) · missing-activation 32 (7.8%)`, commonest
+    /// `other 380 (92.2%) · missing-activation 32 (7.8%)`, commonest
     /// first; empty when the epoch blocked nothing. Counts *and* percentages
     /// per epoch is what the issue asks a reader for, and rendering it here
     /// keeps every surface agreeing on one calculation.

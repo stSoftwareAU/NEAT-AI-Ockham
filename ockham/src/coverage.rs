@@ -2836,7 +2836,7 @@ mod tests {
             blocked("h1", 2, BlockedReason::ValidationFailed),
             visit("h2", 3),
             blocked(&edge("input-0", "h0"), 4, BlockedReason::ValidationFailed),
-            blocked(&edge("h0", "output-0"), 5, BlockedReason::NoOutputPath),
+            blocked(&edge("h0", "output-0"), 5, BlockedReason::MissingActivation),
             blocked(&edge("input-0", "h1"), 6, BlockedReason::MissingActivation),
             screen(&edge("h1", "output-0"), 7),
         ];
@@ -2850,8 +2850,9 @@ mod tests {
             "the breakdown is a partition of the blocked population"
         );
         assert_eq!(cov.blocked_by_reason.validation_failed, 2);
-        assert_eq!(cov.blocked_by_reason.no_output_path, 1);
-        assert_eq!(cov.blocked_by_reason.missing_activation, 1);
+        // Only codes a synapse visit can actually report: `no-output-path` is a
+        // neuron path and is never filed against an edge (blocked-reasons.md).
+        assert_eq!(cov.blocked_by_reason.missing_activation, 2);
         assert_eq!(cov.blocked_by_reason.unrecorded, 1);
     }
 
