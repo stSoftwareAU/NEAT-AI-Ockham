@@ -139,4 +139,28 @@
 # `ockham-201-prune-json-corner-cases` (0.18.0): `./quality.sh` is green here,
 # including `scripts/check-neat-core-version.sh` and the full suite.
 
+# Still 0.18.0 for Ockham #203, which changes what Ockham *records* rather than
+# what it compiles against. Two reports core already returned were dropped on the
+# floor here: `PruneResult::converted_neurons` — the single-edge aggregate
+# rewrites of #197, extended at 0.18.0 to name the zero-edge `HYPOTv2 ->
+# ABSOLUTE` one — and `UncompensatedTarget::dropped_mean`, the magnitude
+# `weight_sum . mu` of the term a target lost where a statistic or the creature's
+# own structure proves one. `PruneDetail::absorb` now copies both, onto
+# `PruneDetail::converted_neurons` (`convertedNeurons`) and
+# `UncompensatedRecord::dropped_mean` (`droppedMean`), so a run's journal says
+# which aggregate stopped aggregating and how big the dropped term was. The
+# baseline does not move for either: both items shipped with Ockham #197 in the
+# 0.16.0 line, and the 0.18.0 entry above records core extending
+# `converted_neurons` to name the zero-edge `HYPOTv2 -> ABSOLUTE` rewrite as
+# well, so the recorded 0.18.0 already covers every core release that carries
+# them. The sibling clone is at 0.17.0, below that baseline, and no public item
+# core exposes changed here. This is the file's first mention of `dropped_mean`
+# only because Ockham did not read the field until now, not because the core
+# release carrying it went unacknowledged.
+# `fully_compensated()` is unchanged with it: a converted target still
+# lost its term, so it is still named on `uncompensated` and Ockham's constant
+# substitution still runs for it. Verified against the sibling clone on
+# `Develop` (0.17.0, 282bc18): `./quality.sh` is green here, including
+# `scripts/check-neat-core-version.sh` and the full suite.
+
 0.18.0

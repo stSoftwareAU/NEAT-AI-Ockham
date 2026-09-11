@@ -297,6 +297,12 @@ the target that got nothing back on `uncompensated`, with the reason
 like every other, so an unmeasured edge is judged by the scorer rather than
 recorded as blocked.
 
+An `uncompensated` row on the telemetry detail carries `droppedMean` beside its
+reason wherever a number proves one — the magnitude `weight x mean` of the term
+the target lost, from the statistic Ockham measured or from the value the
+creature's own structure fixes. A `no-statistics` row proves neither, so the
+field is absent rather than `0`: a zero would read as "nothing was lost".
+
 The resolver is the value side of the single-synapse cut: it is what supplies
 the statistical hint `prune_edge` hands the shared engine. The sweep that walks a creature's edges and asks for
 one is the [synapse visit pool](#synapse-visits) below.
@@ -910,7 +916,11 @@ Issue #200 `aggregate-squash` is **retired** outright: NEAT-AI-core converts an
 aggregate target a cut leaves holding one inward edge, folds one left holding
 none into its bias, and otherwise drops the term as an approximate candidate the
 scorer judges, so no binary files the code and a blocked record carrying it is
-dropped at load. `blocked` never meant *not pruneable forever*: it means the
+dropped at load. Each conversion is named on the telemetry detail's
+`convertedNeurons` row — the neuron, the aggregate it declared and the
+point-wise squash it declares now — so the run's evidence says which aggregate
+stopped aggregating rather than leaving a reader to diff two creatures.
+`blocked` never meant *not pruneable forever*: it means the
 current proposal mechanism does not know how to test this neuron safely, and the
 code says which mechanism is missing.
 

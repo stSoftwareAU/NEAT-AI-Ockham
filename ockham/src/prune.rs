@@ -100,6 +100,29 @@ pub struct UncompensatedRecord {
     pub squash: String,
     /// `no-statistics` or `aggregate-target`.
     pub reason: String,
+    /// Magnitude of the term the target lost, where a number proves one.
+    ///
+    /// Core's own report (Ockham #197): `weight_sum · μ` from the statistic
+    /// Ockham supplied, or `weight_sum · a` where the creature itself fixes the
+    /// source's activation. `None` where neither exists — no magnitude is
+    /// invented to stand in for one, and a zero would read as "nothing was
+    /// lost". Reported, never enforced: judging the loss is the scorer's half
+    /// of the boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped_mean: Option<f64>,
+}
+
+/// One aggregate core rewrote to the point-wise squash that computes the same
+/// number, in the form telemetry carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SquashConversionRecord {
+    /// Neuron whose squash was rewritten.
+    pub uuid: String,
+    /// The aggregate squash it declared.
+    pub from: String,
+    /// The point-wise squash it declares now.
+    pub to: String,
 }
 
 /// An `IF` the removal left with a condition the creature itself decides.
@@ -117,7 +140,9 @@ pub struct StaticIfRecord {
 /// Every field is core's own report of the rewrite — nothing here is Ockham
 /// re-deriving what the graph became — so a run's evidence says whether a cut
 /// was exact or approximate, what the cascade took, which `IF` structure was
-/// rewritten, and which targets were left carrying the removal uncompensated.
+/// rewritten, which aggregates stopped aggregating and were converted, and
+/// which targets were left carrying the removal uncompensated — each one with
+/// the magnitude of the term it dropped, where a number proves one.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PruneDetail {
@@ -165,6 +190,17 @@ pub struct PruneDetail {
     /// Targets left carrying the removal without compensation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uncompensated: Vec<UncompensatedRecord>,
+    /// Aggregates the cut stopped aggregating, rewritten to the point-wise
+    /// squash that computes the same number (Ockham #197) — one left holding a
+    /// single inward edge, and since the recorded 0.18.0 baseline one left
+    /// holding none whose `HYPOTv2` becomes `ABSOLUTE` over its folded bias.
+    ///
+    /// Every conversion is exact, so none of them moves
+    /// [`Self::transform_class`] — and none of them compensates the target
+    /// either: the term is still gone, so a converted target is still named on
+    /// [`Self::uncompensated`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub converted_neurons: Vec<SquashConversionRecord>,
 }
 
 impl PruneDetail {
@@ -220,7 +256,19 @@ impl PruneDetail {
                     UncompensatedReason::NoStatistics => "no-statistics".to_string(),
                     UncompensatedReason::AggregateTarget => "aggregate-target".to_string(),
                 },
+                dropped_mean: u.dropped_mean,
             }));
+        self.converted_neurons
+            .extend(
+                result
+                    .converted_neurons
+                    .iter()
+                    .map(|c| SquashConversionRecord {
+                        uuid: c.uuid.clone(),
+                        from: c.from.to_string(),
+                        to: c.to.to_string(),
+                    }),
+            );
     }
 
     /// Neurons the transform took out of the hidden set on top of the
@@ -787,6 +835,98 @@ mod tests {
         )
     }
 
+    /// A `MINIMUM` target fed by `h_src` and exactly one other edge, so the
+    /// cut leaves it holding a single term.
+    fn single_edge_minimum_target() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_src", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_min", 0.0, Some("MINIMUM")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_src", 1.0),
+                synapse("input-0", "h_min", 1.0),
+                synapse("h_src", "h_min", 2.0),
+                synapse("h_min", "output-0", 1.0),
+            ],
+        )
+    }
+
+    /// Two `MINIMUM` targets, each fed by one input edge and one hidden
+    /// neuron, so a group cut over both hidden neurons converts both — the
+    /// shape that proves the conversions of separate requests accumulate.
+    fn two_minimum_targets() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_b", 0.0, Some("IDENTITY")),
+                neuron("hidden", "m_a", 0.0, Some("MINIMUM")),
+                neuron("hidden", "m_b", 0.0, Some("MINIMUM")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_a", 1.0),
+                synapse("input-0", "h_b", 1.0),
+                synapse("input-0", "m_a", 1.0),
+                synapse("input-0", "m_b", 1.0),
+                synapse("h_a", "m_a", 2.0),
+                synapse("h_b", "m_b", 3.0),
+                synapse("m_a", "output-0", 1.0),
+                synapse("m_b", "output-0", 1.0),
+            ],
+        )
+    }
+
+    /// A `MINIMUM` target fed by a **constant**, so the creature itself fixes
+    /// what the edge carried and no measurement is needed to value it.
+    fn constant_into_minimum_target() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("constant", "c0", 0.5, None),
+                neuron("hidden", "h_keep", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_min", 0.0, Some("MINIMUM")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("c0", "h_min", 2.0),
+                synapse("input-0", "h_keep", 1.0),
+                synapse("input-0", "h_min", 1.0),
+                synapse("h_keep", "h_min", 1.0),
+                synapse("h_min", "output-0", 1.0),
+            ],
+        )
+    }
+
+    /// The same target fed by one edge more, so the cut leaves it still
+    /// reducing two terms and no conversion is available.
+    fn two_edge_minimum_target() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_src", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_keep", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_min", 0.0, Some("MINIMUM")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_src", 1.0),
+                synapse("input-0", "h_keep", 1.0),
+                synapse("input-0", "h_min", 1.0),
+                synapse("h_src", "h_min", 2.0),
+                synapse("h_keep", "h_min", 1.0),
+                synapse("h_min", "output-0", 1.0),
+            ],
+        )
+    }
+
     fn outputs(creature: &CreatureExport, xs: &[f32]) -> Vec<f32> {
         let mut net = compile_creature(creature).unwrap();
         xs.iter().map(|&x| net.activate(&[x], 1)[0]).collect()
@@ -930,6 +1070,164 @@ mod tests {
         validate_creature(&result.creature).unwrap();
     }
 
+    /// Core rewrites an aggregate its cut leaves holding **one** inward edge to
+    /// the point-wise squash that computes the same number (Ockham #197), and
+    /// names the rewrite on `PruneResult::converted_neurons`. The journal
+    /// records what came back rather than leaving a reader to diff two squashes.
+    #[test]
+    fn a_single_edge_aggregate_target_is_reported_converted() {
+        let incumbent = single_edge_minimum_target();
+        let result = prune_hidden_neuron(&incumbent, "h_src", Some(0.5), None).unwrap();
+        assert_eq!(
+            result.detail.converted_neurons,
+            vec![SquashConversionRecord {
+                uuid: "h_min".to_string(),
+                from: "MINIMUM".to_string(),
+                to: "IDENTITY".to_string(),
+            }],
+            "{:?}",
+            result.detail
+        );
+        // The conversion is exact, but it does not hand the target back what it
+        // lost: the term is still gone, so the candidate is still uncompensated
+        // and Ockham's constant substitution still has a rung to run.
+        assert!(!result.fully_compensated(), "{:?}", result.detail);
+        validate_creature(&result.creature).unwrap();
+        assert_eq!(
+            incumbent,
+            single_edge_minimum_target(),
+            "the source must not move"
+        );
+    }
+
+    /// A target the cut leaves reducing two terms is not converted — and core
+    /// reports how big the term it lost was, where a statistic proves one
+    /// (Ockham #197). No magnitude is invented where nothing proves one.
+    #[test]
+    fn a_two_edge_aggregate_target_carries_the_magnitude_it_dropped() {
+        let incumbent = two_edge_minimum_target();
+        let measured = prune_hidden_neuron(&incumbent, "h_src", Some(0.5), None).unwrap();
+        assert!(
+            measured.detail.converted_neurons.is_empty(),
+            "two terms still reduce: {:?}",
+            measured.detail
+        );
+        assert!(!measured.fully_compensated(), "{:?}", measured.detail);
+        let named = &measured.detail.uncompensated[0];
+        assert_eq!(named.target_uuid, "h_min");
+        assert_eq!(named.squash, "MINIMUM");
+        assert_eq!(named.reason, "aggregate-target");
+        let dropped = named
+            .dropped_mean
+            .expect("a measured mean proves the magnitude of the lost term");
+        assert!(close(dropped, 1.0), "weight 2.0 x mean 0.5, got {dropped}");
+        validate_creature(&measured.creature).unwrap();
+
+        let unmeasured = prune_hidden_neuron(&incumbent, "h_src", None, None).unwrap();
+        assert_eq!(
+            unmeasured.detail.uncompensated[0].dropped_mean, None,
+            "nothing proves a magnitude, so none is invented: {:?}",
+            unmeasured.detail
+        );
+    }
+
+    /// Every request path absorbs the same two reports, and a group cut
+    /// accumulates them across the requests it makes rather than keeping only
+    /// the last one.
+    #[test]
+    fn every_request_path_reports_what_core_converted_and_dropped() {
+        let edge = prune_edge(
+            &single_edge_minimum_target(),
+            "h_src",
+            "h_min",
+            Some(0.5),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            edge.detail
+                .converted_neurons
+                .iter()
+                .map(|c| c.uuid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["h_min"],
+            "{:?}",
+            edge.detail
+        );
+        assert_eq!(edge.detail.uncompensated[0].dropped_mean, Some(1.0));
+        validate_creature(&edge.creature).unwrap();
+
+        let grouped = prune_hidden_group(&two_minimum_targets(), &group(&["h_a", "h_b"], 0.5))
+            .expect("both members are core's to remove");
+        assert_eq!(
+            grouped
+                .detail
+                .converted_neurons
+                .iter()
+                .map(|c| (c.uuid.as_str(), c.from.as_str(), c.to.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("m_a", "MINIMUM", "IDENTITY"),
+                ("m_b", "MINIMUM", "IDENTITY"),
+            ],
+            "one request per member, both conversions kept: {:?}",
+            grouped.detail
+        );
+        let dropped: Vec<Option<f64>> = grouped
+            .detail
+            .uncompensated
+            .iter()
+            .map(|u| u.dropped_mean)
+            .collect();
+        assert_eq!(dropped, vec![Some(1.0), Some(1.5)], "{:?}", grouped.detail);
+        validate_creature(&grouped.creature).unwrap();
+    }
+
+    /// The magnitude does not need a measurement. Where the creature itself
+    /// fixes what the removed edge carried — a constant source — core values it
+    /// from the structure, exactly as the compensation would have.
+    #[test]
+    fn a_structurally_fixed_source_proves_the_magnitude_without_a_statistic() {
+        let incumbent = constant_into_minimum_target();
+        let result = prune_edge(&incumbent, "c0", "h_min", None, None)
+            .expect("a constant source is core's to value");
+        let named = &result.detail.uncompensated[0];
+        assert_eq!(named.target_uuid, "h_min");
+        assert_eq!(named.reason, "aggregate-target");
+        let dropped = named
+            .dropped_mean
+            .expect("the creature fixes the source at 0.5, so the magnitude is proven");
+        assert!(
+            close(dropped, 1.0),
+            "weight 2.0 x constant 0.5, got {dropped}"
+        );
+        validate_creature(&result.creature).unwrap();
+    }
+
+    /// Both reports reach the telemetry row, and neither writes an empty field.
+    #[test]
+    fn the_conversion_and_dropped_magnitude_serialise_on_the_detail() {
+        let converted =
+            prune_hidden_neuron(&single_edge_minimum_target(), "h_src", Some(0.5), None).unwrap();
+        let json = serde_json::to_string(&converted.detail).unwrap();
+        assert!(json.contains("\"convertedNeurons\""), "{json}");
+        assert!(json.contains("\"droppedMean\""), "{json}");
+        let back: PruneDetail = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, converted.detail);
+
+        let unmeasured =
+            prune_hidden_neuron(&two_edge_minimum_target(), "h_src", None, None).unwrap();
+        let json = serde_json::to_string(&unmeasured.detail).unwrap();
+        assert!(
+            !json.contains("\"convertedNeurons\""),
+            "an empty list is not written: {json}"
+        );
+        assert!(
+            !json.contains("\"droppedMean\""),
+            "an absent magnitude is not written: {json}"
+        );
+    }
+
     /// Issue #199: no measured mean is not a refusal. Core is handed `None`,
     /// takes the neuron, and names the target it could not compensate under
     /// `no-statistics` — an approximate candidate the scorer judges, rather
@@ -949,6 +1247,10 @@ mod tests {
         let named = &result.detail.uncompensated[0];
         assert_eq!(named.target_uuid, "output-0");
         assert_eq!(named.reason, "no-statistics");
+        assert_eq!(
+            named.dropped_mean, None,
+            "`no-statistics` is exactly the case nothing proves a magnitude for"
+        );
         assert!(result.detail.bias_folds.is_empty(), "{:?}", result.detail);
         assert!(
             result.creature.neurons.iter().all(|n| n.uuid != "h_a"),
@@ -968,6 +1270,7 @@ mod tests {
         assert_eq!(edge.detail.transform_class, TransformClass::Approximate);
         assert_eq!(edge.detail.uncompensated[0].target_uuid, "output-0");
         assert_eq!(edge.detail.uncompensated[0].reason, "no-statistics");
+        assert_eq!(edge.detail.uncompensated[0].dropped_mean, None);
         validate_creature(&edge.creature).unwrap();
 
         let chain = chain_plus_keep();
@@ -976,6 +1279,7 @@ mod tests {
         assert_eq!(grouped.detail.transform_class, TransformClass::Approximate);
         assert_eq!(grouped.detail.uncompensated[0].target_uuid, "output-0");
         assert_eq!(grouped.detail.uncompensated[0].reason, "no-statistics");
+        assert_eq!(grouped.detail.uncompensated[0].dropped_mean, None);
         validate_creature(&grouped.creature).unwrap();
     }
 
