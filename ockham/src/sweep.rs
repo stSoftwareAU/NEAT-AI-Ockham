@@ -166,6 +166,23 @@ pub enum CandidateKind {
     Synapse,
 }
 
+impl CandidateKind {
+    /// Every candidate kind, in declaration order.
+    ///
+    /// The set a screen record's `kind` must name when the visit produced a
+    /// candidate at all — the positive half of the Issue #202 gate, which
+    /// checks that nothing is blocked *and* that every record says what was
+    /// proposed instead.
+    pub const ALL: [CandidateKind; 6] = [
+        Self::Identity,
+        Self::Ablation,
+        Self::Constant,
+        Self::Group,
+        Self::Merge,
+        Self::Synapse,
+    ];
+}
+
 /// One valid pruning candidate produced by the sweep.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2362,6 +2379,32 @@ mod tests {
     /// candidates, so the property under test is the walk itself rather than
     /// the skips: a batch and its skips together account for every visit, and
     /// no visit is made twice.
+    /// `CandidateKind::ALL` must carry every variant, or the Issue #202 gate
+    /// silently stops requiring a kind it has never heard of.
+    ///
+    /// The match below is **exhaustive**, so a seventh variant cannot be added
+    /// to the enum without being named here, and naming it here is what forces
+    /// it into `ALL` — the length assertion fails otherwise.
+    #[test]
+    fn every_candidate_kind_is_named_in_all_with_its_label() {
+        for kind in CandidateKind::ALL {
+            let label = match kind {
+                CandidateKind::Identity => "identity",
+                CandidateKind::Ablation => "ablation",
+                CandidateKind::Constant => "constant",
+                CandidateKind::Group => "group",
+                CandidateKind::Merge => "merge",
+                CandidateKind::Synapse => "synapse",
+            };
+            assert_eq!(crate::learnings::kind_label(kind), label);
+        }
+        assert_eq!(
+            CandidateKind::ALL.len(),
+            6,
+            "a new candidate kind must be added to ALL"
+        );
+    }
+
     #[test]
     fn a_creature_whose_edges_are_all_unmeasured_still_advances_visit_by_visit() {
         let creature = two_hidden();
