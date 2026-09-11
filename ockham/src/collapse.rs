@@ -94,14 +94,16 @@ impl CollapseSkip {
     /// rather than the missing statistic beside it.
     pub fn blocked_reason(&self) -> BlockedReason {
         match self {
-            Self::AggregateTarget { .. } => BlockedReason::AggregateSquash,
-            // Shapes the *exact collapse* does not model — a typed edge out,
-            // a bypass that would self-connect — and requests naming structure
-            // the incumbent does not carry. Neither is a topology the razor
-            // cannot prune: the shared engine rewrites both since #182, so
-            // these are findings about this transform, not a category
-            // (Issue #192).
-            Self::UnknownNeuron(_)
+            // Shapes the *exact collapse* does not model — a typed edge out, a
+            // bypass that would self-connect, a downstream aggregate that does
+            // not sum — and requests naming structure the incumbent does not
+            // carry. None is a topology the razor cannot prune: the shared
+            // engine rewrites them since #182, and since Issue #200 it converts
+            // a one-edge aggregate target, folds a zero-edge one and otherwise
+            // drops the term as an approximate transform. So these are findings
+            // about this transform, not a category (Issues #192, #200).
+            Self::AggregateTarget { .. }
+            | Self::UnknownNeuron(_)
             | Self::NotHidden { .. }
             | Self::TypedSynapse { .. }
             | Self::SelfLoop { .. } => BlockedReason::Other,
@@ -549,6 +551,42 @@ mod tests {
         .unwrap();
         assert!(forced.after.growth_units > forced.before.growth_units);
         validate_creature(&forced.creature).unwrap();
+    }
+
+    /// An IDENTITY feeding an aggregate target is refused by the *exact*
+    /// collapse — the bypass would change what the aggregate reduces — and that
+    /// refusal is a finding about this transform, not a blocked category
+    /// (Issue #200). The ladder falls through to the core prune, which converts,
+    /// folds or approximates the same target.
+    #[test]
+    fn an_aggregate_target_is_a_finding_about_the_collapse_not_a_category() {
+        let incumbent = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h1", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_mean", 0.0, Some("MEAN")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h1", 1.0),
+                synapse("input-0", "h_mean", 1.0),
+                synapse("h1", "h_mean", 1.0),
+                synapse("h_mean", "output-0", 1.0),
+            ],
+        );
+        let err = collapse_identity(&incumbent, "h1", CollapseOptions::default())
+            .expect_err("the exact collapse cannot bypass into an aggregate");
+        assert!(matches!(err, CollapseSkip::AggregateTarget { .. }), "{err}");
+        assert_eq!(err.blocked_reason(), BlockedReason::Other);
+        assert!(
+            !err.blocked_reason().is_retired(),
+            "a live code, never the retired `aggregate-squash`"
+        );
+        assert_eq!(
+            err.to_string(),
+            "aggregate target `h_mean` (`MEAN`); skipped"
+        );
     }
 
     #[test]

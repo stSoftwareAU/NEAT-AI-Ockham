@@ -6,9 +6,10 @@
 //! (#182). A visit that produces no candidate is missing a *value*, or is a
 //! defect in the request — never a topology the razor is not allowed to touch.
 //!
-//! `blocked-reasons.md` says `unsafe-topology` is retired. This is the
-//! executable half: the shapes that used to earn that code are pruned here, and
-//! no refusal any Ockham transform can report carries it any more.
+//! `blocked-reasons.md` says `unsafe-topology` and — since Issue #200 —
+//! `aggregate-squash` are retired. This is the executable half: the shapes that
+//! used to earn either code are pruned here, and no refusal any Ockham
+//! transform can report carries a retired code any more.
 
 use neat_ai_ockham::AblationSkip;
 use neat_ai_ockham::blocked::BlockedReason;
@@ -107,12 +108,13 @@ fn every_listed_edge_is_a_pruning_candidate() {
     }
 }
 
-/// No refusal any Ockham transform can report carries the retired code.
+/// No refusal any Ockham transform can report carries a retired code.
 ///
 /// Every variant of every skip enum is constructed and asked for its reason, so
-/// a variant added later that reached for `unsafe-topology` fails here.
+/// a variant added later that reached for `unsafe-topology` or
+/// `aggregate-squash` fails here.
 #[test]
-fn no_transform_refusal_reports_the_retired_code() {
+fn no_transform_refusal_reports_a_retired_code() {
     let uuid = || "h_x".to_string();
     let reasons: Vec<(&str, BlockedReason)> = vec![
         (
@@ -354,18 +356,31 @@ fn core_refusals_are_reported_under_live_codes() {
     }
 }
 
-/// The retired code still *reads*, so fleet history deserialises unchanged.
+/// A retired code still *reads*, so fleet history deserialises unchanged.
+///
+/// `aggregate-squash` joined `unsafe-topology` in retirement under Issue #200:
+/// core converts a one-edge aggregate target, folds a zero-edge one into its
+/// bias and otherwise drops the term as an approximate transform, so no binary
+/// files it any more.
 #[test]
-fn the_retired_code_is_still_read_off_a_record() {
-    let reason = BlockedReason::from_code("unsafe-topology");
-    assert_eq!(reason, BlockedReason::UnsafeTopology);
-    assert!(reason.is_retired());
+fn the_retired_codes_are_still_read_off_a_record() {
+    for (code, expected) in [
+        ("unsafe-topology", BlockedReason::UnsafeTopology),
+        ("aggregate-squash", BlockedReason::AggregateSquash),
+    ] {
+        let reason = BlockedReason::from_code(code);
+        assert_eq!(reason, expected);
+        assert!(reason.is_retired(), "{code} must read as retired");
+    }
     assert_eq!(
         BlockedReason::ALL
             .into_iter()
             .filter(|r| r.is_retired())
             .collect::<Vec<_>>(),
-        vec![BlockedReason::UnsafeTopology],
-        "one retired code, so a reader can name what it dropped"
+        vec![
+            BlockedReason::AggregateSquash,
+            BlockedReason::UnsafeTopology
+        ],
+        "the retired set is the contract a reader drops records against"
     );
 }

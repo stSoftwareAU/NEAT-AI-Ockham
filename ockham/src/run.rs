@@ -2530,7 +2530,7 @@ fn skip_try(skip: &crate::sweep::SweepSkip) -> ScreenTry<'_> {
     )
 }
 
-/// `aggregate-squash: 41, known-failure: 3` — one batch's skips, by reason.
+/// `other: 41, known-failure: 3` — one batch's skips, by reason.
 ///
 /// The kind filed against a skipped visit is only two buckets wide, so the
 /// reason itself would otherwise be discarded: an unexpected skip — a
@@ -7831,17 +7831,17 @@ mod tests {
             reason,
             blocked,
         };
-        let aggregate = |uuid: &str| {
+        let rejected = |uuid: &str| {
             skip(
                 uuid,
-                format!("aggregate target `{uuid}-target` (`MEAN`); skipped"),
-                Some(BlockedReason::AggregateSquash),
+                format!("candidate for `{uuid}` failed creature.validate()"),
+                Some(BlockedReason::ValidationFailed),
             )
         };
         let skips = vec![
-            aggregate("h_a"),
-            aggregate("h_b"),
-            aggregate("h_c"),
+            rejected("h_a"),
+            rejected("h_b"),
+            rejected("h_c"),
             skip(
                 "h_d",
                 "typed synapse `h_d`→`h_if` (condition); skipped".into(),
@@ -7856,7 +7856,7 @@ mod tests {
         ];
         assert_eq!(
             skip_reason_tally(&skips),
-            "aggregate-squash: 3, known-failure: 1, missing-activation: 1, other: 1",
+            "validation-failed: 3, known-failure: 1, missing-activation: 1, other: 1",
             "commonest first, then alphabetical, and no uuid in sight"
         );
     }
@@ -7877,8 +7877,8 @@ mod tests {
         let blocked = SweepSkip {
             uuid: "h_blocked".into(),
             permutation_index: 1,
-            reason: "aggregate target `t` (`MEAN`); skipped".into(),
-            blocked: Some(BlockedReason::AggregateSquash),
+            reason: "candidate for `h_blocked` failed creature.validate()".into(),
+            blocked: Some(BlockedReason::ValidationFailed),
         };
         let known = skip_try(&known);
         assert_eq!(known.kind, crate::learnings::SCREEN_KIND_KNOWN_FAILURE);
@@ -7887,7 +7887,7 @@ mod tests {
         assert_eq!(blocked.kind, crate::learnings::SCREEN_KIND_SKIPPED);
         assert_eq!(
             blocked.blocked_reason,
-            Some(BlockedReason::AggregateSquash),
+            Some(BlockedReason::ValidationFailed),
             "a blocked visit files the code that stopped it"
         );
 
@@ -7918,13 +7918,16 @@ mod tests {
         let blocked_skip = SweepSkip {
             uuid: key.clone(),
             permutation_index: 0,
-            reason: "aggregate target `h_b` (`MEAN`); skipped".into(),
-            blocked: Some(BlockedReason::AggregateSquash),
+            reason: "candidate for the edge failed creature.validate()".into(),
+            blocked: Some(BlockedReason::ValidationFailed),
         };
         let blocked = skip_try(&blocked_skip);
         assert_eq!(blocked.uuid, key, "the key is what was visited");
         assert_eq!(blocked.kind, crate::learnings::SCREEN_KIND_SKIPPED);
-        assert_eq!(blocked.blocked_reason, Some(BlockedReason::AggregateSquash));
+        assert_eq!(
+            blocked.blocked_reason,
+            Some(BlockedReason::ValidationFailed)
+        );
         assert_eq!(blocked.outcome, ScreenOutcomeKind::Loser);
 
         let known_skip = SweepSkip {
@@ -7943,7 +7946,7 @@ mod tests {
         file_screens(None, &[blocked, known], &mut filed);
         assert_eq!(
             filed[0].blocked_category(),
-            Some(BlockedReason::AggregateSquash)
+            Some(BlockedReason::ValidationFailed)
         );
         assert_eq!(filed[1].blocked_category(), None);
         assert!(filed.iter().all(|f| f.uuid == key));
