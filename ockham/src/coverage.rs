@@ -1466,15 +1466,15 @@ mod tests {
         let creature = neurons_only(6);
         let screens = [
             screen("h0", 1),
-            blocked("h1", 2, BlockedReason::AggregateSquash),
-            blocked("h2", 3, BlockedReason::AggregateSquash),
+            blocked("h1", 2, BlockedReason::ValidationFailed),
+            blocked("h2", 3, BlockedReason::ValidationFailed),
             blocked("h3", 4, BlockedReason::MissingActivation),
             visit("h4", 5),
         ];
         let cov = coverage(&creature, &HashSet::new(), &screens, 0);
         assert_eq!(cov.blocked, 4);
         assert_eq!(cov.blocked_by_reason.total(), cov.blocked);
-        assert_eq!(cov.blocked_by_reason.aggregate_squash, 2);
+        assert_eq!(cov.blocked_by_reason.validation_failed, 2);
         assert_eq!(cov.blocked_by_reason.missing_activation, 1);
         assert_eq!(
             cov.blocked_by_reason.unrecorded, 1,
@@ -1482,7 +1482,7 @@ mod tests {
         );
         assert_eq!(
             cov.blocked_by_reason.dominant(),
-            Some((BlockedReason::AggregateSquash, 2))
+            Some((BlockedReason::ValidationFailed, 2))
         );
     }
 
@@ -1493,14 +1493,14 @@ mod tests {
     fn the_freshest_record_decides_the_reason_whatever_order_it_was_read_in() {
         let creature = neurons_only(1);
         let old = blocked("h0", 1, BlockedReason::MissingActivation);
-        let new = blocked("h0", 9, BlockedReason::AggregateSquash);
+        let new = blocked("h0", 9, BlockedReason::ValidationFailed);
         for screens in [
             vec![old.clone(), new.clone()],
             vec![new.clone(), old.clone()],
         ] {
             let cov = coverage(&creature, &HashSet::new(), &screens, 0);
             assert_eq!(cov.blocked, 1);
-            assert_eq!(cov.blocked_by_reason.aggregate_squash, 1, "{screens:?}");
+            assert_eq!(cov.blocked_by_reason.validation_failed, 1, "{screens:?}");
             assert_eq!(cov.blocked_by_reason.missing_activation, 0, "{screens:?}");
         }
     }
@@ -1511,13 +1511,13 @@ mod tests {
     fn a_uuid_with_one_real_screen_contributes_no_reason() {
         let creature = neurons_only(2);
         let screens = [
-            blocked("h0", 1, BlockedReason::AggregateSquash),
+            blocked("h0", 1, BlockedReason::ValidationFailed),
             screen("h0", 2),
-            blocked("h1", 3, BlockedReason::AggregateSquash),
+            blocked("h1", 3, BlockedReason::ValidationFailed),
         ];
         let cov = coverage(&creature, &HashSet::new(), &screens, 0);
         assert_eq!(cov.blocked, 1);
-        assert_eq!(cov.blocked_by_reason.aggregate_squash, 1);
+        assert_eq!(cov.blocked_by_reason.validation_failed, 1);
     }
 
     /// The commit description carries the breakdown, so the largest category to
@@ -1526,9 +1526,9 @@ mod tests {
     fn the_description_breaks_the_blocked_line_down_by_reason() {
         let creature = neurons_only(4);
         let screens = [
-            blocked("h0", 1, BlockedReason::AggregateSquash),
-            blocked("h1", 2, BlockedReason::AggregateSquash),
-            blocked("h2", 3, BlockedReason::UnsafeTopology),
+            blocked("h0", 1, BlockedReason::ValidationFailed),
+            blocked("h1", 2, BlockedReason::ValidationFailed),
+            blocked("h2", 3, BlockedReason::MissingActivation),
         ];
         let cov = coverage(&creature, &HashSet::new(), &screens, 0);
         let text = cov.description(100, None);
@@ -1537,7 +1537,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("reasons:   aggregate-squash 2 (66.7%) · unsafe-topology 1 (33.3%)"),
+            text.contains("reasons:   validation-failed 2 (66.7%) · missing-activation 1 (33.3%)"),
             "{text}"
         );
     }
@@ -2833,10 +2833,10 @@ mod tests {
         let creature = hidden_creature(3);
         let screens = [
             screen("h0", 1),
-            blocked("h1", 2, BlockedReason::AggregateSquash),
+            blocked("h1", 2, BlockedReason::ValidationFailed),
             visit("h2", 3),
-            blocked(&edge("input-0", "h0"), 4, BlockedReason::UnsafeTopology),
-            blocked(&edge("h0", "output-0"), 5, BlockedReason::UnsafeTopology),
+            blocked(&edge("input-0", "h0"), 4, BlockedReason::ValidationFailed),
+            blocked(&edge("h0", "output-0"), 5, BlockedReason::NoOutputPath),
             blocked(&edge("input-0", "h1"), 6, BlockedReason::MissingActivation),
             screen(&edge("h1", "output-0"), 7),
         ];
@@ -2849,8 +2849,8 @@ mod tests {
             cov.blocked,
             "the breakdown is a partition of the blocked population"
         );
-        assert_eq!(cov.blocked_by_reason.unsafe_topology, 2);
-        assert_eq!(cov.blocked_by_reason.aggregate_squash, 1);
+        assert_eq!(cov.blocked_by_reason.validation_failed, 2);
+        assert_eq!(cov.blocked_by_reason.no_output_path, 1);
         assert_eq!(cov.blocked_by_reason.missing_activation, 1);
         assert_eq!(cov.blocked_by_reason.unrecorded, 1);
     }

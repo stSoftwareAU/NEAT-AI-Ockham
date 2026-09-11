@@ -298,7 +298,7 @@ pub struct EpochBlocked {
     pub blocked_by_reason: BlockedBreakdown,
     /// The same split rendered with each category's share of the total.
     ///
-    /// `aggregate-squash 380 (92.2%) · missing-activation 32 (7.8%)`, commonest
+    /// `validation-failed 380 (92.2%) · missing-activation 32 (7.8%)`, commonest
     /// first; empty when the epoch blocked nothing. Counts *and* percentages
     /// per epoch is what the issue asks a reader for, and rendering it here
     /// keeps every surface agreeing on one calculation.
@@ -1557,7 +1557,7 @@ mod tests {
         journal::append(&path, &start(Ordering::Random)).unwrap();
         let mut reasons = BlockedBreakdown::default();
         for _ in 0..380 {
-            reasons.add(BlockedReason::AggregateSquash);
+            reasons.add(BlockedReason::ValidationFailed);
         }
         for _ in 0..32 {
             reasons.add(BlockedReason::MissingActivation);
@@ -1589,10 +1589,10 @@ mod tests {
         );
         assert_eq!(
             report.dominant_blocked_reason.as_deref(),
-            Some("aggregate-squash")
+            Some("validation-failed")
         );
         let json = serde_json::to_string(&report).unwrap();
-        assert!(json.contains("\"aggregateSquash\":380"), "{json}");
+        assert!(json.contains("\"validationFailed\":380"), "{json}");
     }
 
     /// The historical half of Issue #103: one entry per screening epoch, each
@@ -1633,7 +1633,7 @@ mod tests {
             &coverage(
                 "corp-old",
                 40,
-                breakdown(BlockedReason::AggregateSquash, 40),
+                breakdown(BlockedReason::ValidationFailed, 40),
             ),
         )
         .unwrap();
@@ -1642,7 +1642,7 @@ mod tests {
             &coverage(
                 "corp-old",
                 30,
-                breakdown(BlockedReason::AggregateSquash, 30),
+                breakdown(BlockedReason::ValidationFailed, 30),
             ),
         )
         .unwrap();
@@ -1672,7 +1672,7 @@ mod tests {
             "the freshest snapshot"
         );
         assert_eq!(
-            report.blocked_epochs[0].blocked_by_reason.aggregate_squash,
+            report.blocked_epochs[0].blocked_by_reason.validation_failed,
             30
         );
         assert_eq!(

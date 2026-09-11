@@ -189,14 +189,22 @@ impl AblationSkip {
     /// deterministic, and a reason names the neuron it is about.
     pub fn blocked_reason(&self) -> BlockedReason {
         match self {
-            Self::AggregateNeuron { .. }
-            | Self::AggregateTarget { .. }
-            | Self::UnknownSquash { .. } => BlockedReason::AggregateSquash,
             Self::NonFiniteMean(_) => BlockedReason::MissingActivation,
             // Requests naming structure the incumbent does not carry, and
             // shapes this transform does not model. Not a topology the razor
             // cannot prune (Issue #192).
-            Self::UnknownNeuron(_)
+            //
+            // An aggregate squash is one of those shapes since Issue #200: core
+            // converts a target left holding one inward edge, folds one left
+            // holding none into its bias, and otherwise drops the term as an
+            // approximate transform the scorer judges. This ablation is an
+            // alternate rung whose refusal falls through to the core prune, so
+            // the message is a finding about *this* transform rather than a
+            // category — `aggregate-squash` is retired.
+            Self::AggregateNeuron { .. }
+            | Self::AggregateTarget { .. }
+            | Self::UnknownSquash { .. }
+            | Self::UnknownNeuron(_)
             | Self::NotHidden { .. }
             | Self::TypedSynapse { .. }
             | Self::UnknownSynapse { .. }
@@ -574,7 +582,10 @@ mod tests {
             uuid: "h_mean".into(),
             squash: "MEAN".into(),
         };
-        assert_eq!(skip.blocked_reason(), BlockedReason::AggregateSquash);
+        // The message still names the aggregate; the *code* is `other` since
+        // Issue #200, because core converts, folds or approximates that target
+        // rather than refusing it.
+        assert_eq!(skip.blocked_reason(), BlockedReason::Other);
         assert_eq!(
             skip.to_string(),
             "aggregate target `h_mean` (`MEAN`); skipped"

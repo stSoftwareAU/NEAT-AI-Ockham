@@ -140,10 +140,12 @@ fn assert_contains_all(text: &str, needles: &[&str], what: &str) {
     assert!(missing.is_empty(), "{what} omits: {missing:?} (#172)");
 }
 
-/// The eight preserved design principles, each by a phrase that cannot survive
-/// the principle being dropped.
+/// The preserved design principles, each by a phrase that cannot survive the
+/// principle being dropped. The closest-creature guarantee joined them with
+/// Issue #200, when the last aggregate refusal stopped being a blocked reason.
 const PRESERVED_PRINCIPLES: &[&str] = &[
     "hidden neurons and synapses are pruning candidates",
+    "every hidden neuron and synapse prunes to a valid, closest creature",
     "observation/input and output neurons are protected from direct deletion",
     "constants are support nodes",
     "at most three constants, all bias=1",

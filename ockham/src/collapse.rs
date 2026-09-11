@@ -94,14 +94,16 @@ impl CollapseSkip {
     /// rather than the missing statistic beside it.
     pub fn blocked_reason(&self) -> BlockedReason {
         match self {
-            Self::AggregateTarget { .. } => BlockedReason::AggregateSquash,
-            // Shapes the *exact collapse* does not model — a typed edge out,
-            // a bypass that would self-connect — and requests naming structure
-            // the incumbent does not carry. Neither is a topology the razor
-            // cannot prune: the shared engine rewrites both since #182, so
-            // these are findings about this transform, not a category
-            // (Issue #192).
-            Self::UnknownNeuron(_)
+            // Shapes the *exact collapse* does not model — a typed edge out, a
+            // bypass that would self-connect, a downstream aggregate that does
+            // not sum — and requests naming structure the incumbent does not
+            // carry. None is a topology the razor cannot prune: the shared
+            // engine rewrites them since #182, and since Issue #200 it converts
+            // a one-edge aggregate target, folds a zero-edge one and otherwise
+            // drops the term as an approximate transform. So these are findings
+            // about this transform, not a category (Issues #192, #200).
+            Self::AggregateTarget { .. }
+            | Self::UnknownNeuron(_)
             | Self::NotHidden { .. }
             | Self::TypedSynapse { .. }
             | Self::SelfLoop { .. } => BlockedReason::Other,

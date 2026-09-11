@@ -28,11 +28,24 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// beside it, and the fleet runs mixed versions against one shared store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlockedReason {
-    /// The neuron, or something the fold would touch, uses an aggregate squash.
+    /// **Retired (Issue #200).** No current binary files this code.
     ///
-    /// `IF`, `MEAN`, `MINIMUM`, … do not sum their inputs, so a mean-activation
-    /// substitution cannot be folded into a downstream bias. The dominant
-    /// category on a forest-heavy creature.
+    /// It meant "the neuron, or something the fold would touch, uses an
+    /// aggregate squash" — `IF`, `MEAN`, `MINIMUM`, … do not sum their inputs,
+    /// so a mean-activation fold into a downstream bias was refused outright,
+    /// and on a forest-heavy creature that was the dominant category.
+    ///
+    /// It is not a category any more. NEAT-AI-core **converts** an aggregate
+    /// target a cut leaves holding one inward edge (#197), **folds** one left
+    /// holding none into its bias (#196), and otherwise drops the term and
+    /// labels the candidate approximate — so every visit this code was filed
+    /// against is a candidate the scorer judges. Ockham's three aggregate
+    /// refusals are alternate rungs whose message is a finding about that
+    /// transform, reported under [`Self::Other`].
+    ///
+    /// The variant stays so fleet history still deserialises, and
+    /// [`Self::is_retired`] is what tells a reader that a record carrying it
+    /// describes a razor that no longer exists.
     AggregateSquash,
     /// A statistic that is present but not a usable number — a non-finite
     /// mean, a negative variance, a proxy that does not hold up. NEAT-AI-core
@@ -110,7 +123,7 @@ impl BlockedReason {
     pub fn describe(self) -> &'static str {
         match self {
             Self::AggregateSquash => {
-                "aggregate squash semantics — a mean substitution cannot fold into a non-sum input"
+                "aggregate squash semantics — retired (#200): core converts, folds or approximates"
             }
             Self::MissingActivation => "an activation statistic that is present but not usable",
             Self::UnsafeTopology => "topology cannot be compensated safely",
@@ -121,7 +134,7 @@ impl BlockedReason {
         }
     }
 
-    /// Whether this code is one no current binary can file (Issue #192).
+    /// Whether this code is one no current binary can file (Issues #192, #200).
     ///
     /// A retired code is still read — the variant exists so fleet history
     /// deserialises — but a **blocked** record carrying one was filed by a
@@ -130,7 +143,7 @@ impl BlockedReason {
     /// records, which is what puts the visit back in front of the sweep
     /// instead of leaving it counted as checked-and-refused forever.
     pub fn is_retired(self) -> bool {
-        matches!(self, Self::UnsafeTopology)
+        matches!(self, Self::AggregateSquash | Self::UnsafeTopology)
     }
 
     /// Read a code back off a record.
@@ -237,7 +250,7 @@ impl BlockedBreakdown {
         self.entries().first().copied()
     }
 
-    /// `aggregate-squash 380 (92.2%) · unsafe-topology 20 (4.9%)`, or `None`.
+    /// `validation-failed 380 (92.2%) · missing-activation 20 (4.9%)`, or `None`.
     ///
     /// Percentages are of the blocked total, not of the creature: this line
     /// answers "what is blocking the sweep?", and the `blocked:` line beside it
@@ -299,6 +312,26 @@ mod tests {
                 reason.code()
             );
         }
+    }
+
+    /// Retirement is a property of the code, and the set of retired codes is
+    /// the contract a reader uses to decide what to drop (Issues #192, #200).
+    #[test]
+    fn the_retired_codes_are_the_ones_no_binary_can_file() {
+        let retired: Vec<&str> = BlockedReason::ALL
+            .into_iter()
+            .filter(|r| r.is_retired())
+            .map(BlockedReason::code)
+            .collect();
+        assert_eq!(retired, vec!["aggregate-squash", "unsafe-topology"]);
+        assert!(
+            BlockedReason::AggregateSquash.is_retired(),
+            "core converts, folds or approximates every aggregate target (#200)"
+        );
+        assert!(
+            !BlockedReason::MissingActivation.is_retired(),
+            "a corrupt statistic is still a code a binary files"
+        );
     }
 
     /// A code from a newer binary is counted, not dropped: the neuron really is
