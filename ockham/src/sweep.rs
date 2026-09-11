@@ -25,12 +25,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use neat_core::{CreatureExport, SquashType, creature_to_json, parse_squash_name};
 use serde::Serialize;
 
 use crate::blocked::BlockedReason;
+use crate::clock::Clock;
 use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
 use crate::incumbent::sha256_hex;
 use crate::merge::{MergeSkip, merge_correlated};
@@ -1022,7 +1022,12 @@ pub struct ScreenConfig<'a> {
 /// Score the incumbent and `candidates` in one sampled scorer cohort.
 ///
 /// Writes into [`ScreenConfig::dir`] and does **not** touch `best.json`.
+///
+/// `clock` times the cohort: `screen_ms` is what the run prices a screening
+/// batch from, so it is read from the run's own time source (#214) rather than
+/// the wall clock directly.
 pub fn screen_batch(
+    clock: &dyn Clock,
     scorer: &dyn DirectoryScorer,
     training_dir: &Path,
     incumbent: &CreatureExport,
@@ -1043,11 +1048,11 @@ pub fn screen_batch(
         rate: cfg.sample_rate,
         phase: cfg.sample_phase,
     };
-    let started = Instant::now();
+    let started = clock.now();
     let results = scorer
         .score_directory(cfg.dir, training_dir, mode)
         .map_err(|e| e.to_string())?;
-    let screen_ms = started.elapsed().as_millis() as u64;
+    let screen_ms = clock.ms_since(started);
     let baseline = results
         .get("baseline")
         .ok_or_else(|| "screen: scorer returned no `baseline` entry".to_string())?;
@@ -1121,6 +1126,7 @@ pub fn screen_dir(workspace: &Path, batch: u64) -> PathBuf {
 mod tests {
     use super::*;
     use crate::baseline::fake::ScriptedScorer;
+    use crate::clock::SystemClock;
     use crate::fixtures::{creature, neuron, synapse};
     use crate::incumbent::validate_creature;
     use crate::stats::{ActivationStats, NeuronStats, STATS_FORMAT_VERSION, SampleSpec};
@@ -1254,6 +1260,7 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let outcome = screen_batch(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &creature,
@@ -1296,6 +1303,7 @@ mod tests {
             ..ScriptedScorer::ok(0.80, 0.20)
         };
         let outcome = screen_batch(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &creature,

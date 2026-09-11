@@ -41,6 +41,7 @@
 //! | correlated-neuron merging | [`merge`] | #109 |
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
 //! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
+//! | injected run-budget clock | [`clock`] | #214 |
 
 #![warn(missing_docs)]
 
@@ -50,6 +51,7 @@ pub mod blocked;
 pub mod cancel;
 pub mod canonical;
 pub mod cascade;
+pub mod clock;
 pub mod collapse;
 pub mod config;
 pub mod corpus;
@@ -89,6 +91,7 @@ pub use canonical::{
     Canonicalisation, CleanupError, CleanupReport, ExactRule, RuleTally, canonicalise,
 };
 pub use cascade::{CascadeEstimate, CascadeIndex, estimate_cut};
+pub use clock::{Clock, ManualClock, SystemClock};
 pub use collapse::{CollapseOptions, CollapseSkip, IdentityCollapse, collapse_identity};
 pub use config::{
     ConfigReport, DEFAULT_CANDIDATE_COUNT, DEFAULT_MIN_IMPROVEMENT, DEFAULT_SCREEN_SAMPLE_RATE,
@@ -116,7 +119,7 @@ pub use prune::{
     prune_edge, prune_hidden_group, prune_hidden_neuron,
 };
 pub use report::{Report, summarise};
-pub use run::{BaselineRun, establish_run};
+pub use run::{BaselineRun, establish_run, establish_run_with_clock};
 pub use scorer::{DirectoryScorer, ExternalScorer, ScoreResult, ScorerError, ScorerMode};
 pub use screening::{
     DEFAULT_SCREEN_REJECT_MARGIN, ProgressiveConfig, ProgressiveScreen, ScreenLadder, ScreenStage,

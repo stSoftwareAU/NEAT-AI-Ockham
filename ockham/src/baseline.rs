@@ -7,10 +7,10 @@
 //! authority.
 
 use std::path::Path;
-use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use crate::clock::Clock;
 use crate::corpus::CorpusInfo;
 use crate::incumbent::Incumbent;
 use crate::scorer::{DirectoryScorer, ScorerMode};
@@ -61,7 +61,12 @@ pub struct AuthoritativeBaseline {
 ///
 /// Writes `workspace/baseline-score/baseline.json` (the creature) for the
 /// scorer, then `workspace/baseline.json` (this record).
+///
+/// `clock` times the scorer call: `scorer_ms` is the run's first cost
+/// measurement, and the screening reserve of Issue #77 is sized from it before
+/// any cohort has run, so it is read from the run's own time source (#214).
 pub fn establish_baseline(
+    clock: &dyn Clock,
     incumbent: &Incumbent,
     training_dir: &Path,
     corpus: &CorpusInfo,
@@ -74,11 +79,11 @@ pub fn establish_baseline(
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let compact = neat_core::creature_to_json(&incumbent.creature).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("baseline.json"), compact).map_err(|e| e.to_string())?;
-    let started = Instant::now();
+    let started = clock.now();
     let results = scorer
         .score_directory(&dir, training_dir, ScorerMode::Full)
         .map_err(|e| format!("baseline: {e}"))?;
-    let scorer_ms = started.elapsed().as_millis() as u64;
+    let scorer_ms = clock.ms_since(started);
     let _ = std::fs::remove_dir_all(&dir);
     let result = results
         .get("baseline")
@@ -160,6 +165,14 @@ pub mod fake {
         /// Wall time this fake spends per creature, so a test can starve a run
         /// of budget deterministically (Issue #58).
         pub delay_per_creature: std::time::Duration,
+        /// Clock [`Self::delay_per_creature`] is spent on (Issue #214).
+        ///
+        /// With a clock the delay is *advanced*, not slept: a test that drives
+        /// the same clock through the run spends a scripted budget with no
+        /// wall-clock sleep at all, so the decision under test is reached the
+        /// same way on a loaded runner as on an idle one. Without one the
+        /// delay is a real sleep, as it has always been.
+        pub clock: Option<crate::clock::ManualClock>,
     }
 
     impl ScriptedScorer {
@@ -217,7 +230,11 @@ pub mod fake {
                 stems.extend(extra);
             }
             if !self.delay_per_creature.is_zero() {
-                std::thread::sleep(self.delay_per_creature * stems.len() as u32);
+                let spent = self.delay_per_creature * stems.len() as u32;
+                match &self.clock {
+                    Some(clock) => clock.advance(spent),
+                    None => std::thread::sleep(spent),
+                }
             }
             self.last_stems.replace(stems.clone());
             let mut out = BTreeMap::new();
@@ -264,6 +281,7 @@ pub mod fake {
 mod tests {
     use super::fake::ScriptedScorer;
     use super::*;
+    use crate::clock::SystemClock;
     use crate::corpus::{corpus_info, write_bin_file};
     use crate::fixtures::identity_creature;
     use crate::incumbent::Incumbent;
@@ -286,7 +304,8 @@ mod tests {
         let scorer = ScriptedScorer::ok(0.87, 0.13);
         let ws = tmp.path().join("ws");
         std::fs::create_dir_all(&ws).unwrap();
-        let b = establish_baseline(&inc, tmp.path(), &corpus, &scorer, &[], &ws).unwrap();
+        let b =
+            establish_baseline(&SystemClock, &inc, tmp.path(), &corpus, &scorer, &[], &ws).unwrap();
         assert_eq!(b.score, 0.87);
         assert_eq!(b.error, 0.13);
         assert_eq!(b.record_count, 8);
@@ -310,7 +329,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            establish_baseline(&inc, tmp.path(), &corpus, &failing, &[], &ws)
+            establish_baseline(&SystemClock, &inc, tmp.path(), &corpus, &failing, &[], &ws)
                 .unwrap_err()
                 .contains("boom")
         );
@@ -319,18 +338,34 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            establish_baseline(&inc, tmp.path(), &corpus, &malformed, &[], &ws)
-                .unwrap_err()
-                .contains("malformed")
+            establish_baseline(
+                &SystemClock,
+                &inc,
+                tmp.path(),
+                &corpus,
+                &malformed,
+                &[],
+                &ws
+            )
+            .unwrap_err()
+            .contains("malformed")
         );
         let wrong_count = ScriptedScorer {
             raw_output: Some(r#"{"baseline":{"score":0.5,"error":0.5,"recordCount":3}}"#.into()),
             ..Default::default()
         };
         assert!(
-            establish_baseline(&inc, tmp.path(), &corpus, &wrong_count, &[], &ws)
-                .unwrap_err()
-                .contains("records")
+            establish_baseline(
+                &SystemClock,
+                &inc,
+                tmp.path(),
+                &corpus,
+                &wrong_count,
+                &[],
+                &ws
+            )
+            .unwrap_err()
+            .contains("records")
         );
     }
 }
