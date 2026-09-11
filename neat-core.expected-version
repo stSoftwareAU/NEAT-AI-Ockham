@@ -115,4 +115,28 @@
 # `ockham-198-prune-neuron-if-rewrite` (0.16.0): `./quality.sh` is green here,
 # including `scripts/check-neat-core-version.sh` and the full suite.
 
-0.16.0
+# 0.16.0 -> 0.18.0: acknowledge Ockham #201 (neat-core 0.18.0). Two things reach
+# Ockham, neither of them a source change here. First, the Ockham #198 entry is
+# retitled to the version it actually shipped as, 0.17.0 — its branch was cut at
+# 0.15.9 and claimed 0.16.0, #197 took that slot first, and core's auto-bump
+# moved it to 0.17.0 on merge. The behaviour was already acknowledged above;
+# only the number it carries was wrong. Second, 0.18.0 lands the Ockham #196
+# zero-edge bias fold, acknowledged above at 0.16.0 and described exactly as it
+# ships: its core branch was pushed but its PR was never opened, so the rule was
+# never on Develop, and the #201 branch merges it because corner case (11) is
+# that rule. The #201 work itself is test-only on the behaviour side — corner
+# cases 1-12 driven through `prune_neuron_json` / `prune_synapse_json` and added
+# to the golden parity record — plus one additive public item,
+# `impl From<&PruneResult> for PruneResponse`, which was the private
+# `PruneResponse::from_result`. Nothing Ockham compiles against was removed,
+# renamed or narrowed, and Ockham calls the native entry points rather than the
+# JSON ones. One behaviour moves with it, found by driving the shapes across
+# the wire: the zero-edge `HYPOTv2 -> ABSOLUTE` rewrite is now named on
+# `PruneResult::converted_neurons` like the single-edge conversion already was,
+# where before it happened silently. Ockham reads that list nowhere in
+# `ockham/src` — `PruneDetail::absorb` copies the fold, uncompensated and
+# transform fields — so it sees a more complete report and needs no edit. Verified against the sibling clone on
+# `ockham-201-prune-json-corner-cases` (0.18.0): `./quality.sh` is green here,
+# including `scripts/check-neat-core-version.sh` and the full suite.
+
+0.18.0
