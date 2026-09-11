@@ -110,7 +110,7 @@ fn main() {
         let build_ms = started.elapsed().as_secs_f64() * 1000.0;
         let (mut saving, mut hidden, mut blocked) = (0.0f64, 0usize, 0usize);
         for uuid in order.iter().take(VISITS) {
-            match prune_hidden_neuron(&creature, uuid, 0.1, None) {
+            match prune_hidden_neuron(&creature, uuid, Some(0.1), None) {
                 Ok(ablation) => {
                     saving += ablation.before.growth_units - ablation.after.growth_units;
                     hidden += ablation.before.hidden_neurons - ablation.after.hidden_neurons;

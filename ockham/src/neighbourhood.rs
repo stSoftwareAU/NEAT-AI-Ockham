@@ -821,7 +821,7 @@ mod tests {
                     .iter()
                     .map(|uuid| GroupMember {
                         uuid: uuid.clone(),
-                        mean: stats.by_uuid(uuid).unwrap().mean,
+                        mean: Some(stats.by_uuid(uuid).unwrap().mean),
                     })
                     .collect();
                 let built = prune_hidden_group(&creature, &members)
@@ -904,14 +904,14 @@ mod tests {
             .iter()
             .map(|uuid| GroupMember {
                 uuid: uuid.clone(),
-                mean: stats.by_uuid(uuid).unwrap().mean,
+                mean: Some(stats.by_uuid(uuid).unwrap().mean),
             })
             .collect();
         let grouped = prune_hidden_group(&creature, &members).unwrap();
         let group_saving = grouped.before.growth_units - grouped.after.growth_units;
         for uuid in &cluster.members {
             let mean = stats.by_uuid(uuid).unwrap().mean;
-            let single = prune_hidden_neuron(&creature, uuid, mean, None).unwrap();
+            let single = prune_hidden_neuron(&creature, uuid, Some(mean), None).unwrap();
             let single_saving = single.before.growth_units - single.after.growth_units;
             assert!(
                 group_saving > single_saving,

@@ -2530,7 +2530,7 @@ fn skip_try(skip: &crate::sweep::SweepSkip) -> ScreenTry<'_> {
     )
 }
 
-/// `aggregate-squash: 41, known-failure: 3` — one batch's skips, by reason.
+/// `other: 41, known-failure: 3` — one batch's skips, by reason.
 ///
 /// The kind filed against a skipped visit is only two buckets wide, so the
 /// reason itself would otherwise be discarded: an unexpected skip — a
@@ -5736,8 +5736,23 @@ mod tests {
     /// the shape of the production creature, where forests put an aggregate
     /// squash downstream of most hidden neurons (Issue #93).
     fn aggregate_blocked_paths(tmp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let c = aggregate_blocked_creature();
+        let path = tmp.join("creature.json");
+        std::fs::write(&path, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
+        )
+        .unwrap();
+        (path, train)
+    }
+
+    /// The creature [`aggregate_blocked_paths`] writes, on its own.
+    fn aggregate_blocked_creature() -> CreatureExport {
         use crate::fixtures::{creature, neuron, synapse};
-        let c = creature(
+        creature(
             1,
             1,
             vec![
@@ -5754,17 +5769,7 @@ mod tests {
                 synapse("h_fed", "h_agg", 1.0),
                 synapse("h_agg", "output-0", 1.0),
             ],
-        );
-        let path = tmp.join("creature.json");
-        std::fs::write(&path, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
-        let train = tmp.join("train");
-        std::fs::create_dir(&train).unwrap();
-        write_bin_file(
-            &train.join("0.bin"),
-            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
         )
-        .unwrap();
-        (path, train)
     }
 
     /// Issue #93: the counter went backwards because a visit the razor could
@@ -7831,17 +7836,17 @@ mod tests {
             reason,
             blocked,
         };
-        let aggregate = |uuid: &str| {
+        let rejected = |uuid: &str| {
             skip(
                 uuid,
-                format!("aggregate target `{uuid}-target` (`MEAN`); skipped"),
-                Some(BlockedReason::AggregateSquash),
+                format!("candidate for `{uuid}` failed creature.validate()"),
+                Some(BlockedReason::ValidationFailed),
             )
         };
         let skips = vec![
-            aggregate("h_a"),
-            aggregate("h_b"),
-            aggregate("h_c"),
+            rejected("h_a"),
+            rejected("h_b"),
+            rejected("h_c"),
             skip(
                 "h_d",
                 "typed synapse `h_d`→`h_if` (condition); skipped".into(),
@@ -7856,7 +7861,7 @@ mod tests {
         ];
         assert_eq!(
             skip_reason_tally(&skips),
-            "aggregate-squash: 3, known-failure: 1, missing-activation: 1, other: 1",
+            "validation-failed: 3, known-failure: 1, missing-activation: 1, other: 1",
             "commonest first, then alphabetical, and no uuid in sight"
         );
     }
@@ -7877,8 +7882,8 @@ mod tests {
         let blocked = SweepSkip {
             uuid: "h_blocked".into(),
             permutation_index: 1,
-            reason: "aggregate target `t` (`MEAN`); skipped".into(),
-            blocked: Some(BlockedReason::AggregateSquash),
+            reason: "candidate for `h_blocked` failed creature.validate()".into(),
+            blocked: Some(BlockedReason::ValidationFailed),
         };
         let known = skip_try(&known);
         assert_eq!(known.kind, crate::learnings::SCREEN_KIND_KNOWN_FAILURE);
@@ -7887,7 +7892,7 @@ mod tests {
         assert_eq!(blocked.kind, crate::learnings::SCREEN_KIND_SKIPPED);
         assert_eq!(
             blocked.blocked_reason,
-            Some(BlockedReason::AggregateSquash),
+            Some(BlockedReason::ValidationFailed),
             "a blocked visit files the code that stopped it"
         );
 
@@ -7918,13 +7923,16 @@ mod tests {
         let blocked_skip = SweepSkip {
             uuid: key.clone(),
             permutation_index: 0,
-            reason: "aggregate target `h_b` (`MEAN`); skipped".into(),
-            blocked: Some(BlockedReason::AggregateSquash),
+            reason: "candidate for the edge failed creature.validate()".into(),
+            blocked: Some(BlockedReason::ValidationFailed),
         };
         let blocked = skip_try(&blocked_skip);
         assert_eq!(blocked.uuid, key, "the key is what was visited");
         assert_eq!(blocked.kind, crate::learnings::SCREEN_KIND_SKIPPED);
-        assert_eq!(blocked.blocked_reason, Some(BlockedReason::AggregateSquash));
+        assert_eq!(
+            blocked.blocked_reason,
+            Some(BlockedReason::ValidationFailed)
+        );
         assert_eq!(blocked.outcome, ScreenOutcomeKind::Loser);
 
         let known_skip = SweepSkip {
@@ -7943,7 +7951,7 @@ mod tests {
         file_screens(None, &[blocked, known], &mut filed);
         assert_eq!(
             filed[0].blocked_category(),
-            Some(BlockedReason::AggregateSquash)
+            Some(BlockedReason::ValidationFailed)
         );
         assert_eq!(filed[1].blocked_category(), None);
         assert!(filed.iter().all(|f| f.uuid == key));
@@ -8357,5 +8365,380 @@ mod tests {
             promotion["promoted"], 0,
             "it still loses to `--screen-threshold`, which the ladder never relaxes"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #202 — the pruning-fixture gate.
+    //
+    // The parent milestone's guarantee is that every hidden neuron and every
+    // synapse of a fixture is a candidate the razor proposes. Turned into a
+    // gate: a sweep over any pruning fixture files **no** blocked visit under
+    // any live reason, and every record it does file names a candidate kind.
+    // A non-zero count here is a regression — in Ockham, or in the sibling
+    // NEAT-AI-core it builds against at head.
+    // ---------------------------------------------------------------------
+
+    /// Whether the fixture sweep is handed activation statistics at all.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Measurement {
+        /// The corpus is scanned, exactly as a production run scans it.
+        Measured,
+        /// The run reads a cached measurement with no neuron and no input
+        /// entries — the unmeasured shape Issue #199 prunes uncompensated.
+        Unmeasured,
+    }
+
+    /// What one fixture sweep filed: its coverage and every screen record.
+    struct FixtureSweep {
+        coverage: Coverage,
+        screens: Vec<crate::learnings::Screened>,
+        /// Every activation-statistics cache the run left in its workspace.
+        caches: Vec<ActivationStats>,
+    }
+
+    impl FixtureSweep {
+        /// The Issue #202 gate: nothing blocked, under any reason, and every
+        /// record a positive confirmation rather than an absent one.
+        fn assert_nothing_blocked(&self, fixture: &str) {
+            assert_eq!(
+                self.coverage.blocked_by_reason,
+                crate::blocked::BlockedBreakdown::default(),
+                "{fixture}: every live reason must count zero, got {:?}",
+                self.coverage.blocked_by_reason
+            );
+            assert_eq!(
+                self.coverage.blocked_by_reason.total(),
+                0,
+                "{fixture}: {:?}",
+                self.coverage.blocked_by_reason
+            );
+            assert_eq!(
+                self.coverage.blocked, 0,
+                "{fixture}: the blocked total must agree with the breakdown"
+            );
+            assert!(
+                !self.screens.is_empty(),
+                "{fixture}: a sweep that filed nothing proves nothing"
+            );
+            let kinds: Vec<&'static str> = crate::sweep::CandidateKind::ALL
+                .into_iter()
+                .map(crate::learnings::kind_label)
+                .collect();
+            for screen in &self.screens {
+                assert_eq!(
+                    screen.blocked_reason, None,
+                    "{fixture}: {} carries a blocked reason",
+                    screen.uuid
+                );
+                assert_eq!(
+                    screen.blocked_category(),
+                    None,
+                    "{fixture}: {} reads back as blocked",
+                    screen.uuid
+                );
+                assert!(
+                    kinds.contains(&screen.kind.as_str()),
+                    "{fixture}: {} filed kind {:?}, which is no candidate kind",
+                    screen.uuid,
+                    screen.kind
+                );
+            }
+            assert_eq!(
+                self.coverage.checked, self.coverage.checkable,
+                "{fixture}: the batch must be wide enough for every visit"
+            );
+        }
+
+        /// The run really swept with no statistics at all.
+        ///
+        /// Asserted rather than assumed: a seeded cache the run failed to read
+        /// would not block it measuring — it would scan the corpus and store
+        /// the result under its own key, leaving a second cache file and
+        /// populated statistics behind. Without this, a drifting cache key
+        /// would turn the unmeasured gate into a silent duplicate of the
+        /// measured one, still green.
+        fn assert_swept_unmeasured(&self, fixture: &str) {
+            assert_eq!(
+                self.caches.len(),
+                1,
+                "{fixture}: the run must read the seeded cache, not measure beside it"
+            );
+            let stats = &self.caches[0];
+            assert!(
+                stats.neurons.is_empty() && stats.inputs.is_empty(),
+                "{fixture}: the run measured after all — {} neurons, {} inputs",
+                stats.neurons.len(),
+                stats.inputs.len()
+            );
+        }
+
+        /// Visit keys that name a hidden neuron, not an edge.
+        fn neuron_visits(&self) -> Vec<&str> {
+            self.screens
+                .iter()
+                .map(|s| s.uuid.as_str())
+                .filter(|v| crate::sweep::parse_synapse_key(v).is_none())
+                .collect()
+        }
+
+        /// The `(from, to)` pair of every edge visit.
+        fn edge_visits(&self) -> Vec<(&str, &str)> {
+            self.screens
+                .iter()
+                .filter_map(|s| crate::sweep::parse_synapse_key(&s.uuid))
+                .collect()
+        }
+    }
+
+    /// Hand the run a cached measurement with no neuron and no input entries.
+    ///
+    /// Keyed exactly as [`crate::stats::ensure_activation_stats`] keys its
+    /// cache, so the run loads it instead of scanning the corpus. This is the
+    /// unmeasured run Issue #199 requires: no fold value resolves for any
+    /// neuron or any input, so every candidate goes to core with no statistic
+    /// at all and comes back approximate rather than blocked.
+    fn seed_unmeasured_stats(cfg: &OckhamConfig, corpus: &crate::corpus::CorpusInfo) {
+        let incumbent = load_incumbent(&cfg.creature).unwrap();
+        let sample = cfg.stats_sample_spec();
+        let mut stats = ActivationStats::empty();
+        stats.creature_checksum = incumbent.checksum.clone();
+        stats.corpus_identity = corpus.identity.clone();
+        stats.sample = sample;
+        let path = crate::stats::cache_path(
+            &cfg.output_dir.join("workspace"),
+            &incumbent.checksum,
+            &corpus.identity,
+            &sample,
+        );
+        crate::stats::store_cached_stats(&path, &stats).unwrap();
+    }
+
+    /// Every activation-statistics cache file the run left in the workspace.
+    ///
+    /// The positive marker the unmeasured gate needs. A seeded cache the run
+    /// did **not** read would not stop it scanning the corpus — it would store
+    /// what it measured under its own key, so a second file would appear here.
+    /// One file, still carrying no neurons and no inputs, is what says the run
+    /// really swept with no statistics rather than quietly measuring after all.
+    fn activation_caches(output_dir: &std::path::Path) -> Vec<ActivationStats> {
+        let mut found: Vec<(std::ffi::OsString, ActivationStats)> =
+            std::fs::read_dir(output_dir.join("workspace"))
+                .expect("the run writes a workspace")
+                .map(|e| e.unwrap())
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("activation-stats.")
+                })
+                .map(|e| {
+                    let text = std::fs::read_to_string(e.path()).unwrap();
+                    (
+                        e.file_name(),
+                        serde_json::from_str(&text)
+                            .unwrap_or_else(|err| panic!("{}: {err}", e.path().display())),
+                    )
+                })
+                .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found.into_iter().map(|(_, stats)| stats).collect()
+    }
+
+    /// Sweep `fixture` end to end with a batch wide enough for every visit.
+    ///
+    /// The scorer is flat, so nothing is accepted and the creature under the
+    /// sweep never changes: one batch reaches every hidden neuron and every
+    /// edge the fixture carries, which is what makes the blocked count below a
+    /// statement about the whole fixture rather than about a sample of it.
+    fn sweep_fixture(
+        tmp: &std::path::Path,
+        fixture: &CreatureExport,
+        measurement: Measurement,
+    ) -> FixtureSweep {
+        let path = tmp.join("creature.json");
+        std::fs::write(&path, neat_core::creature_to_json_pretty(fixture).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[
+                (vec![1.0f32; fixture.input], vec![1.0f32; fixture.output]),
+                (vec![2.0f32; fixture.input], vec![2.0f32; fixture.output]),
+            ],
+        )
+        .unwrap();
+
+        // Every hidden neuron plus every distinct ordered pair: the width the
+        // gate needs, computed from the fixture rather than hard-coded, so a
+        // fixture that grows a neuron cannot quietly stop being swept whole.
+        let hidden = fixture
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .count();
+        let pairs: std::collections::HashSet<(&str, &str)> = fixture
+            .synapses
+            .iter()
+            .map(|s| (s.from_uuid.as_str(), s.to_uuid.as_str()))
+            .collect();
+        let learnings_dir = tmp.join("learnings");
+        let cfg = OckhamConfig {
+            creature: path,
+            training_data: train.clone(),
+            output_dir: tmp.join("out"),
+            timeout: Duration::from_secs(60),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: hidden + pairs.len(),
+            learnings_dir: Some(learnings_dir.clone()),
+            learnings_host: Some("t".into()),
+            ..test_defaults()
+        };
+        let corpus = crate::corpus::corpus_info(
+            &train,
+            &TrainingDataConfig::new(fixture.input, fixture.output),
+        )
+        .unwrap();
+        if measurement == Measurement::Unmeasured {
+            seed_unmeasured_stats(&cfg, &corpus);
+        }
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        FixtureSweep {
+            coverage: coverage_json(&cfg.output_dir),
+            screens: LearningsStore::new(&learnings_dir, corpus.identity, "t".into())
+                .load_screens()
+                .unwrap(),
+            caches: activation_caches(&cfg.output_dir),
+        }
+    }
+
+    /// The aggregate fixture of Issue #202: an `IF` output over a `HYPOT`
+    /// hidden neuron, so the aggregate paths are actually walked.
+    #[test]
+    fn the_if_hypot_fixture_visits_the_aggregate_paths_and_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fixture = crate::fixtures::if_hypot_creature();
+        let aggregates: std::collections::HashSet<&str> =
+            crate::fixtures::aggregate_uuids(&fixture)
+                .into_iter()
+                .collect();
+        assert!(
+            aggregates.contains("h_hyp") && aggregates.contains("output-0"),
+            "the fixture must carry a hidden aggregate and an aggregate output: {aggregates:?}"
+        );
+
+        let swept = sweep_fixture(tmp.path(), &fixture, Measurement::Measured);
+        swept.assert_nothing_blocked("if_hypot_creature");
+
+        let aggregate_neurons: Vec<&str> = swept
+            .neuron_visits()
+            .into_iter()
+            .filter(|v| aggregates.contains(v))
+            .collect();
+        assert!(
+            !aggregate_neurons.is_empty(),
+            "the sweep must visit at least one aggregate neuron, visited {:?}",
+            swept.neuron_visits()
+        );
+        let into_aggregate: Vec<(&str, &str)> = swept
+            .edge_visits()
+            .into_iter()
+            .filter(|(_, to)| aggregates.contains(to))
+            .collect();
+        assert!(
+            !into_aggregate.is_empty(),
+            "the sweep must visit at least one edge into an aggregate, visited {:?}",
+            swept.edge_visits()
+        );
+    }
+
+    /// The same fixture swept with **no** statistics at all.
+    ///
+    /// The unmeasured half of the gate (Issue #199): a caller measurement with
+    /// no neuron and no input entries must still prune every visit
+    /// uncompensated through core, never file `missing-activation`.
+    #[test]
+    fn an_unmeasured_sweep_of_the_if_hypot_fixture_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::if_hypot_creature(),
+            Measurement::Unmeasured,
+        );
+        swept.assert_swept_unmeasured("if_hypot_creature (unmeasured)");
+        swept.assert_nothing_blocked("if_hypot_creature (unmeasured)");
+    }
+
+    /// The forest-heavy shape of Issue #93: a `MEAN` aggregate, the neuron
+    /// feeding it, and one ordinary neuron beside them.
+    #[test]
+    fn the_aggregate_blocked_paths_fixture_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &aggregate_blocked_creature(),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("aggregate_blocked_paths");
+    }
+
+    /// `wide_creature` with an aggregate squash on every hidden neuron.
+    #[test]
+    fn the_wide_fixture_with_an_aggregate_squash_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::wide_creature(2, 3, "MEAN"),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("wide_creature (MEAN)");
+    }
+
+    /// `wide_creature` point-wise: the same topology, no aggregate anywhere.
+    #[test]
+    fn the_wide_fixture_point_wise_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::wide_creature(2, 3, "TANH"),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("wide_creature (TANH)");
+    }
+
+    /// One hidden IDENTITY neuron: the exact-collapse rung.
+    #[test]
+    fn the_hidden_identity_fixture_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::hidden_identity_creature(0.25, 0.5),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("hidden_identity_creature");
+    }
+
+    /// The pure-synapse-win shape of Issue #138.
+    #[test]
+    fn the_shortcut_edge_fixture_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::shortcut_edge_creature(),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("shortcut_edge_creature");
+    }
+
+    /// The smallest fixture there is: no hidden neuron, edges out of an
+    /// observation only.
+    #[test]
+    fn the_identity_fixture_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::identity_creature(2, 2),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("identity_creature");
     }
 }

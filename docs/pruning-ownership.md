@@ -46,6 +46,7 @@ These are the principles the engine was built to, recorded here so they survive
 the issue thread that stated them:
 
 - hidden neurons and synapses are pruning candidates;
+- every hidden neuron and synapse prunes to a valid, closest creature;
 - observation/input and output neurons are protected from direct deletion;
 - constants are support nodes, not direct optimisation targets;
 - at most three constants, all bias=1; remove them automatically when unreferenced;
@@ -63,6 +64,7 @@ here rather than in a reviewer's memory:
 | Principle | What enforces it in core |
 |---|---|
 | Hidden neurons and synapses are candidates | `prune_neuron` and `prune_synapse` — a synapse is named by its `(from, to, role)` `SynapseKey`, so an edge out of an observation is a candidate even though the observation neuron is not. |
+| Every one of them prunes to a valid, closest creature | `prune_neuron` / `prune_synapse` return a validated creature for every hidden target: a lost term is folded into a target's bias where the target sums, an aggregate left with one inward edge is converted to `IDENTITY`/`ABSOLUTE` (#197) and one left with none folds into its bias (#196); anything still uncompensated is named on `PruneResult::uncompensated` and the candidate is labelled `TransformClass::Approximate` rather than refused. That is why `aggregate-squash` is retired (#200). |
 | Observation and output neurons are protected | `PruneError::Protected { kind }`, with `ProtectedKind::Observation` / `ProtectedKind::Output`. |
 | Constants are support nodes | `ProtectedKind::Constant` — a constant is removed as dead structure by the cleanup once nothing references it, never as a requested target. |
 | At most three, all bias 1 | `MAX_SUPPORT_CONSTANTS` (3) and `SUPPORT_CONSTANT_BIAS` (1.0), applied by `cleanup_creature`. |
@@ -91,8 +93,18 @@ their turn comes.
 Core's report travels with every candidate it built: `prune::PruneDetail` is
 written into the sweep candidate, the screened-out record and the telemetry row,
 so a run's evidence says whether a rewrite was exact or approximate, what its
-cascade took, which `IF` structure it rewrote, and which targets it left
-uncompensated.
+cascade took, which `IF` structure it rewrote, which aggregates it converted
+(`convertedNeurons` — the single-edge rewrites of #197, and the zero-edge
+`HYPOTv2` → `ABSOLUTE` one core names from the 0.18.0 baseline), and which
+targets it left uncompensated — each one carrying `droppedMean`, the magnitude
+of the term that went where a statistic or the creature's own structure proves
+one, and absent where neither does.
+
+A conversion is not a compensation. A target the cut left holding one term is
+rewritten to the squash that computes the same number, and it has still lost
+what the removed structure fed it, so it is named on both lists and
+`fully_compensated()` stays `false` for it — which is what keeps the Issue #103
+constant substitution running as the alternate candidate for that visit.
 
 The rule for new work is the simple half of the boundary: **a
 change to what a prune does structurally belongs in core**, and a change to

@@ -1854,6 +1854,72 @@ mod tests {
         );
     }
 
+    /// A blocked `aggregate-squash` record is dropped too (Issue #200).
+    ///
+    /// The code is retired: core converts a one-edge aggregate target, folds a
+    /// zero-edge one into its bias, and otherwise drops the term labelled
+    /// approximate — so every visit those records were filed against is a
+    /// candidate now. Leaving them on the books keeps the visit out of the
+    /// sweep, which is exactly what the GRQ re-measure needs back.
+    #[test]
+    fn a_blocked_aggregate_squash_record_is_dropped_so_the_visit_is_tried_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LearningsStore::new(dir.path(), "corp".into(), "host-a".into());
+        let blocked = |uuid: &str, reason: BlockedReason| Screened {
+            kind: SCREEN_KIND_SKIPPED.into(),
+            blocked_reason: Some(reason),
+            ..screen(uuid, ScreenOutcomeKind::Loser, 4)
+        };
+        store
+            .append_screen(&blocked("h_mean", BlockedReason::AggregateSquash))
+            .unwrap();
+        store
+            .append_screen(&blocked(
+                &crate::sweep::synapse_key("h_src", "h_mean"),
+                BlockedReason::AggregateSquash,
+            ))
+            .unwrap();
+        store
+            .append_screen(&blocked("h_live", BlockedReason::ValidationFailed))
+            .unwrap();
+
+        let loaded = store.load_screens().unwrap();
+        let uuids: Vec<&str> = loaded.iter().map(|s| s.uuid.as_str()).collect();
+        assert_eq!(
+            uuids,
+            vec!["h_live"],
+            "both aggregate-squash records are dropped: {loaded:?}"
+        );
+
+        // Dropped means *eligible*, not merely uncounted: the visit reads
+        // unchecked, so the sweep goes back to it.
+        use crate::fixtures::{creature, neuron, synapse};
+        let incumbent = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_src", 0.0, Some("TANH")),
+                neuron("hidden", "h_mean", 0.0, Some("MEAN")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_src", 1.0),
+                synapse("h_src", "h_mean", 1.0),
+                synapse("h_mean", "output-0", 1.0),
+            ],
+        );
+        let cov =
+            crate::coverage::coverage(&incumbent, &std::collections::HashSet::new(), &loaded, 0);
+        assert_eq!(
+            cov.blocked, 0,
+            "nothing is blocked once the code is retired"
+        );
+        assert_eq!(
+            cov.checked, 0,
+            "neither the neuron nor the edge reads as checked: {cov:?}"
+        );
+    }
+
     /// The markers live beside the screen records, never inside them: a pass
     /// marker must not be readable as coverage, and neither log may break the
     /// other.
@@ -2235,7 +2301,7 @@ mod tests {
         let filed = file_screens(
             Some(&store),
             &[
-                ScreenTry::blocked("h_agg", BlockedReason::AggregateSquash),
+                ScreenTry::blocked("h_agg", BlockedReason::ValidationFailed),
                 ScreenTry::visited("h_known", SCREEN_KIND_KNOWN_FAILURE),
                 ScreenTry::scored("h_ok", CandidateKind::Ablation, ScreenOutcomeKind::Loser),
             ],
@@ -2245,7 +2311,7 @@ mod tests {
 
         let text = std::fs::read_to_string(store.screens_host_path()).unwrap();
         assert!(
-            text.contains("\"blockedReason\":\"aggregate-squash\""),
+            text.contains("\"blockedReason\":\"validation-failed\""),
             "the code is on the record, not only in the log: {text}"
         );
         let by_uuid: HashMap<String, Screened> = store
@@ -2256,7 +2322,7 @@ mod tests {
             .collect();
         assert_eq!(
             by_uuid["h_agg"].blocked_category(),
-            Some(BlockedReason::AggregateSquash)
+            Some(BlockedReason::ValidationFailed)
         );
         assert_eq!(
             by_uuid["h_agg"].version, SCREENS_VISIT_FORMAT_VERSION,
@@ -2297,7 +2363,7 @@ mod tests {
         let mut record = serde_json::to_value(Screened {
             kind: SCREEN_KIND_SKIPPED.into(),
             version: SCREENS_VISIT_FORMAT_VERSION,
-            blocked_reason: Some(BlockedReason::AggregateSquash),
+            blocked_reason: Some(BlockedReason::ValidationFailed),
             ..screen("h_future", ScreenOutcomeKind::Loser, 1)
         })
         .unwrap();
@@ -2506,7 +2572,7 @@ mod tests {
         file_screens(
             None,
             &[
-                ScreenTry::blocked(&key, BlockedReason::AggregateSquash),
+                ScreenTry::blocked(&key, BlockedReason::ValidationFailed),
                 ScreenTry::visited(&key, SCREEN_KIND_KNOWN_FAILURE),
             ],
             &mut filed,
@@ -2515,7 +2581,7 @@ mod tests {
         assert!(filed[0].is_skipped());
         assert_eq!(
             filed[0].blocked_category(),
-            Some(BlockedReason::AggregateSquash)
+            Some(BlockedReason::ValidationFailed)
         );
         assert_eq!(filed[1].kind, SCREEN_KIND_KNOWN_FAILURE);
         assert_eq!(filed[1].uuid, key);

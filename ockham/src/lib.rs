@@ -111,9 +111,9 @@ pub use ordering::{Ordering, OrderingConfig, hidden_order, synapse_order};
 pub use priority::{CompositeWeights, PriorityContext, expected_pruning_value};
 pub use promote::{FullOutcome, evaluate_full};
 pub use prune::{
-    BiasFoldRecord, GroupMember, PruneDetail, PruneRefusal, PrunedCandidate, StaticIfRecord,
-    SynapseRef, UncompensatedRecord, WeightShareRecord, prune_edge, prune_hidden_group,
-    prune_hidden_neuron,
+    BiasFoldRecord, GroupMember, PruneDetail, PruneRefusal, PrunedCandidate,
+    SquashConversionRecord, StaticIfRecord, SynapseRef, UncompensatedRecord, WeightShareRecord,
+    prune_edge, prune_hidden_group, prune_hidden_neuron,
 };
 pub use report::{Report, summarise};
 pub use run::{BaselineRun, establish_run};

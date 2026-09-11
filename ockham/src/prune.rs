@@ -100,6 +100,29 @@ pub struct UncompensatedRecord {
     pub squash: String,
     /// `no-statistics` or `aggregate-target`.
     pub reason: String,
+    /// Magnitude of the term the target lost, where a number proves one.
+    ///
+    /// Core's own report (Ockham #197): `weight_sum · μ` from the statistic
+    /// Ockham supplied, or `weight_sum · a` where the creature itself fixes the
+    /// source's activation. `None` where neither exists — no magnitude is
+    /// invented to stand in for one, and a zero would read as "nothing was
+    /// lost". Reported, never enforced: judging the loss is the scorer's half
+    /// of the boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped_mean: Option<f64>,
+}
+
+/// One aggregate core rewrote to the point-wise squash that computes the same
+/// number, in the form telemetry carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SquashConversionRecord {
+    /// Neuron whose squash was rewritten.
+    pub uuid: String,
+    /// The aggregate squash it declared.
+    pub from: String,
+    /// The point-wise squash it declares now.
+    pub to: String,
 }
 
 /// An `IF` the removal left with a condition the creature itself decides.
@@ -117,7 +140,9 @@ pub struct StaticIfRecord {
 /// Every field is core's own report of the rewrite — nothing here is Ockham
 /// re-deriving what the graph became — so a run's evidence says whether a cut
 /// was exact or approximate, what the cascade took, which `IF` structure was
-/// rewritten, and which targets were left carrying the removal uncompensated.
+/// rewritten, which aggregates stopped aggregating and were converted, and
+/// which targets were left carrying the removal uncompensated — each one with
+/// the magnitude of the term it dropped, where a number proves one.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PruneDetail {
@@ -141,6 +166,13 @@ pub struct PruneDetail {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub folded_neurons: Vec<String>,
     /// `IF` neurons downgraded to `IDENTITY` — the one inexact cleanup rewrite.
+    ///
+    /// **Always empty since neat-core 0.16.0** (Issue #198): both core entry
+    /// points ask cleanup for `IfRepair::Rewrite`, so an `IF` short a role is
+    /// rewritten exactly and named on [`Self::static_if_neurons`] or
+    /// [`Self::restored_if_roles`] instead. The field stays because a
+    /// non-empty list here would mean core had gone back to the inexact
+    /// repair, and the journal should record that loudly rather than lose it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub downgraded_if_neurons: Vec<String>,
     /// `IF` neurons flattened to the branch their condition always takes.
@@ -158,6 +190,17 @@ pub struct PruneDetail {
     /// Targets left carrying the removal without compensation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uncompensated: Vec<UncompensatedRecord>,
+    /// Aggregates the cut stopped aggregating, rewritten to the point-wise
+    /// squash that computes the same number (Ockham #197) — one left holding a
+    /// single inward edge, and since the recorded 0.18.0 baseline one left
+    /// holding none whose `HYPOTv2` becomes `ABSOLUTE` over its folded bias.
+    ///
+    /// Every conversion is exact, so none of them moves
+    /// [`Self::transform_class`] — and none of them compensates the target
+    /// either: the term is still gone, so a converted target is still named on
+    /// [`Self::uncompensated`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub converted_neurons: Vec<SquashConversionRecord>,
 }
 
 impl PruneDetail {
@@ -213,7 +256,19 @@ impl PruneDetail {
                     UncompensatedReason::NoStatistics => "no-statistics".to_string(),
                     UncompensatedReason::AggregateTarget => "aggregate-target".to_string(),
                 },
+                dropped_mean: u.dropped_mean,
             }));
+        self.converted_neurons
+            .extend(
+                result
+                    .converted_neurons
+                    .iter()
+                    .map(|c| SquashConversionRecord {
+                        uuid: c.uuid.clone(),
+                        from: c.from.to_string(),
+                        to: c.to.to_string(),
+                    }),
+            );
     }
 
     /// Neurons the transform took out of the hidden set on top of the
@@ -309,8 +364,13 @@ impl std::fmt::Display for PruneRefusal {
 /// has to be deterministic (`docs/blocked-reasons.md`).
 fn reason_for(error: &PruneError) -> BlockedReason {
     match error {
-        // A statistic Ockham supplied is not a number core can use, so the
-        // visit had no usable activation after all.
+        // A statistic Ockham supplied is not a number core can use. Since
+        // Issue #199 an **absent** statistic is not one of these: it is handed
+        // to core as `None` and pruned uncompensated. What is left here is a
+        // caller defect — a `NaN` mean, a negative variance, a proxy that does
+        // not hold up — which the fixture suite must never trigger, so the
+        // code stays as the loud report of one rather than a category runs
+        // routinely fill.
         PruneError::NonFiniteStatistic { .. }
         | PruneError::NegativeVariance { .. }
         | PruneError::DegenerateProxy { .. }
@@ -355,11 +415,14 @@ fn is_hidden(creature: &CreatureExport, uuid: &str) -> bool {
 pub struct GroupMember {
     /// Hidden neuron UUID.
     pub uuid: String,
-    /// Full-corpus mean post-activation of that neuron.
-    pub mean: f64,
+    /// Full-corpus mean post-activation of that neuron, when the scan measured
+    /// one. `None` hands core no statistic at all, so the member is pruned
+    /// uncompensated rather than not pruned (Issue #199).
+    pub mean: Option<f64>,
 }
 
-/// The statistical hint Ockham has about one neuron, in core's form.
+/// The statistical hint Ockham has about one neuron, in core's form — or
+/// `None` when it has none (Issue #199).
 ///
 /// The mean is what stands in for the removed activation; the variance is
 /// passed so core can report the residual variance the fold could not carry.
@@ -367,15 +430,24 @@ pub struct GroupMember {
 /// single-record population variance is zero by construction, not a
 /// measurement — and never when it is not a finite, non-negative number, which
 /// core would refuse the whole request for.
-fn hint(mean: f64, stats: Option<&NeuronStats>) -> PruneStats {
-    PruneStats {
-        mean_activation: mean,
+///
+/// No mean is **not** a refusal. Core takes `None`, runs every exact rewrite
+/// it can prove from the structure alone, and names whatever target it could
+/// not compensate under [`UncompensatedReason::NoStatistics`] — so an
+/// unmeasured visit becomes an approximate candidate the scorer judges rather
+/// than a blocked one nothing ever tries. A mean that is present but not
+/// finite is a different thing: it is handed to core unchanged, which refuses
+/// the whole request, because a caller supplying `NaN` is a defect to surface
+/// rather than an absence to work around.
+fn hint(mean: Option<f64>, stats: Option<&NeuronStats>) -> Option<PruneStats> {
+    mean.map(|mean_activation| PruneStats {
+        mean_activation,
         variance: stats
             .filter(|s| s.count >= 2)
             .map(|s| s.variance)
             .filter(|v| v.is_finite() && *v >= 0.0),
         proxy: None,
-    }
+    })
 }
 
 /// Build the candidate, once core has returned one.
@@ -403,10 +475,12 @@ fn candidate(
 
 /// Prune hidden neuron `uuid` from `incumbent` through core (#182).
 ///
-/// `mean` is the full-corpus mean post-activation Ockham measured, and `stats`
-/// the rest of what it measured about the same neuron. Core decides what the
-/// graph becomes: the compensation, the cascade, the `IF` rewrites, the
-/// canonical fixed point and the validation are all its own.
+/// `mean` is the full-corpus mean post-activation Ockham measured — `None`
+/// when the scan never reached the neuron — and `stats` the rest of what it
+/// measured about the same neuron. Core decides what the graph becomes: the
+/// compensation, the cascade, the `IF` rewrites, the canonical fixed point and
+/// the validation are all its own, and a request carrying no mean is pruned
+/// uncompensated rather than refused (Issue #199).
 ///
 /// # Errors
 ///
@@ -415,11 +489,11 @@ fn candidate(
 pub fn prune_hidden_neuron(
     incumbent: &CreatureExport,
     uuid: &str,
-    mean: f64,
+    mean: Option<f64>,
     stats: Option<&NeuronStats>,
 ) -> Result<PrunedCandidate, PruneRefusal> {
     let before = StructureSnapshot::of(incumbent);
-    let result = prune_neuron(incumbent, uuid, Some(&hint(mean, stats)))
+    let result = prune_neuron(incumbent, uuid, hint(mean, stats).as_ref())
         .map_err(|e| PruneRefusal::of(&e))?;
     let mut detail = PruneDetail::default();
     detail.absorb(&result);
@@ -476,7 +550,7 @@ pub fn prune_hidden_group(
         if was_hidden && !is_hidden(&working, &member.uuid) {
             continue;
         }
-        let result = prune_neuron(&working, &member.uuid, Some(&hint(member.mean, None)))
+        let result = prune_neuron(&working, &member.uuid, hint(member.mean, None).as_ref())
             .map_err(|e| PruneRefusal::of(&e))?;
         detail.absorb(&result);
         working = result.creature;
@@ -497,7 +571,9 @@ pub fn prune_hidden_group(
 /// one resolver, [`crate::stats::source_value`] — and `source_stats` is the
 /// rest of what Ockham measured about that source. A source the creature
 /// itself fixes (a constant, a neuron with nothing to sum) is core's to value,
-/// and the hint is ignored for it.
+/// and the hint is ignored for it. A source that resolved to nothing sends
+/// `None`: core still cuts the edge and names the target it could not
+/// compensate, rather than the visit being blocked (Issue #199).
 ///
 /// The visit key names a **pair**, and a pair may repeat with distinct roles at
 /// an `IF` (NEAT-AI-core rule 26), so the role of the first edge the incumbent
@@ -512,7 +588,7 @@ pub fn prune_edge(
     incumbent: &CreatureExport,
     from_uuid: &str,
     to_uuid: &str,
-    source_value: f64,
+    source_value: Option<f64>,
     source_stats: Option<&NeuronStats>,
 ) -> Result<PrunedCandidate, PruneRefusal> {
     let Some(role) = incumbent
@@ -532,7 +608,7 @@ pub fn prune_edge(
         role,
     };
     let before = StructureSnapshot::of(incumbent);
-    let result = prune_synapse(incumbent, &key, Some(&hint(source_value, source_stats)))
+    let result = prune_synapse(incumbent, &key, hint(source_value, source_stats).as_ref())
         .map_err(|e| PruneRefusal::of(&e))?;
     let mut detail = PruneDetail::default();
     detail.absorb(&result);
@@ -585,7 +661,7 @@ mod tests {
         let wide = crate::fixtures::wide_creature(8, hidden, "TANH");
         let started = std::time::Instant::now();
         for _ in 0..ROUNDS {
-            prune_hidden_neuron(&wide, "h0", 0.25, None).expect("h0 feeds the output");
+            prune_hidden_neuron(&wide, "h0", Some(0.25), None).expect("h0 feeds the output");
         }
         started.elapsed().as_secs_f64()
     }
@@ -759,6 +835,98 @@ mod tests {
         )
     }
 
+    /// A `MINIMUM` target fed by `h_src` and exactly one other edge, so the
+    /// cut leaves it holding a single term.
+    fn single_edge_minimum_target() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_src", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_min", 0.0, Some("MINIMUM")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_src", 1.0),
+                synapse("input-0", "h_min", 1.0),
+                synapse("h_src", "h_min", 2.0),
+                synapse("h_min", "output-0", 1.0),
+            ],
+        )
+    }
+
+    /// Two `MINIMUM` targets, each fed by one input edge and one hidden
+    /// neuron, so a group cut over both hidden neurons converts both — the
+    /// shape that proves the conversions of separate requests accumulate.
+    fn two_minimum_targets() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_b", 0.0, Some("IDENTITY")),
+                neuron("hidden", "m_a", 0.0, Some("MINIMUM")),
+                neuron("hidden", "m_b", 0.0, Some("MINIMUM")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_a", 1.0),
+                synapse("input-0", "h_b", 1.0),
+                synapse("input-0", "m_a", 1.0),
+                synapse("input-0", "m_b", 1.0),
+                synapse("h_a", "m_a", 2.0),
+                synapse("h_b", "m_b", 3.0),
+                synapse("m_a", "output-0", 1.0),
+                synapse("m_b", "output-0", 1.0),
+            ],
+        )
+    }
+
+    /// A `MINIMUM` target fed by a **constant**, so the creature itself fixes
+    /// what the edge carried and no measurement is needed to value it.
+    fn constant_into_minimum_target() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("constant", "c0", 0.5, None),
+                neuron("hidden", "h_keep", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_min", 0.0, Some("MINIMUM")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("c0", "h_min", 2.0),
+                synapse("input-0", "h_keep", 1.0),
+                synapse("input-0", "h_min", 1.0),
+                synapse("h_keep", "h_min", 1.0),
+                synapse("h_min", "output-0", 1.0),
+            ],
+        )
+    }
+
+    /// The same target fed by one edge more, so the cut leaves it still
+    /// reducing two terms and no conversion is available.
+    fn two_edge_minimum_target() -> CreatureExport {
+        creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_src", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_keep", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_min", 0.0, Some("MINIMUM")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_src", 1.0),
+                synapse("input-0", "h_keep", 1.0),
+                synapse("input-0", "h_min", 1.0),
+                synapse("h_src", "h_min", 2.0),
+                synapse("h_keep", "h_min", 1.0),
+                synapse("h_min", "output-0", 1.0),
+            ],
+        )
+    }
+
     fn outputs(creature: &CreatureExport, xs: &[f32]) -> Vec<f32> {
         let mut net = compile_creature(creature).unwrap();
         xs.iter().map(|&x| net.activate(&[x], 1)[0]).collect()
@@ -782,7 +950,7 @@ mod tests {
         let incumbent = two_hidden();
         validate_creature(&incumbent).unwrap();
         let original = incumbent.clone();
-        let result = prune_hidden_neuron(&incumbent, "h_a", 2.0, None).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_a", Some(2.0), None).unwrap();
         assert_eq!(incumbent, original, "incumbent must be untouched");
         assert_eq!(result.detail.transform_class, TransformClass::Approximate);
         let bias = bias_of(&result.creature, "output-0");
@@ -800,7 +968,7 @@ mod tests {
     #[test]
     fn the_cascade_removes_a_newly_unreachable_chain() {
         let incumbent = chain_plus_keep();
-        let result = prune_hidden_neuron(&incumbent, "h_leaf", 1.0, None).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_leaf", Some(1.0), None).unwrap();
         let left = uuids(&result.creature);
         assert!(!left.contains(&"h_leaf"));
         assert!(
@@ -824,7 +992,7 @@ mod tests {
         // 1.5. Removing it leaves `h_mid` with nothing to sum, and the cleanup
         // resolves that to constant support rather than leaving a hidden
         // neuron whose activation never moves.
-        let result = prune_hidden_neuron(&incumbent, "h_src", 1.5, None).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_src", Some(1.5), None).unwrap();
         assert_eq!(result.detail.folded_neurons, vec!["h_mid"]);
         let after = outputs(&result.creature, &xs);
         for (x, (a, b)) in xs.iter().zip(before.iter().zip(after.iter())) {
@@ -868,7 +1036,7 @@ mod tests {
         let typed = typed_if_fixture();
         validate_creature(&typed).unwrap();
 
-        let condition = prune_hidden_neuron(&typed, "h_cond", 0.5, None).unwrap();
+        let condition = prune_hidden_neuron(&typed, "h_cond", Some(0.5), None).unwrap();
         validate_creature(&condition.creature).unwrap();
         assert!(
             condition
@@ -880,7 +1048,7 @@ mod tests {
             uuids(&condition.creature)
         );
 
-        let aggregate = prune_hidden_neuron(&typed, "h_if", 0.5, None).unwrap();
+        let aggregate = prune_hidden_neuron(&typed, "h_if", Some(0.5), None).unwrap();
         validate_creature(&aggregate.creature).unwrap();
         assert!(aggregate.creature.neurons.iter().all(|n| n.uuid != "h_if"));
         assert_eq!(typed, typed_if_fixture(), "the source must not move");
@@ -889,7 +1057,7 @@ mod tests {
     #[test]
     fn an_aggregate_target_is_named_rather_than_folded() {
         let aggregate = ordinary_edge_into_aggregate();
-        let result = prune_hidden_neuron(&aggregate, "h_src", 0.5, None).unwrap();
+        let result = prune_hidden_neuron(&aggregate, "h_src", Some(0.5), None).unwrap();
         assert!(
             !result.fully_compensated(),
             "a MEAN target cannot absorb a bias fold: {:?}",
@@ -902,17 +1070,235 @@ mod tests {
         validate_creature(&result.creature).unwrap();
     }
 
+    /// Core rewrites an aggregate its cut leaves holding **one** inward edge to
+    /// the point-wise squash that computes the same number (Ockham #197), and
+    /// names the rewrite on `PruneResult::converted_neurons`. The journal
+    /// records what came back rather than leaving a reader to diff two squashes.
+    #[test]
+    fn a_single_edge_aggregate_target_is_reported_converted() {
+        let incumbent = single_edge_minimum_target();
+        let result = prune_hidden_neuron(&incumbent, "h_src", Some(0.5), None).unwrap();
+        assert_eq!(
+            result.detail.converted_neurons,
+            vec![SquashConversionRecord {
+                uuid: "h_min".to_string(),
+                from: "MINIMUM".to_string(),
+                to: "IDENTITY".to_string(),
+            }],
+            "{:?}",
+            result.detail
+        );
+        // The conversion is exact, but it does not hand the target back what it
+        // lost: the term is still gone, so the candidate is still uncompensated
+        // and Ockham's constant substitution still has a rung to run.
+        assert!(!result.fully_compensated(), "{:?}", result.detail);
+        validate_creature(&result.creature).unwrap();
+        assert_eq!(
+            incumbent,
+            single_edge_minimum_target(),
+            "the source must not move"
+        );
+    }
+
+    /// A target the cut leaves reducing two terms is not converted — and core
+    /// reports how big the term it lost was, where a statistic proves one
+    /// (Ockham #197). No magnitude is invented where nothing proves one.
+    #[test]
+    fn a_two_edge_aggregate_target_carries_the_magnitude_it_dropped() {
+        let incumbent = two_edge_minimum_target();
+        let measured = prune_hidden_neuron(&incumbent, "h_src", Some(0.5), None).unwrap();
+        assert!(
+            measured.detail.converted_neurons.is_empty(),
+            "two terms still reduce: {:?}",
+            measured.detail
+        );
+        assert!(!measured.fully_compensated(), "{:?}", measured.detail);
+        let named = &measured.detail.uncompensated[0];
+        assert_eq!(named.target_uuid, "h_min");
+        assert_eq!(named.squash, "MINIMUM");
+        assert_eq!(named.reason, "aggregate-target");
+        let dropped = named
+            .dropped_mean
+            .expect("a measured mean proves the magnitude of the lost term");
+        assert!(close(dropped, 1.0), "weight 2.0 x mean 0.5, got {dropped}");
+        validate_creature(&measured.creature).unwrap();
+
+        let unmeasured = prune_hidden_neuron(&incumbent, "h_src", None, None).unwrap();
+        assert_eq!(
+            unmeasured.detail.uncompensated[0].dropped_mean, None,
+            "nothing proves a magnitude, so none is invented: {:?}",
+            unmeasured.detail
+        );
+    }
+
+    /// Every request path absorbs the same two reports, and a group cut
+    /// accumulates them across the requests it makes rather than keeping only
+    /// the last one.
+    #[test]
+    fn every_request_path_reports_what_core_converted_and_dropped() {
+        let edge = prune_edge(
+            &single_edge_minimum_target(),
+            "h_src",
+            "h_min",
+            Some(0.5),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            edge.detail
+                .converted_neurons
+                .iter()
+                .map(|c| c.uuid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["h_min"],
+            "{:?}",
+            edge.detail
+        );
+        assert_eq!(edge.detail.uncompensated[0].dropped_mean, Some(1.0));
+        validate_creature(&edge.creature).unwrap();
+
+        let grouped = prune_hidden_group(&two_minimum_targets(), &group(&["h_a", "h_b"], 0.5))
+            .expect("both members are core's to remove");
+        assert_eq!(
+            grouped
+                .detail
+                .converted_neurons
+                .iter()
+                .map(|c| (c.uuid.as_str(), c.from.as_str(), c.to.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("m_a", "MINIMUM", "IDENTITY"),
+                ("m_b", "MINIMUM", "IDENTITY"),
+            ],
+            "one request per member, both conversions kept: {:?}",
+            grouped.detail
+        );
+        let dropped: Vec<Option<f64>> = grouped
+            .detail
+            .uncompensated
+            .iter()
+            .map(|u| u.dropped_mean)
+            .collect();
+        assert_eq!(dropped, vec![Some(1.0), Some(1.5)], "{:?}", grouped.detail);
+        validate_creature(&grouped.creature).unwrap();
+    }
+
+    /// The magnitude does not need a measurement. Where the creature itself
+    /// fixes what the removed edge carried — a constant source — core values it
+    /// from the structure, exactly as the compensation would have.
+    #[test]
+    fn a_structurally_fixed_source_proves_the_magnitude_without_a_statistic() {
+        let incumbent = constant_into_minimum_target();
+        let result = prune_edge(&incumbent, "c0", "h_min", None, None)
+            .expect("a constant source is core's to value");
+        let named = &result.detail.uncompensated[0];
+        assert_eq!(named.target_uuid, "h_min");
+        assert_eq!(named.reason, "aggregate-target");
+        let dropped = named
+            .dropped_mean
+            .expect("the creature fixes the source at 0.5, so the magnitude is proven");
+        assert!(
+            close(dropped, 1.0),
+            "weight 2.0 x constant 0.5, got {dropped}"
+        );
+        validate_creature(&result.creature).unwrap();
+    }
+
+    /// Both reports reach the telemetry row, and neither writes an empty field.
+    #[test]
+    fn the_conversion_and_dropped_magnitude_serialise_on_the_detail() {
+        let converted =
+            prune_hidden_neuron(&single_edge_minimum_target(), "h_src", Some(0.5), None).unwrap();
+        let json = serde_json::to_string(&converted.detail).unwrap();
+        assert!(json.contains("\"convertedNeurons\""), "{json}");
+        assert!(json.contains("\"droppedMean\""), "{json}");
+        let back: PruneDetail = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, converted.detail);
+
+        let unmeasured =
+            prune_hidden_neuron(&two_edge_minimum_target(), "h_src", None, None).unwrap();
+        let json = serde_json::to_string(&unmeasured.detail).unwrap();
+        assert!(
+            !json.contains("\"convertedNeurons\""),
+            "an empty list is not written: {json}"
+        );
+        assert!(
+            !json.contains("\"droppedMean\""),
+            "an absent magnitude is not written: {json}"
+        );
+    }
+
+    /// Issue #199: no measured mean is not a refusal. Core is handed `None`,
+    /// takes the neuron, and names the target it could not compensate under
+    /// `no-statistics` — an approximate candidate the scorer judges, rather
+    /// than a visit nothing ever tries.
+    #[test]
+    fn an_unmeasured_neuron_prunes_uncompensated_through_core() {
+        let incumbent = two_hidden();
+        let result = prune_hidden_neuron(&incumbent, "h_a", None, None)
+            .expect("an unmeasured neuron is still core's to remove");
+        assert!(!result.fully_compensated(), "{:?}", result.detail);
+        assert_eq!(
+            result.detail.transform_class,
+            TransformClass::Approximate,
+            "{:?}",
+            result.detail
+        );
+        let named = &result.detail.uncompensated[0];
+        assert_eq!(named.target_uuid, "output-0");
+        assert_eq!(named.reason, "no-statistics");
+        assert_eq!(
+            named.dropped_mean, None,
+            "`no-statistics` is exactly the case nothing proves a magnitude for"
+        );
+        assert!(result.detail.bias_folds.is_empty(), "{:?}", result.detail);
+        assert!(
+            result.creature.neurons.iter().all(|n| n.uuid != "h_a"),
+            "{:?}",
+            result.creature.neurons
+        );
+        validate_creature(&result.creature).unwrap();
+        assert_eq!(incumbent, two_hidden(), "the source must not move");
+    }
+
+    /// The same for one edge, and for a group member (Issue #199).
+    #[test]
+    fn an_unmeasured_edge_and_group_member_prune_uncompensated_through_core() {
+        let incumbent = two_hidden();
+        let edge = prune_edge(&incumbent, "h_a", "output-0", None, None)
+            .expect("an unmeasured source is still core's to cut");
+        assert_eq!(edge.detail.transform_class, TransformClass::Approximate);
+        assert_eq!(edge.detail.uncompensated[0].target_uuid, "output-0");
+        assert_eq!(edge.detail.uncompensated[0].reason, "no-statistics");
+        assert_eq!(edge.detail.uncompensated[0].dropped_mean, None);
+        validate_creature(&edge.creature).unwrap();
+
+        let chain = chain_plus_keep();
+        let grouped = prune_hidden_group(&chain, &members(&["h_leaf"], None))
+            .expect("an unmeasured member is still core's to remove");
+        assert_eq!(grouped.detail.transform_class, TransformClass::Approximate);
+        assert_eq!(grouped.detail.uncompensated[0].target_uuid, "output-0");
+        assert_eq!(grouped.detail.uncompensated[0].reason, "no-statistics");
+        assert_eq!(grouped.detail.uncompensated[0].dropped_mean, None);
+        validate_creature(&grouped.creature).unwrap();
+    }
+
+    /// A statistic that is present but not a number is a **caller defect**, not
+    /// an absence: core refuses the whole request and Ockham files it as
+    /// `missing-activation` so the fault is loud (Issue #199). An absent
+    /// statistic takes the uncompensated path above instead.
     #[test]
     fn a_protected_or_unknown_target_is_refused_with_no_creature() {
         let incumbent = hidden_identity_creature(0.0, 1.0);
-        let unknown = prune_hidden_neuron(&incumbent, "nope", 0.0, None).unwrap_err();
+        let unknown = prune_hidden_neuron(&incumbent, "nope", Some(0.0), None).unwrap_err();
         assert_eq!(unknown.blocked_reason(), BlockedReason::Other);
-        let output = prune_hidden_neuron(&incumbent, "output-0", 0.0, None).unwrap_err();
+        let output = prune_hidden_neuron(&incumbent, "output-0", Some(0.0), None).unwrap_err();
         assert_eq!(output.blocked_reason(), BlockedReason::Other);
         assert!(output.to_string().contains("protected"), "{output}");
-        let nan = prune_hidden_neuron(&incumbent, "h1", f64::NAN, None).unwrap_err();
+        let nan = prune_hidden_neuron(&incumbent, "h1", Some(f64::NAN), None).unwrap_err();
         assert_eq!(nan.blocked_reason(), BlockedReason::MissingActivation);
-        let infinite = prune_hidden_neuron(&incumbent, "h1", f64::INFINITY, None).unwrap_err();
+        let infinite =
+            prune_hidden_neuron(&incumbent, "h1", Some(f64::INFINITY), None).unwrap_err();
         assert_eq!(infinite.blocked_reason(), BlockedReason::MissingActivation);
     }
 
@@ -930,7 +1316,7 @@ mod tests {
             min: 1.0,
             max: 3.0,
         };
-        let result = prune_hidden_neuron(&incumbent, "h_a", 2.0, Some(&stats)).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_a", Some(2.0), Some(&stats)).unwrap();
         let fold = &result.detail.bias_folds[0];
         assert_eq!(
             fold.residual_variance,
@@ -939,11 +1325,15 @@ mod tests {
         );
         // A single record is no measurement of spread, so nothing is offered.
         let one_record = NeuronStats { count: 1, ..stats };
-        let result = prune_hidden_neuron(&incumbent, "h_a", 2.0, Some(&one_record)).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_a", Some(2.0), Some(&one_record)).unwrap();
         assert_eq!(result.detail.bias_folds[0].residual_variance, None);
     }
 
     fn group(uuids: &[&str], mean: f64) -> Vec<GroupMember> {
+        members(uuids, Some(mean))
+    }
+
+    fn members(uuids: &[&str], mean: Option<f64>) -> Vec<GroupMember> {
         uuids
             .iter()
             .map(|u| GroupMember {
@@ -991,11 +1381,11 @@ mod tests {
         let members = vec![
             GroupMember {
                 uuid: "h_a".into(),
-                mean: 2.0,
+                mean: Some(2.0),
             },
             GroupMember {
                 uuid: "h_b".into(),
-                mean: 0.5,
+                mean: Some(0.5),
             },
         ];
         let result = prune_hidden_group(&incumbent, &members).unwrap();
@@ -1045,6 +1435,10 @@ mod tests {
         validate_creature(&result.creature).unwrap();
     }
 
+    /// A member core cannot build stops the group. A member with no measured
+    /// mean is not one of those since Issue #199 — it is pruned uncompensated,
+    /// asserted by
+    /// [`an_unmeasured_edge_and_group_member_prune_uncompensated_through_core`].
     #[test]
     fn an_unbuildable_member_blocks_the_whole_group() {
         let incumbent = chain_plus_keep();
@@ -1074,7 +1468,7 @@ mod tests {
     #[test]
     fn a_single_member_group_matches_the_single_neuron_prune() {
         let incumbent = chain_plus_keep();
-        let single = prune_hidden_neuron(&incumbent, "h_leaf", 1.0, None).unwrap();
+        let single = prune_hidden_neuron(&incumbent, "h_leaf", Some(1.0), None).unwrap();
         let grouped = prune_hidden_group(&incumbent, &group(&["h_leaf"], 1.0)).unwrap();
         assert_eq!(grouped.creature, single.creature);
         assert_eq!(grouped.detail, single.detail);
@@ -1086,7 +1480,7 @@ mod tests {
         validate_creature(&incumbent).unwrap();
         let original = incumbent.clone();
         // `h_a` is IDENTITY(2 * x), so its mean over XS is exactly 1.0.
-        let result = prune_edge(&incumbent, "h_a", "output-0", 1.0, None).unwrap();
+        let result = prune_edge(&incumbent, "h_a", "output-0", Some(1.0), None).unwrap();
         assert_eq!(incumbent, original, "incumbent must be untouched");
         assert_eq!(result.detail.transform_class, TransformClass::Approximate);
 
@@ -1115,7 +1509,7 @@ mod tests {
     #[test]
     fn a_pure_edge_cut_costs_one_tenth_of_a_growth_unit() {
         let incumbent = shared_output_fan_out();
-        let result = prune_edge(&incumbent, "h_a", "output-0", 1.0, None).unwrap();
+        let result = prune_edge(&incumbent, "h_a", "output-0", Some(1.0), None).unwrap();
         assert!(
             result.detail.cascade_neurons.is_empty(),
             "nothing was stranded: {:?}",
@@ -1143,7 +1537,7 @@ mod tests {
         // input → h_up → h_leaf → output; cutting the leaf's only outgoing edge
         // strands the leaf, and stranding the leaf strands `h_up` behind it.
         let incumbent = chain_plus_keep();
-        let result = prune_edge(&incumbent, "h_leaf", "output-0", 1.0, None).unwrap();
+        let result = prune_edge(&incumbent, "h_leaf", "output-0", Some(1.0), None).unwrap();
         assert_eq!(result.detail.cascade_neurons, vec!["h_leaf", "h_up"]);
         assert_eq!(uuids(&result.creature), vec!["h_keep", "output-0"]);
         let bias = bias_of(&result.creature, "output-0");
@@ -1157,7 +1551,7 @@ mod tests {
         validate_creature(&incumbent).unwrap();
         // The source is a constant, so its value is the creature's to prove:
         // the hint is ignored and the fold is exact.
-        let result = prune_edge(&incumbent, "c0", "output-0", 99.0, None).unwrap();
+        let result = prune_edge(&incumbent, "c0", "output-0", Some(99.0), None).unwrap();
         assert_eq!(result.detail.transform_class, TransformClass::Exact);
         assert_eq!(result.detail.cascade_neurons, vec!["c0"]);
         assert_eq!(result.after.constant_neurons, 0);
@@ -1172,7 +1566,7 @@ mod tests {
     #[test]
     fn typed_roles_and_input_edges_are_candidates_the_core_engine_builds() {
         let typed = typed_if_fixture();
-        let condition = prune_edge(&typed, "h_cond", "h_if", 0.5, None).unwrap();
+        let condition = prune_edge(&typed, "h_cond", "h_if", Some(0.5), None).unwrap();
         validate_creature(&condition.creature).unwrap();
         assert_eq!(condition.detail.removed_synapses[0].role, "condition");
         assert!(
@@ -1182,7 +1576,7 @@ mod tests {
         );
 
         let incumbent = shared_output_fan_out();
-        let from_input = prune_edge(&incumbent, "input-0", "h_a", 0.5, None).unwrap();
+        let from_input = prune_edge(&incumbent, "input-0", "h_a", Some(0.5), None).unwrap();
         validate_creature(&from_input.creature).unwrap();
         assert_eq!(from_input.detail.removed_synapses[0].from_uuid, "input-0");
         assert_eq!(typed, typed_if_fixture(), "the source must not move");
@@ -1191,7 +1585,7 @@ mod tests {
     #[test]
     fn an_edge_into_an_aggregate_target_is_named_rather_than_folded() {
         let aggregate = ordinary_edge_into_aggregate();
-        let result = prune_edge(&aggregate, "h_src", "h_mean", 0.5, None).unwrap();
+        let result = prune_edge(&aggregate, "h_src", "h_mean", Some(0.5), None).unwrap();
         assert!(!result.fully_compensated(), "{:?}", result.detail);
         assert_eq!(result.detail.uncompensated[0].target_uuid, "h_mean");
         validate_creature(&result.creature).unwrap();
@@ -1204,11 +1598,11 @@ mod tests {
             ("h_a", "output-0", f64::NAN),
             ("h_a", "output-0", f64::INFINITY),
         ] {
-            let err = prune_edge(&incumbent, from, to, value, None).unwrap_err();
+            let err = prune_edge(&incumbent, from, to, Some(value), None).unwrap_err();
             assert_eq!(err.blocked_reason(), BlockedReason::MissingActivation);
         }
         for (from, to) in [("nope", "output-0"), ("h_a", "nope"), ("h_a", "h_b")] {
-            let err = prune_edge(&incumbent, from, to, 1.0, None).unwrap_err();
+            let err = prune_edge(&incumbent, from, to, Some(1.0), None).unwrap_err();
             assert_eq!(err.blocked_reason(), BlockedReason::Other, "{err}");
         }
         assert_eq!(
@@ -1225,7 +1619,7 @@ mod tests {
         // candidate is emitted and the full-corpus scorer — never the razor —
         // decides whether an input-blind output is worse.
         let incumbent = hidden_identity_creature(0.0, 1.0);
-        let result = prune_edge(&incumbent, "h1", "output-0", 0.75, None).unwrap();
+        let result = prune_edge(&incumbent, "h1", "output-0", Some(0.75), None).unwrap();
         assert_eq!(result.after.synapses, 0);
         assert_eq!(result.after.hidden_neurons, 0);
         assert_eq!(result.detail.cascade_neurons, vec!["h1"]);
@@ -1258,14 +1652,14 @@ mod tests {
             validate_creature(&invalid).is_err(),
             "fixture must be invalid"
         );
-        let err = prune_edge(&invalid, "h_keep", "output-0", 1.0, None).unwrap_err();
+        let err = prune_edge(&invalid, "h_keep", "output-0", Some(1.0), None).unwrap_err();
         assert_eq!(err.blocked_reason(), BlockedReason::ValidationFailed);
     }
 
     #[test]
     fn the_detail_round_trips_through_json() {
         let incumbent = chain_plus_keep();
-        let result = prune_hidden_neuron(&incumbent, "h_leaf", 1.0, None).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_leaf", Some(1.0), None).unwrap();
         let json = serde_json::to_string(&result.detail).unwrap();
         let back: PruneDetail = serde_json::from_str(&json).unwrap();
         assert_eq!(back, result.detail);

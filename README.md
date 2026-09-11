@@ -287,8 +287,21 @@ emits its bias and the fold value is exact rather than sampled.
 
 The resolver fails closed. An aggregate squash, a non-finite value, a neuron
 the scan never measured, or a uuid the incumbent does not carry yields no value
-at all, so no cut is proposed for that edge rather than a scalar nothing
-measured being folded.
+at all, so nothing a run did not measure is ever folded into a bias.
+
+Failing closed is not failing to prune (Issue #199). No value means the request
+reaches NEAT-AI-core carrying **no statistics**, not that the edge is left
+alone: core runs every rewrite it can prove from the structure itself and names
+the target that got nothing back on `uncompensated`, with the reason
+`no-statistics`. The candidate is labelled `Approximate`, screened and scored
+like every other, so an unmeasured edge is judged by the scorer rather than
+recorded as blocked.
+
+An `uncompensated` row on the telemetry detail carries `droppedMean` beside its
+reason wherever a number proves one — the magnitude `weight x mean` of the term
+the target lost, from the statistic Ockham measured or from the value the
+creature's own structure fixes. A `no-statistics` row proves neither, so the
+field is absent rather than `0`: a zero would read as "nothing was lost".
 
 The resolver is the value side of the single-synapse cut: it is what supplies
 the statistical hint `prune_edge` hands the shared engine. The sweep that walks a creature's edges and asks for
@@ -330,12 +343,14 @@ flowchart LR
 A synapse visit resolves its
 [source fold value](#synapse-source-fold-values) and calls `prune::prune_edge`,
 which asks NEAT-AI-core to remove that `(from, to, role)` triple (Issue #182). A
-source that resolves to nothing is `missing-activation`; every other refusal
-carries the reason core itself reported. Either way the visit files a
-skip and the walk advances, exactly as a neuron visit does. A synapse candidate
-carries its `fromUuid`, `toUuid` and `weight` as provenance — no other kind
-serialises those fields — and its `uuid` is the visit key, headed as always by
-`members`.
+source that resolves to nothing is **not** a refusal since Issue #199: the
+request goes to core carrying no statistic, the edge is cut, and the target core
+could not compensate is named `no-statistics` on an `Approximate` candidate the
+scorer judges like any other. A refusal carries the reason core itself reported,
+the visit files a skip and the walk advances, exactly as a neuron visit does. A
+synapse candidate carries its `fromUuid`, `toUuid` and `weight` as provenance —
+no other kind serialises those fields — and its `uuid` is the visit key, headed
+as always by `members`.
 
 The pool is walked in full, and the **records** are ready for it: a screen
 record and a full-corpus verdict may both be keyed by a visit key, and every
@@ -479,7 +494,10 @@ Exactly zero, never "near zero": a weight of `1e-18` is small, not absent, and
 cutting it stays the scorer's decision. Typed synapses and aggregate-squash
 targets (`MIN`, `MAX`, `IF`, `HYPOT`, `MEAN`) are skipped, never guessed — an
 aggregate reduces its whole synapse range, so dropping a member changes the
-reduction. Duplicate consolidation needs no rule of its own: NEAT-AI-core
+reduction. Skipped here means *left for the scorer*, not blocked: this pass only
+makes rewrites that are exact by construction, and the same structure is an
+ordinary pruning candidate core converts, folds or approximates (Issues #196, #197
+and #200). Duplicate consolidation needs no rule of its own: NEAT-AI-core
 refuses duplicate ordinary synapses, and the one transform that can create a
 parallel edge merges it by adding weights as it writes it.
 
@@ -851,7 +869,7 @@ against:
 |---|---|---|---|
 | Candidate the scorer screened, winner or loser | `identity` / `ablation` / `constant` / `merge` | 2 | checked |
 | A [synapse visit](#synapse-visits) the scorer screened | `synapse` | 2 | checked |
-| Nothing could be proposed — no finite activation statistic, a candidate that would not validate | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
+| Nothing could be proposed — a candidate that would not validate, a request naming structure the incumbent does not carry | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
 | A standing full-corpus verdict suppressed the try | `known-failure` | 3 | checked |
 
 A synapse visit files exactly what a neuron visit files (#136): the visit key in
@@ -890,12 +908,19 @@ reached that way, so the percentage never claims a screen that never happened.
 
 Since #103 a blocked visit also records **why**, as a reason code on the record
 (`blockedReason`), and each batch logs its skips by the same codes
-(`missing-activation: 6, known-failure: 3`). One number could not be attacked; a
+(`other: 6, known-failure: 3`). One number could not be attacked; a
 breakdown can be, and the dominant category — aggregate and typed structure the
 bias fold cannot express — is now *proposed* as a
-[constant substitution](docs/blocked-reasons.md) rather than blocked, which is
-why `aggregate-squash` is a category the codes can still name but the sweep
-rarely reaches. `blocked` never meant *not pruneable forever*: it means the
+[constant substitution](docs/blocked-reasons.md) rather than blocked. Since
+Issue #200 `aggregate-squash` is **retired** outright: NEAT-AI-core converts an
+aggregate target a cut leaves holding one inward edge, folds one left holding
+none into its bias, and otherwise drops the term as an approximate candidate the
+scorer judges, so no binary files the code and a blocked record carrying it is
+dropped at load. Each conversion is named on the telemetry detail's
+`convertedNeurons` row — the neuron, the aggregate it declared and the
+point-wise squash it declares now — so the run's evidence says which aggregate
+stopped aggregating rather than leaving a reader to diff two creatures.
+`blocked` never meant *not pruneable forever*: it means the
 current proposal mechanism does not know how to test this neuron safely, and the
 code says which mechanism is missing.
 
@@ -1381,7 +1406,7 @@ epoch:     corpus 6fc028da — coverage counts this corpus only
 cut:       7 this run
 unchecked: 3809 remaining this epoch (~39 runs at 100/run)
 blocked:   412 checked with no cut proposed
-reasons:   missing-activation 380 (92.2%) · validation-failed 32 (7.8%)
+reasons:   other 380 (92.2%) · missing-activation 32 (7.8%)
 tagged:    42 carry tags, screened like any other
 snapshot:  final · creature 4b1d90c7 · 3013 hidden + 2000 synapses = 5013 visits
 progress:  100 newly checked this run
@@ -1968,8 +1993,11 @@ against the ranking it replaces: at 7,000 hidden neurons and 19,200 synapses,
 
 The estimate is a **prioritisation signal only**. It reasons about topology and
 knows nothing of aggregate squashes, typed synapses or behaviour: a candidate it
-ranks first can still be blocked when it is proposed, and can still lose. Only
-the full-corpus scorer accepts a cut — so every accept journals what the dry-run
+ranks first is cut by core whatever it is wired into — typed roles are rewritten
+(#182) and an aggregate target is converted, folded or approximated (#196, #197
+and #200), which is why neither `unsafe-topology` nor `aggregate-squash` is a
+blocked reason any more — but it can still lose. Only the full-corpus scorer
+accepts a cut — so every accept journals what the dry-run
 predicted beside what the accepted creature actually removed:
 
 ```json

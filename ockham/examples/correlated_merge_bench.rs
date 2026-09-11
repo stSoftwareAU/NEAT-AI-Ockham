@@ -349,7 +349,7 @@ fn main() {
             .probes_of(uuid)
             .map(|v| f64::from(v.iter().sum::<f32>()) / v.len() as f64)
             .unwrap_or(0.0);
-        let built = match prune_hidden_neuron(&incumbent, uuid, mean, None) {
+        let built = match prune_hidden_neuron(&incumbent, uuid, Some(mean), None) {
             Ok(built) => built,
             Err(blocked) => {
                 *ablation

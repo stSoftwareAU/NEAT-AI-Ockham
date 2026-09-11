@@ -191,6 +191,68 @@ pub fn shortcut_edge_creature() -> CreatureExport {
     )
 }
 
+/// UUIDs on `creature` whose squash is one of NEAT-AI-core's six aggregates.
+///
+/// In declaration order. One home for the membership rule so the fixture pin
+/// below and the Issue #202 run gate ask the same question of a creature rather
+/// than restating `SquashType::is_aggregate` twice.
+pub fn aggregate_uuids(creature: &CreatureExport) -> Vec<&str> {
+    creature
+        .neurons
+        .iter()
+        .filter(|n| {
+            n.squash
+                .as_deref()
+                .and_then(|s| neat_core::parse_squash_name(s).ok())
+                .is_some_and(|s| s.is_aggregate())
+        })
+        .map(|n| n.uuid.as_str())
+        .collect()
+}
+
+/// Aggregate-heavy creature: an `IF` output over a `HYPOT` hidden neuron.
+///
+/// Every aggregate path the razor has to walk is present here, so a sweep over
+/// this fixture actually visits the shapes the other fixtures never reach
+/// (Issue #202):
+///
+/// * `h_hyp` is a **hidden aggregate** — `HYPOT` reduces its whole inward
+///   range, so it absorbs no bias fold, and it carries two inward edges so a
+///   cut leaves one behind for core's one-edge conversion (#197).
+/// * `output-0` is an **`IF`**, so three of its inward edges carry roles
+///   (`condition`, `positive`, `negative`) and cutting any of them leaves the
+///   `IF` short a role for core's rewrite (#198).
+///
+/// Shape:
+///
+/// ```text
+/// input-0 ──► h_cond ─condition─► output-0 (IF)
+///        └──► h_hyp  ─positive──►
+/// input-1 ──► h_hyp
+///        └──► h_arm  ─negative──►
+/// ```
+pub fn if_hypot_creature() -> CreatureExport {
+    creature(
+        2,
+        1,
+        vec![
+            neuron("hidden", "h_cond", 0.1, Some("LOGISTIC")),
+            neuron("hidden", "h_hyp", 0.0, Some("HYPOT")),
+            neuron("hidden", "h_arm", 0.2, Some("TANH")),
+            neuron("output", "output-0", 0.0, Some("IF")),
+        ],
+        vec![
+            synapse("input-0", "h_cond", 1.0),
+            synapse("input-0", "h_hyp", 0.5),
+            synapse("input-1", "h_hyp", 0.25),
+            synapse("input-1", "h_arm", 1.0),
+            typed_synapse("h_cond", "output-0", 1.0, "condition"),
+            typed_synapse("h_hyp", "output-0", 2.0, "positive"),
+            typed_synapse("h_arm", "output-0", -1.0, "negative"),
+        ],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,7 +265,7 @@ mod tests {
     #[test]
     fn the_shortcut_fixture_offers_a_cut_that_removes_no_neuron() {
         let before = shortcut_edge_creature();
-        let cut = crate::prune::prune_edge(&before, "a", "output-0", 0.0, None)
+        let cut = crate::prune::prune_edge(&before, "a", "output-0", Some(0.0), None)
             .expect("the shortcut must be cuttable");
         assert!(
             cut.detail.cascade_uuids().is_empty(),
@@ -214,6 +276,30 @@ mod tests {
         assert_eq!(cut.after.hidden_neurons, 2);
         assert_eq!(cut.after.synapses, cut.before.synapses - 1);
         assert!((cut.before.growth_units - cut.after.growth_units - 0.1).abs() < 1e-9);
+    }
+
+    /// The Issue #202 fixture is only an aggregate fixture while it validates
+    /// *and* carries both aggregates. Pinned here so an edit that drops the
+    /// `HYPOT` or downgrades the `IF` fails loudly rather than quietly turning
+    /// the run-level gate into a sweep of point-wise structure.
+    #[test]
+    fn the_if_hypot_fixture_validates_and_carries_both_aggregates() {
+        let c = if_hypot_creature();
+        crate::incumbent::validate_creature(&c).expect("the fixture must validate");
+        assert_eq!(aggregate_uuids(&c), vec!["h_hyp", "output-0"]);
+        assert_eq!(
+            c.synapses.iter().filter(|s| s.to_uuid == "h_hyp").count(),
+            2,
+            "the HYPOT keeps two inward edges, so a cut leaves one behind (#197)"
+        );
+        let mut roles: Vec<&str> = c
+            .synapses
+            .iter()
+            .filter(|s| s.to_uuid == "output-0")
+            .filter_map(|s| s.synapse_type.as_deref())
+            .collect();
+        roles.sort_unstable();
+        assert_eq!(roles, vec!["condition", "negative", "positive"]);
     }
 
     #[test]
