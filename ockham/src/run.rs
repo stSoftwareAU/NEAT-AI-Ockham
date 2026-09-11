@@ -99,9 +99,9 @@ pub fn establish_run(
 
 /// [`establish_run`] with the run's budget clock injected (Issue #214).
 ///
-/// Every duration the run's budget arithmetic reads — its deadline, and the
-/// scorer costs the cohort sizing of Issue #58 and the screening reserve of
-/// Issue #77 are estimated from — comes from `clock`. A test can therefore
+/// Every duration the run's budget arithmetic reads comes from `clock`: its
+/// deadline, and the scorer costs the cohort sizing of Issue #58 and the
+/// screening reserve of Issue #77 are estimated from. A test can therefore
 /// assert what a run *decides* with a given budget left, instead of racing a
 /// wall-clock deadline against real sleeps.
 pub fn establish_run_with_clock(
@@ -8090,9 +8090,9 @@ mod tests {
     /// scorer — because the scripted scorer advances that same clock by its
     /// per-creature delay instead of sleeping. Nothing here races a real
     /// deadline, so the decision under test is reached identically on a loaded
-    /// CI runner, a shared laptop and ARM; and the test costs no wall clock at
-    /// all. The assertions are on what was screened and on record order, never
-    /// on elapsed time.
+    /// CI runner, a shared laptop and ARM — and it spends no real time
+    /// sleeping. The assertions are on what was screened and on record order,
+    /// never on elapsed time.
     #[test]
     fn a_run_down_to_its_last_batch_screens_it_rather_than_replaying() {
         let tmp = tempfile::tempdir().unwrap();

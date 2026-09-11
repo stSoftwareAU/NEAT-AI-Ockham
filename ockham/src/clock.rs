@@ -2,9 +2,13 @@
 //!
 //! Every duration the optimisation loop reasons about is read from one
 //! injected [`Clock`]: the deadline it stops on, and the scorer costs its
-//! budget arithmetic — the cohort sizing of Issue #58 and the screening
-//! reserve of Issue #77 — is sized from. Production runs on [`SystemClock`],
-//! the real monotonic clock.
+//! budget arithmetic is sized from — the cohort sizing of Issue #58 and the
+//! screening reserve of Issue #77. Production runs on [`SystemClock`], the
+//! real monotonic clock.
+//!
+//! The boundary is the budget: local work the run only *reports* on — the
+//! exact-cleanup pre-pass timing — stays on the real clock, because no budget
+//! decision reads it and a manual clock would report real work as free.
 //!
 //! A test drives [`ManualClock`] instead, so a budget decision is asserted
 //! against a time source the test controls rather than raced against the wall
@@ -17,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// A monotonic time source for the run's budget arithmetic.
-pub trait Clock: std::fmt::Debug + Send + Sync {
+pub trait Clock: Send + Sync {
     /// The current instant.
     fn now(&self) -> Instant;
 

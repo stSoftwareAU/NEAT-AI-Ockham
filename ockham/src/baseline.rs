@@ -162,8 +162,9 @@ pub mod fake {
         pub last_mode: Cell<Option<ScorerMode>>,
         /// Last file stems scored in one call (tests).
         pub last_stems: RefCell<Vec<String>>,
-        /// Wall time this fake spends per creature, so a test can starve a run
-        /// of budget deterministically (Issue #58).
+        /// Time this fake spends per creature, so a test can starve a run of
+        /// budget deterministically (Issue #58). Spent on [`Self::clock`] when
+        /// one is set, and on the wall clock when it is not.
         pub delay_per_creature: std::time::Duration,
         /// Clock [`Self::delay_per_creature`] is spent on (Issue #214).
         ///
