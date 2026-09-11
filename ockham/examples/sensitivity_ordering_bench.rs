@@ -200,7 +200,7 @@ fn main() {
         let (mut calls, mut cuts, mut units, mut blocked) = (0u64, 0u64, 0.0f64, 0u64);
         let mut first_ms: Option<f64> = None;
         for uuid in order.iter().take(VISITS) {
-            let Ok(ablation) = prune_hidden_neuron(&creature, uuid, 0.1, None) else {
+            let Ok(ablation) = prune_hidden_neuron(&creature, uuid, Some(0.1), None) else {
                 // A visit the razor cannot propose for buys nothing and never
                 // reaches a judge, so it is reported rather than dropped.
                 blocked += 1;

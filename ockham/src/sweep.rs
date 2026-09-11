@@ -31,7 +31,7 @@ use neat_core::{CreatureExport, SquashType, creature_to_json, parse_squash_name}
 use serde::Serialize;
 
 use crate::blocked::BlockedReason;
-use crate::collapse::{CollapseOptions, collapse_identity};
+use crate::collapse::{CollapseOptions, CollapseSkip, collapse_identity};
 use crate::incumbent::sha256_hex;
 use crate::merge::{MergeSkip, merge_correlated};
 use crate::ordering::{Ordering, OrderingConfig, hidden_order, synapse_order};
@@ -708,12 +708,20 @@ impl fmt::Display for MergeRefusal {
     }
 }
 
-/// Append the merge refusal to `blocked`, when discovery proposed one at all.
+/// Append the rungs the neuron ladder skipped to `blocked`, when it skipped any.
 ///
-/// The fallback path's own reason still classifies the visit — it is the one
-/// that actually stopped the razor — but the merge attempt is named beside it
-/// so a merge-enabled run can see why its proposals went nowhere.
-fn with_merge_detail(mut blocked: Blocked, merge: Option<MergeRefusal>) -> Blocked {
+/// The reason that classifies the visit is the one that actually stopped the
+/// razor — never a rung the shape simply did not suit — but the exact collapse
+/// and the merge are named beside it so a blocked record says what else was
+/// tried rather than silently losing it.
+fn with_skipped_rungs(
+    mut blocked: Blocked,
+    collapse: Option<CollapseSkip>,
+    merge: Option<MergeRefusal>,
+) -> Blocked {
+    if let Some(refusal) = collapse {
+        blocked.detail = format!("{}; collapse: {refusal}", blocked.detail);
+    }
     if let Some(refusal) = merge {
         blocked.detail = format!("{}; merge: {refusal}", blocked.detail);
     }
@@ -724,12 +732,12 @@ fn with_merge_detail(mut blocked: Blocked, merge: Option<MergeRefusal>) -> Block
 ///
 /// The source's fold value comes from the one resolver
 /// ([`crate::stats::source_value`]), so a hidden, `constant` or input source is
-/// asked for its value the same way. A source that resolves to nothing is a
-/// fold this run cannot justify — [`BlockedReason::MissingActivation`] — and
-/// every other refusal is the one [`crate::prune::prune_edge`] reports from
-/// core, under its own reason code. The value is resolved **first**, so an edge
-/// that is both unmeasured and structurally unsafe is filed under the missing
-/// value.
+/// asked for its value the same way. A source that resolves to nothing is
+/// **not** a refusal since Issue #199: the request goes to core carrying no
+/// statistic at all, core cuts the edge and names the target it could not
+/// compensate under `no-statistics`, and the approximate candidate that comes
+/// back is screened and scored like any other. Every refusal is now the one
+/// [`crate::prune::prune_edge`] reports from core, under its own reason code.
 ///
 /// An `input-N`-sourced edge is an ordinary candidate since Issue #182: the
 /// shared engine names an edge by its `(from, to, role)` triple, so an edge out
@@ -744,16 +752,11 @@ fn propose_synapse(
     from_uuid: &str,
     to_uuid: &str,
 ) -> Result<Proposed, Blocked> {
-    let Some(source) = source_value(incumbent, stats, from_uuid) else {
-        return Err(Blocked::new(
-            BlockedReason::MissingActivation,
-            format!("no source value for `{from_uuid}` (synapse `{from_uuid}`→`{to_uuid}`)"),
-        ));
-    };
+    let source = source_value(incumbent, stats, from_uuid).map(|s| s.value);
     let measured = stats
         .by_uuid(from_uuid)
         .or_else(|| stats.input_by_uuid(from_uuid));
-    match prune_edge(incumbent, from_uuid, to_uuid, source.value, measured) {
+    match prune_edge(incumbent, from_uuid, to_uuid, source, measured) {
         Ok(built) => Ok(Proposed {
             from_uuid: Some(from_uuid.to_string()),
             to_uuid: Some(to_uuid.to_string()),
@@ -782,35 +785,19 @@ pub(crate) fn propose(
     {
         return propose_synapse(incumbent, stats, from_uuid, to_uuid);
     }
+    // The exact collapse is the best candidate where the shape allows it. A
+    // refusal — a cost increase, a typed edge out, a self-loop, an aggregate
+    // target — ends this rung and no more: the ladder below does not need the
+    // exact rewrite, and since Issue #199 it does not need a measured mean
+    // either, so the visit carries on down it rather than stopping here. The
+    // refusal is kept rather than dropped: if the whole ladder ends in a
+    // blocked visit, the record should still say which rungs were refused and
+    // why.
+    let mut collapse = None;
     if is_identity(incumbent, uuid) {
         match collapse_identity(incumbent, uuid, CollapseOptions::default()) {
             Ok(c) => return Ok(Proposed::of(CandidateKind::Identity, c.creature)),
-            Err(e) => {
-                // Cost-increasing IDENTITY still has an approximate ablation path.
-                if stats.by_uuid(uuid).is_none() {
-                    // A near-duplicate partner is a path that needs no mean of
-                    // this neuron at all, so it is tried before the statistic
-                    // this branch is about to report missing.
-                    let merge = match propose_merge(incumbent, merges, uuid) {
-                        Ok(merged) => return Ok(merged),
-                        Err(skip) => skip,
-                    };
-                    // Without a measured mean there is no fallback to take, so
-                    // the visit is blocked on the missing statistic rather than
-                    // on the rung the collapse happened to refuse at. The
-                    // collapse's own shape — a typed edge, a self-loop, an
-                    // aggregate target — is no longer the razor's answer for a
-                    // hidden neuron: the shared engine rewrites all three since
-                    // #182, and only the absent value stops it (Issue #192).
-                    // The refusal nearest the razor is the one reported, the
-                    // same rule a synapse visit follows (#135), and the
-                    // collapse's message stays in the detail.
-                    return Err(with_merge_detail(
-                        Blocked::new(BlockedReason::MissingActivation, e.to_string()),
-                        merge,
-                    ));
-                }
-            }
+            Err(skip) => collapse = Some(skip),
         }
     }
     // A merge removes a whole neuron and compensates through a partner that is
@@ -820,15 +807,23 @@ pub(crate) fn propose(
         Ok(merged) => return Ok(merged),
         Err(skip) => skip,
     };
-    let Some(mean) = stats.by_uuid(uuid).map(|s| s.mean) else {
-        return Err(with_merge_detail(
-            Blocked::new(
-                BlockedReason::MissingActivation,
-                format!("no activation stats for `{uuid}`"),
-            ),
-            merge,
-        ));
-    };
+    // No measured mean is no longer a refusal (Issue #199): core is asked for
+    // the cut carrying no statistic, prunes what it can prove from the
+    // structure alone and names the rest as uncompensated, and the approximate
+    // candidate that comes back is screened like any other. Only the
+    // constant-substitution rung below still needs a mean, because a constant
+    // is a value and there is none to write.
+    //
+    // A mean that is not finite is no statistic either, and is filtered here
+    // for the same reason [`crate::stats::source_value`] filters one on the
+    // edge ladder: one measurement must not give a neuron visit and an edge
+    // visit opposite outcomes. What is left for core to refuse as
+    // `NonFiniteStatistic` is a direct caller defect, never a sweep visit.
+    let mean = stats
+        .by_uuid(uuid)
+        .map(|s| s.mean)
+        .filter(|mean| mean.is_finite());
+    let substitute = || mean.map(|m| substitute_constant(incumbent, uuid, m));
     let refusal = match prune_hidden_neuron(incumbent, uuid, mean, stats.by_uuid(uuid)) {
         // Every target that read the neuron got the removal back as a bias
         // fold, so there is nothing an edge-preserving substitution would
@@ -844,9 +839,9 @@ pub(crate) fn propose(
         // Neither is a fallback rewrite: they are two different candidates, one
         // engine each, and the scorer alone accepts.
         Ok(built) => {
-            return Ok(match substitute_constant(incumbent, uuid, mean) {
-                Ok(s) => Proposed::of(CandidateKind::Constant, s.creature),
-                Err(_) => Proposed::pruned(CandidateKind::Ablation, built),
+            return Ok(match substitute() {
+                Some(Ok(s)) => Proposed::of(CandidateKind::Constant, s.creature),
+                Some(Err(_)) | None => Proposed::pruned(CandidateKind::Ablation, built),
             });
         }
         Err(e) => e,
@@ -855,13 +850,21 @@ pub(crate) fn propose(
     // constant substitution is still worth trying — it removes no neuron the
     // engine refused to remove — and when it cannot be built either, the
     // reason reported is the one that actually stopped the razor.
-    match substitute_constant(incumbent, uuid, mean) {
-        Ok(s) => Ok(Proposed::of(CandidateKind::Constant, s.creature)),
-        Err(substitution) => Err(with_merge_detail(
+    match substitute() {
+        Some(Ok(s)) => Ok(Proposed::of(CandidateKind::Constant, s.creature)),
+        Some(Err(substitution)) => Err(with_skipped_rungs(
             Blocked::new(
                 substitution.blocked_reason(),
                 format!("{refusal}; constant substitution: {substitution}"),
             ),
+            collapse,
+            merge,
+        )),
+        // No mean, so there was no substitution rung to take: what core
+        // reported is the whole story.
+        None => Err(with_skipped_rungs(
+            Blocked::new(refusal.blocked_reason(), refusal.to_string()),
+            collapse,
             merge,
         )),
     }
@@ -877,8 +880,10 @@ pub(crate) fn propose(
 ///
 /// The same request [`propose`] makes for one neuron, made for each member in
 /// turn against the creature the last one returned. A member without a measured
-/// mean blocks the group rather than being guessed at, and every other refusal
-/// is the one [`crate::prune::prune_hidden_group`] reports from core.
+/// mean carries no statistic to core rather than blocking the group (Issue
+/// #199) — core prunes it uncompensated and names what it could not compensate
+/// — and every refusal is the one [`crate::prune::prune_hidden_group`] reports
+/// from core.
 ///
 /// Building a group is not accepting one: the candidate goes through the same
 /// sampled screen and the same full-corpus scoring as every other proposal.
@@ -887,19 +892,19 @@ pub(crate) fn propose_group(
     stats: &ActivationStats,
     members: &[String],
 ) -> Result<PrunedCandidate, Blocked> {
-    let mut cuts = Vec::with_capacity(members.len());
-    for uuid in members {
-        let mean = stats.by_uuid(uuid).map(|s| s.mean).ok_or_else(|| {
-            Blocked::new(
-                BlockedReason::MissingActivation,
-                format!("group: no activation stats for `{uuid}`"),
-            )
-        })?;
-        cuts.push(GroupMember {
+    let cuts: Vec<GroupMember> = members
+        .iter()
+        .map(|uuid| GroupMember {
             uuid: uuid.clone(),
-            mean,
-        });
-    }
+            // Absent, or measured but not a finite number — the same filter
+            // [`propose`] applies, so one measurement cannot give a lone cut
+            // and a group cut opposite outcomes (Issue #199).
+            mean: stats
+                .by_uuid(uuid)
+                .map(|s| s.mean)
+                .filter(|mean| mean.is_finite()),
+        })
+        .collect();
     prune_hidden_group(incumbent, &cuts)
         .map_err(|e| Blocked::new(e.blocked_reason(), format!("group: {e}")))
 }
@@ -2089,23 +2094,15 @@ mod tests {
 
     /// Issue #135: a visit that proposes nothing still advances the walk, with
     /// the reason code the refusal maps to.
+    ///
+    /// Since Issue #199 an unmeasured source is not one of those visits — it is
+    /// a candidate, asserted by
+    /// [`an_unmeasured_edge_is_a_screened_candidate_named_no_statistics`]. What
+    /// is left here is the refusal core itself reports.
     #[test]
     fn a_synapse_visit_that_proposes_nothing_is_skipped_with_its_reason() {
-        // No input statistics, so an `input-N` source resolves to no fold value.
         let creature = two_hidden();
         let stats = stats_for(&creature);
-        let blocked = propose(
-            &creature,
-            &stats,
-            MergeIndex::empty(),
-            &synapse_key("input-0", "h_a"),
-        )
-        .unwrap_err();
-        assert_eq!(
-            blocked.reason,
-            BlockedReason::MissingActivation,
-            "{blocked}"
-        );
 
         // An edge the incumbent does not carry names no structure to cut. The
         // sweep never asks for one, so a request that does is a defect to
@@ -2153,34 +2150,203 @@ mod tests {
         assert_eq!(detail.uncompensated[0].target_uuid, "h_mean");
     }
 
+    /// Issue #199: an edge whose source no finite statistic covers is handed
+    /// to core with **no** statistics rather than blocked. Core prunes it
+    /// uncompensated, names the target it could not compensate under
+    /// `no-statistics`, and the candidate is screened like any other.
+    #[test]
+    fn an_unmeasured_edge_is_a_screened_candidate_named_no_statistics() {
+        let creature = two_hidden();
+        // No input statistics, so `input-0` resolves to no fold value at all.
+        let stats = stats_for(&creature);
+        assert!(
+            crate::stats::source_value(&creature, &stats, "input-0").is_none(),
+            "the fixture must leave the source unmeasured"
+        );
+
+        let proposed = propose(
+            &creature,
+            &stats,
+            MergeIndex::empty(),
+            &synapse_key("input-0", "h_a"),
+        )
+        .expect("an unmeasured source prunes uncompensated rather than blocking");
+        assert_eq!(proposed.kind, CandidateKind::Synapse);
+        validate_creature(&proposed.creature).unwrap();
+
+        let detail = proposed.prune.expect("the core report travels with it");
+        assert_eq!(
+            detail.transform_class,
+            crate::ablation::TransformClass::Approximate,
+            "{detail:?}"
+        );
+        let named = detail
+            .uncompensated
+            .iter()
+            .find(|u| u.target_uuid == "h_a")
+            .unwrap_or_else(|| panic!("the target is named: {detail:?}"));
+        assert_eq!(named.reason, "no-statistics");
+    }
+
+    /// Issue #199: the same for a hidden neuron. `h_t` is `TANH`, so there is
+    /// no exact collapse to take, `MergeIndex::empty()` offers no partner, and
+    /// the constant-substitution rung needs a mean it does not have — every
+    /// rung the ladder has is exhausted, and the visit is still a candidate.
+    #[test]
+    fn an_unmeasured_hidden_neuron_is_a_screened_candidate_named_no_statistics() {
+        let creature = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_t", 0.0, Some("TANH")),
+                neuron("hidden", "h_keep", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_t", 1.0),
+                synapse("h_t", "output-0", 1.0),
+                synapse("input-0", "h_keep", 1.0),
+                synapse("h_keep", "output-0", 1.0),
+            ],
+        );
+        validate_creature(&creature).unwrap();
+        let mut stats = stats_with_inputs(&creature);
+        stats.neurons.retain(|n| n.uuid != "h_t");
+        assert!(
+            stats.by_uuid("h_t").is_none(),
+            "the fixture leaves it unmeasured"
+        );
+
+        let proposed = propose(&creature, &stats, MergeIndex::empty(), "h_t")
+            .expect("an unmeasured hidden neuron prunes uncompensated rather than blocking");
+        assert_eq!(proposed.kind, CandidateKind::Ablation);
+        validate_creature(&proposed.creature).unwrap();
+        assert!(
+            proposed.creature.neurons.iter().all(|n| n.uuid != "h_t"),
+            "the neuron is gone: {:?}",
+            proposed.creature.neurons
+        );
+
+        let detail = proposed.prune.expect("the core report travels with it");
+        assert_eq!(
+            detail.transform_class,
+            crate::ablation::TransformClass::Approximate,
+            "{detail:?}"
+        );
+        let named = detail
+            .uncompensated
+            .iter()
+            .find(|u| u.target_uuid == "output-0")
+            .unwrap_or_else(|| panic!("the target is named: {detail:?}"));
+        assert_eq!(named.reason, "no-statistics");
+    }
+
+    /// A measured mean that is not a finite number is no statistic at all, and
+    /// a neuron visit treats it exactly as the edge ladder's resolver does —
+    /// as absent (Issue #199). One corrupt measurement must not block a neuron
+    /// visit while the edge out of the same neuron prunes uncompensated.
+    #[test]
+    fn a_non_finite_measured_mean_is_treated_as_no_statistic_at_all() {
+        let identity = two_hidden();
+        let mut stats = stats_with_inputs(&identity);
+        for n in &mut stats.neurons {
+            if n.uuid == "h_a" {
+                n.mean = f64::NAN;
+            }
+        }
+        // `h_a` is IDENTITY here, so the exact collapse would take it before
+        // the statistic ever mattered; the edge out of it is the visit that
+        // reads the corrupt mean.
+        let edge = propose(
+            &identity,
+            &stats,
+            MergeIndex::empty(),
+            &synapse_key("h_a", "output-0"),
+        )
+        .expect("a corrupt source mean prunes uncompensated, as an absent one does");
+        validate_creature(&edge.creature).unwrap();
+
+        // And the neuron visit reaches the same verdict rather than the
+        // opposite one: `h_t` is TANH, so no collapse rung intercepts it.
+        let tanh = creature(
+            1,
+            1,
+            vec![
+                neuron("hidden", "h_t", 0.0, Some("TANH")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            vec![
+                synapse("input-0", "h_t", 1.0),
+                synapse("h_t", "output-0", 1.0),
+            ],
+        );
+        let mut stats = stats_with_inputs(&tanh);
+        for n in &mut stats.neurons {
+            n.mean = f64::NAN;
+        }
+        let proposed = propose(&tanh, &stats, MergeIndex::empty(), "h_t")
+            .expect("a corrupt mean is absent, not a block");
+        assert_eq!(proposed.kind, CandidateKind::Ablation);
+        let detail = proposed.prune.expect("the core report travels with it");
+        assert_eq!(
+            detail.uncompensated[0].reason, "no-statistics",
+            "{detail:?}"
+        );
+    }
+
+    /// Issue #199: a group member the scan never measured no longer blocks the
+    /// whole group — it is cut carrying no statistic, like a lone neuron.
+    #[test]
+    fn an_unmeasured_group_member_no_longer_blocks_the_group() {
+        let creature = two_hidden();
+        let mut stats = stats_with_inputs(&creature);
+        stats.neurons.retain(|n| n.uuid != "h_b");
+        assert!(stats.by_uuid("h_a").is_some() && stats.by_uuid("h_b").is_none());
+
+        let built = propose_group(&creature, &stats, &["h_a".into(), "h_b".into()])
+            .expect("an unmeasured member is cut, not a block");
+        validate_creature(&built.creature).unwrap();
+        for uuid in ["h_a", "h_b"] {
+            assert!(
+                built.creature.neurons.iter().all(|n| n.uuid != uuid),
+                "{uuid} must be gone: {:?}",
+                built.creature.neurons
+            );
+        }
+        assert!(
+            built
+                .detail
+                .uncompensated
+                .iter()
+                .any(|u| u.reason == "no-statistics"),
+            "the unmeasured member is named: {:?}",
+            built.detail
+        );
+    }
+
     /// A hidden neuron the incumbent carries is always a pruning target, so
-    /// `unsafe-topology` is never what stops a visit to one (Issue #192).
+    /// `unsafe-topology` is never what stops a visit to one (Issue #192) — and
+    /// since Issue #199 nothing else stops it either.
     ///
     /// `h_cond` is IDENTITY with a `condition` edge out of it, which the exact
-    /// collapse refuses as [`CollapseSkip::TypedSynapse`]; before #192 that
-    /// structural refusal was reported as the visit's reason even though the
-    /// shared engine rewrites typed roles perfectly well since #182. What
-    /// actually stopped the razor is the absent statistic, and that is the
-    /// reason nearest the razor — the same rule a synapse visit follows (#135).
+    /// collapse refuses as [`CollapseSkip::TypedSynapse`]. Before #192 that
+    /// structural refusal was the visit's reason; between #192 and #199 the
+    /// absent statistic was. Neither blocks now: the collapse rung is skipped,
+    /// the merge rung finds no partner, and the shared engine takes the neuron
+    /// carrying no statistic at all.
     #[test]
     fn an_unmeasured_identity_with_a_typed_edge_is_not_unsafe_topology() {
         let creature = typed_edge_creature();
         let mut stats = stats_with_inputs(&creature);
         stats.neurons.retain(|n| n.uuid != "h_cond");
-        let blocked = propose(&creature, &stats, MergeIndex::empty(), "h_cond").unwrap_err();
-        assert_ne!(
-            blocked.reason,
-            BlockedReason::UnsafeTopology,
-            "a present hidden neuron is never unsafe topology: {blocked}"
-        );
-        assert_eq!(
-            blocked.reason,
-            BlockedReason::MissingActivation,
-            "the missing mean is what stopped the razor: {blocked}"
-        );
+        let proposed = propose(&creature, &stats, MergeIndex::empty(), "h_cond")
+            .expect("an unmeasured hidden neuron is prunable through core");
+        assert_eq!(proposed.kind, CandidateKind::Ablation);
+        crate::incumbent::validate_creature(&proposed.creature).unwrap();
         assert!(
-            blocked.detail.contains("condition"),
-            "the collapse refusal stays in the detail: {blocked}"
+            proposed.creature.neurons.iter().all(|n| n.uuid != "h_cond"),
+            "the neuron is gone: {:?}",
+            proposed.creature.neurons
         );
 
         // Measured, the same neuron is an ordinary candidate.
@@ -2190,11 +2356,16 @@ mod tests {
         crate::incumbent::validate_creature(&proposed.creature).unwrap();
     }
 
-    /// Every refused visit is filed as a skip, so the walk always advances.
+    /// Every visit advances the walk exactly once, whatever it produced.
+    ///
+    /// Issue #199 turned the unmeasured half of this fixture from refusals into
+    /// candidates, so the property under test is the walk itself rather than
+    /// the skips: a batch and its skips together account for every visit, and
+    /// no visit is made twice.
     #[test]
-    fn a_creature_whose_edges_all_refuse_still_advances_visit_by_visit() {
+    fn a_creature_whose_edges_are_all_unmeasured_still_advances_visit_by_visit() {
         let creature = two_hidden();
-        // No input means: every `input-N`→hidden edge is a blocked visit.
+        // No input means: every `input-N`→hidden edge is an unmeasured visit.
         let stats = stats_for(&creature);
         let mut sweep = Sweep::new(&creature, 8);
         let visits = sweep.order.len();

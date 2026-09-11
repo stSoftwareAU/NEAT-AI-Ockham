@@ -287,8 +287,15 @@ emits its bias and the fold value is exact rather than sampled.
 
 The resolver fails closed. An aggregate squash, a non-finite value, a neuron
 the scan never measured, or a uuid the incumbent does not carry yields no value
-at all, so no cut is proposed for that edge rather than a scalar nothing
-measured being folded.
+at all, so nothing a run did not measure is ever folded into a bias.
+
+Failing closed is not failing to prune (Issue #199). No value means the request
+reaches NEAT-AI-core carrying **no statistics**, not that the edge is left
+alone: core runs every rewrite it can prove from the structure itself and names
+the target that got nothing back on `uncompensated`, with the reason
+`no-statistics`. The candidate is labelled `Approximate`, screened and scored
+like every other, so an unmeasured edge is judged by the scorer rather than
+recorded as blocked.
 
 The resolver is the value side of the single-synapse cut: it is what supplies
 the statistical hint `prune_edge` hands the shared engine. The sweep that walks a creature's edges and asks for
@@ -330,12 +337,14 @@ flowchart LR
 A synapse visit resolves its
 [source fold value](#synapse-source-fold-values) and calls `prune::prune_edge`,
 which asks NEAT-AI-core to remove that `(from, to, role)` triple (Issue #182). A
-source that resolves to nothing is `missing-activation`; every other refusal
-carries the reason core itself reported. Either way the visit files a
-skip and the walk advances, exactly as a neuron visit does. A synapse candidate
-carries its `fromUuid`, `toUuid` and `weight` as provenance — no other kind
-serialises those fields — and its `uuid` is the visit key, headed as always by
-`members`.
+source that resolves to nothing is **not** a refusal since Issue #199: the
+request goes to core carrying no statistic, the edge is cut, and the target core
+could not compensate is named `no-statistics` on an `Approximate` candidate the
+scorer judges like any other. A refusal carries the reason core itself reported,
+the visit files a skip and the walk advances, exactly as a neuron visit does. A
+synapse candidate carries its `fromUuid`, `toUuid` and `weight` as provenance —
+no other kind serialises those fields — and its `uuid` is the visit key, headed
+as always by `members`.
 
 The pool is walked in full, and the **records** are ready for it: a screen
 record and a full-corpus verdict may both be keyed by a visit key, and every
@@ -851,7 +860,7 @@ against:
 |---|---|---|---|
 | Candidate the scorer screened, winner or loser | `identity` / `ablation` / `constant` / `merge` | 2 | checked |
 | A [synapse visit](#synapse-visits) the scorer screened | `synapse` | 2 | checked |
-| Nothing could be proposed — no finite activation statistic, a candidate that would not validate | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
+| Nothing could be proposed — a candidate that would not validate, a request naming structure the incumbent does not carry | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
 | A standing full-corpus verdict suppressed the try | `known-failure` | 3 | checked |
 
 A synapse visit files exactly what a neuron visit files (#136): the visit key in
@@ -890,7 +899,7 @@ reached that way, so the percentage never claims a screen that never happened.
 
 Since #103 a blocked visit also records **why**, as a reason code on the record
 (`blockedReason`), and each batch logs its skips by the same codes
-(`missing-activation: 6, known-failure: 3`). One number could not be attacked; a
+(`aggregate-squash: 6, known-failure: 3`). One number could not be attacked; a
 breakdown can be, and the dominant category — aggregate and typed structure the
 bias fold cannot express — is now *proposed* as a
 [constant substitution](docs/blocked-reasons.md) rather than blocked, which is
@@ -1381,7 +1390,7 @@ epoch:     corpus 6fc028da — coverage counts this corpus only
 cut:       7 this run
 unchecked: 3809 remaining this epoch (~39 runs at 100/run)
 blocked:   412 checked with no cut proposed
-reasons:   missing-activation 380 (92.2%) · validation-failed 32 (7.8%)
+reasons:   aggregate-squash 380 (92.2%) · validation-failed 32 (7.8%)
 tagged:    42 carry tags, screened like any other
 snapshot:  final · creature 4b1d90c7 · 3013 hidden + 2000 synapses = 5013 visits
 progress:  100 newly checked this run

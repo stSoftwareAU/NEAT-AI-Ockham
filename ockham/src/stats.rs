@@ -746,9 +746,14 @@ pub struct SourceValue {
 ///   a non-finite value — `None`.
 ///
 /// It fails closed rather than guessing: every `None` is a fold this run cannot
-/// justify, so the caller proposes no cut for that edge instead of folding a
-/// scalar nothing measured. Which reason code the blocked visit is filed under
-/// is the caller's to decide — see `docs/blocked-reasons.md`.
+/// justify, so nothing the run did not measure is folded into a bias.
+///
+/// Failing closed is not failing to prune (Issue #199). `None` means the caller
+/// asks NEAT-AI-core for the cut carrying **no statistics**, not that it
+/// proposes nothing: core runs every rewrite provable from the structure alone
+/// and names the target that got nothing back as uncompensated, so an
+/// unmeasured edge becomes an approximate candidate the scorer judges — see
+/// `docs/blocked-reasons.md`.
 pub fn source_value(
     creature: &CreatureExport,
     stats: &ActivationStats,

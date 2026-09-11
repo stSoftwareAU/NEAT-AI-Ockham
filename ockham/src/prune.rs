@@ -316,8 +316,13 @@ impl std::fmt::Display for PruneRefusal {
 /// has to be deterministic (`docs/blocked-reasons.md`).
 fn reason_for(error: &PruneError) -> BlockedReason {
     match error {
-        // A statistic Ockham supplied is not a number core can use, so the
-        // visit had no usable activation after all.
+        // A statistic Ockham supplied is not a number core can use. Since
+        // Issue #199 an **absent** statistic is not one of these: it is handed
+        // to core as `None` and pruned uncompensated. What is left here is a
+        // caller defect — a `NaN` mean, a negative variance, a proxy that does
+        // not hold up — which the fixture suite must never trigger, so the
+        // code stays as the loud report of one rather than a category runs
+        // routinely fill.
         PruneError::NonFiniteStatistic { .. }
         | PruneError::NegativeVariance { .. }
         | PruneError::DegenerateProxy { .. }
@@ -362,11 +367,14 @@ fn is_hidden(creature: &CreatureExport, uuid: &str) -> bool {
 pub struct GroupMember {
     /// Hidden neuron UUID.
     pub uuid: String,
-    /// Full-corpus mean post-activation of that neuron.
-    pub mean: f64,
+    /// Full-corpus mean post-activation of that neuron, when the scan measured
+    /// one. `None` hands core no statistic at all, so the member is pruned
+    /// uncompensated rather than not pruned (Issue #199).
+    pub mean: Option<f64>,
 }
 
-/// The statistical hint Ockham has about one neuron, in core's form.
+/// The statistical hint Ockham has about one neuron, in core's form — or
+/// `None` when it has none (Issue #199).
 ///
 /// The mean is what stands in for the removed activation; the variance is
 /// passed so core can report the residual variance the fold could not carry.
@@ -374,15 +382,24 @@ pub struct GroupMember {
 /// single-record population variance is zero by construction, not a
 /// measurement — and never when it is not a finite, non-negative number, which
 /// core would refuse the whole request for.
-fn hint(mean: f64, stats: Option<&NeuronStats>) -> PruneStats {
-    PruneStats {
-        mean_activation: mean,
+///
+/// No mean is **not** a refusal. Core takes `None`, runs every exact rewrite
+/// it can prove from the structure alone, and names whatever target it could
+/// not compensate under [`UncompensatedReason::NoStatistics`] — so an
+/// unmeasured visit becomes an approximate candidate the scorer judges rather
+/// than a blocked one nothing ever tries. A mean that is present but not
+/// finite is a different thing: it is handed to core unchanged, which refuses
+/// the whole request, because a caller supplying `NaN` is a defect to surface
+/// rather than an absence to work around.
+fn hint(mean: Option<f64>, stats: Option<&NeuronStats>) -> Option<PruneStats> {
+    mean.map(|mean_activation| PruneStats {
+        mean_activation,
         variance: stats
             .filter(|s| s.count >= 2)
             .map(|s| s.variance)
             .filter(|v| v.is_finite() && *v >= 0.0),
         proxy: None,
-    }
+    })
 }
 
 /// Build the candidate, once core has returned one.
@@ -410,10 +427,12 @@ fn candidate(
 
 /// Prune hidden neuron `uuid` from `incumbent` through core (#182).
 ///
-/// `mean` is the full-corpus mean post-activation Ockham measured, and `stats`
-/// the rest of what it measured about the same neuron. Core decides what the
-/// graph becomes: the compensation, the cascade, the `IF` rewrites, the
-/// canonical fixed point and the validation are all its own.
+/// `mean` is the full-corpus mean post-activation Ockham measured — `None`
+/// when the scan never reached the neuron — and `stats` the rest of what it
+/// measured about the same neuron. Core decides what the graph becomes: the
+/// compensation, the cascade, the `IF` rewrites, the canonical fixed point and
+/// the validation are all its own, and a request carrying no mean is pruned
+/// uncompensated rather than refused (Issue #199).
 ///
 /// # Errors
 ///
@@ -422,11 +441,11 @@ fn candidate(
 pub fn prune_hidden_neuron(
     incumbent: &CreatureExport,
     uuid: &str,
-    mean: f64,
+    mean: Option<f64>,
     stats: Option<&NeuronStats>,
 ) -> Result<PrunedCandidate, PruneRefusal> {
     let before = StructureSnapshot::of(incumbent);
-    let result = prune_neuron(incumbent, uuid, Some(&hint(mean, stats)))
+    let result = prune_neuron(incumbent, uuid, hint(mean, stats).as_ref())
         .map_err(|e| PruneRefusal::of(&e))?;
     let mut detail = PruneDetail::default();
     detail.absorb(&result);
@@ -483,7 +502,7 @@ pub fn prune_hidden_group(
         if was_hidden && !is_hidden(&working, &member.uuid) {
             continue;
         }
-        let result = prune_neuron(&working, &member.uuid, Some(&hint(member.mean, None)))
+        let result = prune_neuron(&working, &member.uuid, hint(member.mean, None).as_ref())
             .map_err(|e| PruneRefusal::of(&e))?;
         detail.absorb(&result);
         working = result.creature;
@@ -504,7 +523,9 @@ pub fn prune_hidden_group(
 /// one resolver, [`crate::stats::source_value`] — and `source_stats` is the
 /// rest of what Ockham measured about that source. A source the creature
 /// itself fixes (a constant, a neuron with nothing to sum) is core's to value,
-/// and the hint is ignored for it.
+/// and the hint is ignored for it. A source that resolved to nothing sends
+/// `None`: core still cuts the edge and names the target it could not
+/// compensate, rather than the visit being blocked (Issue #199).
 ///
 /// The visit key names a **pair**, and a pair may repeat with distinct roles at
 /// an `IF` (NEAT-AI-core rule 26), so the role of the first edge the incumbent
@@ -519,7 +540,7 @@ pub fn prune_edge(
     incumbent: &CreatureExport,
     from_uuid: &str,
     to_uuid: &str,
-    source_value: f64,
+    source_value: Option<f64>,
     source_stats: Option<&NeuronStats>,
 ) -> Result<PrunedCandidate, PruneRefusal> {
     let Some(role) = incumbent
@@ -539,7 +560,7 @@ pub fn prune_edge(
         role,
     };
     let before = StructureSnapshot::of(incumbent);
-    let result = prune_synapse(incumbent, &key, Some(&hint(source_value, source_stats)))
+    let result = prune_synapse(incumbent, &key, hint(source_value, source_stats).as_ref())
         .map_err(|e| PruneRefusal::of(&e))?;
     let mut detail = PruneDetail::default();
     detail.absorb(&result);
@@ -592,7 +613,7 @@ mod tests {
         let wide = crate::fixtures::wide_creature(8, hidden, "TANH");
         let started = std::time::Instant::now();
         for _ in 0..ROUNDS {
-            prune_hidden_neuron(&wide, "h0", 0.25, None).expect("h0 feeds the output");
+            prune_hidden_neuron(&wide, "h0", Some(0.25), None).expect("h0 feeds the output");
         }
         started.elapsed().as_secs_f64()
     }
@@ -789,7 +810,7 @@ mod tests {
         let incumbent = two_hidden();
         validate_creature(&incumbent).unwrap();
         let original = incumbent.clone();
-        let result = prune_hidden_neuron(&incumbent, "h_a", 2.0, None).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_a", Some(2.0), None).unwrap();
         assert_eq!(incumbent, original, "incumbent must be untouched");
         assert_eq!(result.detail.transform_class, TransformClass::Approximate);
         let bias = bias_of(&result.creature, "output-0");
@@ -807,7 +828,7 @@ mod tests {
     #[test]
     fn the_cascade_removes_a_newly_unreachable_chain() {
         let incumbent = chain_plus_keep();
-        let result = prune_hidden_neuron(&incumbent, "h_leaf", 1.0, None).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_leaf", Some(1.0), None).unwrap();
         let left = uuids(&result.creature);
         assert!(!left.contains(&"h_leaf"));
         assert!(
@@ -831,7 +852,7 @@ mod tests {
         // 1.5. Removing it leaves `h_mid` with nothing to sum, and the cleanup
         // resolves that to constant support rather than leaving a hidden
         // neuron whose activation never moves.
-        let result = prune_hidden_neuron(&incumbent, "h_src", 1.5, None).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_src", Some(1.5), None).unwrap();
         assert_eq!(result.detail.folded_neurons, vec!["h_mid"]);
         let after = outputs(&result.creature, &xs);
         for (x, (a, b)) in xs.iter().zip(before.iter().zip(after.iter())) {
@@ -875,7 +896,7 @@ mod tests {
         let typed = typed_if_fixture();
         validate_creature(&typed).unwrap();
 
-        let condition = prune_hidden_neuron(&typed, "h_cond", 0.5, None).unwrap();
+        let condition = prune_hidden_neuron(&typed, "h_cond", Some(0.5), None).unwrap();
         validate_creature(&condition.creature).unwrap();
         assert!(
             condition
@@ -887,7 +908,7 @@ mod tests {
             uuids(&condition.creature)
         );
 
-        let aggregate = prune_hidden_neuron(&typed, "h_if", 0.5, None).unwrap();
+        let aggregate = prune_hidden_neuron(&typed, "h_if", Some(0.5), None).unwrap();
         validate_creature(&aggregate.creature).unwrap();
         assert!(aggregate.creature.neurons.iter().all(|n| n.uuid != "h_if"));
         assert_eq!(typed, typed_if_fixture(), "the source must not move");
@@ -896,7 +917,7 @@ mod tests {
     #[test]
     fn an_aggregate_target_is_named_rather_than_folded() {
         let aggregate = ordinary_edge_into_aggregate();
-        let result = prune_hidden_neuron(&aggregate, "h_src", 0.5, None).unwrap();
+        let result = prune_hidden_neuron(&aggregate, "h_src", Some(0.5), None).unwrap();
         assert!(
             !result.fully_compensated(),
             "a MEAN target cannot absorb a bias fold: {:?}",
@@ -909,17 +930,71 @@ mod tests {
         validate_creature(&result.creature).unwrap();
     }
 
+    /// Issue #199: no measured mean is not a refusal. Core is handed `None`,
+    /// takes the neuron, and names the target it could not compensate under
+    /// `no-statistics` — an approximate candidate the scorer judges, rather
+    /// than a visit nothing ever tries.
+    #[test]
+    fn an_unmeasured_neuron_prunes_uncompensated_through_core() {
+        let incumbent = two_hidden();
+        let result = prune_hidden_neuron(&incumbent, "h_a", None, None)
+            .expect("an unmeasured neuron is still core's to remove");
+        assert!(!result.fully_compensated(), "{:?}", result.detail);
+        assert_eq!(
+            result.detail.transform_class,
+            TransformClass::Approximate,
+            "{:?}",
+            result.detail
+        );
+        let named = &result.detail.uncompensated[0];
+        assert_eq!(named.target_uuid, "output-0");
+        assert_eq!(named.reason, "no-statistics");
+        assert!(result.detail.bias_folds.is_empty(), "{:?}", result.detail);
+        assert!(
+            result.creature.neurons.iter().all(|n| n.uuid != "h_a"),
+            "{:?}",
+            result.creature.neurons
+        );
+        validate_creature(&result.creature).unwrap();
+        assert_eq!(incumbent, two_hidden(), "the source must not move");
+    }
+
+    /// The same for one edge, and for a group member (Issue #199).
+    #[test]
+    fn an_unmeasured_edge_and_group_member_prune_uncompensated_through_core() {
+        let incumbent = two_hidden();
+        let edge = prune_edge(&incumbent, "h_a", "output-0", None, None)
+            .expect("an unmeasured source is still core's to cut");
+        assert_eq!(edge.detail.transform_class, TransformClass::Approximate);
+        assert_eq!(edge.detail.uncompensated[0].target_uuid, "output-0");
+        assert_eq!(edge.detail.uncompensated[0].reason, "no-statistics");
+        validate_creature(&edge.creature).unwrap();
+
+        let chain = chain_plus_keep();
+        let grouped = prune_hidden_group(&chain, &members(&["h_leaf"], None))
+            .expect("an unmeasured member is still core's to remove");
+        assert_eq!(grouped.detail.transform_class, TransformClass::Approximate);
+        assert_eq!(grouped.detail.uncompensated[0].target_uuid, "output-0");
+        assert_eq!(grouped.detail.uncompensated[0].reason, "no-statistics");
+        validate_creature(&grouped.creature).unwrap();
+    }
+
+    /// A statistic that is present but not a number is a **caller defect**, not
+    /// an absence: core refuses the whole request and Ockham files it as
+    /// `missing-activation` so the fault is loud (Issue #199). An absent
+    /// statistic takes the uncompensated path above instead.
     #[test]
     fn a_protected_or_unknown_target_is_refused_with_no_creature() {
         let incumbent = hidden_identity_creature(0.0, 1.0);
-        let unknown = prune_hidden_neuron(&incumbent, "nope", 0.0, None).unwrap_err();
+        let unknown = prune_hidden_neuron(&incumbent, "nope", Some(0.0), None).unwrap_err();
         assert_eq!(unknown.blocked_reason(), BlockedReason::Other);
-        let output = prune_hidden_neuron(&incumbent, "output-0", 0.0, None).unwrap_err();
+        let output = prune_hidden_neuron(&incumbent, "output-0", Some(0.0), None).unwrap_err();
         assert_eq!(output.blocked_reason(), BlockedReason::Other);
         assert!(output.to_string().contains("protected"), "{output}");
-        let nan = prune_hidden_neuron(&incumbent, "h1", f64::NAN, None).unwrap_err();
+        let nan = prune_hidden_neuron(&incumbent, "h1", Some(f64::NAN), None).unwrap_err();
         assert_eq!(nan.blocked_reason(), BlockedReason::MissingActivation);
-        let infinite = prune_hidden_neuron(&incumbent, "h1", f64::INFINITY, None).unwrap_err();
+        let infinite =
+            prune_hidden_neuron(&incumbent, "h1", Some(f64::INFINITY), None).unwrap_err();
         assert_eq!(infinite.blocked_reason(), BlockedReason::MissingActivation);
     }
 
@@ -937,7 +1012,7 @@ mod tests {
             min: 1.0,
             max: 3.0,
         };
-        let result = prune_hidden_neuron(&incumbent, "h_a", 2.0, Some(&stats)).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_a", Some(2.0), Some(&stats)).unwrap();
         let fold = &result.detail.bias_folds[0];
         assert_eq!(
             fold.residual_variance,
@@ -946,11 +1021,15 @@ mod tests {
         );
         // A single record is no measurement of spread, so nothing is offered.
         let one_record = NeuronStats { count: 1, ..stats };
-        let result = prune_hidden_neuron(&incumbent, "h_a", 2.0, Some(&one_record)).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_a", Some(2.0), Some(&one_record)).unwrap();
         assert_eq!(result.detail.bias_folds[0].residual_variance, None);
     }
 
     fn group(uuids: &[&str], mean: f64) -> Vec<GroupMember> {
+        members(uuids, Some(mean))
+    }
+
+    fn members(uuids: &[&str], mean: Option<f64>) -> Vec<GroupMember> {
         uuids
             .iter()
             .map(|u| GroupMember {
@@ -998,11 +1077,11 @@ mod tests {
         let members = vec![
             GroupMember {
                 uuid: "h_a".into(),
-                mean: 2.0,
+                mean: Some(2.0),
             },
             GroupMember {
                 uuid: "h_b".into(),
-                mean: 0.5,
+                mean: Some(0.5),
             },
         ];
         let result = prune_hidden_group(&incumbent, &members).unwrap();
@@ -1052,6 +1131,10 @@ mod tests {
         validate_creature(&result.creature).unwrap();
     }
 
+    /// A member core cannot build stops the group. A member with no measured
+    /// mean is not one of those since Issue #199 — it is pruned uncompensated,
+    /// asserted by
+    /// [`an_unmeasured_edge_and_group_member_prune_uncompensated_through_core`].
     #[test]
     fn an_unbuildable_member_blocks_the_whole_group() {
         let incumbent = chain_plus_keep();
@@ -1081,7 +1164,7 @@ mod tests {
     #[test]
     fn a_single_member_group_matches_the_single_neuron_prune() {
         let incumbent = chain_plus_keep();
-        let single = prune_hidden_neuron(&incumbent, "h_leaf", 1.0, None).unwrap();
+        let single = prune_hidden_neuron(&incumbent, "h_leaf", Some(1.0), None).unwrap();
         let grouped = prune_hidden_group(&incumbent, &group(&["h_leaf"], 1.0)).unwrap();
         assert_eq!(grouped.creature, single.creature);
         assert_eq!(grouped.detail, single.detail);
@@ -1093,7 +1176,7 @@ mod tests {
         validate_creature(&incumbent).unwrap();
         let original = incumbent.clone();
         // `h_a` is IDENTITY(2 * x), so its mean over XS is exactly 1.0.
-        let result = prune_edge(&incumbent, "h_a", "output-0", 1.0, None).unwrap();
+        let result = prune_edge(&incumbent, "h_a", "output-0", Some(1.0), None).unwrap();
         assert_eq!(incumbent, original, "incumbent must be untouched");
         assert_eq!(result.detail.transform_class, TransformClass::Approximate);
 
@@ -1122,7 +1205,7 @@ mod tests {
     #[test]
     fn a_pure_edge_cut_costs_one_tenth_of_a_growth_unit() {
         let incumbent = shared_output_fan_out();
-        let result = prune_edge(&incumbent, "h_a", "output-0", 1.0, None).unwrap();
+        let result = prune_edge(&incumbent, "h_a", "output-0", Some(1.0), None).unwrap();
         assert!(
             result.detail.cascade_neurons.is_empty(),
             "nothing was stranded: {:?}",
@@ -1150,7 +1233,7 @@ mod tests {
         // input → h_up → h_leaf → output; cutting the leaf's only outgoing edge
         // strands the leaf, and stranding the leaf strands `h_up` behind it.
         let incumbent = chain_plus_keep();
-        let result = prune_edge(&incumbent, "h_leaf", "output-0", 1.0, None).unwrap();
+        let result = prune_edge(&incumbent, "h_leaf", "output-0", Some(1.0), None).unwrap();
         assert_eq!(result.detail.cascade_neurons, vec!["h_leaf", "h_up"]);
         assert_eq!(uuids(&result.creature), vec!["h_keep", "output-0"]);
         let bias = bias_of(&result.creature, "output-0");
@@ -1164,7 +1247,7 @@ mod tests {
         validate_creature(&incumbent).unwrap();
         // The source is a constant, so its value is the creature's to prove:
         // the hint is ignored and the fold is exact.
-        let result = prune_edge(&incumbent, "c0", "output-0", 99.0, None).unwrap();
+        let result = prune_edge(&incumbent, "c0", "output-0", Some(99.0), None).unwrap();
         assert_eq!(result.detail.transform_class, TransformClass::Exact);
         assert_eq!(result.detail.cascade_neurons, vec!["c0"]);
         assert_eq!(result.after.constant_neurons, 0);
@@ -1179,7 +1262,7 @@ mod tests {
     #[test]
     fn typed_roles_and_input_edges_are_candidates_the_core_engine_builds() {
         let typed = typed_if_fixture();
-        let condition = prune_edge(&typed, "h_cond", "h_if", 0.5, None).unwrap();
+        let condition = prune_edge(&typed, "h_cond", "h_if", Some(0.5), None).unwrap();
         validate_creature(&condition.creature).unwrap();
         assert_eq!(condition.detail.removed_synapses[0].role, "condition");
         assert!(
@@ -1189,7 +1272,7 @@ mod tests {
         );
 
         let incumbent = shared_output_fan_out();
-        let from_input = prune_edge(&incumbent, "input-0", "h_a", 0.5, None).unwrap();
+        let from_input = prune_edge(&incumbent, "input-0", "h_a", Some(0.5), None).unwrap();
         validate_creature(&from_input.creature).unwrap();
         assert_eq!(from_input.detail.removed_synapses[0].from_uuid, "input-0");
         assert_eq!(typed, typed_if_fixture(), "the source must not move");
@@ -1198,7 +1281,7 @@ mod tests {
     #[test]
     fn an_edge_into_an_aggregate_target_is_named_rather_than_folded() {
         let aggregate = ordinary_edge_into_aggregate();
-        let result = prune_edge(&aggregate, "h_src", "h_mean", 0.5, None).unwrap();
+        let result = prune_edge(&aggregate, "h_src", "h_mean", Some(0.5), None).unwrap();
         assert!(!result.fully_compensated(), "{:?}", result.detail);
         assert_eq!(result.detail.uncompensated[0].target_uuid, "h_mean");
         validate_creature(&result.creature).unwrap();
@@ -1211,11 +1294,11 @@ mod tests {
             ("h_a", "output-0", f64::NAN),
             ("h_a", "output-0", f64::INFINITY),
         ] {
-            let err = prune_edge(&incumbent, from, to, value, None).unwrap_err();
+            let err = prune_edge(&incumbent, from, to, Some(value), None).unwrap_err();
             assert_eq!(err.blocked_reason(), BlockedReason::MissingActivation);
         }
         for (from, to) in [("nope", "output-0"), ("h_a", "nope"), ("h_a", "h_b")] {
-            let err = prune_edge(&incumbent, from, to, 1.0, None).unwrap_err();
+            let err = prune_edge(&incumbent, from, to, Some(1.0), None).unwrap_err();
             assert_eq!(err.blocked_reason(), BlockedReason::Other, "{err}");
         }
         assert_eq!(
@@ -1232,7 +1315,7 @@ mod tests {
         // candidate is emitted and the full-corpus scorer — never the razor —
         // decides whether an input-blind output is worse.
         let incumbent = hidden_identity_creature(0.0, 1.0);
-        let result = prune_edge(&incumbent, "h1", "output-0", 0.75, None).unwrap();
+        let result = prune_edge(&incumbent, "h1", "output-0", Some(0.75), None).unwrap();
         assert_eq!(result.after.synapses, 0);
         assert_eq!(result.after.hidden_neurons, 0);
         assert_eq!(result.detail.cascade_neurons, vec!["h1"]);
@@ -1265,14 +1348,14 @@ mod tests {
             validate_creature(&invalid).is_err(),
             "fixture must be invalid"
         );
-        let err = prune_edge(&invalid, "h_keep", "output-0", 1.0, None).unwrap_err();
+        let err = prune_edge(&invalid, "h_keep", "output-0", Some(1.0), None).unwrap_err();
         assert_eq!(err.blocked_reason(), BlockedReason::ValidationFailed);
     }
 
     #[test]
     fn the_detail_round_trips_through_json() {
         let incumbent = chain_plus_keep();
-        let result = prune_hidden_neuron(&incumbent, "h_leaf", 1.0, None).unwrap();
+        let result = prune_hidden_neuron(&incumbent, "h_leaf", Some(1.0), None).unwrap();
         let json = serde_json::to_string(&result.detail).unwrap();
         let back: PruneDetail = serde_json::from_str(&json).unwrap();
         assert_eq!(back, result.detail);

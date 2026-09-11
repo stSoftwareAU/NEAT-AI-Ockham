@@ -34,7 +34,16 @@ pub enum BlockedReason {
     /// substitution cannot be folded into a downstream bias. The dominant
     /// category on a forest-heavy creature.
     AggregateSquash,
-    /// No usable activation statistic: none sampled, or a non-finite mean.
+    /// A statistic that is present but not a usable number — a non-finite
+    /// mean, a negative variance, a proxy that does not hold up. NEAT-AI-core
+    /// refuses such a request outright, and Ockham's own rewrites refuse one
+    /// the same way.
+    ///
+    /// **Not an absent statistic since Issue #199.** An unmeasured neuron, and
+    /// an edge whose source resolves to no fold value, are handed to core with
+    /// no statistics at all and pruned uncompensated under `no-statistics`, so
+    /// what is left under this code is a corrupt measurement to surface rather
+    /// than a category a sweep routinely fills.
     MissingActivation,
     /// **Retired (Issue #192).** No current binary files this code.
     ///
@@ -42,10 +51,11 @@ pub enum BlockedReason {
     /// or a neuron the transform could not treat as an ordinary hidden unit.
     /// There is no such thing: every hidden neuron the incumbent carries, and
     /// every edge it lists, is a pruning target the shared NEAT-AI-core engine
-    /// rewrites (#182). What remains is either the value the razor was missing
-    /// ([`Self::MissingActivation`]) or a request naming structure the
+    /// rewrites (#182). What remains is a request naming structure the
     /// incumbent does not carry, which is a defect to report under
-    /// [`Self::Other`] rather than a category to build a path for.
+    /// [`Self::Other`] rather than a category to build a path for — an
+    /// **unmeasured** visit is not one of them either, since Issue #199 prunes
+    /// it uncompensated instead of blocking it.
     ///
     /// The variant stays so fleet history still deserialises, and
     /// [`Self::is_retired`] is what tells a reader that a record carrying it
@@ -102,7 +112,7 @@ impl BlockedReason {
             Self::AggregateSquash => {
                 "aggregate squash semantics — a mean substitution cannot fold into a non-sum input"
             }
-            Self::MissingActivation => "no finite sampled activation statistic to substitute",
+            Self::MissingActivation => "an activation statistic that is present but not usable",
             Self::UnsafeTopology => "topology cannot be compensated safely",
             Self::ValidationFailed => "the candidate failed creature.validate()",
             Self::NoOutputPath => "no outgoing contribution path, and no valid exact removal",

@@ -63,7 +63,7 @@ fn every_hidden_neuron_is_a_pruning_candidate() {
         .collect();
     assert_eq!(hidden, vec!["h_cond", "h_arm", "h_if", "h_mean"]);
     for uuid in hidden {
-        let built = prune_hidden_neuron(&incumbent, uuid, 0.25, None)
+        let built = prune_hidden_neuron(&incumbent, uuid, Some(0.25), None)
             .unwrap_or_else(|e| panic!("`{uuid}` must be prunable, got: {e}"));
         neat_ai_ockham::incumbent::validate_creature(&built.creature)
             .unwrap_or_else(|e| panic!("`{uuid}` produced an invalid candidate: {e}"));
@@ -88,7 +88,7 @@ fn every_listed_edge_is_a_pruning_candidate() {
     pairs.dedup();
     assert_eq!(pairs.len(), 8, "every edge is visited: {pairs:?}");
     for (from, to) in pairs {
-        let built = prune_edge(&incumbent, from, to, 0.25, None)
+        let built = prune_edge(&incumbent, from, to, Some(0.25), None)
             .unwrap_or_else(|e| panic!("`{from}`→`{to}` must be cuttable, got: {e}"));
         neat_ai_ockham::incumbent::validate_creature(&built.creature)
             .unwrap_or_else(|e| panic!("`{from}`→`{to}` produced an invalid candidate: {e}"));
@@ -339,11 +339,11 @@ fn no_transform_refusal_reports_the_retired_code() {
 fn core_refusals_are_reported_under_live_codes() {
     let incumbent = adversarial();
     let refusals = [
-        prune_hidden_neuron(&incumbent, "nope", 0.25, None).unwrap_err(),
-        prune_hidden_neuron(&incumbent, "output-0", 0.25, None).unwrap_err(),
-        prune_hidden_neuron(&incumbent, "constant-0", 0.25, None).unwrap_err(),
-        prune_hidden_neuron(&incumbent, "h_cond", f64::NAN, None).unwrap_err(),
-        prune_edge(&incumbent, "h_cond", "output-0", 0.25, None).unwrap_err(),
+        prune_hidden_neuron(&incumbent, "nope", Some(0.25), None).unwrap_err(),
+        prune_hidden_neuron(&incumbent, "output-0", Some(0.25), None).unwrap_err(),
+        prune_hidden_neuron(&incumbent, "constant-0", Some(0.25), None).unwrap_err(),
+        prune_hidden_neuron(&incumbent, "h_cond", Some(f64::NAN), None).unwrap_err(),
+        prune_edge(&incumbent, "h_cond", "output-0", Some(0.25), None).unwrap_err(),
     ];
     for refusal in refusals {
         assert!(
