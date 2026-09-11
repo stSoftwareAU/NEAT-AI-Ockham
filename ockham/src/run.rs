@@ -8392,6 +8392,8 @@ mod tests {
     struct FixtureSweep {
         coverage: Coverage,
         screens: Vec<crate::learnings::Screened>,
+        /// Every activation-statistics cache the run left in its workspace.
+        caches: Vec<ActivationStats>,
     }
 
     impl FixtureSweep {
@@ -8447,6 +8449,29 @@ mod tests {
             );
         }
 
+        /// The run really swept with no statistics at all.
+        ///
+        /// Asserted rather than assumed: a seeded cache the run failed to read
+        /// would not block it measuring — it would scan the corpus and store
+        /// the result under its own key, leaving a second cache file and
+        /// populated statistics behind. Without this, a drifting cache key
+        /// would turn the unmeasured gate into a silent duplicate of the
+        /// measured one, still green.
+        fn assert_swept_unmeasured(&self, fixture: &str) {
+            assert_eq!(
+                self.caches.len(),
+                1,
+                "{fixture}: the run must read the seeded cache, not measure beside it"
+            );
+            let stats = &self.caches[0];
+            assert!(
+                stats.neurons.is_empty() && stats.inputs.is_empty(),
+                "{fixture}: the run measured after all — {} neurons, {} inputs",
+                stats.neurons.len(),
+                stats.inputs.len()
+            );
+        }
+
         /// Visit keys that name a hidden neuron, not an edge.
         fn neuron_visits(&self) -> Vec<&str> {
             self.screens
@@ -8486,10 +8511,36 @@ mod tests {
             &sample,
         );
         crate::stats::store_cached_stats(&path, &stats).unwrap();
-        assert!(
-            stats.inputs.is_empty() && stats.neurons.is_empty(),
-            "the seeded measurement must carry no statistics at all"
-        );
+    }
+
+    /// Every activation-statistics cache file the run left in the workspace.
+    ///
+    /// The positive marker the unmeasured gate needs. A seeded cache the run
+    /// did **not** read would not stop it scanning the corpus — it would store
+    /// what it measured under its own key, so a second file would appear here.
+    /// One file, still carrying no neurons and no inputs, is what says the run
+    /// really swept with no statistics rather than quietly measuring after all.
+    fn activation_caches(output_dir: &std::path::Path) -> Vec<ActivationStats> {
+        let mut found: Vec<(std::ffi::OsString, ActivationStats)> =
+            std::fs::read_dir(output_dir.join("workspace"))
+                .expect("the run writes a workspace")
+                .map(|e| e.unwrap())
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("activation-stats.")
+                })
+                .map(|e| {
+                    let text = std::fs::read_to_string(e.path()).unwrap();
+                    (
+                        e.file_name(),
+                        serde_json::from_str(&text)
+                            .unwrap_or_else(|err| panic!("{}: {err}", e.path().display())),
+                    )
+                })
+                .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found.into_iter().map(|(_, stats)| stats).collect()
     }
 
     /// Sweep `fixture` end to end with a batch wide enough for every visit.
@@ -8556,22 +8607,8 @@ mod tests {
             screens: LearningsStore::new(&learnings_dir, corpus.identity, "t".into())
                 .load_screens()
                 .unwrap(),
+            caches: activation_caches(&cfg.output_dir),
         }
-    }
-
-    /// Every UUID on `fixture` whose squash is one of core's six aggregates.
-    fn aggregate_uuids(fixture: &CreatureExport) -> std::collections::HashSet<&str> {
-        fixture
-            .neurons
-            .iter()
-            .filter(|n| {
-                n.squash
-                    .as_deref()
-                    .and_then(|s| neat_core::parse_squash_name(s).ok())
-                    .is_some_and(|s| s.is_aggregate())
-            })
-            .map(|n| n.uuid.as_str())
-            .collect()
     }
 
     /// The aggregate fixture of Issue #202: an `IF` output over a `HYPOT`
@@ -8580,7 +8617,10 @@ mod tests {
     fn the_if_hypot_fixture_visits_the_aggregate_paths_and_blocks_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let fixture = crate::fixtures::if_hypot_creature();
-        let aggregates = aggregate_uuids(&fixture);
+        let aggregates: std::collections::HashSet<&str> =
+            crate::fixtures::aggregate_uuids(&fixture)
+                .into_iter()
+                .collect();
         assert!(
             aggregates.contains("h_hyp") && aggregates.contains("output-0"),
             "the fixture must carry a hidden aggregate and an aggregate output: {aggregates:?}"
@@ -8624,6 +8664,7 @@ mod tests {
             &crate::fixtures::if_hypot_creature(),
             Measurement::Unmeasured,
         );
+        swept.assert_swept_unmeasured("if_hypot_creature (unmeasured)");
         swept.assert_nothing_blocked("if_hypot_creature (unmeasured)");
     }
 

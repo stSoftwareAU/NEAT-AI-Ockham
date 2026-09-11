@@ -302,8 +302,11 @@ The families covered are the aggregate `MEAN` creature of Issue #93,
 `fixtures::identity_creature`, and `fixtures::if_hypot_creature` — added for
 this gate because none of the others walks the aggregate paths: it carries an
 `IF` output whose three inward edges hold the `condition`, `positive` and
-`negative` roles, over a `HYPOT` hidden neuron with two inward edges, so a cut
-reaches core's `IF` rewrite (#198) and its one-edge aggregate conversion (#197).
+`negative` roles, over a `HYPOT` hidden neuron with two inward edges, so the
+visits put core's `IF` rewrite (#198) and its one-edge aggregate conversion
+(#197) in reach. The gate asserts the outcome — a candidate rather than a
+blocked visit — not which rewrite produced it; the transforms themselves are
+pinned in NEAT-AI-core's own tests.
 
 ```mermaid
 flowchart LR
@@ -317,7 +320,10 @@ flowchart LR
 ```
 
 One of those runs is handed a cached measurement carrying **no** neuron and no
-input statistics at all. That is the unmeasured case of Issue #199 held to the
+input statistics at all, and asserts the run really read it — one cache file in
+the workspace, still empty afterwards — because a seeded cache the run failed to
+key would leave it measuring the corpus and the test would pass for the wrong
+reason. That is the unmeasured case of Issue #199 held to the
 same standard: with nothing measured, every visit still goes to core
 uncompensated and comes back an approximate candidate, so `missing-activation`
 stays at zero rather than absorbing the whole sweep.

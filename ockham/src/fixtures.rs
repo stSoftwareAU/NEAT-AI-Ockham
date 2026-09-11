@@ -191,6 +191,25 @@ pub fn shortcut_edge_creature() -> CreatureExport {
     )
 }
 
+/// UUIDs on `creature` whose squash is one of NEAT-AI-core's six aggregates.
+///
+/// In declaration order. One home for the membership rule so the fixture pin
+/// below and the Issue #202 run gate ask the same question of a creature rather
+/// than restating `SquashType::is_aggregate` twice.
+pub fn aggregate_uuids(creature: &CreatureExport) -> Vec<&str> {
+    creature
+        .neurons
+        .iter()
+        .filter(|n| {
+            n.squash
+                .as_deref()
+                .and_then(|s| neat_core::parse_squash_name(s).ok())
+                .is_some_and(|s| s.is_aggregate())
+        })
+        .map(|n| n.uuid.as_str())
+        .collect()
+}
+
 /// Aggregate-heavy creature: an `IF` output over a `HYPOT` hidden neuron.
 ///
 /// Every aggregate path the razor has to walk is present here, so a sweep over
@@ -267,18 +286,7 @@ mod tests {
     fn the_if_hypot_fixture_validates_and_carries_both_aggregates() {
         let c = if_hypot_creature();
         crate::incumbent::validate_creature(&c).expect("the fixture must validate");
-        let aggregates: Vec<&str> = c
-            .neurons
-            .iter()
-            .filter(|n| {
-                n.squash
-                    .as_deref()
-                    .and_then(|s| neat_core::parse_squash_name(s).ok())
-                    .is_some_and(|s| s.is_aggregate())
-            })
-            .map(|n| n.uuid.as_str())
-            .collect();
-        assert_eq!(aggregates, vec!["h_hyp", "output-0"]);
+        assert_eq!(aggregate_uuids(&c), vec!["h_hyp", "output-0"]);
         assert_eq!(
             c.synapses.iter().filter(|s| s.to_uuid == "h_hyp").count(),
             2,
