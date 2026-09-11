@@ -148,11 +148,16 @@
 # own structure proves one. `PruneDetail::absorb` now copies both, onto
 # `PruneDetail::converted_neurons` (`convertedNeurons`) and
 # `UncompensatedRecord::dropped_mean` (`droppedMean`), so a run's journal says
-# which aggregate stopped aggregating and how big the dropped term was. Both
-# items were acknowledged above when they shipped — #197 in the 0.16.0 line and
-# the zero-edge naming in the 0.18.0 entry — so the baseline does not move: the
-# sibling clone is at 0.17.0, below the recorded 0.18.0, and no public item
-# changed. `fully_compensated()` is unchanged with it: a converted target still
+# which aggregate stopped aggregating and how big the dropped term was. The
+# baseline does not move for either: both items shipped with Ockham #197 in the
+# 0.16.0 line, and the 0.18.0 entry above records core extending
+# `converted_neurons` to name the zero-edge `HYPOTv2 -> ABSOLUTE` rewrite as
+# well, so the recorded 0.18.0 already covers every core release that carries
+# them. The sibling clone is at 0.17.0, below that baseline, and no public item
+# core exposes changed here. This is the file's first mention of `dropped_mean`
+# only because Ockham did not read the field until now, not because the core
+# release carrying it went unacknowledged.
+# `fully_compensated()` is unchanged with it: a converted target still
 # lost its term, so it is still named on `uncompensated` and Ockham's constant
 # substitution still runs for it. Verified against the sibling clone on
 # `Develop` (0.17.0, 282bc18): `./quality.sh` is green here, including

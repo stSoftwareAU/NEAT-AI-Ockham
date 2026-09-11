@@ -94,10 +94,11 @@ Core's report travels with every candidate it built: `prune::PruneDetail` is
 written into the sweep candidate, the screened-out record and the telemetry row,
 so a run's evidence says whether a rewrite was exact or approximate, what its
 cascade took, which `IF` structure it rewrote, which aggregates it converted
-(`convertedNeurons`, the single-edge rewrites of #197), and which targets it
-left uncompensated — each one carrying `droppedMean`, the magnitude of the term
-that went where a statistic or the creature's own structure proves one, and
-absent where neither does.
+(`convertedNeurons` — the single-edge rewrites of #197, and the zero-edge
+`HYPOTv2` → `ABSOLUTE` one core names from the 0.18.0 baseline), and which
+targets it left uncompensated — each one carrying `droppedMean`, the magnitude
+of the term that went where a statistic or the creature's own structure proves
+one, and absent where neither does.
 
 A conversion is not a compensation. A target the cut left holding one term is
 rewritten to the squash that computes the same number, and it has still lost
