@@ -166,6 +166,23 @@ pub enum CandidateKind {
     Synapse,
 }
 
+impl CandidateKind {
+    /// Every candidate kind, in declaration order.
+    ///
+    /// The set a screen record's `kind` must name when the visit produced a
+    /// candidate at all — the positive half of the Issue #202 gate, which
+    /// checks that nothing is blocked *and* that every record says what was
+    /// proposed instead.
+    pub const ALL: [CandidateKind; 6] = [
+        Self::Identity,
+        Self::Ablation,
+        Self::Constant,
+        Self::Group,
+        Self::Merge,
+        Self::Synapse,
+    ];
+}
+
 /// One valid pruning candidate produced by the sweep.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

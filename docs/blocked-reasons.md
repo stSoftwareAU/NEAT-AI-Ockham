@@ -282,6 +282,51 @@ unmeasured visit is a scored candidate, see
   transform that would leave one refuses rather than emitting a candidate that
   cannot validate.
 
+## The fixture gate: zero blocked, and a kind on every record (Issue #202)
+
+Everything above says a category was retired or a path was built. Issue #202 is
+the executable statement of the result: a sweep over **any** pruning fixture
+blocks nothing, under any live reason, and a non-zero count fails the build.
+
+One test per fixture family in `ockham/src/run.rs` runs `establish_run` with a
+batch wide enough for every hidden neuron and every edge the fixture carries,
+then asserts `blocked == 0`, `blockedByReason == BlockedBreakdown::default()`
+and — the positive half — that every screen record carries no
+`blockedReason` and names a candidate kind. A zero that came from a sweep that
+visited nothing would prove nothing, so the width comes from the fixture itself
+and `checked == checkable` is asserted beside the zero.
+
+The families covered are the aggregate `MEAN` creature of Issue #93,
+`fixtures::wide_creature` with an aggregate squash and point-wise,
+`fixtures::hidden_identity_creature`, `fixtures::shortcut_edge_creature`,
+`fixtures::identity_creature`, and `fixtures::if_hypot_creature` — added for
+this gate because none of the others walks the aggregate paths: it carries an
+`IF` output whose three inward edges hold the `condition`, `positive` and
+`negative` roles, over a `HYPOT` hidden neuron with two inward edges, so a cut
+reaches core's `IF` rewrite (#198) and its one-edge aggregate conversion (#197).
+
+```mermaid
+flowchart LR
+    F["pruning fixture"] --> S["establish_run<br/>candidates = hidden + edges"]
+    S --> C["coverage.json"]
+    C --> Z{"blockedByReason<br/>all zero?"}
+    Z -- no --> X["test fails — Ockham or core regressed"]
+    Z -- yes --> K{"every record names<br/>a candidate kind?"}
+    K -- no --> X
+    K -- yes --> G["gate green"]
+```
+
+One of those runs is handed a cached measurement carrying **no** neuron and no
+input statistics at all. That is the unmeasured case of Issue #199 held to the
+same standard: with nothing measured, every visit still goes to core
+uncompensated and comes back an approximate candidate, so `missing-activation`
+stays at zero rather than absorbing the whole sweep.
+
+Ockham builds against the sibling NEAT-AI-core at head, so these tests are also
+the fleet's detector for a core pruning regression: a rewrite that starts
+refusing a shape shows up as a blocked visit on a fixture in the `cargo-quality`
+workflow rather than as a stalled sweep on a live creature.
+
 ## Where to read the breakdown
 
 | Surface | What it carries |
