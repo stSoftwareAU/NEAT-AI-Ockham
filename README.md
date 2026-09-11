@@ -2625,7 +2625,7 @@ NEAT-AI-Ockham/
 │       ├── throughput.rs      # screening funnel, per-hour rates, rescan ETAs
 │       ├── fixtures.rs
 │       ├── run.rs
-│       ├── clock.rs          # injected run-budget time source (real or manual)
+│       ├── clock.rs           # injected run-budget time source (real or manual)
 │       ├── log.rs
 │       └── cancel.rs
 ├── docs/

@@ -7221,13 +7221,17 @@ mod tests {
             screen_sample_rate: Some(0.01),
             ..test_defaults()
         };
+        // Spent on an injected clock, not slept (Issue #214): this asserts a
+        // budget decision, so it must not race a real deadline either.
+        let clock = ManualClock::new();
         let scorer = ScriptedScorer {
             delay_per_creature: Duration::from_millis(100),
+            clock: Some(clock.clone()),
             baseline_score: 0.50,
             candidate_score: Some(0.80),
             ..ScriptedScorer::ok(0.50, 0.50)
         };
-        let run = establish_run(&cfg, &scorer).unwrap();
+        let run = establish_run_with_clock(&cfg, &scorer, &clock).unwrap();
         assert_eq!(run.stop_reason, "budget");
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
@@ -8132,7 +8136,7 @@ mod tests {
 
         assert!(
             clock.since(opened) >= Duration::from_millis(1_500),
-            "the replay stage must have spent the budget on the injected clock: {:?}",
+            "the run must have spent its budget on the injected clock rather than              the wall clock: {:?}",
             clock.since(opened)
         );
         assert!(

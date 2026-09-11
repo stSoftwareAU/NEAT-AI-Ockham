@@ -101,8 +101,17 @@ impl Default for ManualClock {
 }
 
 impl Clock for ManualClock {
+    /// # Panics
+    ///
+    /// If the advanced reading is beyond what [`Instant`] can represent on
+    /// this platform. That is loud on purpose: silently folding the reading
+    /// back would run a deadline backwards, which is the fault this clock
+    /// exists to make impossible.
     fn now(&self) -> Instant {
-        self.state.base + self.elapsed()
+        self.state
+            .base
+            .checked_add(self.elapsed())
+            .expect("manual clock advanced beyond what Instant can represent")
     }
 }
 
@@ -154,6 +163,7 @@ mod tests {
     #[test]
     fn an_absurd_advance_saturates_rather_than_wrapping() {
         let clock = ManualClock::new();
+        let opened = clock.now();
         clock.advance(Duration::from_secs(u64::MAX));
         clock.advance(Duration::from_secs(1));
         assert_eq!(
@@ -161,5 +171,12 @@ mod tests {
             Duration::from_nanos(u64::MAX),
             "a saturated clock stays at its ceiling; it must never wrap to zero"
         );
+        // The reading a deadline is compared against, not just the counter: a
+        // wrapped one would hand an expired budget a fresh deadline.
+        assert!(
+            clock.now() > opened,
+            "a saturated clock still reads forward"
+        );
+        assert_eq!(clock.since(opened), Duration::from_nanos(u64::MAX));
     }
 }

@@ -105,6 +105,17 @@ exists to prevent regressing to — it fails again
 (`the reserve must buy this run a screening batch: 0`), and the mutation was
 reverted immediately after.
 
+## Scope
+
+One adjacent test is migrated with it:
+`run::tests::a_starved_run_stops_before_launching_a_cohort_it_cannot_finish`
+asserted the *same kind* of decision (`stop_reason == "budget"`, no cohort
+launched) the same broken way — 100 ms scripted sleeps against a real 2 s
+deadline — so a slow enough host reached the deadline first and the run
+stopped on `timeout` instead. It now drives the injected clock too. Those were
+the only two uses of `ScriptedScorer::delay_per_creature`, so no unit test in
+the crate spends real time sleeping any more.
+
 ## Test Plan
 
 - **Rewritten**
@@ -116,9 +127,15 @@ reverted immediately after.
 - **Added** `ockham/src/clock.rs::tests` — four unit tests over the new seam:
   the system clock never runs backwards and saturates a future reading at zero;
   a manual clock stands still until advanced; every clone shares one reading;
-  an absurd advance saturates rather than wrapping (a wrapped reading would
-  turn an expired budget into a fresh one).
-- **Unchanged and still green**: the existing `reserve_stands` unit test, the
-  #58 cohort-trim test that still uses a real per-creature sleep, and the rest
-  of the suite — 703 lib + 71 integration tests at default parallelism and at
-  `--test-threads=2`.
+  an absurd advance saturates rather than wrapping, asserted on the reading a
+  deadline is actually compared against (`now()` / `since()`), not just on the
+  counter — a wrapped reading would hand an expired budget a fresh deadline.
+  A reading beyond what `Instant` can represent panics with a named message
+  rather than folding back quietly.
+- **Migrated**
+  `ockham/src/run.rs::tests::a_starved_run_stops_before_launching_a_cohort_it_cannot_finish`
+  — same decision asserted, same scripted costs, now spent on the injected
+  clock rather than slept (see **Scope**).
+- **Unchanged and still green**: the existing `reserve_stands` unit test and
+  the rest of the suite — 703 lib + 71 integration tests at default
+  parallelism and at `--test-threads=2`.
