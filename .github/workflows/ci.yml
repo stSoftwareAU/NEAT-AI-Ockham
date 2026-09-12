@@ -125,6 +125,7 @@ jobs:
             "LICENSE"
             "CONTRIBUTING.md"
             "quality.sh"
+            "scripts/runlib.sh"
             "deny.toml"
             "rust-toolchain.toml"
             "ockham/src/main.rs"
@@ -253,6 +254,9 @@ jobs:
             exit 0
           fi
           shellcheck --severity=warning "${scripts[@]}"
+
+      - name: Check scripts/runlib.sh already-installed contract
+        run: ./scripts/test-runlib.sh
 
   spell-check:
     name: Spell Check

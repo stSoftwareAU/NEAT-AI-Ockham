@@ -2567,6 +2567,14 @@ The project is pure Rust and expects sibling clones of `NEAT-AI-core` and
 ./quality.sh < /dev/null
 ```
 
+Fleet hosts do not run `cargo build` on every run.
+[`scripts/runlib.sh`](./scripts/runlib.sh) (Issue #219) installs
+`~/.cargo/bin/neat_ai_ockham` and `.neat_ai_ockham.version`, prints that path on
+stdout, and removes `target/` after a successful install. A second run on the
+same crate version prints `[neat_ai_ockham] already installed v<x>` and runs no
+cargo command. It builds the `neat_ai_ockham` binary only. The byte-identical
+copy synced from NEAT-AI-core is a separate job (see the family-sync issue).
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the local and CI quality gates.
 Ockham commit messages use the **🪒** prefix.
 
