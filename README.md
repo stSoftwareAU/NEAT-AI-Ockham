@@ -2567,13 +2567,33 @@ The project is pure Rust and expects sibling clones of `NEAT-AI-core` and
 ./quality.sh < /dev/null
 ```
 
-Fleet hosts do not run `cargo build` on every run.
-[`scripts/runlib.sh`](./scripts/runlib.sh) (Issue #219) installs
-`~/.cargo/bin/neat_ai_ockham` and `.neat_ai_ockham.version`, prints that path on
-stdout, and removes `target/` after a successful install. A second run on the
-same crate version prints `[neat_ai_ockham] already installed v<x>` and runs no
-cargo command. It builds the `neat_ai_ockham` binary only. The byte-identical
-copy synced from NEAT-AI-core is a separate job (see the family-sync issue).
+Fleet hosts do not run `cargo build` on every run. Run
+[`scripts/runlib.sh`](./scripts/runlib.sh) from the repository root: it installs
+the CLI to `~/.cargo/bin/neat_ai_ockham` (`$CARGO_HOME/bin` when that is set)
+with the crate version stamped beside it in `.neat_ai_ockham.version`, prints
+that path on stdout, and removes `target/` after a successful install. A second
+run on the same crate version prints `[neat_ai_ockham] already installed v<x>`
+and runs no cargo command at all.
+
+`scripts/runlib.sh` is **owned by
+[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)** — its one home is
+`scripts/runlib.sh` on that repository's `Develop` branch (NEAT-AI-core#680).
+The copy here is byte-identical and is never edited in this repository: change
+it in core, and the `version-increment` job refreshes the copy on the next PR,
+riding the same commit as the version bump. That job fails when core's file
+cannot be fetched (Issue #209).
+
+```mermaid
+flowchart LR
+    A["PR opened / synchronised"] --> B["version-increment job"]
+    B --> C["Fetch scripts/runlib.sh<br/>from NEAT-AI-core Develop"]
+    C -->|fetch fails| D["Job fails —<br/>ci-required blocks the merge"]
+    C -->|differs| E["Overwrite the local copy"]
+    C -->|identical| F["Leave it alone"]
+    E --> G["Bump ockham/Cargo.toml"]
+    F --> G
+    G --> H["One commit, one push:<br/>bump + refreshed runlib.sh"]
+```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the local and CI quality gates.
 Ockham commit messages use the **🪒** prefix.
