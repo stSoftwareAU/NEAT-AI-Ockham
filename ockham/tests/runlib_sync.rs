@@ -12,8 +12,8 @@
 
 use std::path::{Path, PathBuf};
 
-const CORE_RUNLIB_PATH: &str = "repos/${CORE_REPO}/contents/scripts/runlib.sh?ref=${CORE_REF}";
-const CORE_REPO: &str = "CORE_REPO: stSoftwareAU/NEAT-AI-core";
+const CORE_REPO: &str = "stSoftwareAU/NEAT-AI-core";
+const RUNLIB_PATH: &str = "scripts/runlib.sh";
 const BUMP_INVOCATION: &str = "./scripts/auto-version.sh ockham/Cargo.toml";
 
 fn ci_workflow_path() -> PathBuf {
@@ -44,20 +44,28 @@ fn version_increment_job(workflow: &str) -> String {
     format!("{header}\n{}", body.join("\n"))
 }
 
+/// The step that refreshes `scripts/runlib.sh` from core: the one step naming
+/// both the file and the repository that owns it. How it fetches — `gh api`,
+/// `curl`, a checkout — is the step's business, not this test's.
+fn refresh_step(job: &str) -> &str {
+    job.split("- name:")
+        .find(|step| step.contains(RUNLIB_PATH) && step.contains(CORE_REPO))
+        .unwrap_or_else(|| {
+            panic!(
+                "a version-increment step must refresh {RUNLIB_PATH} from {CORE_REPO}; job:\n{job}"
+            )
+        })
+}
+
 #[test]
 fn version_increment_refreshes_runlib_from_core_before_the_bump() {
     let workflow = ci_workflow();
     let job = version_increment_job(&workflow);
 
-    assert!(
-        job.contains(CORE_REPO),
-        "the version-increment job must name stSoftwareAU/NEAT-AI-core as the owner of \
-         scripts/runlib.sh; job body:\n{job}"
-    );
-
+    let step = refresh_step(&job);
     let fetch = job
-        .find(CORE_RUNLIB_PATH)
-        .expect("the version-increment job must fetch core's scripts/runlib.sh");
+        .find(step)
+        .expect("the refresh step is part of the job it was taken from");
     let bump = job
         .find(BUMP_INVOCATION)
         .expect("the version-increment job must still bump ockham/Cargo.toml");
@@ -92,10 +100,7 @@ fn the_refreshed_runlib_rides_the_commit_the_job_pushes() {
 fn a_failed_fetch_of_cores_runlib_fails_the_job() {
     let workflow = ci_workflow();
     let job = version_increment_job(&workflow);
-    let refresh = job
-        .split("- name:")
-        .find(|step| step.contains(CORE_RUNLIB_PATH))
-        .expect("a step fetches core's scripts/runlib.sh");
+    let refresh = refresh_step(&job);
     assert!(
         refresh.contains("exit 1"),
         "an unfetchable scripts/runlib.sh must fail the step loudly rather than \

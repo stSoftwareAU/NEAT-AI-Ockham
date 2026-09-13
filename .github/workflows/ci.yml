@@ -195,8 +195,11 @@ jobs:
             exit 1
           fi
           # An error page or an empty body would otherwise be copied over the
-          # working script and only fail much later, somewhere else.
-          if [ ! -s "$fetched" ] || ! head -n 1 "$fetched" | grep -qx '#!/usr/bin/env bash'; then
+          # working script and only fail much later, somewhere else. The test is
+          # "a script bash can parse", not core's exact first line: core is free
+          # to change its shebang without hard-failing every PR here.
+          if [ ! -s "$fetched" ] || ! head -n 1 "$fetched" | grep -q '^#!' ||
+            ! bash -n "$fetched"; then
             echo "Fetched ${CORE_REPO}@${CORE_REF} scripts/runlib.sh is not a bash script" >&2
             exit 1
           fi

@@ -2,7 +2,8 @@ name: SBOM
 
 # Software Bill of Materials workflow (Issue #172).
 #
-# `ockham` ships a binary (`[[bin]] name = "neat_ai_ockham"`), so it has a
+# `ockham` ships the `neat_ai_ockham` binary (cargo's default bin target, from
+# `src/main.rs`), so it has a
 # real binary surface whose dependency inventory should be captured in a
 # standard, scanner-consumable format. `Cargo.lock` already pins the full
 # graph; this workflow exports it as a CycloneDX SBOM and uploads the document
