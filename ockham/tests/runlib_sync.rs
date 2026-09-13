@@ -28,8 +28,12 @@ fn ci_workflow() -> String {
 /// The body of the `version-increment` job: its lines, up to the next
 /// two-space job key.
 fn version_increment_job(workflow: &str) -> String {
-    let mut lines = workflow.lines().skip_while(|l| *l != "  version-increment:");
-    let header = lines.next().expect("ci.yml declares a version-increment job");
+    let mut lines = workflow
+        .lines()
+        .skip_while(|l| *l != "  version-increment:");
+    let header = lines
+        .next()
+        .expect("ci.yml declares a version-increment job");
     let is_job_key = |line: &str| {
         line.starts_with("  ")
             && !line.starts_with("   ")

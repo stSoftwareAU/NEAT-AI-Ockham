@@ -32,7 +32,7 @@ if [[ "$SHELLCHECK_FAILED" -ne 0 ]]; then
 fi
 echo "shellcheck: all scripts passed"
 
-echo "Checking scripts/runlib.sh already-installed contract (Issue #219)..."
+echo "Checking the canonical scripts/runlib.sh contract (Issue #209)..."
 ./scripts/test-runlib.sh
 
 if [ -f "./../NEAT-AI-core/Cargo.toml" ]; then
