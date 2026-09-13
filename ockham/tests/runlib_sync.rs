@@ -8,7 +8,15 @@
 //! Two things must hold, and neither is visible to a reviewer scanning YAML:
 //! the refresh happens *before* the bump rewrites the manifest, and the
 //! refreshed file is in the `git add` list that commit is built from. Drop
-//! either and the fleet silently keeps a stale copy.
+//! either and the fleet silently keeps a stale copy. Both are questions about
+//! where the step sits in the job, which is why they are asserted here.
+//!
+//! What the step *does* — refuse an unfetchable file, refuse a body that is
+//! not a script, refuse one that breaks the install contract, overwrite a
+//! stale copy and leave an identical one alone — is asserted by executing the
+//! step's own `run:` body against a `gh` shim in
+//! `scripts/test-runlib-refresh.sh`. Behaviour belongs in the test that runs
+//! it, not in a substring match on YAML.
 
 use std::path::{Path, PathBuf};
 
@@ -93,17 +101,5 @@ fn the_refreshed_runlib_rides_the_commit_the_job_pushes() {
     assert!(
         add.contains("ockham/Cargo.toml") && add.contains("Cargo.lock"),
         "widening the `git add` must not drop the manifest or the lock file: {add}"
-    );
-}
-
-#[test]
-fn a_failed_fetch_of_cores_runlib_fails_the_job() {
-    let workflow = ci_workflow();
-    let job = version_increment_job(&workflow);
-    let refresh = refresh_step(&job);
-    assert!(
-        refresh.contains("exit 1"),
-        "an unfetchable scripts/runlib.sh must fail the step loudly rather than \
-         leave a stale copy in place; step:\n{refresh}"
     );
 }

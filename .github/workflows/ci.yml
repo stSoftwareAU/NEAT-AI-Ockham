@@ -210,6 +210,12 @@ jobs:
           echo "Refreshing scripts/runlib.sh from ${CORE_REPO}@${CORE_REF}"
           cp "$fetched" scripts/runlib.sh
           chmod +x scripts/runlib.sh
+          # The new bytes are gated *here*, where they arrive. A push made with
+          # the default GITHUB_TOKEN starts no new workflow run, so the
+          # `shell-checks` job of this run only ever saw the pre-refresh
+          # checkout — without this, a refreshed script could merge ungated.
+          shellcheck --severity=warning -s bash scripts/runlib.sh
+          ./scripts/test-runlib.sh </dev/null
 
       - name: Bump the crate version when this PR has not already
         env:
@@ -309,8 +315,11 @@ jobs:
           fi
           shellcheck --severity=warning "${scripts[@]}"
 
-      - name: Check scripts/runlib.sh already-installed contract
+      - name: Check the canonical scripts/runlib.sh contract
         run: ./scripts/test-runlib.sh
+
+      - name: Check the CI step that refreshes scripts/runlib.sh
+        run: ./scripts/test-runlib-refresh.sh
 
   spell-check:
     name: Spell Check
