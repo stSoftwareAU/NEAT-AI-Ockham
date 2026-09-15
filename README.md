@@ -70,6 +70,11 @@ The current Rust implementation includes:
   surfaced by `report`, and carried into the `ockham` check-in tag (the
   GRQ-sampler commit subject) in the compact `sweep X/Y (Z% of epoch <id>)`
   form whenever a learnings dir is configured;
+- one snapshot behind every published figure (#171): the subject, the commit
+  description, `coverage.txt` and `coverage.json` are all rendered from the
+  coverage measured **after** the final accepted creature is selected, and the
+  `snapshot:` line names the measurement and the creature it was taken over —
+  see [One snapshot, four surfaces](#one-snapshot-four-surfaces);
 - epoch-aware reporting throughout (#102): every percentage says what it is a
   percentage *of*, a finished sweep reads `sweep complete for this epoch`
   rather than as Ockham finishing, the short corpus id travels with the figure,
@@ -282,11 +287,24 @@ emits its bias and the fold value is exact rather than sampled.
 
 The resolver fails closed. An aggregate squash, a non-finite value, a neuron
 the scan never measured, or a uuid the incumbent does not carry yields no value
-at all, so no cut is proposed for that edge rather than a scalar nothing
-measured being folded.
+at all, so nothing a run did not measure is ever folded into a bias.
+
+Failing closed is not failing to prune (Issue #199). No value means the request
+reaches NEAT-AI-core carrying **no statistics**, not that the edge is left
+alone: core runs every rewrite it can prove from the structure itself and names
+the target that got nothing back on `uncompensated`, with the reason
+`no-statistics`. The candidate is labelled `Approximate`, screened and scored
+like every other, so an unmeasured edge is judged by the scorer rather than
+recorded as blocked.
+
+An `uncompensated` row on the telemetry detail carries `droppedMean` beside its
+reason wherever a number proves one — the magnitude `weight x mean` of the term
+the target lost, from the statistic Ockham measured or from the value the
+creature's own structure fixes. A `no-statistics` row proves neither, so the
+field is absent rather than `0`: a zero would read as "nothing was lost".
 
 The resolver is the value side of the single-synapse cut: it is what supplies
-`ablate_synapse`'s scalar. The sweep that walks a creature's edges and asks for
+the statistical hint `prune_edge` hands the shared engine. The sweep that walks a creature's edges and asks for
 one is the [synapse visit pool](#synapse-visits) below.
 
 ## Synapse visits
@@ -317,19 +335,22 @@ flowchart LR
     S["synapse visit keys<br/>shuffled from the seed"] --> M
     M --> O["Sweep::order<br/>one permutation of every visit"]
     O -->|neuron visit| N["identity → merge →<br/>ablation → constant"]
-    O -->|synapse visit| E["source value → ablate_synapse"]
+    O -->|synapse visit| E["source value → core prune_synapse"]
     N --> C["candidate, or a skip with its blocked reason"]
     E --> C
 ```
 
 A synapse visit resolves its
-[source fold value](#synapse-source-fold-values) and calls `ablate_synapse`. A
-source that resolves to nothing is `missing-activation`; every other refusal
-carries the reason the transform itself reported. Either way the visit files a
-skip and the walk advances, exactly as a neuron visit does. A synapse candidate
-carries its `fromUuid`, `toUuid` and `weight` as provenance — no other kind
-serialises those fields — and its `uuid` is the visit key, headed as always by
-`members`.
+[source fold value](#synapse-source-fold-values) and calls `prune::prune_edge`,
+which asks NEAT-AI-core to remove that `(from, to, role)` triple (Issue #182). A
+source that resolves to nothing is **not** a refusal since Issue #199: the
+request goes to core carrying no statistic, the edge is cut, and the target core
+could not compensate is named `no-statistics` on an `Approximate` candidate the
+scorer judges like any other. A refusal carries the reason core itself reported,
+the visit files a skip and the walk advances, exactly as a neuron visit does. A
+synapse candidate carries its `fromUuid`, `toUuid` and `weight` as provenance —
+no other kind serialises those fields — and its `uuid` is the visit key, headed
+as always by `members`.
 
 The pool is walked in full, and the **records** are ready for it: a screen
 record and a full-corpus verdict may both be keyed by a visit key, and every
@@ -383,15 +404,18 @@ the pool reports:
 | Figure | Value |
 | --- | --- |
 | pool | 2386 visits (799 neuron, 1587 synapse) |
-| synapse proposals built and validated | 1129 |
-| refused | 458 — 270 `aggregate-squash`, 188 `unsafe-topology` |
-| removed per accepted proposal | 2.03 synapses, 0.89 neurons cascaded |
-| cost | ~2.3–2.6ms per synapse visit, ~3.2–3.6ms per proposal built |
+| synapse proposals built and validated | 1587 |
+| refused | 0 |
+| removed per accepted proposal | 1.46 synapses, 0.32 neurons cascaded |
+| cost | ~3.5ms per synapse visit, ~3.5ms per proposal built |
 
-Two thirds of the edges yield a candidate, and the average accepted proposal
-takes more than the one synapse it asked for — the cleanup cascade takes the
-structure the cut stranded with it. The refusals are the aggregate collectors
-and the typed gates, both failing closed as they should.
+**Every** edge yields a candidate. The aggregate collectors and the typed gates
+used to fail closed here — 458 refusals, 188 of them under the retired
+`unsafe-topology` code — but since Issue #182 the shared NEAT-AI-core engine
+rewrites both, so there is no topology the razor refuses to try (Issue #192);
+the full-corpus scorer is the only thing that turns a candidate down. The
+average proposal still takes more than the one synapse it asked for, because the
+cleanup cascade takes the structure the cut stranded with it.
 
 ## Mean-activation ablation
 
@@ -470,7 +494,10 @@ Exactly zero, never "near zero": a weight of `1e-18` is small, not absent, and
 cutting it stays the scorer's decision. Typed synapses and aggregate-squash
 targets (`MIN`, `MAX`, `IF`, `HYPOT`, `MEAN`) are skipped, never guessed — an
 aggregate reduces its whole synapse range, so dropping a member changes the
-reduction. Duplicate consolidation needs no rule of its own: NEAT-AI-core
+reduction. Skipped here means *left for the scorer*, not blocked: this pass only
+makes rewrites that are exact by construction, and the same structure is an
+ordinary pruning candidate core converts, folds or approximates (Issues #196, #197
+and #200). Duplicate consolidation needs no rule of its own: NEAT-AI-core
 refuses duplicate ordinary synapses, and the one transform that can create a
 parallel edge merges it by adding weights as it writes it.
 
@@ -842,7 +869,7 @@ against:
 |---|---|---|---|
 | Candidate the scorer screened, winner or loser | `identity` / `ablation` / `constant` / `merge` | 2 | checked |
 | A [synapse visit](#synapse-visits) the scorer screened | `synapse` | 2 | checked |
-| Nothing could be proposed — no finite activation statistic, a candidate that would not validate | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
+| Nothing could be proposed — a candidate that would not validate, a request naming structure the incumbent does not carry | `skipped` (with a `blockedReason`) | 3 | checked **and** blocked |
 | A standing full-corpus verdict suppressed the try | `known-failure` | 3 | checked |
 
 A synapse visit files exactly what a neuron visit files (#136): the visit key in
@@ -881,12 +908,19 @@ reached that way, so the percentage never claims a screen that never happened.
 
 Since #103 a blocked visit also records **why**, as a reason code on the record
 (`blockedReason`), and each batch logs its skips by the same codes
-(`missing-activation: 6, known-failure: 3`). One number could not be attacked; a
+(`other: 6, known-failure: 3`). One number could not be attacked; a
 breakdown can be, and the dominant category — aggregate and typed structure the
 bias fold cannot express — is now *proposed* as a
-[constant substitution](docs/blocked-reasons.md) rather than blocked, which is
-why `aggregate-squash` is a category the codes can still name but the sweep
-rarely reaches. `blocked` never meant *not pruneable forever*: it means the
+[constant substitution](docs/blocked-reasons.md) rather than blocked. Since
+Issue #200 `aggregate-squash` is **retired** outright: NEAT-AI-core converts an
+aggregate target a cut leaves holding one inward edge, folds one left holding
+none into its bias, and otherwise drops the term as an approximate candidate the
+scorer judges, so no binary files the code and a blocked record carrying it is
+dropped at load. Each conversion is named on the telemetry detail's
+`convertedNeurons` row — the neuron, the aggregate it declared and the
+point-wise squash it declares now — so the run's evidence says which aggregate
+stopped aggregating rather than leaving a reader to diff two creatures.
+`blocked` never meant *not pruneable forever*: it means the
 current proposal mechanism does not know how to test this neuron safely, and the
 code says which mechanism is missing.
 
@@ -1268,6 +1302,86 @@ flowchart TD
     S --> B
 ```
 
+### Screening throughput and rescan ETA
+
+The optimisation target is not "walk UUIDs quickly". It is **find
+scorer-verified removable structure per wall-clock hour** (#162). A sweep can
+reach seven thousand entries in a run while only a few hundred of them ever
+become a candidate a scorer judges, so every stage of the walk is counted
+separately and none of them is a synonym for another:
+
+| Stage | What it counts | `coverage.json` |
+|---|---|---|
+| visits | Every visit attempt, revisits included | `throughput.funnel.visits` |
+| revisits | Visits over keys the fleet had already checked at open | `throughput.funnel.revisits` |
+| blocked | Visits the razor could propose no cut for — no scorer was paid | `throughput.funnel.blocked` |
+| proposed | Valid pruning candidates constructed | `throughput.funnel.proposed` |
+| sample-screened | Candidates that entered the sampled screen | `throughput.funnel.sampleScreened` |
+| sample winners | Candidates the sampled screen promoted | `throughput.funnel.sampleWinners` |
+| full-scored | Candidates the full corpus scored individually | `throughput.funnel.fullScored` |
+| confirmed | Full-scored candidates whose own Δ beat `--min-improvement` | `throughput.funnel.confirmed` |
+| applied | Candidates an accepted winner applied | `throughput.funnel.applied` |
+
+Every stage carries `neurons`, `synapses` and `total`, so a neuron rate and an
+edge rate are never averaged into one number. A visit key that parses as a
+[synapse visit](#synapse-visits) is an edge; everything else is a neuron, and
+the full-scoring stages classify by the cohort label the entry was scored
+under — `synapse` is the one that removes no hidden neuron (#138).
+
+Two things are deliberately **not** in the funnel:
+
+- **group proposals** (#108). A neighbourhood rides the batch as an extra
+  candidate; it is not a sweep visit, and counting it would credit the walk with
+  a visit the permutation never made;
+- **replayed known winners** (#52, #101). Their candidates came from the
+  learnings cache rather than from this run's screening pipeline. What a replay
+  accept removed is still reported, by `cut:` and `winners:`.
+
+Rates are per hour of **measured** wall clock — the optimisation loop's own
+elapsed time, never the configured `--timeout-seconds`. A run that stopped on its
+experiment cap after four minutes of a one-hour budget, or spent most of its
+budget in replay and full scoring, reports the whole-run rate it actually
+achieved.
+
+Two rescan ETAs are reported, because "checked" costs two very different
+amounts of work — a visit nothing can be proposed for files a record without
+paying a scorer (#93):
+
+| ETA | Question it answers |
+|---|---|
+| `visitRescanHours` | How long to walk every eligible visit once, at this run's measured visit rate? |
+| `scoredRescanHours` | How long to construct and sample-score every currently **proposable** candidate once, at this run's measured screen rate? |
+
+The proposable population is the current population scaled by the proposable
+fraction the run measured, per kind (`proposableEstimate`): a creature whose
+edges are mostly typed proposes few of them, so a rescan of it has
+correspondingly little to score. Both ETAs are `null` rather than `0.0` when
+nothing was measured to estimate from — a kind with a live population the run
+never visited leaves `scoredRescanHours` **unknown**, because a total that
+quietly omitted it would read as though it covered both kinds.
+
+The two agree whenever every proposed candidate was screened, and that agreement
+is a finding rather than a defect: finding the proposable candidates means
+walking the blocked visits too, so both ETAs pay for the blocked population.
+They diverge as soon as proposals go unscreened — a coverage tail (#91), a run
+with screening off, a cohort the wall-clock budget stopped — which is the case
+the two numbers exist to separate.
+
+```mermaid
+flowchart LR
+    V["visits<br/>(walk rate)"] --> B{"proposable?"}
+    B -->|no| K["blocked<br/>no scorer paid"]
+    B -->|yes| P["proposed"]
+    P --> S["sample-screened<br/>(screen rate)"]
+    S --> W["sample winners"]
+    W --> F["full-scored"]
+    F --> C["confirmed"]
+    C --> A["applied"]
+    K --> E1["visit rescan ETA<br/>population / visits per hour"]
+    V --> E1
+    S --> E2["scored rescan ETA<br/>proposable / screened per hour"]
+```
+
 ### The GRQ commit-description contract
 
 The `ockham` tag is one crowded line, so the readable answer to "how many
@@ -1292,8 +1406,9 @@ epoch:     corpus 6fc028da — coverage counts this corpus only
 cut:       7 this run
 unchecked: 3809 remaining this epoch (~39 runs at 100/run)
 blocked:   412 checked with no cut proposed
-reasons:   missing-activation 380 (92.2%) · validation-failed 32 (7.8%)
+reasons:   other 380 (92.2%) · missing-activation 32 (7.8%)
 tagged:    42 carry tags, screened like any other
+snapshot:  final · creature 4b1d90c7 · 3013 hidden + 2000 synapses = 5013 visits
 progress:  100 newly checked this run
 passes:    7 complete this epoch · 1 this run · pass 8 in progress
 visits:    120 hidden neurons visited this run · 118 revisited
@@ -1301,6 +1416,10 @@ history:   4802 of 5013 ever checked across 3 corpus epochs
 winners:   38 screened · 22 confirmed · 1 applied · 21 carried
 bundles:   9 plans · best 14 cuts (Δ +1.2e-4) · 3 skipped
 dropped:   12 entries over budget (est 18s/creature)
+funnel:    neurons 9100 visits · 8680 blocked · 420 proposed · 312 screened · 24 scored
+funnel:    synapses 31400 visits · 29295 blocked · 2105 proposed · 1840 screened · 60 scored
+rate:      neurons 312 screened/h · synapses 1840 screened/h · full rescan ~0.8h
+eta:       visit rescan ~0.2h · scored rescan ~0.8h · 5013 neurons + 2000 edges eligible
 ```
 
 - the runs-remaining estimate divides `unchecked` by the configured
@@ -1355,14 +1474,42 @@ dropped:   12 entries over budget (est 18s/creature)
 - the `winners:` / `bundles:` / `dropped:` lines are each omitted when they have
   nothing to report, so a run that screened nothing renders the coverage lines
   alone, exactly as it did before they existed;
+- the `funnel:` / `rate:` / `eta:` lines say how fast the sweep got there rather
+  than where it got to (#162), and the whole block is omitted when the run
+  measured no wall clock or reached no visit. There is one `funnel:` line per
+  kind — the synapse line is omitted when the run walked no edge, exactly as the
+  `visits:` line above it is — and each names every stage separately, so
+  `visited`, `proposed`, `screened` and `scored` can never be read as the same
+  figure. `rate:` is the compact GRQ line: the per-kind screened-per-hour
+  figures and the full rescan ETA — the same figure `eta:` names `scored
+  rescan`, carried alone so a reader of the subject line has it. `eta:` carries
+  both rescan estimates beside the eligible population they are over, renders
+  `unknown` — never a zero — for an estimate nothing was measured for, and
+  `none left` when there is genuinely nothing proposable to get through. See
+  [Screening throughput and rescan ETA](#screening-throughput-and-rescan-eta);
+- the `snapshot:` line names the one measurement every figure above it came
+  from (#171): the stage (`final` — after the last accepted creature was
+  selected), the creature the counts were taken over, and the two populations
+  that add up to the `sweep:` denominator. It sits directly under those figures
+  and is omitted only by an artefact written before it existed. It scopes the
+  **current-epoch** figures and the run's own counts; the `history:` line below
+  it stays cumulative across every epoch and says so in its own words, so the
+  two are never read as one number. See
+  [One snapshot, four surfaces](#one-snapshot-four-surfaces);
 - `coverage.json` carries the same per-run figure under `newlyScreened`, the
   epoch under `corpusIdentity` (in full), the cumulative figures under an
   additive `history` key, the pass counters under an additive `passes` key
   (`sweepRestartsRun`, `sweepsCompletedEpoch`, `currentPass`, `visitedRun`,
-  `revisitedRun`) and the winner figures under an additive
-  `winners` key, and
+  `revisitedRun`), the winner figures under an additive
+  `winners` key and the funnel, rates and ETAs under an additive `throughput`
+  key (`elapsedMs`, `funnel`, `hidden`, `synapses`, `visitsPerHour`,
+  `proposedPerHour`, `screenedPerHour`, `fullScoredPerHour`,
+  `proposableEstimate`, `visitRescanHours`, `scoredRescanHours`) and the
+  measurement itself under an additive `snapshot` key (`stage`, `creature`), and
   still deserialises straight into `Coverage` for a consumer that ignores them,
-  so nothing downstream needs to parse the prose.
+  so nothing downstream needs to parse the prose. `ockham report` reads the same
+  `throughput` snapshot back off the journal's `coverage` record, so the three
+  surfaces quote the same rates.
 
 Both files are written only when coverage exists: no `--learnings-dir` means no
 screen store, no coverage state, and neither file. A write fault warns and the
@@ -1377,6 +1524,50 @@ flowchart LR
     C --> S["coverage.json — Coverage struct"]
     T --> G["GRQ: git commit description"]
     S --> G
+```
+
+### One snapshot, four surfaces
+
+A GRQ-sampler commit once reported `sweep 10338/55649 (18.6%)` in its subject
+and `13481/55649 (24.2%)` in its body, with nothing to say which was which
+(#171). Neither figure was wrong: they were **two snapshots**. The `ockham`
+check-in tag is stamped the moment an accept publishes `best.json`, and the run
+keeps screening afterwards — in the coverage tail a replay accept opens (#91),
+or in the sweep a search accept rebuilds over the changed creature — so the
+description written when the run ended counted everything screened after the
+cut, and the subject still carried the figure at the cut.
+
+Ockham now measures coverage **once**, after the final accepted creature is
+selected, and renders every published figure from that one snapshot:
+
+- the subject clause comes from `Coverage::subject_clause`, so the subject and
+  the description share one numerator, one denominator, one epoch identity and
+  one percentage calculation — the only way they could disagree is by being
+  handed different snapshots;
+- the check-in tag is re-stamped from the final snapshot before the run exits,
+  whatever ended the search. It was previously re-stamped only after a coverage
+  tail, which left every **search** accept publishing the figure at its cut;
+- the snapshot names the creature it was measured over, so the hidden count,
+  the synapse count and the `sweep:` denominator they add up to are provably of
+  one creature — an accept that rewires the topology changes both the
+  denominator and the visit keys inside it, and the `snapshot:` line is what
+  makes that one legible state rather than two mixed.
+
+Distinct semantics stay distinct: `sweep:` is **unique** visit coverage of the
+current epoch, `passes:` counts **strict** sweep completions, `rescan:` counts
+**visit attempts** and the creature-equivalent passes they add up to, and
+`history:` is cumulative across every epoch. One snapshot means one moment, not
+one number.
+
+```mermaid
+flowchart TD
+    A["accept publishes best.json<br/>(working figure, superseded)"] --> K["run keeps screening<br/>coverage tail or rebuilt sweep"]
+    K --> F["final snapshot:<br/>coverage over the creature<br/>the run finished on"]
+    F --> R["CoverageReport"]
+    R --> S["subject_clause<br/>→ re-stamped ockham tag"]
+    R --> D["description<br/>→ coverage.txt"]
+    R --> J["serialised<br/>→ coverage.json"]
+    F --> V["journal coverage record<br/>→ ockham report"]
 ```
 
 ### Unchecked-first selection
@@ -1802,8 +1993,11 @@ against the ranking it replaces: at 7,000 hidden neurons and 19,200 synapses,
 
 The estimate is a **prioritisation signal only**. It reasons about topology and
 knows nothing of aggregate squashes, typed synapses or behaviour: a candidate it
-ranks first can still be blocked when it is proposed, and can still lose. Only
-the full-corpus scorer accepts a cut — so every accept journals what the dry-run
+ranks first is cut by core whatever it is wired into — typed roles are rewritten
+(#182) and an aggregate target is converted, folded or approximated (#196, #197
+and #200), which is why neither `unsafe-topology` nor `aggregate-squash` is a
+blocked reason any more — but it can still lose. Only the full-corpus scorer
+accepts a cut — so every accept journals what the dry-run
 predicted beside what the accepted creature actually removed:
 
 ```json
@@ -1875,7 +2069,7 @@ The benchmark builds a creature carrying exactly the failure mode above: 60
 loud four-neuron chains whose last edge into the output carries weight zero,
 beside 600 quiet neurons wired straight into an output with a heavy weight and
 600 ordinary contributors. Every visited neuron goes through the real
-`ablate_mean` and its recursive cleanup, and the candidate is judged by a
+core prune and its cleanup fixed point, and the candidate is judged by a
 compiled forward pass over 64 fixed probes — **not** by the ranking key. A cut
 is *confirmed* when the outputs are unchanged within `1e-6`.
 
@@ -2064,7 +2258,7 @@ neurons as 1,500 lone neurons and 150 five-neuron chains, with the loud neurons
 carrying the heavy outgoing weights they earned. A quiet neuron is confirmable,
 except that one in ten is not and one loud neuron in twenty is anyway: a ground
 truth that *is* one of the ranking signals would score that signal against
-itself. Growth units are what the real `ablate_mean` and its recursive cleanup
+itself. Growth units are what the real core prune and its cleanup fixed point
 remove, not the ranking key. The budget is deliberately smaller than the sweep,
 because an ordering only matters when the budget cannot reach everything:
 
@@ -2136,7 +2330,7 @@ flowchart LR
     CH --> R{"rank: loudest<br/>mean_abs x importance<br/>÷ cascade saving"}
     BR --> R
     CL --> R
-    R --> G["ablate_group: fold every member's<br/>own mean, then the exact cleanup"]
+    R --> G["core prune_neuron per member,<br/>each on the last one's result"]
     G --> V["creature.validate()"]
     V --> S[sampled screen]
     S --> F[full-corpus scorer]
@@ -2359,7 +2553,7 @@ done
 ## Related repositories
 
 - [NEAT-AI](https://github.com/stSoftwareAU/NEAT-AI) — evolutionary neural-network library and trainer.
-- [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) — canonical Rust creature/network implementation.
+- [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) — canonical Rust creature/network implementation, and the canonical pruning rewrite engine: see [docs/pruning-ownership.md](docs/pruning-ownership.md) for the boundary between what core rewrites and what Ockham chooses.
 - [NEAT-AI-scorer](https://github.com/stSoftwareAU/NEAT-AI-scorer) — authoritative scorer used by Ockham.
 - [NEAT-AI-Forests](https://github.com/stSoftwareAU/NEAT-AI-Forests) — experimental search for useful structure to add.
 - [NEAT-AI-Lamarck](https://github.com/stSoftwareAU/NEAT-AI-Lamarck) — experimental acquired-information optimisation.
@@ -2371,6 +2565,50 @@ The project is pure Rust and expects sibling clones of `NEAT-AI-core` and
 
 ```bash
 ./quality.sh < /dev/null
+```
+
+Fleet hosts do not run `cargo build` on every run. Run
+[`scripts/runlib.sh`](./scripts/runlib.sh) from the repository root: it installs
+the CLI to `~/.cargo/bin/neat_ai_ockham` (`$CARGO_HOME/bin` when that is set)
+with the crate version stamped beside it in `.neat_ai_ockham.version`, prints
+that path on stdout, and removes `target/` after a successful install. A second
+run on the same crate version prints `[neat_ai_ockham] already installed v<x>`
+and runs no cargo command at all.
+
+### Canonical runlib.sh
+
+`scripts/runlib.sh` is **owned by
+[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)** — its one home is
+`scripts/runlib.sh` on that repository's `Develop` branch (NEAT-AI-core#680).
+The copy here is byte-identical and is never edited in this repository: change
+it in core, and the `version-increment` job refreshes the copy on the next PR,
+riding the same commit as the version bump. That job fails when core's file
+cannot be fetched (Issue #209).
+
+A refreshed copy is linted and contract-tested **inside the refreshing step**,
+before it is committed: a push made with the default `GITHUB_TOKEN` starts no
+new workflow run, so the `shell-checks` job of the *same* run only ever sees the
+pre-refresh checkout. Gating the new bytes where they are fetched is what keeps
+"the CI lints the copied script" true rather than aspirational.
+
+Two carve-outs, both inherited from the job itself: `version-increment` is
+skipped on **fork** PRs (it cannot push to a fork's branch), so a fork's copy is
+refreshed when a maintainer's follow-up branch runs the job; and a PR opened
+while core's `Develop` is mid-change refreshes to whatever core has at that
+moment, by design — `Develop` is the copy contract's source of truth.
+
+```mermaid
+flowchart LR
+    A["PR opened / synchronised"] --> B["version-increment job"]
+    B --> C["Fetch scripts/runlib.sh<br/>from NEAT-AI-core Develop"]
+    C -->|fetch fails| D["Job fails —<br/>ci-required blocks the merge"]
+    C -->|identical| F["Leave it alone"]
+    C -->|differs| E["Overwrite the local copy"]
+    E --> L["shellcheck + runlib contract tests<br/>on the new bytes"]
+    L -->|fails| D
+    L -->|passes| G["Bump ockham/Cargo.toml"]
+    F --> G
+    G --> H["One commit, one push:<br/>bump + refreshed runlib.sh"]
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the local and CI quality gates.
@@ -2403,7 +2641,8 @@ NEAT-AI-Ockham/
 │       ├── corpus.rs          # training-data identity / streaming
 │       ├── baseline.rs        # full-corpus scorer baseline
 │       ├── stats.rs           # activation statistics + synapse-source values
-│       ├── ablation.rs        # mean-activation + single-synapse ablation + cleanup
+│       ├── ablation.rs        # growth units, structure snapshots + exact cleanup
+│       ├── prune.rs           # NEAT-AI-core prune requests + their reports
 │       ├── collapse.rs        # exact IDENTITY neuron collapse
 │       ├── canonical.rs       # exact zero-risk cleanup pre-pass
 │       ├── substitute.rs      # mean-valued constant substitution
@@ -2427,13 +2666,16 @@ NEAT-AI-Ockham/
 │       ├── model.rs           # learned logistic ranker (ranking only)
 │       ├── neighbourhood.rs   # bounded chain/branch group-cut proposals
 │       ├── telemetry.rs       # candidate feature/outcome training rows
+│       ├── throughput.rs      # screening funnel, per-hour rates, rescan ETAs
 │       ├── fixtures.rs
 │       ├── run.rs
+│       ├── clock.rs           # injected run-budget time source (real or manual)
 │       ├── log.rs
 │       └── cancel.rs
 ├── docs/
 │   ├── grq-integration.md   # audit: how GRQ invokes Ockham and reads it back
 │   ├── blocked-reasons.md   # blocked codes, and the path built for the largest
+│   ├── pruning-ownership.md # design reference: rewrites belong in NEAT-AI-core
 │   ├── population-entry.md  # how cuts actually enter the live population
 │   └── incident-response.md # emergency dependency fast lane (SECURITY.md)
 ├── quality.sh

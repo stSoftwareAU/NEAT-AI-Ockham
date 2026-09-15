@@ -6,8 +6,8 @@
 //! carrying chains, single-output tributaries and lone neurons.
 //!
 //! Nothing here is scored by the ranking key it was chosen with. Every proposal
-//! is put through the real [`neat_ai_ockham::ablate_group`] and every
-//! comparison cut through the real [`neat_ai_ockham::ablate_mean`], recursive
+//! is put through the real [`neat_ai_ockham::prune_hidden_group`] and every
+//! comparison cut through the real [`neat_ai_ockham::prune_hidden_neuron`], recursive
 //! cleanup and all, and what those transforms actually remove is what is
 //! reported: neurons and synapses removed per accepted proposal, and the
 //! wall-clock cost of proposing them.
@@ -27,7 +27,7 @@ use neat_ai_ockham::neighbourhood::{
     propose_neighbourhoods,
 };
 use neat_ai_ockham::stats::{ActivationStats, NeuronStats};
-use neat_ai_ockham::{GroupMember, ablate_group, ablate_mean};
+use neat_ai_ockham::{GroupMember, prune_hidden_group, prune_hidden_neuron};
 use neat_core::{CreatureExport, compile_creature};
 
 /// Lone neurons, linear chains and single-output tributaries in one creature.
@@ -284,11 +284,11 @@ fn main() {
                 .filter_map(|uuid| {
                     stats.by_uuid(uuid).map(|s| GroupMember {
                         uuid: uuid.clone(),
-                        mean: s.mean,
+                        mean: Some(s.mean),
                     })
                 })
                 .collect();
-            match ablate_group(&creature, &members) {
+            match prune_hidden_group(&creature, &members) {
                 Ok(built) => group.observe(&built.before, &built.after),
                 // Never silent: a refusal changes what the totals below mean.
                 Err(skip) => println!("  refused {}: {skip}", proposal.members.join(" + ")),
@@ -303,7 +303,7 @@ fn main() {
                 let Some(mean) = stats.by_uuid(uuid).map(|s| s.mean) else {
                     continue;
                 };
-                match ablate_mean(&creature, uuid, mean, None) {
+                match prune_hidden_neuron(&creature, uuid, Some(mean), None) {
                     Ok(built) => {
                         let saved = built.before.growth_units - built.after.growth_units;
                         let better = best.as_ref().is_none_or(|(before, after)| {
@@ -383,10 +383,10 @@ fn fidelity() {
         .iter()
         .map(|uuid| GroupMember {
             uuid: uuid.clone(),
-            mean: stats.by_uuid(uuid).expect("measured").mean,
+            mean: Some(stats.by_uuid(uuid).expect("measured").mean),
         })
         .collect();
-    let grouped = ablate_group(&creature, &members).expect("the chain must build");
+    let grouped = prune_hidden_group(&creature, &members).expect("the chain must build");
     println!(
         "\nfidelity on one {}-neuron {}, {SAMPLES} inputs in [-2, 2]:",
         proposal.members.len(),
@@ -400,7 +400,8 @@ fn fidelity() {
     );
     for uuid in &proposal.members {
         let mean = stats.by_uuid(uuid).expect("measured").mean;
-        let single = ablate_mean(&creature, uuid, mean, None).expect("member must build");
+        let single =
+            prune_hidden_neuron(&creature, uuid, Some(mean), None).expect("member must build");
         println!(
             "  {:<26} {:.6} mean |Δoutput|, {} hidden removed",
             format!("single cut of {uuid}"),
@@ -454,7 +455,7 @@ fn stats_measured(creature: &CreatureExport, samples: usize) -> ActivationStats 
     for x in inputs(samples) {
         net.activate(&[x], 1);
         for (slot, (index, _)) in hidden.iter().enumerate() {
-            let value = f64::from(net.activations[net.num_inputs + index]);
+            let value = f64::from(net.activations()[net.num_inputs() + index]);
             sums[slot].0 += value;
             sums[slot].1 += value.abs();
         }

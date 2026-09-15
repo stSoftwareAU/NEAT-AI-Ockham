@@ -141,15 +141,22 @@ impl MergeSkip {
     /// The reason code this skip is counted under (Issue #103).
     pub fn blocked_reason(&self) -> BlockedReason {
         match self {
-            Self::AggregateTarget { .. } => BlockedReason::AggregateSquash,
             Self::NonFiniteRelation(_) => BlockedReason::MissingActivation,
             Self::NoOutgoing(_) => BlockedReason::NoOutputPath,
-            Self::UnknownNeuron(_)
+            // Shapes a *merge* cannot make sense of, and requests naming
+            // structure the incumbent does not carry. The neuron itself is
+            // still prunable — the shared engine takes it (#182), and since
+            // Issue #200 it converts, folds or approximates every aggregate
+            // target rather than refusing one — so these are findings about
+            // this transform rather than a topology or aggregate category
+            // (Issues #192, #200).
+            Self::AggregateTarget { .. }
+            | Self::UnknownNeuron(_)
             | Self::NotHidden { .. }
             | Self::SameNeuron(_)
             | Self::TypedSynapse { .. }
             | Self::SelfLoop { .. }
-            | Self::NotForward { .. } => BlockedReason::UnsafeTopology,
+            | Self::NotForward { .. } => BlockedReason::Other,
             Self::Invalid(_) => BlockedReason::ValidationFailed,
             // A merge that grew the creature broke the structural invariant
             // above; nothing the razor could have built a path for.
@@ -642,12 +649,14 @@ mod tests {
         let err =
             merge_correlated(&incumbent, "h_b", "h_a", LinearRelation::IDENTICAL).unwrap_err();
         assert!(matches!(err, MergeSkip::TypedSynapse { .. }), "{err}");
-        assert_eq!(err.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert_eq!(err.blocked_reason(), BlockedReason::Other);
         // `h_b`'s ordinary edge still lands on an aggregate that does not sum.
         let err =
             merge_correlated(&incumbent, "h_a", "h_b", LinearRelation::IDENTICAL).unwrap_err();
         assert!(matches!(err, MergeSkip::AggregateTarget { .. }), "{err}");
-        assert_eq!(err.blocked_reason(), BlockedReason::AggregateSquash);
+        // A finding about the merge, not a category: `aggregate-squash` is
+        // retired since Issue #200.
+        assert_eq!(err.blocked_reason(), BlockedReason::Other);
     }
 
     /// A survivor that sits after the target would make the rewritten edge run
@@ -741,7 +750,7 @@ mod tests {
         let err =
             merge_correlated(&incumbent, "h_a", "h_b", LinearRelation::IDENTICAL).unwrap_err();
         assert!(matches!(err, MergeSkip::SelfLoop { .. }), "{err}");
-        assert_eq!(err.blocked_reason(), BlockedReason::UnsafeTopology);
+        assert_eq!(err.blocked_reason(), BlockedReason::Other);
     }
 
     #[test]

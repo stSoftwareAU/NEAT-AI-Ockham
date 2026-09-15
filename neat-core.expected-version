@@ -9,4 +9,177 @@
 # 0.10.6: bootstrap against the current family pin (NEAT-AI-core #577 synapse
 # uniqueness by (fromUUID, toUUID, type)). Ockham issue #1 does not yet mutate
 # creatures; the pin documents the sibling we compile against.
-0.10.6
+#
+# 0.10.6 -> 0.11.4: acknowledge neat-core #619 (0.11.0), the Pruning milestone
+# roll-up (Issues #588, #589 and their siblings). It is additive: it adds the
+# `prune_cleanup`, `prune_fixtures`, `prune_json`, `prune_neuron` and
+# `prune_synapse` modules and their re-exports, and removes or renames nothing
+# Ockham names (`CreatureExport`, `NeuronExport`, `SynapseExport`, `SquashType`,
+# `compile_creature`, `apply_squash`, `parse_creature_json`, `creature_to_json*`,
+# `parse_squash_name`, `parse_synapse_type`, `validate_no_duplicate_synapses`,
+# `training_data`). The minor bump is the milestone policy in neat-core's
+# RELEASING.md, not a signature change. Within the line, 0.11.2 (#626, Issue
+# #613) withdrew the `weighted_sum_*_simd` kernels whose `get_unchecked`
+# preconditions were caller-upheld; Ockham calls none of them. 0.11.1, 0.11.3
+# and 0.11.4 are bump-deps.sh fixes with no library change. No Ockham source
+# change was required; as Issue #183 reports, `cargo build`, clippy with `-D warnings`
+# and the full test suite were green against 0.11.1 with no edit.
+#
+# 0.11.4 -> 0.13.0: acknowledge neat-core #633 (Issue #625, 0.12.0), which made
+# every `CompiledNetwork` field private behind borrow-only accessors so safe
+# code can no longer edit a validated network into an out-of-bounds SIMD read,
+# and 0.13.0 (#637, the security-scan milestone roll-up; nothing Ockham names
+# changed). Ockham read `num_inputs` and `activations` directly in `stats.rs`;
+# those reads now go through `num_inputs()` and `activations()`. Unhandled, the
+# same bump took the GRQ fleet down through rust_scorer (GRQ#4724); Ockham was
+# next in line because GRQ builds it from the same sibling neat-core at head.
+# Verified by `cargo clippy --all-targets -- -D warnings` and the full test
+# suite against the sibling clone at 0.13.0 (59eb6e6).
+
+# 0.13.0 -> 0.14.1: acknowledge neat-core #640 (Issue #622, 0.14.0), which bounds
+# a creature's DECLARED observation width before it is walked:
+# `validate_creature_width` now refuses a declared `input` above MAX_NODE_COUNT
+# with `CreatureError::TooManyNodes`, so `compile_creature`,
+# `validate_creature_topology` and `cleanup_creature_with` no longer size an
+# allocation by an unbounded literal. Pre-1.0 that is a minor bump because input
+# previously accepted is now refused; 0.14.1 (#641) is a bump-deps.sh fix with no
+# library change. Ockham names none of the affected items (no `TooManyNodes`,
+# `validate_creature_width` or MAX_NODE_COUNT reference in `ockham/src`), and the
+# creatures it screens are real exports far below the ceiling, so no Ockham
+# source change was required. Verified against the sibling clone at Develop
+# 0.14.1 (255b06e): `cargo build`, `cargo clippy --workspace --all-targets
+# --all-features -D warnings` and `cargo test --workspace --all-features`
+# (665 lib + 56 integration tests) are all green.
+
+# 0.14.1 -> 0.14.4: patch releases with no library change Ockham names. The
+# sibling clone this branch builds against is 0.14.4, and Issue #182 compiles
+# against its `prune_neuron` / `prune_synapse` surface (neat-core #587's
+# Pruning milestone), so the recorded baseline moves with it.
+
+# 0.14.4 -> 0.15.4: acknowledge neat-core #653 (Issue #601, 0.15.0), which adds
+# the `NetworkError::InvalidInputCount { num_inputs, num_neurons }` variant.
+# `CompiledNetwork::new` computed `num_neurons - num_inputs` straight from the
+# 8-byte header, so a malformed buffer declaring more inputs than nodes wrapped
+# that usize subtraction (release builds carry Cargo's default
+# `overflow-checks = false`) and aborted the module in `Vec::with_capacity`; the
+# header is now validated first and such a buffer returns the new variant.
+# Pre-1.0 that is a breaking bump only because `NetworkError` is not
+# `#[non_exhaustive]`, so a downstream exhaustive `match` must gain an arm.
+# Ockham names `NetworkError` nowhere (no reference in `ockham/src` or
+# `ockham/tests`): it reaches a network only through `compile_creature`, never
+# through `CompiledNetwork::new` on a serialised buffer, and renders the error it
+# does see with `to_string()` rather than matching it. No Ockham source change
+# was required. 0.14.5-0.14.7 and 0.15.1-0.15.4 are patch releases
+# (a CI exit-status fix, `MemeticExport::prune_to` bounding the declared
+# observation width, a `propagate_codec` overflow fix, and bats/Deno workflow
+# work) with no library change Ockham names. Verified against the Develop head
+# clone at 0.15.4 (ed3165a): `cargo clippy --workspace --all-targets
+# --all-features -- -D warnings` and `cargo test --workspace --all-features`
+# (675 lib + 70 integration tests) are green with no edit.
+
+# 0.15.4 -> 0.16.0: acknowledge Ockham #196 (neat-core 0.16.0), which widens the
+# pruning compensation rule. `prune_neuron` and `prune_synapse` used to refuse a
+# bias fold to **every** aggregate target and name it on
+# `PruneResult::uncompensated`; a target the cut leaves with **no inward edge**
+# now takes the fold, because the forward pass evaluates a zero-edge MINIMUM,
+# MAXIMUM, MEAN or HYPOT from its bias alone. HYPOT folds the magnitude `|W.mu|`,
+# and a bare HYPOTv2 target — whose bias lives inside a per-synapse square that
+# no longer exists — is rewritten to ABSOLUTE over the folded bias. `IF` is
+# excluded: what it lost is a role, and IfRepair owns that. Pre-1.0 that is a
+# minor bump because documented pruning behaviour callers rely on changed, not
+# because any public item did: no signature, type or name Ockham compiles
+# against moved. Ockham only *reports* what a `PruneResult` carries
+# (`ockham/src/prune.rs::PruneDetail::absorb` copies `bias_folds`,
+# `uncompensated`, `transform` and the rest into its journal records), so what
+# it sees is a better-compensated candidate — fewer `aggregate-target` entries,
+# and a `TransformClass::Exact` where the source's value was fixed — with no
+# Ockham source change required. Verified against the sibling clone at 0.16.0
+# (bc80140): `cargo test --workspace --all-features` (675 lib + 70 integration
+# tests) and `cargo clippy --workspace --all-targets --all-features -- -D
+# warnings` are green with no edit.
+
+# Within the same 0.16.0 line, Ockham #198 makes `prune_neuron` ask cleanup for
+# `IfRepair::Rewrite` — the exact `IF` repair `prune_synapse` already used —
+# instead of the TypeScript-parity `IfRepair::Downgrade`. An `IF` a neuron
+# removal leaves short of a role is now flattened onto the arm a statically
+# decided condition always takes, or given back the emptied arm on a zero-weight
+# support edge, so `PruneResult::downgraded_if_neurons` is always empty on both
+# entry points and `static_if_neurons` / `restored_if_roles` carry what happened.
+# `PruneResult::transform` also reaches `Exact` where the rewrite proves the lost
+# term cost nothing. Pre-1.0 that is a minor bump because documented pruning
+# behaviour callers rely on changed, not because any public item did. Ockham only
+# *reports* what a `PruneResult` carries (`ockham/src/prune.rs::PruneDetail::absorb`),
+# so what it sees is a better-rewritten candidate; the one edit is the doc comment
+# on `PruneDetail::downgraded_if_neurons`, which now records that the list can no
+# longer fill. Verified against the sibling clone on
+# `ockham-198-prune-neuron-if-rewrite` (0.16.0): `./quality.sh` is green here,
+# including `scripts/check-neat-core-version.sh` and the full suite.
+
+# 0.16.0 -> 0.18.0: acknowledge Ockham #201 (neat-core 0.18.0). Two things reach
+# Ockham, neither of them a source change here. First, the Ockham #198 entry is
+# retitled to the version it actually shipped as, 0.17.0 — its branch was cut at
+# 0.15.9 and claimed 0.16.0, #197 took that slot first, and core's auto-bump
+# moved it to 0.17.0 on merge. The behaviour was already acknowledged above;
+# only the number it carries was wrong. Second, 0.18.0 lands the Ockham #196
+# zero-edge bias fold, acknowledged above at 0.16.0 and described exactly as it
+# ships: its core branch was pushed but its PR was never opened, so the rule was
+# never on Develop, and the #201 branch merges it because corner case (11) is
+# that rule. The #201 work itself is test-only on the behaviour side — corner
+# cases 1-12 driven through `prune_neuron_json` / `prune_synapse_json` and added
+# to the golden parity record — plus one additive public item,
+# `impl From<&PruneResult> for PruneResponse`, which was the private
+# `PruneResponse::from_result`. Nothing Ockham compiles against was removed,
+# renamed or narrowed, and Ockham calls the native entry points rather than the
+# JSON ones. One behaviour moves with it, found by driving the shapes across
+# the wire: the zero-edge `HYPOTv2 -> ABSOLUTE` rewrite is now named on
+# `PruneResult::converted_neurons` like the single-edge conversion already was,
+# where before it happened silently. Ockham reads that list nowhere in
+# `ockham/src` — `PruneDetail::absorb` copies the fold, uncompensated and
+# transform fields — so it sees a more complete report and needs no edit. Verified against the sibling clone on
+# `ockham-201-prune-json-corner-cases` (0.18.0): `./quality.sh` is green here,
+# including `scripts/check-neat-core-version.sh` and the full suite.
+
+# Still 0.18.0 for Ockham #203, which changes what Ockham *records* rather than
+# what it compiles against. Two reports core already returned were dropped on the
+# floor here: `PruneResult::converted_neurons` — the single-edge aggregate
+# rewrites of #197, extended at 0.18.0 to name the zero-edge `HYPOTv2 ->
+# ABSOLUTE` one — and `UncompensatedTarget::dropped_mean`, the magnitude
+# `weight_sum . mu` of the term a target lost where a statistic or the creature's
+# own structure proves one. `PruneDetail::absorb` now copies both, onto
+# `PruneDetail::converted_neurons` (`convertedNeurons`) and
+# `UncompensatedRecord::dropped_mean` (`droppedMean`), so a run's journal says
+# which aggregate stopped aggregating and how big the dropped term was. The
+# baseline does not move for either: both items shipped with Ockham #197 in the
+# 0.16.0 line, and the 0.18.0 entry above records core extending
+# `converted_neurons` to name the zero-edge `HYPOTv2 -> ABSOLUTE` rewrite as
+# well, so the recorded 0.18.0 already covers every core release that carries
+# them. The sibling clone is at 0.17.0, below that baseline, and no public item
+# core exposes changed here. This is the file's first mention of `dropped_mean`
+# only because Ockham did not read the field until now, not because the core
+# release carrying it went unacknowledged.
+# `fully_compensated()` is unchanged with it: a converted target still
+# lost its term, so it is still named on `uncompensated` and Ockham's constant
+# substitution still runs for it. Verified against the sibling clone on
+# `Develop` (0.17.0, 282bc18): `./quality.sh` is green here, including
+# `scripts/check-neat-core-version.sh` and the full suite.
+
+# 0.18.0 -> 0.20.0: acknowledge neat-core #685/#686 (Issue #682, 0.19.0), the
+# only behavioural change since 0.18.0. `compile_creature` used to resolve a
+# synapse's `toUUID` by grouping synapses per listed neuron, so an edge naming
+# a neuron the creature does not carry was never looked up and silently
+# dropped — the compiled network came back `Ok` with one fewer synapse than
+# the creature declared. `CreatureError` gains `UnknownTargetUuid(String)`, and
+# `compile_creature` now refuses that creature instead. Pre-1.0 that is a
+# minor bump because `CreatureError` is not `#[non_exhaustive]`, so an
+# exhaustive downstream `match` gains a new arm to handle. Ockham names
+# `CreatureError` nowhere in `ockham/src` (every `compile_creature` call
+# reports the error generically via `.to_string()`/`map_err`, or `.unwrap()`s
+# a fixture creature that never carries a dangling `toUUID`), so no Ockham
+# source change was required. 0.19.1 and 0.20.0 are unrelated dependency and
+# tooling bumps (wasm-bindgen, the canonical runlib.sh build step) with no
+# library change Ockham names. Verified against the sibling clone at Develop
+# 0.20.0 (ae71f44): `cargo check`, `cargo clippy --workspace --all-targets
+# --locked -- -D warnings` and the full `cargo test --workspace --locked`
+# suite are green with no edit.
+
+0.20.0

@@ -199,26 +199,21 @@ pub struct OckhamProgress<'a> {
 ///
 /// The coverage clause uses the compact `sweep X/Y (Z% of epoch <id>)` form —
 /// this is a commit subject, so [`Coverage::summary`]'s fuller wording belongs
-/// in the commit description instead. `of epoch` is not decoration (Issue
-/// #102): `sweep 7284/7284 (100.0%)` reads as "Ockham has finished", and the
-/// next corpus makes that reading false, so the scope travels with the figure.
+/// in the commit description instead. It is rendered by
+/// [`Coverage::subject_clause`] rather than formatted here (Issue #171): the
+/// subject and the commit description then read one numerator, one denominator
+/// and one percentage calculation out of the same [`Coverage`] value, so the
+/// only way the two can disagree is by being handed different snapshots —
+/// which is why a run stamps this tag again from its final snapshot before it
+/// exits.
 pub fn ockham_progress_message(progress: &OckhamProgress<'_>) -> String {
     let delta = if progress.score > progress.opening {
         format!(" (+{:.2e})", progress.score - progress.opening)
     } else {
         String::new()
     };
-    let epoch = progress
-        .epoch
-        .map(|id| format!(" {}", crate::coverage::short_epoch(id)))
-        .unwrap_or_default();
     let coverage = progress.coverage.map_or_else(String::new, |c| {
-        format!(
-            " · sweep {}/{} ({:.1}% of epoch{epoch})",
-            c.checked,
-            c.checkable,
-            c.percent()
-        )
+        format!(" · {}", c.subject_clause(progress.epoch))
     });
     match progress.origin {
         "search" => format!(
