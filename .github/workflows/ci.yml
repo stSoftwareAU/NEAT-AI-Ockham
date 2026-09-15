@@ -125,6 +125,7 @@ jobs:
             "LICENSE"
             "CONTRIBUTING.md"
             "quality.sh"
+            "scripts/runlib.sh"
             "deny.toml"
             "rust-toolchain.toml"
             "ockham/src/main.rs"
@@ -176,6 +177,46 @@ jobs:
           # build script could read it; it is supplied per step instead.
           persist-credentials: false
 
+      - name: Refresh scripts/runlib.sh from NEAT-AI-core
+        # `scripts/runlib.sh` has one home — NEAT-AI-core `Develop`
+        # (NEAT-AI-core#680). It is never edited here: a stale copy is
+        # overwritten from core and rides the single commit this job already
+        # pushes, so the refresh never races the bump (Issue #209).
+        env:
+          CORE_REF: Develop
+          CORE_REPO: stSoftwareAU/NEAT-AI-core
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          fetched="${RUNNER_TEMP}/core-runlib.sh"
+          if ! gh api "repos/${CORE_REPO}/contents/scripts/runlib.sh?ref=${CORE_REF}" \
+            -H "Accept: application/vnd.github.raw" >"$fetched"; then
+            echo "Cannot fetch scripts/runlib.sh from ${CORE_REPO}@${CORE_REF}" >&2
+            exit 1
+          fi
+          # An error page or an empty body would otherwise be copied over the
+          # working script and only fail much later, somewhere else. The test is
+          # "a script bash can parse", not core's exact first line: core is free
+          # to change its shebang without hard-failing every PR here.
+          if [ ! -s "$fetched" ] || ! head -n 1 "$fetched" | grep -q '^#!' ||
+            ! bash -n "$fetched"; then
+            echo "Fetched ${CORE_REPO}@${CORE_REF} scripts/runlib.sh is not a bash script" >&2
+            exit 1
+          fi
+          if cmp -s "$fetched" scripts/runlib.sh; then
+            echo "scripts/runlib.sh already matches ${CORE_REPO}@${CORE_REF}"
+            exit 0
+          fi
+          echo "Refreshing scripts/runlib.sh from ${CORE_REPO}@${CORE_REF}"
+          cp "$fetched" scripts/runlib.sh
+          chmod +x scripts/runlib.sh
+          # The new bytes are gated *here*, where they arrive. A push made with
+          # the default GITHUB_TOKEN starts no new workflow run, so the
+          # `shell-checks` job of this run only ever saw the pre-refresh
+          # checkout — without this, a refreshed script could merge ungated.
+          shellcheck --severity=warning -s bash scripts/runlib.sh
+          ./scripts/test-runlib.sh </dev/null
+
       - name: Bump the crate version when this PR has not already
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -194,22 +235,42 @@ jobs:
           fi
           ./scripts/auto-version.sh ockham/Cargo.toml "$base" Cargo.lock
 
-      - name: Commit and push the bump
+      # One commit, one push: the bump and any runlib refresh travel together,
+      # so a refreshed copy can never race the bump onto the branch.
+      - name: Commit and push the bump and any runlib refresh
         env:
           HEAD_REF: ${{ github.head_ref }}
           PUSH_TOKEN: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- ockham/Cargo.toml Cargo.lock; then
-            echo "Version is already ahead of ${GITHUB_BASE_REF} — nothing to commit"
+          bumped=0
+          refreshed=0
+          if ! git diff --quiet -- ockham/Cargo.toml Cargo.lock; then
+            bumped=1
+          fi
+          if ! git diff --quiet -- scripts/runlib.sh; then
+            refreshed=1
+          fi
+          if [ "$bumped" -eq 0 ] && [ "$refreshed" -eq 0 ]; then
+            echo "Version is already ahead of ${GITHUB_BASE_REF} and scripts/runlib.sh matches core — nothing to commit"
             exit 0
           fi
-          version="$(./scripts/auto-version.sh --print ockham/Cargo.toml)"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ockham/Cargo.toml Cargo.lock
-          git commit -m "🪒 auto-increment crate version to ${version}"
+          git add ockham/Cargo.toml Cargo.lock scripts/runlib.sh
+          if [ "$bumped" -eq 1 ]; then
+            version="$(./scripts/auto-version.sh --print ockham/Cargo.toml)"
+            subject="🪒 auto-increment crate version to ${version}"
+          else
+            subject="🪒 refresh scripts/runlib.sh from NEAT-AI-core"
+          fi
+          if [ "$bumped" -eq 1 ] && [ "$refreshed" -eq 1 ]; then
+            git commit -m "$subject" \
+              -m "Refresh scripts/runlib.sh from NEAT-AI-core Develop (Issue #209)."
+          else
+            git commit -m "$subject"
+          fi
           git push "https://x-access-token:${PUSH_TOKEN}@github.com/${REPOSITORY}.git" \
             "HEAD:${HEAD_REF}"
 
@@ -253,6 +314,12 @@ jobs:
             exit 0
           fi
           shellcheck --severity=warning "${scripts[@]}"
+
+      - name: Check the canonical scripts/runlib.sh contract
+        run: ./scripts/test-runlib.sh
+
+      - name: Check the CI step that refreshes scripts/runlib.sh
+        run: ./scripts/test-runlib-refresh.sh
 
   spell-check:
     name: Spell Check

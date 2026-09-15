@@ -29,6 +29,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use neat_ai_ockham::clock::SystemClock;
 use neat_ai_ockham::fixtures::{creature, neuron, synapse};
 use neat_ai_ockham::scorer::{DirectoryScorer, ScoreResult, ScorerError, ScorerMode};
 use neat_ai_ockham::screening::{ProgressiveConfig, ScreenLadder, screen_progressive};
@@ -281,6 +282,7 @@ fn run_arm(name: &'static str, ladder: &ScreenLadder, workspace: &Path) -> Arm {
             let stem = format!("c{i:03}");
             stems.insert(stem.clone(), *id);
             candidates.push(SweepCandidate {
+                prune: None,
                 merged_with: None,
                 from_uuid: None,
                 to_uuid: None,
@@ -307,6 +309,7 @@ fn run_arm(name: &'static str, ladder: &ScreenLadder, workspace: &Path) -> Arm {
         let before_records = *scorer.records.borrow();
         let before_ms = *scorer.ms.borrow();
         let screen = screen_progressive(
+            &SystemClock,
             &scorer,
             workspace,
             &incumbent,

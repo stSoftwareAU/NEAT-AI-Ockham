@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use crate::baseline::{AuthoritativeBaseline, establish_baseline};
 use crate::cancel::CancelToken;
+use crate::clock::{Clock, SystemClock};
 use crate::config::OckhamConfig;
 use crate::corpus::corpus_info;
 use crate::incumbent::{Incumbent, IncumbentMeta, load_incumbent};
@@ -86,9 +87,27 @@ pub struct BaselineRun {
 ///
 /// Returns an error (fail closed) on invalid creatures, scorer failure or
 /// checksum drift. Never writes to [`OckhamConfig::creature`].
+///
+/// Runs on the real clock; [`establish_run_with_clock`] is the same run with
+/// its time source injected.
 pub fn establish_run(
     config: &OckhamConfig,
     scorer: &dyn DirectoryScorer,
+) -> Result<BaselineRun, String> {
+    establish_run_with_clock(config, scorer, &SystemClock)
+}
+
+/// [`establish_run`] with the run's budget clock injected (Issue #214).
+///
+/// Every duration the run's budget arithmetic reads comes from `clock`: its
+/// deadline, and the scorer costs the cohort sizing of Issue #58 and the
+/// screening reserve of Issue #77 are estimated from. A test can therefore
+/// assert what a run *decides* with a given budget left, instead of racing a
+/// wall-clock deadline against real sleeps.
+pub fn establish_run_with_clock(
+    config: &OckhamConfig,
+    scorer: &dyn DirectoryScorer,
+    clock: &dyn Clock,
 ) -> Result<BaselineRun, String> {
     let source = config.creature.clone();
     let source_before = std::fs::read(&source).map_err(|e| format!("{}: {e}", source.display()))?;
@@ -136,6 +155,7 @@ pub fn establish_run(
     let canonicalised = exact_cleanup.as_ref().is_some_and(|r| r.changed);
 
     let baseline = establish_baseline(
+        clock,
         &incumbent,
         &config.training_data,
         &corpus,
@@ -201,6 +221,7 @@ pub fn establish_run(
     let cancel = CancelToken::new();
     let loop_out = ockham_loop(
         config,
+        clock,
         scorer,
         &corpus,
         incumbent,
@@ -812,6 +833,7 @@ fn build_merge_index(config: &OckhamConfig, activation: &ActivationStats) -> Mer
 #[allow(clippy::too_many_arguments)]
 fn ockham_loop(
     config: &OckhamConfig,
+    clock: &dyn Clock,
     scorer: &dyn DirectoryScorer,
     corpus: &crate::corpus::CorpusInfo,
     mut incumbent: Incumbent,
@@ -825,7 +847,7 @@ fn ockham_loop(
     let journal_path = config.output_dir.join("experiments.jsonl");
     let seed = config.seed.unwrap_or_else(draw_seed);
     let ordering = config.ordering_config();
-    let started = Instant::now();
+    let started = clock.now();
     let opening_hidden = incumbent.hidden_neurons();
     log::info(&format!(
         "loop seed={seed}  ordering={}  randomQuota={}  hidden={}  budget={}s  candidates={}",
@@ -1013,6 +1035,10 @@ fn ockham_loop(
     // the ordering strategies — after the identity above is already fixed.
     let unchecked_first = config.unchecked_first_enabled();
     let mut progress = crate::coverage::ScreenProgress::new(&screens);
+    // How far each visit got, stage by stage (Issue #162). `progress` counts
+    // the visits themselves, so the funnel head is taken from it at the end
+    // rather than counted twice here.
+    let mut funnel = crate::throughput::Funnel::default();
     let mut sweep = fresh_sweep(
         &incumbent.creature,
         &activation,
@@ -1038,7 +1064,7 @@ fn ockham_loop(
         },
     )?;
 
-    let deadline = Instant::now() + config.timeout;
+    let deadline = clock.now() + config.timeout;
     let mut accepts = 0u64;
     let mut experiments = 0u64;
     let mut consecutive_fail = 0u32;
@@ -1114,7 +1140,7 @@ fn ockham_loop(
         // ended the search. What ended the tail is not lost — it is journalled
         // as its own `coverageTail` record. A fault — cancellation, a broken
         // scorer — overrides the stop reason as well.
-        if Instant::now() >= deadline {
+        if clock.now() >= deadline {
             if coverage_tail {
                 tail_end = "timeout".into();
             } else {
@@ -1141,7 +1167,7 @@ fn ockham_loop(
         let reserving = reserve_stands(
             &cost,
             config,
-            deadline.saturating_duration_since(Instant::now()),
+            deadline.saturating_duration_since(clock.now()),
             screened_batches,
         );
         // Silent in a coverage tail: the replay stage is already standing down
@@ -1258,6 +1284,7 @@ fn ockham_loop(
                             from_uuid: proposed.from_uuid,
                             to_uuid: proposed.to_uuid,
                             weight: proposed.weight,
+                            prune: proposed.prune,
                             stem: "r000".into(),
                             creature: proposed.creature,
                         },
@@ -1290,6 +1317,7 @@ fn ockham_loop(
                 ));
             }
             match evaluate_full(
+                clock,
                 scorer,
                 &config.training_data,
                 &incumbent.creature,
@@ -1311,7 +1339,7 @@ fn ockham_loop(
                     consecutive_fail = 0;
                     cost.observe_full(full.full_ms, full.entries());
                     tally.observe(&full, config.min_improvement);
-                    journal_full(&journal_path, &full, started)?;
+                    journal_full(&journal_path, &full, clock, started)?;
                     if full.winner.is_none() && sampled.is_empty() && applied.len() > 1 {
                         log::info(&format!(
                             "replay: every plan missed; probing {probe_n} known win(s) individually"
@@ -1329,6 +1357,7 @@ fn ockham_loop(
                                         from_uuid: proposed.from_uuid,
                                         to_uuid: proposed.to_uuid,
                                         weight: proposed.weight,
+                                        prune: proposed.prune,
                                         stem: "r000".into(),
                                         creature: proposed.creature,
                                     },
@@ -1348,6 +1377,7 @@ fn ockham_loop(
                         experiments += 1;
                         extra_plans = Vec::new();
                         match evaluate_full(
+                            clock,
                             scorer,
                             &config.training_data,
                             &incumbent.creature,
@@ -1369,7 +1399,7 @@ fn ockham_loop(
                                 consecutive_fail = 0;
                                 cost.observe_full(probe_full.full_ms, probe_full.entries());
                                 tally.observe(&probe_full, config.min_improvement);
-                                journal_full(&journal_path, &probe_full, started)?;
+                                journal_full(&journal_path, &probe_full, clock, started)?;
                                 // The probes are the honest per-uuid measurement
                                 // of a replayed win: one that has stopped paying
                                 // files a negative delta here and stops being
@@ -1403,6 +1433,7 @@ fn ockham_loop(
                                         unchecked_first,
                                         &screens,
                                         &prior,
+                                        clock,
                                         deadline,
                                         store.is_some(),
                                         ladder.is_some(),
@@ -1457,6 +1488,7 @@ fn ockham_loop(
                             unchecked_first,
                             &screens,
                             &prior,
+                            clock,
                             deadline,
                             store.is_some(),
                             ladder.is_some(),
@@ -1581,6 +1613,26 @@ fn ockham_loop(
         {
             progress.visit(uuid);
         }
+        // The same walk, split by how far it got (Issue #162): a visit the
+        // razor could build nothing from cost no scorer time and is counted
+        // apart from the candidates it did construct. Counted here, before the
+        // group proposals below join the batch, for the same reason the visits
+        // above are — a neighbourhood is not a sweep visit.
+        for skip in &skips {
+            let kind = crate::throughput::VisitKind::of_visit(&skip.uuid);
+            // The same split `skip_try` files below: a known failure was
+            // proposed, scored and judged on an earlier run, so it is skipped
+            // rather than blocked, and counting it as blocked would report
+            // proposable structure as unproposable (#162).
+            if skip.reason == crate::sweep::KNOWN_FAILURE_REASON && skip.blocked.is_none() {
+                funnel.record_judged(kind);
+            } else {
+                funnel.record_blocked(kind);
+            }
+        }
+        for candidate in &candidates {
+            funnel.record_proposed(crate::throughput::VisitKind::of_visit(&candidate.uuid));
+        }
         // Structural neighbourhood proposals ride the same batch (Issue #108):
         // a chain or a low-fan-out branch that no single-neuron cut can expose,
         // screened and scored exactly like every other candidate. They are
@@ -1634,7 +1686,7 @@ fn ockham_loop(
             }
         }
         let candidates = candidates;
-        let remaining_s = deadline.saturating_duration_since(Instant::now()).as_secs();
+        let remaining_s = deadline.saturating_duration_since(clock.now()).as_secs();
         log::info(&format!(
             "batch {batch_idx}: {} candidates ({group_candidates} group), {} skipped, \
              {} hidden left, {remaining_s}s remaining",
@@ -1687,9 +1739,22 @@ fn ockham_loop(
         }
 
         let batch_size = candidates.len();
+        // Candidates that entered the sampled screen (Issue #162), counted on
+        // entry so a screen the scorer lost still shows the wall clock it
+        // cost. With screening off there is no sampled stage to count: those
+        // candidates go straight to full scoring, and the full-scored stage is
+        // what moves.
+        if ladder.is_some() {
+            for candidate in candidates.iter().filter(|c| !c.is_group()) {
+                funnel.record_sample_screened(crate::throughput::VisitKind::of_visit(
+                    &candidate.uuid,
+                ));
+            }
+        }
         let sampled = match &ladder {
             Some(ladder) => {
                 match screen_progressive(
+                    clock,
                     scorer,
                     &config.training_data,
                     &incumbent.creature,
@@ -1748,6 +1813,11 @@ fn ockham_loop(
                                     },
                                 )?;
                             }
+                        }
+                        for w in screen.winners.iter().filter(|w| !w.candidate.is_group()) {
+                            funnel.record_sample_winner(crate::throughput::VisitKind::of_visit(
+                                &w.candidate.uuid,
+                            ));
                         }
                         let mut coverage = visits.clone();
                         // A sampled winner is a lead, and only full scoring
@@ -1906,7 +1976,7 @@ fn ockham_loop(
             pool.len(),
         ));
 
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(clock.now());
         let max_entries = match cost.cohort_budget(remaining) {
             CohortBudget::Unmeasured => None,
             CohortBudget::Entries(n) => Some(n),
@@ -1924,6 +1994,7 @@ fn ockham_loop(
             }
         };
         match evaluate_full(
+            clock,
             scorer,
             &config.training_data,
             &incumbent.creature,
@@ -1966,7 +2037,7 @@ fn ockham_loop(
                         crate::promote::MAX_BUNDLE_PLANS
                     ));
                 }
-                journal_full(&journal_path, &full, started)?;
+                journal_full(&journal_path, &full, clock, started)?;
                 journal::append(
                     &journal_path,
                     &Event::Budget {
@@ -1978,6 +2049,8 @@ fn ockham_loop(
                     },
                 )?;
                 tally.observe(&full, config.min_improvement);
+                // The scored, confirmed and applied end of the funnel (#162).
+                funnel.observe_full(&full, config.min_improvement);
                 if let Some(log) = &candidate_log {
                     log.judged(
                         &incumbent.creature,
@@ -2104,12 +2177,24 @@ fn ockham_loop(
         log::warn(&warning);
     }
 
-    // The accept published `best.json` before the tail screened anything, so
-    // its `sweep X/Y` is the figure at the cut rather than the one the run
-    // finished on. Re-stamp it, or the check-in subject would still report the
-    // stalled coverage this issue is about (#91). Only the tag changes: the
-    // creature published is the one the accept produced.
-    if coverage_tail && let Some(stamp) = &last_accept {
+    // An accept publishes `best.json` the moment it lands, so the `sweep X/Y`
+    // in its check-in subject is the figure at the cut — and the run keeps
+    // screening afterwards, whether in a coverage tail (#91) or in the rebuilt
+    // sweep a search accept restarts. Re-stamp the subject from the same final
+    // snapshot the commit description is written from, or the two disagree:
+    // one GRQ-sampler commit reported 10338/55649 in its subject and
+    // 13481/55649 in its body (#171). Only the tag changes: the creature
+    // published is the one the accept produced, which is the creature the
+    // snapshot was measured over.
+    //
+    // Guarded on the screen store because that is the only thing the re-stamp
+    // can change: without one there is no coverage to carry, so the tag the
+    // accept wrote is already the tag the run finishes on, and re-publishing
+    // `best.json` to say nothing new would be a write that claims work it did
+    // not do.
+    if store.is_some()
+        && let Some(stamp) = &last_accept
+    {
         meta.stamp_acceptance(&OckhamProgress {
             accepts: stamp.accepts,
             experiments: stamp.experiments,
@@ -2123,7 +2208,7 @@ fn ockham_loop(
             epoch: store.map(|_| corpus.identity.as_str()),
         });
         publish_best(config, &meta, &incumbent.creature, &stamp.checksum)?;
-        log::detail("coverage: re-stamped the check-in tag with the run's final coverage");
+        log::detail("coverage: re-stamped the check-in tag from the run's final snapshot");
     }
 
     // Coverage is only meaningful with the screen store behind it; without one
@@ -2146,20 +2231,34 @@ fn ockham_loop(
                 }
             })
             .unwrap_or(epoch_passes_at_open + passes_filed);
-        let passes = crate::coverage::Passes::new(
+        let passes = crate::coverage::Passes::measured(
             restarts,
             completed_epoch,
-            progress.visited(),
-            progress.revisited(),
+            progress.visit_counts(),
+            progress.revisit_counts(),
+            cov.checkable,
+        );
+        // Rates over the run's **measured** wall clock (Issue #162), never the
+        // configured timeout: a run that stopped on its experiment cap, lost a
+        // cohort to the deadline or spent most of its budget in replay still
+        // reports the throughput it actually achieved.
+        let throughput = crate::throughput::Throughput::measured(
+            funnel,
+            progress.visit_counts(),
+            progress.revisit_counts(),
+            clock.ms_since(started),
+            cov.hidden,
+            cov.synapses,
         );
         // The epoch travels with the figure, so a log read months later can
         // tell a fresh epoch from a collapse in coverage (Issue #102).
         log::info(&format!(
-            "{} · epoch corpus {} · pass {} ({} complete this epoch)",
+            "{} · epoch corpus {} · pass {} ({} strict complete; {:.2} equivalent this run)",
             cov.summary(),
             crate::coverage::short_epoch(&corpus.identity),
             passes.current_pass,
-            passes.sweeps_completed_epoch
+            passes.sweeps_completed_epoch,
+            passes.equivalent_passes_run
         ));
         journal::append(
             &journal_path,
@@ -2175,6 +2274,7 @@ fn ockham_loop(
                 cut: cov.cut,
                 corpus_identity: Some(corpus.identity.clone()),
                 passes: Some(passes),
+                throughput: Some(Box::new(throughput)),
             },
         )?;
         // The GRQ-facing commit-description artefacts (Issues #40, #59). A
@@ -2193,6 +2293,13 @@ fn ockham_loop(
             })
             .filter(crate::coverage::History::has_any),
             passes: Some(passes),
+            throughput: Some(throughput),
+            // The one snapshot every final figure is rendered from (#171):
+            // `cov`, measured above over the creature the run finished on, and
+            // the same value the re-stamped check-in subject carries.
+            snapshot: Some(crate::coverage::Snapshot::final_over(
+                incumbent.checksum.clone(),
+            )),
         };
         match crate::coverage::write_files(&config.output_dir, &report, config.candidates) {
             Ok(()) => log::detail(&format!(
@@ -2214,7 +2321,7 @@ fn ockham_loop(
             cumulative_delta: current_score - opening_score,
             final_hidden: incumbent.hidden_neurons(),
             final_synapses: incumbent.creature.synapses.len(),
-            elapsed_ms: started.elapsed().as_millis() as u64,
+            elapsed_ms: clock.ms_since(started),
             newly_screened,
         },
     )?;
@@ -2270,6 +2377,7 @@ fn open_coverage_tail(
     unchecked_first: bool,
     screens: &[Screened],
     prior: &PriorHint<'_>,
+    clock: &dyn Clock,
     deadline: Instant,
     has_store: bool,
     has_screen: bool,
@@ -2278,7 +2386,7 @@ fn open_coverage_tail(
     pool: &mut Vec<BundleMember>,
     pass_candidates: &mut usize,
 ) -> bool {
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    let remaining = deadline.saturating_duration_since(clock.now());
     if !incumbent.has_visits() || remaining.is_zero() || !has_store || !has_screen {
         return false;
     }
@@ -2451,7 +2559,7 @@ fn skip_try(skip: &crate::sweep::SweepSkip) -> ScreenTry<'_> {
     )
 }
 
-/// `aggregate-squash: 41, known-failure: 3` — one batch's skips, by reason.
+/// `other: 41, known-failure: 3` — one batch's skips, by reason.
 ///
 /// The kind filed against a skipped visit is only two buckets wide, so the
 /// reason itself would otherwise be discarded: an unexpected skip — a
@@ -2507,6 +2615,7 @@ fn prefer_unchecked(sweep: &mut Sweep, screens: &[Screened], creature: &Creature
 fn journal_full(
     path: &std::path::Path,
     full: &FullOutcome,
+    clock: &dyn Clock,
     started: Instant,
 ) -> Result<(), String> {
     journal::append(
@@ -2519,7 +2628,7 @@ fn journal_full(
             score: full.winner.as_ref().map(|w| w.candidate.score),
             delta: full.winner.as_ref().map(|w| w.candidate.delta),
             cuts: full.winner.as_ref().map_or(0, |w| w.candidate.uuids.len()),
-            elapsed_ms: started.elapsed().as_millis() as u64,
+            elapsed_ms: clock.ms_since(started),
         },
     )
 }
@@ -2854,6 +2963,7 @@ fn apply_local_win(
 mod tests {
     use super::*;
     use crate::baseline::fake::ScriptedScorer;
+    use crate::clock::ManualClock;
     use crate::corpus::write_bin_file;
     use crate::coverage::Coverage;
     use crate::fixtures::identity_creature_json;
@@ -2896,14 +3006,19 @@ mod tests {
     #[test]
     fn baseline_gate_writes_workspace_and_does_not_prune() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg = config(tmp.path());
+        // One experiment: the creature has no hidden neuron to cut, and since
+        // Issue #182 the one edge it carries — out of `input-0`, which the
+        // razor used to refuse — is a candidate the shared engine builds. A
+        // flat scorer never accepts it, so without the cap the run would spend
+        // its whole budget recycling that single visit (#77).
+        let cfg = OckhamConfig {
+            max_experiments: Some(1),
+            ..config(tmp.path())
+        };
         let before = std::fs::read(&cfg.creature).unwrap();
         let run = establish_run(&cfg, &ScriptedScorer::ok(0.9, 0.1)).unwrap();
         assert_eq!(run.optimisation, "complete");
-        // No hidden neuron to cut, and the one edge the creature carries is out
-        // of `input-0`, which the razor refuses — so the pass proposes nothing
-        // and stops with a reason rather than looping (#138).
-        assert_eq!(run.stop_reason, "no-candidates");
+        assert_eq!(run.stop_reason, "max-experiments");
         assert_eq!(run.baseline.score, 0.9);
         assert!(cfg.output_dir.join("best.json").exists());
         assert!(run.workspace.join("incumbent.json").exists());
@@ -3301,8 +3416,11 @@ mod tests {
         let run = establish_run(&cfg, &scorer).unwrap();
         assert!(run.accepts > 1, "accepts={}", run.accepts);
         assert_eq!(
-            run.stop_reason, "no-candidates",
-            "the search runs on until the creature has nothing left to cut"
+            run.stop_reason, "no-hidden",
+            "the search runs on until the creature has nothing left to cut — \
+             every edge is cuttable through the shared engine now (#182), so \
+             the walk ends by running out of visits rather than by being \
+             refused one"
         );
     }
 
@@ -3441,12 +3559,21 @@ mod tests {
         assert!(journal.contains(r#""groups":1"#), "{journal}");
         assert!(journal.contains(r#""kind":"group""#), "{journal}");
 
-        // The accepted creature lost the whole chain and kept the neuron that
-        // was never in the group.
+        // The accepted creature lost the chain's hidden neurons and kept the
+        // neuron that was never in the group. `a1` is gone outright; `a2` lost
+        // its only source with it, so core folded it into the constant support
+        // its average contribution is worth (#182) rather than leaving a hidden
+        // neuron with nothing to sum.
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        let best_creature: neat_core::CreatureExport = serde_json::from_str(&best).unwrap();
+        let hidden: Vec<&str> = best_creature
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .map(|n| n.uuid.as_str())
+            .collect();
+        assert_eq!(hidden, vec!["z"], "{best}");
         assert!(!best.contains("\"a1\""), "{best}");
-        assert!(!best.contains("\"a2\""), "{best}");
-        assert!(best.contains("\"z\""), "{best}");
 
         // Both members carry the whole membership, so replay can rebuild it.
         let filed: Vec<crate::learnings::Learning> = store
@@ -3550,9 +3677,19 @@ mod tests {
         let run = establish_run(&cfg, &scorer).unwrap();
         assert_eq!(run.accepts, 1, "stop={}", run.stop_reason);
         assert_eq!(run.stop_reason, "replay-accepts");
+        // `a1` is gone outright, and `a2` — which lost its only source with it
+        // — is the constant support core folded it into rather than a hidden
+        // neuron with nothing to sum (#182).
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        let best_creature: neat_core::CreatureExport = serde_json::from_str(&best).unwrap();
         assert!(!best.contains("\"a1\""), "{best}");
-        assert!(!best.contains("\"a2\""), "{best}");
+        assert!(
+            !best_creature
+                .neurons
+                .iter()
+                .any(|n| n.neuron_type == "hidden" && n.uuid == "a2"),
+            "{best}"
+        );
     }
 
     /// Issue #108: a replayed group the corpus now rejects must be filed as
@@ -3803,24 +3940,19 @@ mod tests {
                 "{uuid} must reach the screen: {screened:?}"
             );
         }
-        // Proposed: the batch emitted both tagged neurons beside the two edge
-        // visits out of them (#138). The only skips are the edges whose source
-        // is `input-0`, which the razor never cuts — neither tagged neuron is
-        // among them.
+        // Proposed: the batch emitted both tagged neurons beside every edge
+        // visit out of them (#138), and nothing was skipped — an edge out of
+        // `input-0` is a candidate the shared engine builds now (#182).
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
-            journal.contains(r#""candidates":4,"skipped":2"#),
+            journal.contains(r#""candidates":6,"skipped":0"#),
             "both tagged neurons must be proposed: {journal}"
         );
-        let skipped: Vec<&crate::learnings::Screened> = store_records
-            .iter()
-            .filter(|r| r.kind == crate::learnings::SCREEN_KIND_SKIPPED)
-            .collect();
         assert!(
-            skipped
+            !store_records
                 .iter()
-                .all(|r| crate::sweep::parse_synapse_key(&r.uuid).is_some()),
-            "only edge visits are skipped: {skipped:?}"
+                .any(|r| r.kind == crate::learnings::SCREEN_KIND_SKIPPED),
+            "nothing this creature carries is refused: {store_records:?}"
         );
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
         assert!(
@@ -4100,12 +4232,12 @@ mod tests {
 
         let store = screens_store(&learnings_dir, &train);
         let records = store.load_screens().unwrap();
-        // Two batches of two candidates, plus the edge visits each batch
-        // walked past and filed a skip for (#138): every visit the run made
-        // leaves exactly one record.
+        // Two batches of two candidates, and nothing walked past: every visit
+        // is a candidate the shared engine builds (#182), so every visit the
+        // run made leaves exactly one record.
         assert_eq!(
             records.len(),
-            8,
+            4,
             "one record per visit made, no duplicates: {records:?}"
         );
         let mut uuids: Vec<&str> = records.iter().map(|r| r.uuid.as_str()).collect();
@@ -4127,7 +4259,31 @@ mod tests {
             "one screened record per batch: {journal}"
         );
         let report = crate::report::summarise(&[&journal_path]).unwrap();
-        assert_eq!(report.screened, 8);
+        assert_eq!(report.screened, 4);
+    }
+
+    /// Seed an already-screened record for every **edge** of a
+    /// [`hidden_paths`] fixture, dated `unix_secs`.
+    ///
+    /// Since Issue #182 an edge is an ordinary candidate, so a test about
+    /// which *neuron* the walk reaches first has to say that the edge half of
+    /// the pool is already checked — otherwise the unchecked-first ordering is
+    /// answering a different question.
+    fn seed_synapse_screens(store: &LearningsStore, uuids: &[&str], unix_secs: u64) {
+        for syn in &hidden_creature(uuids).synapses {
+            store
+                .append_screen(&Screened {
+                    blocked_reason: Default::default(),
+                    version: crate::learnings::SCREENS_FORMAT_VERSION,
+                    uuid: crate::sweep::synapse_key(&syn.from_uuid, &syn.to_uuid),
+                    kind: "synapse".into(),
+                    outcome: ScreenOutcomeKind::Loser,
+                    unix_secs,
+                    host: "t".into(),
+                    corpus_identity: Some(store.corpus_identity().to_string()),
+                })
+                .unwrap();
+        }
     }
 
     /// Seed one already-screened record per uuid, dated `unix_secs`.
@@ -4259,19 +4415,36 @@ mod tests {
             .unwrap();
     }
 
-    /// The one uuid a control run — same seed, no old-corpus hint — screens.
+    /// The first **neuron** a control run — same seed, no old-corpus hint —
+    /// reaches.
+    ///
+    /// Every visit is a candidate the shared engine builds now (#182), so a
+    /// batch of one no longer walks past its edges to a neuron: the run is
+    /// given batches enough to reach one, and the first neuron in visit order
+    /// is the answer.
     fn control_screened(tmp: &std::path::Path, uuids: &[&str]) -> String {
         let (creature, train) = hidden_paths(tmp, uuids);
         let learnings_dir = tmp.join("learnings");
         let store = screens_store(&learnings_dir, &train);
-        let cfg = old_corpus_cfg(creature, train, tmp.join("out"), learnings_dir, None);
+        let cfg = OckhamConfig {
+            max_experiments: Some(visit_budget(uuids.len())),
+            ..old_corpus_cfg(creature, train, tmp.join("out"), learnings_dir, None)
+        };
         establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
-        // The neuron half of what the batch walked. A batch of one candidate
-        // also files a record for every edge visit it walked past (#138), and
-        // this helper answers which **neuron** the seeded permutation reached.
-        let screened = neurons_screened_this_run(&store, 0);
-        assert_eq!(screened.len(), 1, "one batch of one neuron: {screened:?}");
-        screened.into_iter().next().unwrap()
+        first_neuron_visited(&store).expect("the walk must reach a hidden neuron")
+    }
+
+    /// Batches of one enough to walk every visit of a `hidden`-neuron fixture
+    /// from [`hidden_paths`]: the neuron itself and its two edges.
+    fn visit_budget(hidden: usize) -> u64 {
+        hidden as u64 * 3
+    }
+
+    /// The first hidden-neuron visit in the order the records were filed.
+    fn first_neuron_visited(store: &LearningsStore) -> Option<String> {
+        visits_in_order(store)
+            .into_iter()
+            .find(|v| crate::sweep::parse_synapse_key(v).is_none())
     }
 
     /// [`screened_this_run`] narrowed to hidden-neuron visits (#138).
@@ -4363,11 +4536,15 @@ mod tests {
             learnings_dir,
             Some(false),
         );
+        let cfg = OckhamConfig {
+            max_experiments: Some(visit_budget(uuids.len())),
+            ..cfg
+        };
         establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
 
         assert_eq!(
-            neurons_screened_this_run(&store, 0),
-            vec![reached],
+            first_neuron_visited(&store).as_deref(),
+            Some(reached.as_str()),
             "with the priority off the seeded permutation stands"
         );
     }
@@ -4465,7 +4642,7 @@ mod tests {
         screened.dedup();
         assert_eq!(
             screened.len(),
-            9,
+            6,
             "the accept ends the search, not the run's coverage duty: {screened:?}"
         );
         assert!(
@@ -4477,27 +4654,222 @@ mod tests {
                 .iter()
                 .filter(|v| crate::sweep::parse_synapse_key(v).is_none())
                 .collect::<Vec<_>>(),
-            vec!["h_b", "h_c", "h_e"],
+            vec!["h_b", "h_c"],
             "the tail advances neuron coverage too: {screened:?}"
         );
-        assert_eq!(run.newly_screened, 9);
+        assert_eq!(run.newly_screened, 6);
         let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
         assert!(
             // 4 hidden neurons and the 9 ordered synapse pairs left after the
             // cut are one visit population since Issue #137.
-            best.contains("sweep 9/13"),
+            best.contains("sweep 6/13"),
             "the check-in tag must report the coverage the run finished on, not the \
              coverage at the cut: {best}"
         );
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
-            journal.contains(r#""newly_screened":9"#),
+            journal.contains(r#""newly_screened":6"#),
             "the stop record carries the coverage the run advanced: {journal}"
         );
         assert!(
             journal.contains(r#""record":"coverageTail""#) && journal.contains(r#""ended":"#),
             "the tail's own end is journalled, not folded into the accept's stop reason: \
              {journal}"
+        );
+    }
+
+    /// A creature whose one hidden neuron fans in from `inputs` inputs.
+    ///
+    /// Cutting the neuron rewires every input straight to the output, so the
+    /// accept both **changes the denominator** and mints visit keys the fleet
+    /// has never screened — the topology rebuild Issue #171 has to stay
+    /// consistent across. The razor refuses an input-sourced edge, so those new
+    /// visits are reached, blocked and counted as checked after the cut.
+    fn fan_in_paths(
+        tmp: &std::path::Path,
+        inputs: usize,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        use crate::fixtures::{neuron, synapse};
+        let mut synapses: Vec<neat_core::SynapseExport> = (0..inputs)
+            .map(|i| synapse(&format!("input-{i}"), "h_a", 1.0))
+            .collect();
+        synapses.push(synapse("h_a", "output-0", 1.0));
+        let c = crate::fixtures::creature(
+            inputs,
+            1,
+            vec![
+                neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
+                neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            ],
+            synapses,
+        );
+        let creature = tmp.join("creature.json");
+        std::fs::write(&creature, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[
+                (vec![1.0f32; inputs], vec![1.0f32]),
+                (vec![2.0f32; inputs], vec![2.0f32]),
+            ],
+        )
+        .unwrap();
+        (creature, train)
+    }
+
+    /// `(checked, checkable, percent)` from the `sweep X/Y (Z% …)` clause of
+    /// the check-in subject held in `best.json`'s `ockham` tag.
+    fn subject_sweep(best: &str) -> (usize, usize, String) {
+        let value: serde_json::Value = serde_json::from_str(best).unwrap();
+        let subject = value["tags"]
+            .as_array()
+            .expect("creature tags")
+            .iter()
+            .find(|t| t["name"] == "ockham")
+            .and_then(|t| t["value"].as_str())
+            .expect("ockham tag")
+            .to_string();
+        let clause = subject
+            .split_once("sweep ")
+            .unwrap_or_else(|| panic!("no sweep clause in the subject: {subject}"))
+            .1;
+        let (figures, rest) = clause.split_once(" (").expect("sweep figures");
+        let (checked, checkable) = figures.split_once('/').expect("checked/checkable");
+        let percent = rest.split_once('%').expect("percentage").0;
+        (
+            checked.trim().parse().expect("checked"),
+            checkable.trim().parse().expect("checkable"),
+            percent.to_string(),
+        )
+    }
+
+    /// The same three figures from the `sweep:` line of `coverage.txt`.
+    fn description_sweep(text: &str) -> (usize, usize, String) {
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("sweep:"))
+            .unwrap_or_else(|| panic!("no sweep line in the description: {text}"));
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let percent = fields
+            .iter()
+            .find(|f| f.starts_with('('))
+            .expect("percentage")
+            .trim_start_matches('(')
+            .trim_end_matches('%');
+        (
+            fields[1].parse().expect("checked"),
+            fields[3].parse().expect("checkable"),
+            percent.to_string(),
+        )
+    }
+
+    /// Issue #171: one snapshot behind the subject and the description alike.
+    ///
+    /// The check-in tag was stamped at the accept and re-stamped only when a
+    /// **coverage tail** ran, so a search accept — which rebuilds the sweep and
+    /// keeps screening — left the subject reporting the coverage at the cut
+    /// while `coverage.txt`, written when the run ended, reported everything
+    /// screened after it. That is the GRQ-sampler commit reporting
+    /// `sweep 10338/55649 (18.6%)` in its subject and `13481/55649 (24.2%)` in
+    /// its body.
+    #[test]
+    fn a_search_accept_reports_one_snapshot_in_the_subject_and_the_description() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = fan_in_paths(tmp.path(), 6);
+        let learnings_dir = tmp.path().join("learnings");
+        let cfg = OckhamConfig {
+            creature,
+            training_data: train,
+            output_dir: tmp.path().join("out"),
+            timeout: Duration::from_secs(30),
+            max_experiments: Some(2),
+            seed: Some(1),
+            candidates: 8,
+            learnings_dir: Some(learnings_dir),
+            learnings_host: Some("t".into()),
+            ..test_defaults()
+        };
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert!(run.accepts >= 1, "the run must publish an accept to stamp");
+
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert_eq!(
+            subject_sweep(&best),
+            description_sweep(&text),
+            "the subject and the description must render one snapshot\nbest: {best}\n\
+             coverage.txt: {text}"
+        );
+        // The cut rewired the fan-in's input edges onto the output, so the
+        // accept both shrank the denominator and minted visit keys nothing had
+        // screened. The published figures are the ones measured after that
+        // rebuild — and the experiment cap stops the run while the creature
+        // still carries visits, so they are a real snapshot rather than the
+        // empty creature an unbounded scripted winner grinds down to (#182).
+        assert_eq!(
+            description_sweep(&text),
+            (5, 5, "100.0".to_string()),
+            "the figures are the final snapshot's, not the accept's: {text}"
+        );
+        assert!(
+            text.contains("snapshot:  final · creature "),
+            "the description names the snapshot every figure came from: {text}"
+        );
+        let json =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_JSON_FILE))
+                .unwrap();
+        let report: crate::coverage::CoverageReport = serde_json::from_str(&json).unwrap();
+        let (checked, checkable, percent) = description_sweep(&text);
+        assert_eq!(
+            (report.coverage.checked, report.coverage.checkable),
+            (checked, checkable)
+        );
+        assert_eq!(format!("{:.1}", report.coverage.percent()), percent);
+        assert_eq!(
+            report.snapshot.as_ref().map(|s| s.stage),
+            Some(crate::coverage::SnapshotStage::Final),
+            "the JSON names the same snapshot the text does: {json}"
+        );
+    }
+
+    /// The replay/rebase path publishes the same one snapshot (Issue #171).
+    ///
+    /// A replayed win opens a coverage tail, and the tail keeps screening after
+    /// `best.json` was published — the case #91 first re-stamped for. The
+    /// subject and the description must still agree figure for figure.
+    #[test]
+    fn a_replay_accept_reports_one_snapshot_in_the_subject_and_the_description() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d", "h_e"]);
+        let learnings_dir = tmp.path().join("learnings");
+        let store = screens_store(&learnings_dir, &train);
+        seed_verdicts(&store, &[("h_a", Outcome::Accepted, None, 10)]);
+        let cfg = coverage_tail_cfg(creature, train, tmp.path().join("out"), learnings_dir, 2, 4);
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        let run = establish_run(&cfg, &scorer).unwrap();
+        assert_eq!(run.stop_reason, "replay-accepts");
+
+        let best = std::fs::read_to_string(cfg.output_dir.join("best.json")).unwrap();
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert_eq!(
+            subject_sweep(&best),
+            description_sweep(&text),
+            "the tail screened after the accept published, so both surfaces must \
+             report what it finished on\nbest: {best}\ncoverage.txt: {text}"
         );
     }
 
@@ -4511,6 +4883,9 @@ mod tests {
         let store = screens_store(&learnings_dir, &train);
         seed_verdicts(&store, &[("h_a", Outcome::Accepted, None, 10)]);
         seed_screens(&store, &[("h_c", 10), ("h_d", 20), ("h_e", 30)]);
+        // The edge half of the pool is already checked, so h_b is the only
+        // never-screened visit and the ordering question is about neurons.
+        seed_synapse_screens(&store, &["h_a", "h_b", "h_c", "h_d", "h_e"], 10);
         let cfg = coverage_tail_cfg(creature, train, tmp.path().join("out"), learnings_dir, 1, 2);
         let scorer = ScriptedScorer {
             baseline_score: 0.50,
@@ -4550,11 +4925,15 @@ mod tests {
         let run = establish_run(&cfg, &scorer).unwrap();
         assert_eq!(run.stop_reason, "replay-accepts");
         // Both hidden neurons were cut. The collapse rewired `input-0` straight
-        // to the output, and that one edge is the only visit left — the razor
-        // refuses it (the source is not a listed neuron), so the tail files its
-        // blocked record and has nothing else to screen (#138).
+        // to the output, and that one edge is the only visit left: the tail
+        // screens it — a candidate the shared engine builds now (#182) — and
+        // then has nothing else, so it recycles that same visit until the
+        // experiment budget ends (#77). Deduplicated, because what this test
+        // pins is *which* visits were left, not how often #77 recycled them.
+        let mut screened = screened_this_run(&store, 20);
+        screened.dedup();
         assert_eq!(
-            screened_this_run(&store, 20),
+            screened,
             vec![crate::sweep::synapse_key("input-0", "output-0")],
             "no neuron is left to screen"
         );
@@ -4634,9 +5013,10 @@ mod tests {
             "the search runs on past its first accept: {run:?}"
         );
         assert_eq!(
-            run.stop_reason, "no-candidates",
+            run.stop_reason, "max-experiments",
             "no accept stops it: the search runs on until nothing is left to \
-             cut, or the budget ends: {run:?}"
+             cut, or the budget ends — and with every edge cuttable through \
+             the shared engine (#182) this creature outlasts the budget: {run:?}"
         );
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
@@ -4752,17 +5132,18 @@ mod tests {
         assert_eq!(report.hidden, Some(4));
         assert_eq!(
             report.checked,
-            Some(4),
-            "one batch of two candidates, plus the edge visits walked past (#138)"
+            Some(2),
+            "one batch of two candidates, and no visit walked past: every edge the
+             batch offered is a candidate the shared engine builds (#182)"
         );
         assert_eq!(report.synapses, Some(8), "the edge half of the population");
-        assert_eq!(report.synapses_checked, Some(3));
+        assert_eq!(report.synapses_checked, Some(1));
         assert_eq!(
             report.checkable,
             Some(12),
             "hidden neurons plus synapse visits (#137)"
         );
-        assert_eq!(report.coverage_percent, Some(4.0f64 / 12.0 * 100.0));
+        assert_eq!(report.coverage_percent, Some(2.0f64 / 12.0 * 100.0));
     }
 
     /// A **repacked** corpus: the same records written to a fresh directory,
@@ -4833,8 +5214,9 @@ mod tests {
         establish_run(&first, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(
             coverage_json(&first.output_dir).checked,
-            4,
-            "one batch of two candidates, plus the edge visits walked past (#138)"
+            2,
+            "one batch of two candidates, and no visit walked past: every edge the
+             batch offered is a candidate the shared engine builds (#182)"
         );
 
         let repacked = repacked_corpus(tmp.path());
@@ -4852,7 +5234,7 @@ mod tests {
         establish_run(&second, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         assert_eq!(
             coverage_json(&second.output_dir).checked,
-            8,
+            4,
             "a repack is the same epoch: both batches must be counted"
         );
     }
@@ -4876,8 +5258,9 @@ mod tests {
         establish_run(&first, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
         let first_cov = coverage_json(&first.output_dir);
         assert_eq!(
-            first_cov.checked, 4,
-            "one batch of two candidates, plus the edge visits walked past (#138)"
+            first_cov.checked, 2,
+            "one batch of two candidates, and no visit walked past: every edge the
+             batch offered is a candidate the shared engine builds (#182)"
         );
 
         let extended = extended_corpus(tmp.path());
@@ -4896,7 +5279,7 @@ mod tests {
 
         let second_cov = coverage_json(&second.output_dir);
         assert_eq!(
-            second_cov.checked, 4,
+            second_cov.checked, 2,
             "the new epoch counts its own batch alone, not the old corpus's"
         );
         assert_eq!(
@@ -4904,7 +5287,7 @@ mod tests {
             "every hidden neuron and every synapse visit is checkable (#137)"
         );
         assert_eq!(
-            second_run.newly_screened, 4,
+            second_run.newly_screened, 2,
             "a visit checked under the old corpus is new coverage under the new one"
         );
 
@@ -4912,7 +5295,7 @@ mod tests {
         assert_eq!(epochs.len(), 2, "{epochs:?}");
         let old = &epochs[&corpus_identity(&train)];
         let new = &epochs[&corpus_identity(&extended)];
-        assert_eq!(old.len(), 4, "the previous epoch's records are still there");
+        assert_eq!(old.len(), 2, "the previous epoch's records are still there");
         assert_eq!(
             old, new,
             "the neurons the old epoch checked are eligible again: {epochs:?}"
@@ -4984,7 +5367,7 @@ mod tests {
             std::fs::read_to_string(second.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            fresh.contains("sweep:     4 of 12 visits (33.3% of epoch)"),
+            fresh.contains("sweep:     2 of 12 visits (16.7% of epoch)"),
             "the new epoch reports its own coverage: {fresh}"
         );
         assert!(
@@ -5005,7 +5388,7 @@ mod tests {
         );
 
         let report = coverage_report_json(&second.output_dir);
-        assert_eq!(report.coverage.percent(), 4.0f64 / 12.0 * 100.0);
+        assert_eq!(report.coverage.percent(), 2.0f64 / 12.0 * 100.0);
         assert_eq!(
             report.history.expect("cumulative figures").checked_ever,
             12,
@@ -5117,7 +5500,7 @@ mod tests {
                     unix_secs: 1,
                     host: "t".into(),
                     corpus_identity: Some(identity.clone()),
-                    blocked_reason: Some(crate::blocked::BlockedReason::UnsafeTopology),
+                    blocked_reason: Some(crate::blocked::BlockedReason::MissingActivation),
                 })
                 .unwrap();
         }
@@ -5179,8 +5562,9 @@ mod tests {
         let cov: Coverage = serde_json::from_str(&json).unwrap();
         assert_eq!(cov.hidden, 4);
         assert_eq!(
-            cov.checked, 4,
-            "one batch of two candidates, plus the edge visits walked past (#138)"
+            cov.checked, 2,
+            "one batch of two candidates, and no visit walked past: every edge the
+             batch offered is a candidate the shared engine builds (#182)"
         );
         assert_eq!(cov.synapses, 8);
         assert_eq!(
@@ -5188,7 +5572,7 @@ mod tests {
             "hidden neurons plus synapse visits (#137)"
         );
         let report: crate::coverage::CoverageReport = serde_json::from_str(&json).unwrap();
-        assert_eq!(report.newly_screened, 4, "the run's own progress (#77)");
+        assert_eq!(report.newly_screened, 2, "the run's own progress (#77)");
         assert_eq!(
             text,
             format!("{}\n", report.description(cfg.candidates)),
@@ -5199,7 +5583,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("unchecked: 8 remaining this epoch (~4 runs at 2/run)"),
+            text.contains("unchecked: 10 remaining this epoch (~5 runs at 2/run)"),
             "{text}"
         );
         // Issue #102: the run names the epoch its percentage belongs to, in
@@ -5213,7 +5597,122 @@ mod tests {
             )),
             "{text}"
         );
-        assert!(text.contains("(33.3% of epoch)"), "{text}");
+        assert!(text.contains("(16.7% of epoch)"), "{text}");
+    }
+
+    /// End-to-end detector for Issue #162: a mixed neuron/synapse run must
+    /// report a funnel whose stages cannot be conflated, per-kind rates over
+    /// its measured wall clock, and both rescan ETAs — in `coverage.json`,
+    /// `coverage.txt` and `ockham report` alike.
+    #[test]
+    fn a_mixed_run_reports_its_screening_funnel_rates_and_rescan_eta() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        let cfg = OckhamConfig {
+            candidates: 6,
+            max_experiments: Some(3),
+            ..coverage_files_cfg(
+                creature,
+                train,
+                tmp.path().join("out"),
+                Some(tmp.path().join("learnings")),
+            )
+        };
+        // A candidate that beats the incumbent, so the run reaches full
+        // scoring and the tail of the funnel has something to count.
+        let scorer = ScriptedScorer {
+            baseline_score: 0.50,
+            candidate_score: Some(0.80),
+            ..ScriptedScorer::ok(0.50, 0.50)
+        };
+        establish_run(&cfg, &scorer).unwrap();
+
+        let report = coverage_report_json(&cfg.output_dir);
+        let t = report.throughput.expect("the run reports its throughput");
+        assert!(t.elapsed_ms > 0, "the rates are over measured wall clock");
+        // Both kinds were walked: this is the mixed run the funnel is for.
+        assert!(t.funnel.visits.neurons > 0, "{t:?}");
+        assert!(t.funnel.visits.synapses > 0, "{t:?}");
+        // Every visit either produced a candidate or produced nothing, and the
+        // two are counted apart — the conflation this issue is about.
+        assert_eq!(
+            t.funnel.blocked.total + t.funnel.judged.total + t.funnel.proposed.total,
+            t.funnel.visits.total,
+            "{t:?}"
+        );
+        assert_eq!(
+            t.funnel.blocked.total, 0,
+            "nothing this creature carries is refused any more — the edges out \
+             of `input-0` are candidates the shared engine builds (#182), so \
+             the blocked stage is empty and every visit is a proposal: {t:?}"
+        );
+        assert!(
+            t.funnel.sample_screened.total > 0
+                && t.funnel.sample_screened.total <= t.funnel.proposed.total,
+            "a screened candidate was first a proposed one: {t:?}"
+        );
+        assert!(
+            t.funnel.full_scored.total > 0
+                && t.funnel.full_scored.total <= t.funnel.sample_winners.total,
+            "a full score follows a sampled win: {t:?}"
+        );
+        assert!(
+            t.funnel.applied.total > 0,
+            "the scripted winner was applied: {t:?}"
+        );
+        // The funnel head is the same measurement the `visits:` line renders,
+        // never a second count of the same walk (#140, #161).
+        let passes = report.passes.expect("the run reports its passes");
+        assert_eq!(t.funnel.visits.total, passes.visits_run, "{t:?}");
+        assert_eq!(
+            t.funnel.revisits.total, passes.revisit_attempts_run,
+            "{t:?}"
+        );
+        // Rates are the counts over the measured hours, per kind, never merged.
+        let hours = t.elapsed_ms as f64 / 3_600_000.0;
+        assert!(
+            (t.screened_per_hour.neurons - t.funnel.sample_screened.neurons as f64 / hours).abs()
+                < 1e-6,
+            "{t:?}"
+        );
+        assert!(
+            (t.visits_per_hour.synapses - t.funnel.visits.synapses as f64 / hours).abs() < 1e-6,
+            "{t:?}"
+        );
+        assert_eq!(t.hidden, report.coverage.hidden);
+        assert_eq!(t.synapses, report.coverage.synapses);
+        assert!(t.visit_rescan_hours.unwrap() > 0.0, "{t:?}");
+        assert!(t.scored_rescan_hours.unwrap() > 0.0, "{t:?}");
+
+        // `coverage.txt` renders the same figures, and names every stage.
+        let text =
+            std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
+                .unwrap();
+        assert_eq!(text, format!("{}\n", report.description(cfg.candidates)));
+        assert!(
+            text.contains(&format!(
+                "funnel:    neurons {} visits · {} blocked · {} judged · {} proposed · {} screened · {} scored",
+                t.funnel.visits.neurons,
+                t.funnel.blocked.neurons,
+                t.funnel.judged.neurons,
+                t.funnel.proposed.neurons,
+                t.funnel.sample_screened.neurons,
+                t.funnel.full_scored.neurons
+            )),
+            "{text}"
+        );
+        assert!(text.contains("funnel:    synapses "), "{text}");
+        assert!(text.contains(" screened/h · synapses "), "{text}");
+        assert!(text.contains("eta:       visit rescan ~"), "{text}");
+
+        // `ockham report` reads the same snapshot back off the journal.
+        let summary =
+            crate::report::summarise(&[cfg.output_dir.join("experiments.jsonl")]).unwrap();
+        assert_eq!(
+            summary.throughput,
+            Some(t),
+            "report, coverage.json and coverage.txt must agree"
+        );
     }
 
     /// End-to-end detector for Issue #74: a fully tagged creature must report
@@ -5246,8 +5745,8 @@ mod tests {
             "tagged neurons stay in the denominator, beside the synapse visits"
         );
         assert_eq!(cov.checkable, 12);
-        assert_eq!(cov.checked, 4, "screened tagged UUIDs count as checked");
-        assert_eq!(cov.percent(), 4.0f64 / 12.0 * 100.0);
+        assert_eq!(cov.checked, 2, "screened tagged UUIDs count as checked");
+        assert_eq!(cov.percent(), 2.0f64 / 12.0 * 100.0);
 
         let text =
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
@@ -5268,8 +5767,23 @@ mod tests {
     /// the shape of the production creature, where forests put an aggregate
     /// squash downstream of most hidden neurons (Issue #93).
     fn aggregate_blocked_paths(tmp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let c = aggregate_blocked_creature();
+        let path = tmp.join("creature.json");
+        std::fs::write(&path, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
+        )
+        .unwrap();
+        (path, train)
+    }
+
+    /// The creature [`aggregate_blocked_paths`] writes, on its own.
+    fn aggregate_blocked_creature() -> CreatureExport {
         use crate::fixtures::{creature, neuron, synapse};
-        let c = creature(
+        creature(
             1,
             1,
             vec![
@@ -5286,17 +5800,7 @@ mod tests {
                 synapse("h_fed", "h_agg", 1.0),
                 synapse("h_agg", "output-0", 1.0),
             ],
-        );
-        let path = tmp.join("creature.json");
-        std::fs::write(&path, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
-        let train = tmp.join("train");
-        std::fs::create_dir(&train).unwrap();
-        write_bin_file(
-            &train.join("0.bin"),
-            &[(vec![1.0f32], vec![1.0f32]), (vec![2.0], vec![2.0])],
         )
-        .unwrap();
-        (path, train)
     }
 
     /// Issue #93: the counter went backwards because a visit the razor could
@@ -5323,7 +5827,9 @@ mod tests {
             timeout: Duration::from_secs(30),
             max_experiments: Some(1),
             seed: Some(1),
-            candidates: 8,
+            // One batch wide enough for every visit: three neurons and six
+            // edges, all of them candidates the shared engine builds (#182).
+            candidates: 9,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
             ..test_defaults()
@@ -5389,7 +5895,9 @@ mod tests {
             timeout: Duration::from_secs(30),
             max_experiments: Some(1),
             seed: Some(1),
-            candidates: 8,
+            // One batch wide enough for every visit: three neurons and six
+            // edges, all of them candidates the shared engine builds (#182).
+            candidates: 9,
             learnings_dir: Some(learnings_dir.clone()),
             learnings_host: Some("t".into()),
             ..test_defaults()
@@ -5409,15 +5917,17 @@ mod tests {
             "a neuron feeding an aggregate is proposable now, not blocked"
         );
         assert_eq!(
-            kinds["h_agg"], "constant",
-            "the aggregate neuron itself is proposable now, not blocked"
+            kinds["h_agg"], "ablation",
+            "the aggregate neuron itself is proposable now, not blocked — and \
+             its only reader can absorb the fold, so the shared engine removes \
+             it outright rather than standing a constant in its place (#182)"
         );
 
         let cov = coverage_json(&cfg.output_dir);
         assert_eq!(cov.checked, 9, "three neurons and six edge visits (#138)");
-        // No **neuron** is blocked any more, which is what #103 changed. The
-        // blocked population left is entirely edge visits the razor refuses —
-        // an edge out of `input-0`, or one into the aggregate neuron (#138).
+        // No **neuron** is blocked any more, which is what #103 changed, and
+        // since #182 no edge is either: every visit this creature carries is a
+        // candidate the shared engine builds.
         let blocked: Vec<String> = store
             .load_screens()
             .unwrap()
@@ -5900,27 +6410,20 @@ mod tests {
         let run = establish_run(&cfg, &scorer).unwrap();
         assert_eq!(run.stop_reason, "scorer-failures");
 
-        // Only the visits the razor refused outright are filed: an edge whose
-        // source is not a listed neuron never reaches the screen (#138). Not
-        // one candidate the failed screen was asked about is among them.
+        // Nothing is filed at all. Every visit of this creature is a candidate
+        // the shared engine builds (#182), so none is refused outright, and a
+        // candidate whose screen errored was never checked.
         let store = screens_store(&learnings_dir, &train);
         let filed = store.load_screens().unwrap();
         assert!(
-            filed
-                .iter()
-                .all(|s| s.kind == crate::learnings::SCREEN_KIND_SKIPPED),
+            filed.is_empty(),
             "candidates whose screen errored were never checked: {filed:?}"
-        );
-        assert_eq!(
-            filed.len(),
-            1,
-            "one refused edge visit, and no screened candidate: {filed:?}"
         );
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert_eq!(
             journal.matches(r#""record":"screened""#).count(),
-            1,
-            "the only coverage filed is that refused visit: {journal}"
+            0,
+            "a failed screen is not coverage: {journal}"
         );
     }
 
@@ -6718,13 +7221,17 @@ mod tests {
             screen_sample_rate: Some(0.01),
             ..test_defaults()
         };
+        // Spent on an injected clock, not slept (Issue #214): this asserts a
+        // budget decision, so it must not race a real deadline either.
+        let clock = ManualClock::new();
         let scorer = ScriptedScorer {
             delay_per_creature: Duration::from_millis(100),
+            clock: Some(clock.clone()),
             baseline_score: 0.50,
             candidate_score: Some(0.80),
             ..ScriptedScorer::ok(0.50, 0.50)
         };
-        let run = establish_run(&cfg, &scorer).unwrap();
+        let run = establish_run_with_clock(&cfg, &scorer, &clock).unwrap();
         assert_eq!(run.stop_reason, "budget");
         let journal = std::fs::read_to_string(cfg.output_dir.join("experiments.jsonl")).unwrap();
         assert!(
@@ -6867,6 +7374,10 @@ mod tests {
         let learnings_dir = tmp.path().join("learnings");
         let cfg = OckhamConfig {
             exact_cleanup: true,
+            // One batch wide enough for every visit the pre-pass leaves: the
+            // surviving neuron and its three edges, all of them candidates the
+            // shared engine builds (#182).
+            candidates: 4,
             ..restart_cfg(
                 creature,
                 train.clone(),
@@ -7010,10 +7521,19 @@ mod tests {
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            text.contains("passes:    3 complete this epoch · 3 this run · pass 4 in progress"),
+            text.contains(
+                "passes:    3 strict complete this epoch · 3 strict this run · pass 4 in progress"
+            ),
             "{text}"
         );
-        assert!(text.contains("visits:"), "{text}");
+        assert!(
+            text.contains("rescan:    3.33 creature-equivalent this run · 20 visit attempts"),
+            "{text}"
+        );
+        assert!(
+            text.contains("visits:    neurons 8 (0 revisits) · synapses 12 (0 revisits)"),
+            "{text}"
+        );
 
         // `report` reads the same counters out of the journal, so the two
         // GRQ-facing surfaces cannot disagree about which pass this was.
@@ -7296,11 +7816,14 @@ mod tests {
         let learnings_dir = tmp.path().join("learnings");
         let store = screens_store(&learnings_dir, &train);
         let now = crate::incumbent::now_unix();
-        // Every visit is a fresh known failure — the two neurons and the two
-        // edges the razor could otherwise cut (#138). The edges out of
-        // `input-0` need no verdict: the razor refuses them structurally.
+        // Every visit is a fresh known failure — the two neurons and all four
+        // edges. Since Issue #182 the edges out of `input-0` are candidates
+        // the shared engine builds, so they need a verdict too: nothing on
+        // this creature is refused structurally any more.
         let out_a = crate::sweep::synapse_key("h_a", "output-0");
         let out_b = crate::sweep::synapse_key("h_b", "output-0");
+        let in_a = crate::sweep::synapse_key("input-0", "h_a");
+        let in_b = crate::sweep::synapse_key("input-0", "h_b");
         seed_verdicts(
             &store,
             &[
@@ -7308,6 +7831,8 @@ mod tests {
                 ("h_b", Outcome::Rejected, Some(-1.0), now),
                 (out_a.as_str(), Outcome::Rejected, Some(-1.0), now),
                 (out_b.as_str(), Outcome::Rejected, Some(-1.0), now),
+                (in_a.as_str(), Outcome::Rejected, Some(-1.0), now),
+                (in_b.as_str(), Outcome::Rejected, Some(-1.0), now),
             ],
         );
         let cfg = restart_cfg(
@@ -7346,21 +7871,21 @@ mod tests {
             reason,
             blocked,
         };
-        let aggregate = |uuid: &str| {
+        let rejected = |uuid: &str| {
             skip(
                 uuid,
-                format!("aggregate target `{uuid}-target` (`MEAN`); skipped"),
-                Some(BlockedReason::AggregateSquash),
+                format!("candidate for `{uuid}` failed creature.validate()"),
+                Some(BlockedReason::ValidationFailed),
             )
         };
         let skips = vec![
-            aggregate("h_a"),
-            aggregate("h_b"),
-            aggregate("h_c"),
+            rejected("h_a"),
+            rejected("h_b"),
+            rejected("h_c"),
             skip(
                 "h_d",
                 "typed synapse `h_d`→`h_if` (condition); skipped".into(),
-                Some(BlockedReason::UnsafeTopology),
+                Some(BlockedReason::Other),
             ),
             skip("h_e", crate::sweep::KNOWN_FAILURE_REASON.into(), None),
             skip(
@@ -7371,7 +7896,7 @@ mod tests {
         ];
         assert_eq!(
             skip_reason_tally(&skips),
-            "aggregate-squash: 3, known-failure: 1, missing-activation: 1, unsafe-topology: 1",
+            "validation-failed: 3, known-failure: 1, missing-activation: 1, other: 1",
             "commonest first, then alphabetical, and no uuid in sight"
         );
     }
@@ -7392,8 +7917,8 @@ mod tests {
         let blocked = SweepSkip {
             uuid: "h_blocked".into(),
             permutation_index: 1,
-            reason: "aggregate target `t` (`MEAN`); skipped".into(),
-            blocked: Some(BlockedReason::AggregateSquash),
+            reason: "candidate for `h_blocked` failed creature.validate()".into(),
+            blocked: Some(BlockedReason::ValidationFailed),
         };
         let known = skip_try(&known);
         assert_eq!(known.kind, crate::learnings::SCREEN_KIND_KNOWN_FAILURE);
@@ -7402,7 +7927,7 @@ mod tests {
         assert_eq!(blocked.kind, crate::learnings::SCREEN_KIND_SKIPPED);
         assert_eq!(
             blocked.blocked_reason,
-            Some(BlockedReason::AggregateSquash),
+            Some(BlockedReason::ValidationFailed),
             "a blocked visit files the code that stopped it"
         );
 
@@ -7433,13 +7958,16 @@ mod tests {
         let blocked_skip = SweepSkip {
             uuid: key.clone(),
             permutation_index: 0,
-            reason: "aggregate target `h_b` (`MEAN`); skipped".into(),
-            blocked: Some(BlockedReason::AggregateSquash),
+            reason: "candidate for the edge failed creature.validate()".into(),
+            blocked: Some(BlockedReason::ValidationFailed),
         };
         let blocked = skip_try(&blocked_skip);
         assert_eq!(blocked.uuid, key, "the key is what was visited");
         assert_eq!(blocked.kind, crate::learnings::SCREEN_KIND_SKIPPED);
-        assert_eq!(blocked.blocked_reason, Some(BlockedReason::AggregateSquash));
+        assert_eq!(
+            blocked.blocked_reason,
+            Some(BlockedReason::ValidationFailed)
+        );
         assert_eq!(blocked.outcome, ScreenOutcomeKind::Loser);
 
         let known_skip = SweepSkip {
@@ -7458,7 +7986,7 @@ mod tests {
         file_screens(None, &[blocked, known], &mut filed);
         assert_eq!(
             filed[0].blocked_category(),
-            Some(BlockedReason::AggregateSquash)
+            Some(BlockedReason::ValidationFailed)
         );
         assert_eq!(filed[1].blocked_category(), None);
         assert!(filed.iter().all(|f| f.uuid == key));
@@ -7561,12 +8089,13 @@ mod tests {
     /// The behaviour those rules buy, end to end: a run whose budget has fallen
     /// to its last batch stands the replay stage down and screens instead.
     ///
-    /// The one test here that depends on the wall clock, unavoidably: the
-    /// reserve is a statement about time left, and the scorer's per-creature
-    /// delay is how a test spends a budget. The margin is deliberately wide —
-    /// the replay stage's 15 scored creatures nominally spend 1.5s of the 2s
-    /// budget, so it takes better than 30% jitter to reach the deadline first.
-    /// The assertions themselves are on what was screened and on record order,
+    /// Driven by an injected [`ManualClock`] rather than the wall clock (Issue
+    /// #214). The budget is spent only where the run really spends it — in the
+    /// scorer — because the scripted scorer advances that same clock by its
+    /// per-creature delay instead of sleeping. Nothing here races a real
+    /// deadline, so the decision under test is reached identically on a loaded
+    /// CI runner, a shared laptop and ARM — and it spends no real time
+    /// sleeping. The assertions are on what was screened and on record order,
     /// never on elapsed time.
     #[test]
     fn a_run_down_to_its_last_batch_screens_it_rather_than_replaying() {
@@ -7596,12 +8125,20 @@ mod tests {
                 None,
             )
         };
+        let clock = ManualClock::new();
+        let opened = clock.now();
         let scorer = ScriptedScorer {
             delay_per_creature: Duration::from_millis(100),
+            clock: Some(clock.clone()),
             ..losing_scorer()
         };
-        let run = establish_run(&cfg, &scorer).unwrap();
+        let run = establish_run_with_clock(&cfg, &scorer, &clock).unwrap();
 
+        assert!(
+            clock.since(opened) >= Duration::from_millis(1_500),
+            "the run must have spent its budget on the injected clock rather than              the wall clock: {:?}",
+            clock.since(opened)
+        );
         assert!(
             run.newly_screened > 0,
             "the reserve must buy this run a screening batch: {}",
@@ -7643,17 +8180,18 @@ mod tests {
         let run = establish_run(&cfg, &losing_scorer()).unwrap();
 
         assert_eq!(
-            run.newly_screened, 4,
-            "one batch of two candidates, plus the edge visits walked past (#138)"
+            run.newly_screened, 2,
+            "one batch of two candidates, and no visit walked past: every edge the
+             batch offered is a candidate the shared engine builds (#182)"
         );
         let stops = journal_records(&cfg.output_dir, "stop");
         assert_eq!(stops.len(), 1);
-        assert_eq!(stops[0]["newly_screened"], 4, "{:?}", stops[0]);
+        assert_eq!(stops[0]["newly_screened"], 2, "{:?}", stops[0]);
         let text =
             std::fs::read_to_string(cfg.output_dir.join(crate::coverage::COVERAGE_TEXT_FILE))
                 .unwrap();
         assert!(
-            text.contains("progress:  4 newly checked this run"),
+            text.contains("progress:  2 newly checked this run"),
             "{text}"
         );
     }
@@ -7707,10 +8245,11 @@ mod tests {
         );
         let first_run = establish_run(&first, &losing_scorer()).unwrap();
         assert_eq!(
-            first_run.newly_screened, 3,
-            "a full batch, plus the edge visit it walked past (#138)"
+            first_run.newly_screened, 2,
+            "a full batch, and no visit walked past: every edge the batch \
+             offered is a candidate the shared engine builds (#182)"
         );
-        assert_eq!(coverage_json(&first.output_dir).checked, 3);
+        assert_eq!(coverage_json(&first.output_dir).checked, 2);
 
         let second = restart_cfg(
             creature,
@@ -7725,10 +8264,10 @@ mod tests {
             "bounded by the unchecked remainder, not the batch size"
         );
         let cov = coverage_json(&second.output_dir);
-        assert_eq!(cov.checked, 5);
+        assert_eq!(cov.checked, 4);
         assert_eq!(
             cov.unchecked(),
-            4,
+            5,
             "the four visits neither run reached: {cov:?}"
         );
     }
@@ -7870,5 +8409,380 @@ mod tests {
             promotion["promoted"], 0,
             "it still loses to `--screen-threshold`, which the ladder never relaxes"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #202 — the pruning-fixture gate.
+    //
+    // The parent milestone's guarantee is that every hidden neuron and every
+    // synapse of a fixture is a candidate the razor proposes. Turned into a
+    // gate: a sweep over any pruning fixture files **no** blocked visit under
+    // any live reason, and every record it does file names a candidate kind.
+    // A non-zero count here is a regression — in Ockham, or in the sibling
+    // NEAT-AI-core it builds against at head.
+    // ---------------------------------------------------------------------
+
+    /// Whether the fixture sweep is handed activation statistics at all.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Measurement {
+        /// The corpus is scanned, exactly as a production run scans it.
+        Measured,
+        /// The run reads a cached measurement with no neuron and no input
+        /// entries — the unmeasured shape Issue #199 prunes uncompensated.
+        Unmeasured,
+    }
+
+    /// What one fixture sweep filed: its coverage and every screen record.
+    struct FixtureSweep {
+        coverage: Coverage,
+        screens: Vec<crate::learnings::Screened>,
+        /// Every activation-statistics cache the run left in its workspace.
+        caches: Vec<ActivationStats>,
+    }
+
+    impl FixtureSweep {
+        /// The Issue #202 gate: nothing blocked, under any reason, and every
+        /// record a positive confirmation rather than an absent one.
+        fn assert_nothing_blocked(&self, fixture: &str) {
+            assert_eq!(
+                self.coverage.blocked_by_reason,
+                crate::blocked::BlockedBreakdown::default(),
+                "{fixture}: every live reason must count zero, got {:?}",
+                self.coverage.blocked_by_reason
+            );
+            assert_eq!(
+                self.coverage.blocked_by_reason.total(),
+                0,
+                "{fixture}: {:?}",
+                self.coverage.blocked_by_reason
+            );
+            assert_eq!(
+                self.coverage.blocked, 0,
+                "{fixture}: the blocked total must agree with the breakdown"
+            );
+            assert!(
+                !self.screens.is_empty(),
+                "{fixture}: a sweep that filed nothing proves nothing"
+            );
+            let kinds: Vec<&'static str> = crate::sweep::CandidateKind::ALL
+                .into_iter()
+                .map(crate::learnings::kind_label)
+                .collect();
+            for screen in &self.screens {
+                assert_eq!(
+                    screen.blocked_reason, None,
+                    "{fixture}: {} carries a blocked reason",
+                    screen.uuid
+                );
+                assert_eq!(
+                    screen.blocked_category(),
+                    None,
+                    "{fixture}: {} reads back as blocked",
+                    screen.uuid
+                );
+                assert!(
+                    kinds.contains(&screen.kind.as_str()),
+                    "{fixture}: {} filed kind {:?}, which is no candidate kind",
+                    screen.uuid,
+                    screen.kind
+                );
+            }
+            assert_eq!(
+                self.coverage.checked, self.coverage.checkable,
+                "{fixture}: the batch must be wide enough for every visit"
+            );
+        }
+
+        /// The run really swept with no statistics at all.
+        ///
+        /// Asserted rather than assumed: a seeded cache the run failed to read
+        /// would not block it measuring — it would scan the corpus and store
+        /// the result under its own key, leaving a second cache file and
+        /// populated statistics behind. Without this, a drifting cache key
+        /// would turn the unmeasured gate into a silent duplicate of the
+        /// measured one, still green.
+        fn assert_swept_unmeasured(&self, fixture: &str) {
+            assert_eq!(
+                self.caches.len(),
+                1,
+                "{fixture}: the run must read the seeded cache, not measure beside it"
+            );
+            let stats = &self.caches[0];
+            assert!(
+                stats.neurons.is_empty() && stats.inputs.is_empty(),
+                "{fixture}: the run measured after all — {} neurons, {} inputs",
+                stats.neurons.len(),
+                stats.inputs.len()
+            );
+        }
+
+        /// Visit keys that name a hidden neuron, not an edge.
+        fn neuron_visits(&self) -> Vec<&str> {
+            self.screens
+                .iter()
+                .map(|s| s.uuid.as_str())
+                .filter(|v| crate::sweep::parse_synapse_key(v).is_none())
+                .collect()
+        }
+
+        /// The `(from, to)` pair of every edge visit.
+        fn edge_visits(&self) -> Vec<(&str, &str)> {
+            self.screens
+                .iter()
+                .filter_map(|s| crate::sweep::parse_synapse_key(&s.uuid))
+                .collect()
+        }
+    }
+
+    /// Hand the run a cached measurement with no neuron and no input entries.
+    ///
+    /// Keyed exactly as [`crate::stats::ensure_activation_stats`] keys its
+    /// cache, so the run loads it instead of scanning the corpus. This is the
+    /// unmeasured run Issue #199 requires: no fold value resolves for any
+    /// neuron or any input, so every candidate goes to core with no statistic
+    /// at all and comes back approximate rather than blocked.
+    fn seed_unmeasured_stats(cfg: &OckhamConfig, corpus: &crate::corpus::CorpusInfo) {
+        let incumbent = load_incumbent(&cfg.creature).unwrap();
+        let sample = cfg.stats_sample_spec();
+        let mut stats = ActivationStats::empty();
+        stats.creature_checksum = incumbent.checksum.clone();
+        stats.corpus_identity = corpus.identity.clone();
+        stats.sample = sample;
+        let path = crate::stats::cache_path(
+            &cfg.output_dir.join("workspace"),
+            &incumbent.checksum,
+            &corpus.identity,
+            &sample,
+        );
+        crate::stats::store_cached_stats(&path, &stats).unwrap();
+    }
+
+    /// Every activation-statistics cache file the run left in the workspace.
+    ///
+    /// The positive marker the unmeasured gate needs. A seeded cache the run
+    /// did **not** read would not stop it scanning the corpus — it would store
+    /// what it measured under its own key, so a second file would appear here.
+    /// One file, still carrying no neurons and no inputs, is what says the run
+    /// really swept with no statistics rather than quietly measuring after all.
+    fn activation_caches(output_dir: &std::path::Path) -> Vec<ActivationStats> {
+        let mut found: Vec<(std::ffi::OsString, ActivationStats)> =
+            std::fs::read_dir(output_dir.join("workspace"))
+                .expect("the run writes a workspace")
+                .map(|e| e.unwrap())
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("activation-stats.")
+                })
+                .map(|e| {
+                    let text = std::fs::read_to_string(e.path()).unwrap();
+                    (
+                        e.file_name(),
+                        serde_json::from_str(&text)
+                            .unwrap_or_else(|err| panic!("{}: {err}", e.path().display())),
+                    )
+                })
+                .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found.into_iter().map(|(_, stats)| stats).collect()
+    }
+
+    /// Sweep `fixture` end to end with a batch wide enough for every visit.
+    ///
+    /// The scorer is flat, so nothing is accepted and the creature under the
+    /// sweep never changes: one batch reaches every hidden neuron and every
+    /// edge the fixture carries, which is what makes the blocked count below a
+    /// statement about the whole fixture rather than about a sample of it.
+    fn sweep_fixture(
+        tmp: &std::path::Path,
+        fixture: &CreatureExport,
+        measurement: Measurement,
+    ) -> FixtureSweep {
+        let path = tmp.join("creature.json");
+        std::fs::write(&path, neat_core::creature_to_json_pretty(fixture).unwrap()).unwrap();
+        let train = tmp.join("train");
+        std::fs::create_dir(&train).unwrap();
+        write_bin_file(
+            &train.join("0.bin"),
+            &[
+                (vec![1.0f32; fixture.input], vec![1.0f32; fixture.output]),
+                (vec![2.0f32; fixture.input], vec![2.0f32; fixture.output]),
+            ],
+        )
+        .unwrap();
+
+        // Every hidden neuron plus every distinct ordered pair: the width the
+        // gate needs, computed from the fixture rather than hard-coded, so a
+        // fixture that grows a neuron cannot quietly stop being swept whole.
+        let hidden = fixture
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .count();
+        let pairs: std::collections::HashSet<(&str, &str)> = fixture
+            .synapses
+            .iter()
+            .map(|s| (s.from_uuid.as_str(), s.to_uuid.as_str()))
+            .collect();
+        let learnings_dir = tmp.join("learnings");
+        let cfg = OckhamConfig {
+            creature: path,
+            training_data: train.clone(),
+            output_dir: tmp.join("out"),
+            timeout: Duration::from_secs(60),
+            max_experiments: Some(1),
+            seed: Some(1),
+            candidates: hidden + pairs.len(),
+            learnings_dir: Some(learnings_dir.clone()),
+            learnings_host: Some("t".into()),
+            ..test_defaults()
+        };
+        let corpus = crate::corpus::corpus_info(
+            &train,
+            &TrainingDataConfig::new(fixture.input, fixture.output),
+        )
+        .unwrap();
+        if measurement == Measurement::Unmeasured {
+            seed_unmeasured_stats(&cfg, &corpus);
+        }
+        establish_run(&cfg, &ScriptedScorer::ok(0.50, 0.50)).unwrap();
+        FixtureSweep {
+            coverage: coverage_json(&cfg.output_dir),
+            screens: LearningsStore::new(&learnings_dir, corpus.identity, "t".into())
+                .load_screens()
+                .unwrap(),
+            caches: activation_caches(&cfg.output_dir),
+        }
+    }
+
+    /// The aggregate fixture of Issue #202: an `IF` output over a `HYPOT`
+    /// hidden neuron, so the aggregate paths are actually walked.
+    #[test]
+    fn the_if_hypot_fixture_visits_the_aggregate_paths_and_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fixture = crate::fixtures::if_hypot_creature();
+        let aggregates: std::collections::HashSet<&str> =
+            crate::fixtures::aggregate_uuids(&fixture)
+                .into_iter()
+                .collect();
+        assert!(
+            aggregates.contains("h_hyp") && aggregates.contains("output-0"),
+            "the fixture must carry a hidden aggregate and an aggregate output: {aggregates:?}"
+        );
+
+        let swept = sweep_fixture(tmp.path(), &fixture, Measurement::Measured);
+        swept.assert_nothing_blocked("if_hypot_creature");
+
+        let aggregate_neurons: Vec<&str> = swept
+            .neuron_visits()
+            .into_iter()
+            .filter(|v| aggregates.contains(v))
+            .collect();
+        assert!(
+            !aggregate_neurons.is_empty(),
+            "the sweep must visit at least one aggregate neuron, visited {:?}",
+            swept.neuron_visits()
+        );
+        let into_aggregate: Vec<(&str, &str)> = swept
+            .edge_visits()
+            .into_iter()
+            .filter(|(_, to)| aggregates.contains(to))
+            .collect();
+        assert!(
+            !into_aggregate.is_empty(),
+            "the sweep must visit at least one edge into an aggregate, visited {:?}",
+            swept.edge_visits()
+        );
+    }
+
+    /// The same fixture swept with **no** statistics at all.
+    ///
+    /// The unmeasured half of the gate (Issue #199): a caller measurement with
+    /// no neuron and no input entries must still prune every visit
+    /// uncompensated through core, never file `missing-activation`.
+    #[test]
+    fn an_unmeasured_sweep_of_the_if_hypot_fixture_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::if_hypot_creature(),
+            Measurement::Unmeasured,
+        );
+        swept.assert_swept_unmeasured("if_hypot_creature (unmeasured)");
+        swept.assert_nothing_blocked("if_hypot_creature (unmeasured)");
+    }
+
+    /// The forest-heavy shape of Issue #93: a `MEAN` aggregate, the neuron
+    /// feeding it, and one ordinary neuron beside them.
+    #[test]
+    fn the_aggregate_blocked_paths_fixture_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &aggregate_blocked_creature(),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("aggregate_blocked_paths");
+    }
+
+    /// `wide_creature` with an aggregate squash on every hidden neuron.
+    #[test]
+    fn the_wide_fixture_with_an_aggregate_squash_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::wide_creature(2, 3, "MEAN"),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("wide_creature (MEAN)");
+    }
+
+    /// `wide_creature` point-wise: the same topology, no aggregate anywhere.
+    #[test]
+    fn the_wide_fixture_point_wise_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::wide_creature(2, 3, "TANH"),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("wide_creature (TANH)");
+    }
+
+    /// One hidden IDENTITY neuron: the exact-collapse rung.
+    #[test]
+    fn the_hidden_identity_fixture_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::hidden_identity_creature(0.25, 0.5),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("hidden_identity_creature");
+    }
+
+    /// The pure-synapse-win shape of Issue #138.
+    #[test]
+    fn the_shortcut_edge_fixture_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::shortcut_edge_creature(),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("shortcut_edge_creature");
+    }
+
+    /// The smallest fixture there is: no hidden neuron, edges out of an
+    /// observation only.
+    #[test]
+    fn the_identity_fixture_blocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let swept = sweep_fixture(
+            tmp.path(),
+            &crate::fixtures::identity_creature(2, 2),
+            Measurement::Measured,
+        );
+        swept.assert_nothing_blocked("identity_creature");
     }
 }

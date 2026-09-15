@@ -1,6 +1,6 @@
 [package]
 name = "neat_ai_ockham"
-version = "0.1.54"
+version = "0.1.74"
 edition = "2024"
 license = "Apache-2.0"
 description = "Experimental pruning optimiser for already-fit NEAT-AI creatures."
@@ -10,13 +10,11 @@ readme = "../README.md"
 [lints]
 workspace = true
 
-[lib]
-name = "neat_ai_ockham"
-path = "src/lib.rs"
-
-[[bin]]
-name = "neat_ai_ockham"
-path = "src/main.rs"
+# No explicit [lib]/[[bin]] tables: cargo's defaults already name both targets
+# `neat_ai_ockham` from src/lib.rs and src/main.rs. Spelling them out made the
+# manifest ambiguous to scripts/runlib.sh, whose no-cargo fast path declines
+# any manifest carrying an explicit [[bin]] — so an already-installed run paid
+# for a `cargo metadata` call it does not need (Issue #209).
 
 [dependencies]
 # Keep this sibling path aligned with NEAT-AI-scorer / NEAT-AI-Lamarck / Forests.

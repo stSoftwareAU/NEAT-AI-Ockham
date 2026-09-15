@@ -66,6 +66,21 @@ pub const COVERAGE_JSON_FILE: &str = "coverage.json";
 /// Characters of a corpus identity a human-readable epoch clause carries.
 pub const EPOCH_SHORT_LEN: usize = 8;
 
+/// One truncation rule, shared by every identity this module shortens.
+///
+/// Private on purpose: [`short_epoch`] is the public spelling, and the creature
+/// identity a [`Snapshot`] renders goes through the same helper (Issue #171),
+/// so two identities printed beside each other are never shortened on different
+/// terms.
+///
+/// Truncation is on a character boundary, so a non-hex identity cannot panic.
+fn short_id(identity: &str) -> &str {
+    match identity.char_indices().nth(EPOCH_SHORT_LEN) {
+        Some((end, _)) => &identity[..end],
+        None => identity,
+    }
+}
+
 /// Compact epoch id for a commit subject or a log line (Issue #102).
 ///
 /// The first [`EPOCH_SHORT_LEN`] characters of the corpus identity — enough to
@@ -75,10 +90,7 @@ pub const EPOCH_SHORT_LEN: usize = 8;
 ///
 /// Truncation is on a character boundary, so a non-hex identity cannot panic.
 pub fn short_epoch(identity: &str) -> &str {
-    match identity.char_indices().nth(EPOCH_SHORT_LEN) {
-        Some((end, _)) => &identity[..end],
-        None => identity,
-    }
+    short_id(identity)
 }
 
 /// Screening coverage of one incumbent at one moment.
@@ -109,12 +121,12 @@ pub struct Coverage {
     pub checked: usize,
     /// Synapse visits on the current incumbent: one per ordered edge pair.
     ///
-    /// The edge half of [`Self::checkable`] (Issue #137). An **ordinary**
-    /// (untyped) edge is what [`crate::ablation::ablate_synapse`] can actually
-    /// cut, and a **typed** edge is counted here beside it: the sweep visits
-    /// one and files the blocked record that stops it being asked again, so
-    /// leaving typed edges out would strand a creature full of them on a sweep
-    /// that could never complete.
+    /// The edge half of [`Self::checkable`] (Issue #137). Every ordered pair
+    /// is counted, typed or not: since Issue #182 the shared engine
+    /// ([`crate::prune::prune_edge`]) cuts a typed role as readily as an
+    /// untyped one, and a pair it still refuses is visited and filed as a
+    /// blocked record that stops it being asked again — so leaving any pair
+    /// out would strand the sweep on visits it could never complete.
     ///
     /// `#[serde(default)]` so a pre-#137 `coverage.json` still deserialises,
     /// reading as no synapse visits rather than as a failed parse.
@@ -204,6 +216,33 @@ impl Coverage {
             out.push_str(&format!(", {} tagged", self.tagged));
         }
         out
+    }
+
+    /// The compact `sweep X/Y (Z% of epoch <id>)` clause (Issue #171).
+    ///
+    /// What the GRQ-sampler commit **subject** carries. It is rendered here,
+    /// beside [`Self::summary`] and [`Self::description`], so the subject reads
+    /// its numerator, its denominator and its percentage from the same
+    /// [`Coverage`] value and the same arithmetic as the body: a subject that
+    /// disagreed with the description was two different snapshots rendered by
+    /// two different pieces of code, and this removes the second of those.
+    ///
+    /// `of epoch` is not decoration (Issue #102): `sweep 7284/7284 (100.0%)`
+    /// reads as "Ockham has finished", and the next corpus makes that reading
+    /// false, so the scope travels with the figure. `epoch` is the full corpus
+    /// identity — it is rendered in [`short_epoch`] form here — and `None`
+    /// leaves the clause reading `of epoch` with no id: still scoped, just
+    /// unnamed.
+    pub fn subject_clause(&self, epoch: Option<&str>) -> String {
+        let epoch = epoch
+            .map(|id| format!(" {}", short_epoch(id)))
+            .unwrap_or_default();
+        format!(
+            "sweep {}/{} ({:.1}% of epoch{epoch})",
+            self.checked,
+            self.checkable,
+            self.percent()
+        )
     }
 
     /// Visits with no screen record yet — neurons and synapses alike (#137).
@@ -333,11 +372,48 @@ impl Coverage {
 /// Since #93 a visit the razor could propose nothing for files a record too, so
 /// this counts every uuid the run reached — which is why the rendered line says
 /// *newly checked* and [`Coverage::blocked`] says how many were never scored.
+/// Run-level visit counts, split by the kind of thing the sweep reached.
+///
+/// Unlike coverage, these are **attempts**, not distinct keys. Reaching the same
+/// neuron twice after an accepted cut rebuilt the sweep counts twice: that is
+/// precisely the topology-tolerant work #161 needs to keep visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisitCounts {
+    /// Every visit attempt.
+    pub total: usize,
+    /// Hidden-neuron visit attempts.
+    pub neurons: usize,
+    /// Synapse visit attempts.
+    pub synapses: usize,
+}
+
+impl VisitCounts {
+    fn observe(&mut self, visit: &str) {
+        self.add(crate::throughput::VisitKind::of_visit(visit));
+    }
+
+    /// Count one entry of an already-classified kind (Issue #162).
+    ///
+    /// The funnel stages downstream of the sweep hold a cohort label rather
+    /// than a visit key, so they classify once and count here — against the
+    /// same two totals, so a stage can never be summed on different terms from
+    /// the visits above it.
+    pub(crate) fn add(&mut self, kind: crate::throughput::VisitKind) {
+        self.total += 1;
+        match kind {
+            crate::throughput::VisitKind::Synapse => self.synapses += 1,
+            crate::throughput::VisitKind::Neuron => self.neurons += 1,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ScreenProgress {
     opening: HashSet<String>,
     added: HashSet<String>,
-    visited: HashSet<String>,
+    visits: VisitCounts,
+    revisits: VisitCounts,
 }
 
 impl ScreenProgress {
@@ -346,7 +422,8 @@ impl ScreenProgress {
         Self {
             opening: screens.iter().map(|s| s.uuid.clone()).collect(),
             added: HashSet::new(),
-            visited: HashSet::new(),
+            visits: VisitCounts::default(),
+            revisits: VisitCounts::default(),
         }
     }
 
@@ -357,23 +434,20 @@ impl ScreenProgress {
     /// so without this the run's own re-screening work is invisible to every
     /// reporting surface, and a fully covered creature reads as idle.
     pub(crate) fn visit(&mut self, uuid: &str) {
-        self.visited.insert(uuid.to_string());
+        self.visits.observe(uuid);
+        if self.opening.contains(uuid) {
+            self.revisits.observe(uuid);
+        }
     }
 
-    /// Distinct hidden UUIDs the sweep reached this run, revisits included.
-    pub(crate) fn visited(&self) -> usize {
-        self.visited.len()
+    /// Every visit attempt this run, including repeats after sweep rebuilds.
+    pub(crate) fn visit_counts(&self) -> VisitCounts {
+        self.visits
     }
 
-    /// How many of those the fleet had already checked when the run opened.
-    ///
-    /// Useful work that added no unique coverage — reported beside `progress:`,
-    /// never inside it.
-    pub(crate) fn revisited(&self) -> usize {
-        self.visited
-            .iter()
-            .filter(|uuid| self.opening.contains(*uuid))
-            .count()
+    /// Visit attempts over keys already checked when this run opened.
+    pub(crate) fn revisit_counts(&self) -> VisitCounts {
+        self.revisits
     }
 
     /// Record one filed screen record; only a first-ever record counts.
@@ -560,7 +634,7 @@ impl History {
 /// markers rather than from the creature in hand. A **corpus change** does open
 /// a new epoch — [`Self::sweeps_completed_epoch`] counts markers filed under the
 /// corpus in hand — for the same reason coverage does (Issue #100).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Passes {
     /// Exhausted-sweep restarts during **this** Ockham invocation (Issue #77).
@@ -599,6 +673,29 @@ pub struct Passes {
     /// batches: what it answers is how much of the run's work went over ground
     /// the fleet had already covered.
     pub revisited_run: usize,
+    /// Every visit attempt this run, including repeat visits caused by accepted
+    /// cuts rebuilding the sweep (#161).
+    #[serde(default)]
+    pub visits_run: usize,
+    /// Hidden-neuron share of [`Self::visits_run`] (#163).
+    #[serde(default)]
+    pub neuron_visits_run: usize,
+    /// Synapse share of [`Self::visits_run`] (#163).
+    #[serde(default)]
+    pub synapse_visits_run: usize,
+    /// Revisit attempts over keys that were already checked when the run opened.
+    #[serde(default)]
+    pub revisit_attempts_run: usize,
+    /// Hidden-neuron share of [`Self::revisit_attempts_run`].
+    #[serde(default)]
+    pub neuron_revisits_run: usize,
+    /// Synapse share of [`Self::revisit_attempts_run`].
+    #[serde(default)]
+    pub synapse_revisits_run: usize,
+    /// Creature-equivalent work this invocation performed: total visit attempts
+    /// divided by the final current-incumbent visit population (#161).
+    #[serde(default)]
+    pub equivalent_passes_run: f64,
 }
 
 impl Passes {
@@ -615,10 +712,51 @@ impl Passes {
             current_pass: sweeps_completed_epoch + 1,
             visited_run,
             revisited_run,
+            visits_run: 0,
+            neuron_visits_run: 0,
+            synapse_visits_run: 0,
+            revisit_attempts_run: 0,
+            neuron_revisits_run: 0,
+            synapse_revisits_run: 0,
+            equivalent_passes_run: 0.0,
         }
     }
 
-    /// The description lines: the pass counters, then this run's visits.
+    /// Build pass telemetry from attempt counters rather than distinct keys.
+    ///
+    /// This is the topology-tolerant measurement path (#161): an accepted cut
+    /// may rebuild a permutation before `Sweep::exhausted()` ever fires, but it
+    /// cannot erase visit attempts already counted here. The strict restart
+    /// counters remain beside it, explicitly separate.
+    pub fn measured(
+        sweep_restarts_run: u64,
+        sweeps_completed_epoch: u64,
+        visits: VisitCounts,
+        revisits: VisitCounts,
+        population: usize,
+    ) -> Self {
+        Self {
+            sweep_restarts_run,
+            sweeps_completed_epoch,
+            current_pass: sweeps_completed_epoch + 1,
+            visited_run: visits.total,
+            revisited_run: revisits.total,
+            visits_run: visits.total,
+            neuron_visits_run: visits.neurons,
+            synapse_visits_run: visits.synapses,
+            revisit_attempts_run: revisits.total,
+            neuron_revisits_run: revisits.neurons,
+            synapse_revisits_run: revisits.synapses,
+            equivalent_passes_run: if population == 0 {
+                0.0
+            } else {
+                visits.total as f64 / population as f64
+            },
+        }
+    }
+
+    /// The description lines: strict sweep counters, topology-tolerant rescan
+    /// work, then the neuron/synapse visit split.
     ///
     /// ```text
     /// passes:    3 complete this epoch · 1 this run · pass 4 in progress
@@ -631,10 +769,30 @@ impl Passes {
     /// `visits:` line is omitted when the run reached nothing.
     fn lines(&self) -> Vec<String> {
         let mut out = vec![format!(
-            "{:<11}{} complete this epoch · {} this run · pass {} in progress",
+            "{:<11}{} strict complete this epoch · {} strict this run · pass {} in progress",
             "passes:", self.sweeps_completed_epoch, self.sweep_restarts_run, self.current_pass
         )];
-        if self.visited_run > 0 {
+        if self.visits_run > 0 {
+            out.push(format!(
+                "{:<11}{:.2} creature-equivalent this run · {} visit attempts",
+                "rescan:", self.equivalent_passes_run, self.visits_run
+            ));
+            if self.synapse_visits_run > 0 {
+                out.push(format!(
+                    "{:<11}neurons {} ({} revisits) · synapses {} ({} revisits)",
+                    "visits:",
+                    self.neuron_visits_run,
+                    self.neuron_revisits_run,
+                    self.synapse_visits_run,
+                    self.synapse_revisits_run
+                ));
+            } else {
+                out.push(format!(
+                    "{:<11}neurons {} ({} revisits)",
+                    "visits:", self.neuron_visits_run, self.neuron_revisits_run
+                ));
+            }
+        } else if self.visited_run > 0 {
             out.push(format!(
                 "{:<11}{} hidden neurons visited this run · {} revisited",
                 "visits:", self.visited_run, self.revisited_run
@@ -723,6 +881,86 @@ impl ScreenHistory {
     }
 }
 
+/// When one set of coverage figures was measured (Issue #171).
+///
+/// Every figure a run publishes has to come from **one** measurement, and the
+/// reader has to be able to see which. Before this, the check-in subject was
+/// stamped as an accept published `best.json` and `coverage.txt` was written
+/// when the run ended, so one commit could report `sweep 10338/55649 (18.6%)`
+/// in its subject and `13481/55649 (24.2%)` in its body with nothing to say
+/// which was which.
+/// The vocabulary is deliberately one word: every published artefact carries
+/// `final`, and a stage that is not `final` is not something Ockham writes. It
+/// is an enum rather than a free-text field so an unknown stage fails the parse
+/// loudly instead of being read as a measurement this binary understands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotStage {
+    /// Measured after the final accepted creature was selected.
+    ///
+    /// The one snapshot the subject, the description, `coverage.txt` and
+    /// `coverage.json` are all rendered from.
+    Final,
+}
+
+impl SnapshotStage {
+    /// The word the description line carries.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Final => "final",
+        }
+    }
+}
+
+/// The measurement every figure in one [`CoverageReport`] came from (#171).
+///
+/// Immutable by construction: it is built once, from the creature the counts
+/// were taken over, and carried into the report rather than re-derived per
+/// surface. Naming the creature is what ties the neuron count, the synapse
+/// count and their combined total together — all three are of *this* creature,
+/// so a topology change between two surfaces is visible as a different
+/// creature id rather than as figures that quietly fail to add up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snapshot {
+    /// Which measurement this is.
+    pub stage: SnapshotStage,
+    /// Checksum of the creature every count in the report was measured over.
+    pub creature: String,
+}
+
+impl Snapshot {
+    /// The snapshot taken after the final accepted creature was selected.
+    pub fn final_over(creature_checksum: impl Into<String>) -> Self {
+        Self {
+            stage: SnapshotStage::Final,
+            creature: creature_checksum.into(),
+        }
+    }
+
+    /// The description line, naming the stage, the creature and the population.
+    ///
+    /// ```text
+    /// snapshot:  final · creature 6fc028da · 4 hidden + 9 synapses = 13 visits
+    /// ```
+    ///
+    /// The arithmetic is spelled out because the three counts are the ones a
+    /// reader most needs to know are of one creature: `hidden + synapses`
+    /// **is** the `sweep:` denominator, so a line that did not add up would be
+    /// two snapshots mixed rather than one reported.
+    fn line(&self, coverage: &Coverage) -> String {
+        format!(
+            "{:<11}{} · creature {} · {} hidden + {} synapses = {} visits",
+            "snapshot:",
+            self.stage.label(),
+            short_id(&self.creature),
+            coverage.hidden,
+            coverage.synapses,
+            coverage.checkable
+        )
+    }
+}
+
 /// The commit-description artefact: coverage, plus the run's winner economics.
 ///
 /// [`Coverage`] is flattened, so a consumer that deserialises `coverage.json`
@@ -776,6 +1014,26 @@ pub struct CoverageReport {
     /// written before this field existed still deserialises.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passes: Option<Passes>,
+    /// The screening funnel, its rates and the rescan ETAs (Issue #162).
+    ///
+    /// Beside the pass counters rather than inside them: those say how many
+    /// times the razor has been round the creature, and this says how fast it
+    /// is getting round it and how much of the walk ever reaches a scorer. A
+    /// visit is not a proposal and a proposal is not a screen, so the funnel
+    /// keeps them apart and the ETAs say which of the two a rescan is paced by.
+    /// `#[serde(default)]` so an artefact written before this field existed
+    /// still deserialises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub throughput: Option<crate::throughput::Throughput>,
+    /// The one measurement every figure above was taken from (Issue #171).
+    ///
+    /// Named rather than implied: the check-in subject, `coverage.txt` and
+    /// `coverage.json` are rendered from this report, so stamping the report
+    /// with its own snapshot is what lets a reader confirm the three surfaces
+    /// describe one creature at one moment. `#[serde(default)]` so an artefact
+    /// written before this field existed still deserialises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Snapshot>,
 }
 
 impl CoverageReport {
@@ -788,7 +1046,20 @@ impl CoverageReport {
             corpus_identity: None,
             history: None,
             passes: None,
+            throughput: None,
+            snapshot: None,
         }
+    }
+
+    /// The commit-subject coverage clause for this report (Issue #171).
+    ///
+    /// The subject and [`Self::description`] are two renderings of one report,
+    /// so they read the same numerator, denominator, epoch and percentage. A
+    /// caller that stamps a subject from anything else is the bug this exists
+    /// to prevent.
+    pub fn subject_clause(&self) -> String {
+        self.coverage
+            .subject_clause(self.corpus_identity.as_deref())
     }
 
     /// The full commit-description block: coverage, epoch, progress, winners.
@@ -807,6 +1078,10 @@ impl CoverageReport {
         let mut out = self
             .coverage
             .description(candidates, self.corpus_identity.as_deref());
+        if let Some(snapshot) = &self.snapshot {
+            out.push('\n');
+            out.push_str(&snapshot.line(&self.coverage));
+        }
         out.push_str(&format!(
             "\n{:<11}{} newly checked this run",
             "progress:", self.newly_screened
@@ -824,6 +1099,17 @@ impl CoverageReport {
             out.push_str(&line);
         }
         for line in self.winners.iter().flat_map(Winners::lines) {
+            out.push('\n');
+            out.push_str(&line);
+        }
+        // Last, because it is the only block about *rate* rather than state:
+        // everything above says where the sweep has got to, and these say how
+        // fast it got there and how long another lap would take (Issue #162).
+        for line in self
+            .throughput
+            .iter()
+            .flat_map(crate::throughput::Throughput::lines)
+        {
             out.push('\n');
             out.push_str(&line);
         }
@@ -1180,15 +1466,15 @@ mod tests {
         let creature = neurons_only(6);
         let screens = [
             screen("h0", 1),
-            blocked("h1", 2, BlockedReason::AggregateSquash),
-            blocked("h2", 3, BlockedReason::AggregateSquash),
+            blocked("h1", 2, BlockedReason::ValidationFailed),
+            blocked("h2", 3, BlockedReason::ValidationFailed),
             blocked("h3", 4, BlockedReason::MissingActivation),
             visit("h4", 5),
         ];
         let cov = coverage(&creature, &HashSet::new(), &screens, 0);
         assert_eq!(cov.blocked, 4);
         assert_eq!(cov.blocked_by_reason.total(), cov.blocked);
-        assert_eq!(cov.blocked_by_reason.aggregate_squash, 2);
+        assert_eq!(cov.blocked_by_reason.validation_failed, 2);
         assert_eq!(cov.blocked_by_reason.missing_activation, 1);
         assert_eq!(
             cov.blocked_by_reason.unrecorded, 1,
@@ -1196,7 +1482,7 @@ mod tests {
         );
         assert_eq!(
             cov.blocked_by_reason.dominant(),
-            Some((BlockedReason::AggregateSquash, 2))
+            Some((BlockedReason::ValidationFailed, 2))
         );
     }
 
@@ -1207,14 +1493,14 @@ mod tests {
     fn the_freshest_record_decides_the_reason_whatever_order_it_was_read_in() {
         let creature = neurons_only(1);
         let old = blocked("h0", 1, BlockedReason::MissingActivation);
-        let new = blocked("h0", 9, BlockedReason::AggregateSquash);
+        let new = blocked("h0", 9, BlockedReason::ValidationFailed);
         for screens in [
             vec![old.clone(), new.clone()],
             vec![new.clone(), old.clone()],
         ] {
             let cov = coverage(&creature, &HashSet::new(), &screens, 0);
             assert_eq!(cov.blocked, 1);
-            assert_eq!(cov.blocked_by_reason.aggregate_squash, 1, "{screens:?}");
+            assert_eq!(cov.blocked_by_reason.validation_failed, 1, "{screens:?}");
             assert_eq!(cov.blocked_by_reason.missing_activation, 0, "{screens:?}");
         }
     }
@@ -1225,13 +1511,13 @@ mod tests {
     fn a_uuid_with_one_real_screen_contributes_no_reason() {
         let creature = neurons_only(2);
         let screens = [
-            blocked("h0", 1, BlockedReason::AggregateSquash),
+            blocked("h0", 1, BlockedReason::ValidationFailed),
             screen("h0", 2),
-            blocked("h1", 3, BlockedReason::AggregateSquash),
+            blocked("h1", 3, BlockedReason::ValidationFailed),
         ];
         let cov = coverage(&creature, &HashSet::new(), &screens, 0);
         assert_eq!(cov.blocked, 1);
-        assert_eq!(cov.blocked_by_reason.aggregate_squash, 1);
+        assert_eq!(cov.blocked_by_reason.validation_failed, 1);
     }
 
     /// The commit description carries the breakdown, so the largest category to
@@ -1240,9 +1526,9 @@ mod tests {
     fn the_description_breaks_the_blocked_line_down_by_reason() {
         let creature = neurons_only(4);
         let screens = [
-            blocked("h0", 1, BlockedReason::AggregateSquash),
-            blocked("h1", 2, BlockedReason::AggregateSquash),
-            blocked("h2", 3, BlockedReason::UnsafeTopology),
+            blocked("h0", 1, BlockedReason::ValidationFailed),
+            blocked("h1", 2, BlockedReason::ValidationFailed),
+            blocked("h2", 3, BlockedReason::MissingActivation),
         ];
         let cov = coverage(&creature, &HashSet::new(), &screens, 0);
         let text = cov.description(100, None);
@@ -1251,7 +1537,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("reasons:   aggregate-squash 2 (66.7%) · unsafe-topology 1 (33.3%)"),
+            text.contains("reasons:   validation-failed 2 (66.7%) · missing-activation 1 (33.3%)"),
             "{text}"
         );
     }
@@ -1686,6 +1972,8 @@ mod tests {
             corpus_identity: None,
             history: None,
             passes: None,
+            throughput: None,
+            snapshot: None,
         };
         assert_eq!(
             report.description(100),
@@ -1701,6 +1989,67 @@ mod tests {
                 "dropped:   12 entries over budget (est 18s/creature)"
             )
         );
+    }
+
+    /// The throughput block renders exactly as GRQ will paste it, with every
+    /// funnel stage named apart from the others (Issue #162).
+    #[test]
+    fn the_throughput_block_renders_exactly_as_grq_will_paste_it() {
+        let kinds = |neurons: usize, synapses: usize| {
+            let mut counts = VisitCounts::default();
+            for _ in 0..neurons {
+                counts.add(crate::throughput::VisitKind::Neuron);
+            }
+            for _ in 0..synapses {
+                counts.add(crate::throughput::VisitKind::Synapse);
+            }
+            counts
+        };
+        let funnel = crate::throughput::Funnel {
+            blocked: kinds(8680, 29_295),
+            proposed: kinds(420, 2105),
+            sample_screened: kinds(312, 1840),
+            full_scored: kinds(24, 60),
+            ..crate::throughput::Funnel::default()
+        };
+        let report = CoverageReport {
+            coverage: fleet_coverage(),
+            newly_screened: 100,
+            winners: None,
+            corpus_identity: None,
+            history: None,
+            passes: None,
+            // One hour of measured wall clock, so each count reads straight
+            // off as its own rate.
+            throughput: Some(crate::throughput::Throughput::measured(
+                funnel,
+                kinds(9100, 31_400),
+                kinds(0, 0),
+                3_600_000,
+                5013,
+                2000,
+            )),
+            snapshot: None,
+        };
+        let block = report.description(100);
+        assert!(
+            block.ends_with(concat!(
+                "funnel:    neurons 9100 visits · 8680 blocked · 0 judged · 420 proposed · 312 screened · 24 scored\n",
+                "funnel:    synapses 31400 visits · 29295 blocked · 0 judged · 2105 proposed · 1840 screened · 60 scored\n",
+                "rate:      neurons 312 screened/h · synapses 1840 screened/h · full rescan ~0.8h\n",
+                "eta:       visit rescan ~0.6h · scored rescan ~0.8h · 5013 neurons + 2000 edges eligible"
+            )),
+            "{block}"
+        );
+    }
+
+    /// A report with no throughput renders exactly as it did before #162.
+    #[test]
+    fn a_report_without_throughput_renders_no_rate_lines() {
+        let block = CoverageReport::new(fleet_coverage()).description(100);
+        assert!(!block.contains("funnel:"), "{block}");
+        assert!(!block.contains("rate:"), "{block}");
+        assert!(!block.contains("eta:"), "{block}");
     }
 
     /// Issue #77: the per-run figure is rendered on every run, zero included —
@@ -1757,6 +2106,8 @@ mod tests {
             corpus_identity: None,
             history: None,
             passes: None,
+            throughput: None,
+            snapshot: None,
         };
         let block = report.description(100);
         assert!(block.ends_with("winners:   4 screened · 0 confirmed · 0 applied · 0 carried"));
@@ -1777,6 +2128,8 @@ mod tests {
             corpus_identity: None,
             history: None,
             passes: None,
+            throughput: None,
+            snapshot: None,
         };
         let block = report.description(100);
         assert!(
@@ -1796,6 +2149,8 @@ mod tests {
             corpus_identity: None,
             history: None,
             passes: None,
+            throughput: None,
+            snapshot: None,
         };
         write_files(&dir, &report, 100).unwrap();
 
@@ -2169,7 +2524,7 @@ mod tests {
         let block = report.description(100);
         assert!(
             block.contains(
-                "passes:    7 complete this epoch · 1 this run · pass 8 in progress\n\
+                "passes:    7 strict complete this epoch · 1 strict this run · pass 8 in progress\n\
                  visits:    120 hidden neurons visited this run · 118 revisited"
             ),
             "{block}"
@@ -2216,7 +2571,9 @@ mod tests {
         };
         let block = opening.description(100);
         assert!(
-            block.contains("passes:    0 complete this epoch · 0 this run · pass 1 in progress"),
+            block.contains(
+                "passes:    0 strict complete this epoch · 0 strict this run · pass 1 in progress"
+            ),
             "{block}"
         );
         assert!(
@@ -2333,21 +2690,25 @@ mod tests {
     /// Issue #140: a revisit is work, not new coverage. Both figures are kept,
     /// and neither is allowed to stand in for the other.
     #[test]
-    fn visits_count_every_uuid_reached_while_progress_counts_only_new_ones() {
+    fn visit_attempts_count_repeat_work_while_progress_counts_only_new_keys() {
         let existing = vec![screen("h_a", 10), screen("h_b", 11)];
         let mut progress = ScreenProgress::new(&existing);
-        assert_eq!(progress.visited(), 0);
+        assert_eq!(progress.visit_counts().total, 0);
 
         progress.visit("h_a");
         progress.visit("h_a");
         progress.visit("h_b");
         progress.visit("h_new");
         assert_eq!(
-            progress.visited(),
-            3,
-            "a uuid is visited once, however often"
+            progress.visit_counts().total,
+            4,
+            "repeat visits are real work and stay counted"
         );
-        assert_eq!(progress.revisited(), 2, "h_a and h_b were already checked");
+        assert_eq!(
+            progress.revisit_counts().total,
+            3,
+            "two h_a visits plus h_b were revisits"
+        );
         assert_eq!(
             progress.count(),
             0,
@@ -2356,7 +2717,11 @@ mod tests {
 
         progress.observe("h_new");
         assert_eq!(progress.count(), 1);
-        assert_eq!(progress.revisited(), 2, "the new uuid is not a revisit");
+        assert_eq!(
+            progress.revisit_counts().total,
+            3,
+            "the new uuid is not a revisit"
+        );
     }
 
     #[test]
@@ -2468,10 +2833,10 @@ mod tests {
         let creature = hidden_creature(3);
         let screens = [
             screen("h0", 1),
-            blocked("h1", 2, BlockedReason::AggregateSquash),
+            blocked("h1", 2, BlockedReason::ValidationFailed),
             visit("h2", 3),
-            blocked(&edge("input-0", "h0"), 4, BlockedReason::UnsafeTopology),
-            blocked(&edge("h0", "output-0"), 5, BlockedReason::UnsafeTopology),
+            blocked(&edge("input-0", "h0"), 4, BlockedReason::ValidationFailed),
+            blocked(&edge("h0", "output-0"), 5, BlockedReason::MissingActivation),
             blocked(&edge("input-0", "h1"), 6, BlockedReason::MissingActivation),
             screen(&edge("h1", "output-0"), 7),
         ];
@@ -2484,9 +2849,10 @@ mod tests {
             cov.blocked,
             "the breakdown is a partition of the blocked population"
         );
-        assert_eq!(cov.blocked_by_reason.unsafe_topology, 2);
-        assert_eq!(cov.blocked_by_reason.aggregate_squash, 1);
-        assert_eq!(cov.blocked_by_reason.missing_activation, 1);
+        assert_eq!(cov.blocked_by_reason.validation_failed, 2);
+        // Only codes a synapse visit can actually report: `no-output-path` is a
+        // neuron path and is never filed against an edge (blocked-reasons.md).
+        assert_eq!(cov.blocked_by_reason.missing_activation, 2);
         assert_eq!(cov.blocked_by_reason.unrecorded, 1);
     }
 
@@ -2595,6 +2961,105 @@ mod tests {
             "the stored denominator is not re-derived"
         );
         assert!(!cov.description(100, None).contains("synapses:"));
+    }
+
+    /// Issue #171: the subject and the body are two renderings of one report.
+    #[test]
+    fn the_subject_clause_and_the_description_report_one_set_of_figures() {
+        let report = CoverageReport {
+            coverage: Coverage {
+                synapses: 2000,
+                synapses_checked: 330,
+                checkable: 7013,
+                ..fleet_coverage()
+            },
+            corpus_identity: Some("6fc028daffffffff".into()),
+            snapshot: Some(Snapshot::final_over("9ab3c1d2e3f40506")),
+            ..CoverageReport::new(fleet_coverage())
+        };
+
+        let subject = report.subject_clause();
+        assert_eq!(subject, "sweep 1204/7013 (17.2% of epoch 6fc028da)");
+        assert_eq!(
+            report.coverage.subject_clause(None),
+            "sweep 1204/7013 (17.2% of epoch)",
+            "an unnamed epoch is still scoped, just unnamed"
+        );
+
+        let description = report.description(100);
+        let sweep = description
+            .lines()
+            .find(|l| l.starts_with("sweep:"))
+            .expect("sweep line");
+        assert_eq!(sweep, "sweep:     1204 of 7013 visits (17.2% of epoch)");
+        assert!(
+            description.contains("epoch:     corpus 6fc028da"),
+            "one epoch identity, shortened the same way: {description}"
+        );
+    }
+
+    /// The snapshot line ties the two populations to one named creature.
+    #[test]
+    fn the_snapshot_line_names_the_creature_and_adds_the_populations_up() {
+        let report = CoverageReport {
+            coverage: Coverage {
+                hidden: 4,
+                tagged: 0,
+                checkable: 13,
+                checked: 6,
+                synapses: 9,
+                synapses_checked: 5,
+                blocked: 0,
+                blocked_by_reason: Default::default(),
+                cut: 1,
+            },
+            snapshot: Some(Snapshot::final_over("6fc028da1234567890")),
+            ..CoverageReport::new(fleet_coverage())
+        };
+
+        assert_eq!(
+            report.description(100),
+            concat!(
+                "🪒 Ockham neuron screening coverage\n",
+                "sweep:     6 of 13 visits (46.2% of epoch)\n",
+                "synapses:  5 of 9 edges checked this epoch\n",
+                "cut:       1 this run\n",
+                "unchecked: 7 remaining this epoch (~1 run at 100/run)\n",
+                // Directly under the figures it identifies, above `progress:`.
+                "snapshot:  final · creature 6fc028da · 4 hidden + 9 synapses = 13 visits\n",
+                "progress:  0 newly checked this run",
+            )
+        );
+    }
+
+    /// Issue #171: an artefact written before the snapshot existed still reads,
+    /// and a report that names no snapshot renders the block as it always did.
+    #[test]
+    fn a_pre_171_coverage_json_reads_and_renders_as_it_did() {
+        let json = r#"{
+            "hidden": 5013,
+            "tagged": 42,
+            "checkable": 5013,
+            "checked": 1204,
+            "cut": 7,
+            "newlyScreened": 100
+        }"#;
+        let old: CoverageReport =
+            serde_json::from_str(json).expect("a pre-#171 artefact must still read");
+        assert_eq!(old.snapshot, None);
+        assert!(
+            !old.description(100).contains("snapshot:"),
+            "the line is omitted rather than rendered empty: {}",
+            old.description(100)
+        );
+        assert_eq!(
+            old.description(100),
+            CoverageReport {
+                newly_screened: 100,
+                ..CoverageReport::new(fleet_coverage())
+            }
+            .description(100)
+        );
     }
 
     /// A synapse's history must be visible to the cumulative line — and so to

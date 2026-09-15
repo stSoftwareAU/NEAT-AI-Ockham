@@ -486,12 +486,12 @@ pub fn compute_activation_stats(
         .iter()
         .enumerate()
         .filter(|(_, n)| n.neuron_type == "hidden")
-        .map(|(i, n)| Accumulator::new(n.uuid.clone(), i, net.num_inputs + i, sample.probes))
+        .map(|(i, n)| Accumulator::new(n.uuid.clone(), i, net.num_inputs() + i, sample.probes))
         .collect();
     // The export form leaves inputs implicit, so they are keyed by the wire
     // uuid the synapses use and read from the head of the activation buffer.
     // No probes: signatures select merge candidates, and an input is not one.
-    let mut input_acc: Vec<Accumulator> = (0..net.num_inputs)
+    let mut input_acc: Vec<Accumulator> = (0..net.num_inputs())
         .map(|i| Accumulator::new(input_uuid(i), i, i, 0))
         .collect();
     if acc.is_empty() && input_acc.is_empty() {
@@ -535,14 +535,14 @@ pub fn compute_activation_stats(
                 let _ = net.activate(inputs, creature.output);
                 let probe = probe_slots.get(next_probe) == Some(&(seen + r as u64));
                 for a in &mut acc {
-                    let x = net.activations[a.activation_index];
+                    let x = net.activations()[a.activation_index];
                     a.push(x);
                     if probe {
                         a.probes.push(x);
                     }
                 }
                 for a in &mut input_acc {
-                    a.push(net.activations[a.activation_index]);
+                    a.push(net.activations()[a.activation_index]);
                 }
                 if probe {
                     next_probe += 1;
@@ -746,9 +746,14 @@ pub struct SourceValue {
 ///   a non-finite value — `None`.
 ///
 /// It fails closed rather than guessing: every `None` is a fold this run cannot
-/// justify, so the caller proposes no cut for that edge instead of folding a
-/// scalar nothing measured. Which reason code the blocked visit is filed under
-/// is the caller's to decide — see `docs/blocked-reasons.md`.
+/// justify, so nothing the run did not measure is folded into a bias.
+///
+/// Failing closed is not failing to prune (Issue #199). `None` means the caller
+/// asks NEAT-AI-core for the cut carrying **no statistics**, not that it
+/// proposes nothing: core runs every rewrite provable from the structure alone
+/// and names the target that got nothing back as uncompensated, so an
+/// unmeasured edge becomes an approximate candidate the scorer judges — see
+/// `docs/blocked-reasons.md`.
 pub fn source_value(
     creature: &CreatureExport,
     stats: &ActivationStats,

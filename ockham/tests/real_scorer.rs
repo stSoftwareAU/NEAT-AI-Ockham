@@ -11,7 +11,7 @@ use std::process::Command;
 use neat_ai_ockham::corpus::{corpus_info, write_bin_file};
 use neat_ai_ockham::fixtures::identity_creature_json;
 use neat_ai_ockham::scorer::{DirectoryScorer, ExternalScorer, ScorerMode};
-use neat_ai_ockham::{establish_baseline, load_incumbent};
+use neat_ai_ockham::{SystemClock, establish_baseline, load_incumbent};
 use neat_core::training_data::TrainingDataConfig;
 
 fn scorer_binary() -> Option<PathBuf> {
@@ -57,6 +57,7 @@ fn real_scorer_scores_the_incumbent_baseline() {
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).unwrap();
     let baseline = establish_baseline(
+        &SystemClock,
         &incumbent,
         &train,
         &corpus,

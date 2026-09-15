@@ -30,7 +30,7 @@ use std::time::Instant;
 use neat_ai_ockham::fixtures::{creature, neuron, synapse};
 use neat_ai_ockham::signature::{DiscoveryConfig, discover};
 use neat_ai_ockham::stats::{ActivationStats, NeuronProbes};
-use neat_ai_ockham::{ablate_mean, merge_correlated};
+use neat_ai_ockham::{merge_correlated, prune_hidden_neuron};
 use neat_core::{CreatureExport, compile_creature};
 
 /// Outputs must stay within this of the incumbent for the judge to confirm.
@@ -163,13 +163,13 @@ fn measured_stats(creature: &CreatureExport, probes: &[Vec<f32>]) -> ActivationS
         .iter()
         .enumerate()
         .filter(|(_, n)| n.neuron_type == "hidden")
-        .map(|(i, n)| (n.uuid.clone(), net.num_inputs + i))
+        .map(|(i, n)| (n.uuid.clone(), net.num_inputs() + i))
         .collect();
     let mut values: Vec<Vec<f32>> = vec![Vec::with_capacity(probes.len()); hidden.len()];
     for input in probes {
         let _ = net.activate(input, creature.output);
         for (slot, (_, index)) in values.iter_mut().zip(&hidden) {
-            slot.push(net.activations[*index]);
+            slot.push(net.activations()[*index]);
         }
     }
     ActivationStats {
@@ -349,7 +349,7 @@ fn main() {
             .probes_of(uuid)
             .map(|v| f64::from(v.iter().sum::<f32>()) / v.len() as f64)
             .unwrap_or(0.0);
-        let built = match ablate_mean(&incumbent, uuid, mean, None) {
+        let built = match prune_hidden_neuron(&incumbent, uuid, Some(mean), None) {
             Ok(built) => built,
             Err(blocked) => {
                 *ablation

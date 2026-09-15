@@ -16,6 +16,7 @@ use neat_core::{CreatureExport, creature_to_json};
 use serde::Serialize;
 
 use crate::ablation::StructureSnapshot;
+use crate::clock::Clock;
 use crate::incumbent::{sha256_hex, validate_creature};
 use crate::scorer::{DirectoryScorer, ScoreResult, ScorerMode};
 use crate::signature::MergeIndex;
@@ -430,7 +431,12 @@ pub fn replay_plans(applied: &[String]) -> Vec<Vec<String>> {
 /// individuals and dropping nested prefixes first (Issue #58).
 ///
 /// Scorer failure means no winner. A sampled win cannot update `best.json`.
+///
+/// `clock` times the cohort: `full_ms` is what the run's cohort sizing of
+/// Issue #58 is estimated from, so it is read from the run's own time source
+/// (#214) rather than the wall clock directly.
 pub fn evaluate_full(
+    clock: &dyn Clock,
     scorer: &dyn DirectoryScorer,
     training_dir: &Path,
     incumbent: &CreatureExport,
@@ -579,11 +585,11 @@ pub fn evaluate_full(
         }
     }
 
-    let started = std::time::Instant::now();
+    let started = clock.now();
     let results = scorer
         .score_directory(cfg.dir, training_dir, ScorerMode::Full)
         .map_err(|e| e.to_string())?;
-    let full_ms = started.elapsed().as_millis() as u64;
+    let full_ms = clock.ms_since(started);
     let baseline = results
         .get("baseline")
         .ok_or_else(|| "full: scorer returned no `baseline` entry".to_string())?;
@@ -720,6 +726,7 @@ pub fn sampled(
 mod tests {
     use super::*;
     use crate::baseline::fake::ScriptedScorer;
+    use crate::clock::SystemClock;
     use crate::fixtures::{creature, neuron, synapse};
     use crate::incumbent::validate_creature;
     use crate::stats::{ActivationStats, NeuronStats, STATS_FORMAT_VERSION, SampleSpec};
@@ -817,6 +824,7 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let out = evaluate_full(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent,
@@ -873,6 +881,7 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let out = evaluate_full(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent,
@@ -916,6 +925,7 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let out = evaluate_full(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent,
@@ -978,6 +988,7 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let out = evaluate_full(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent,
@@ -1047,6 +1058,7 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let out = evaluate_full(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent,
@@ -1079,6 +1091,7 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let out = evaluate_full(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent,
@@ -1108,6 +1121,7 @@ mod tests {
             ..ScriptedScorer::ok(0.50, 0.50)
         };
         let out = evaluate_full(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent,
@@ -1412,6 +1426,7 @@ mod tests {
         let dir = tmp.path().join("full");
         let scorer = ScriptedScorer::ok(0.50, 0.50);
         let out = evaluate_full(
+            &SystemClock,
             &scorer,
             tmp.path(),
             &incumbent,
@@ -1458,6 +1473,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let kept = |dir: &str| -> Vec<String> {
             let out = evaluate_full(
+                &SystemClock,
                 &ScriptedScorer::ok(0.50, 0.50),
                 tmp.path(),
                 &incumbent,
@@ -1487,6 +1503,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("full");
         let out = evaluate_full(
+            &SystemClock,
             &ScriptedScorer::ok(0.50, 0.50),
             tmp.path(),
             &incumbent,
@@ -1507,6 +1524,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("full");
         let out = evaluate_full(
+            &SystemClock,
             &ScriptedScorer::ok(0.50, 0.50),
             tmp.path(),
             &incumbent,
@@ -1531,6 +1549,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("full");
         let untrimmed = evaluate_full(
+            &SystemClock,
             &ScriptedScorer::ok(0.50, 0.50),
             tmp.path(),
             &incumbent,
@@ -1543,6 +1562,7 @@ mod tests {
 
         let dir = tmp.path().join("trimmed");
         let out = evaluate_full(
+            &SystemClock,
             &ScriptedScorer::ok(0.50, 0.50),
             tmp.path(),
             &incumbent,
@@ -1585,6 +1605,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let gone = vec!["h1".to_string(), "not-a-neuron".to_string()];
         let out = evaluate_full(
+            &SystemClock,
             &ScriptedScorer::ok(0.50, 0.50),
             tmp.path(),
             &incumbent,
