@@ -2566,8 +2566,10 @@ done
 
 ## Development
 
-The project is pure Rust and expects sibling clones of `NEAT-AI-core` and
-`NEAT-AI-scorer` where required by the local development setup.
+The project is pure Rust. `neat-core` arrives as a released git tag pinned in
+`ockham/Cargo.toml`, so the workspace builds with nothing checked out beside it;
+`NEAT-AI-scorer` is still expected as a sibling clone by the integration tests
+that use the real scorer.
 
 ```bash
 ./quality.sh < /dev/null
@@ -2606,16 +2608,53 @@ moment, by design — `Develop` is the copy contract's source of truth.
 ```mermaid
 flowchart LR
     A["PR opened / synchronised"] --> B["version-increment job"]
-    B --> C["Fetch scripts/runlib.sh<br/>from NEAT-AI-core Develop"]
+    B --> C["Fetch scripts/runlib.sh and<br/>scripts/family-pins.sh<br/>from NEAT-AI-core Develop"]
     C -->|fetch fails| D["Job fails —<br/>ci-required blocks the merge"]
     C -->|identical| F["Leave it alone"]
     C -->|differs| E["Overwrite the local copy"]
-    E --> L["shellcheck + runlib contract tests<br/>on the new bytes"]
+    E --> L["shellcheck + contract checks<br/>on the new bytes"]
     L -->|fails| D
-    L -->|passes| G["Bump ockham/Cargo.toml"]
-    F --> G
-    G --> H["One commit, one push:<br/>bump + refreshed runlib.sh"]
+    L -->|passes| M
+    F --> M["Run family-pins.sh:<br/>move the neat-core pin<br/>to core's latest release"]
+    M -->|pin cannot be resolved| D
+    M --> G["Bump ockham/Cargo.toml"]
+    G --> H["One commit, one push:<br/>bump + moved pin + refreshed scripts"]
 ```
+
+### Canonical family-pins.sh
+
+`scripts/family-pins.sh` is **owned by
+[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)** — its one home is
+`scripts/family-pins.sh` on that repository's `Develop` branch
+(NEAT-AI-core#681), and it is copied and refreshed here by exactly the same
+fetch-and-overwrite the `runlib.sh` copy gets, in the same job and the same
+commit.
+
+It is what moves this repository's `neat-core` pin. `ockham/Cargo.toml` declares
+
+```toml
+neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v<semver>" }
+```
+
+and the `version-increment` job runs `scripts/family-pins.sh` before
+`scripts/auto-version.sh`, so a pin behind core's latest release is rewritten,
+`Cargo.lock` follows through `cargo update`, and the moved tag lands in the
+job's one commit together with whatever bump that commit carries. (On a branch
+CI has already bumped once, `auto-version.sh` leaves the version alone — it is
+still ahead of the base branch, which is all the unattended machines need.) The
+pin therefore moves **only** through this repository's own PR.
+
+Nothing else is allowed to move it: edit the pin by hand and the next PR simply
+moves it on to the latest release again. A pin that cannot be resolved fails the
+job and `ci-required` blocks the merge.
+
+A moved pin is **built and tested inside the move step**, before it is
+committed. It has to be: a push made with the default `GITHUB_TOKEN` starts no
+new workflow run, so the `quality` job of the same run only ever saw the
+pre-move checkout, and a breaking core release would otherwise land on the
+branch with `ci-required` already green and nothing having compiled it. Gating
+the new core where it arrives is what makes a deliberate upgrade unavoidable —
+the same reasoning the refreshed scripts above are linted in their own step.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the local and CI quality gates.
 Ockham commit messages use the **🪒** prefix.
@@ -2684,9 +2723,17 @@ NEAT-AI-Ockham/
 │   ├── pruning-ownership.md # design reference: rewrites belong in NEAT-AI-core
 │   ├── population-entry.md  # how cuts actually enter the live population
 │   └── incident-response.md # emergency dependency fast lane (SECURITY.md)
+├── scripts/
+│   ├── runlib.sh          # canonical build → install → clean (owned by core)
+│   ├── family-pins.sh     # canonical neat-core pin mover (owned by core)
+│   ├── auto-version.sh    # crate-version bump the version-increment job runs
+│   ├── spell-check.sh     # codespell preflight
+│   ├── test-runlib.sh             # runlib.sh contract
+│   ├── test-runlib-refresh.sh     # the CI step that refreshes runlib.sh
+│   ├── test-family-pins.sh        # family-pins.sh contract
+│   └── test-family-pins-refresh.sh  # the CI steps that refresh and run it
 ├── quality.sh
-├── rust-toolchain.toml
-└── neat-core.expected-version
+└── rust-toolchain.toml
 ```
 
 [docs/grq-integration.md](docs/grq-integration.md) is the checked-in audit of

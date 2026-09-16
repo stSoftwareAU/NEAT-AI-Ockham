@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# Hermetic tests for the CI steps that refresh and run scripts/family-pins.sh
+# (Issue #210).
+#
+# Ockham pins `neat-core` to a released git tag, and the only thing that moves
+# that pin is the `version-increment` job: it overwrites `scripts/family-pins.sh`
+# from NEAT-AI-core `Develop` and then runs it. Both steps commit to the PR
+# branch, so their failure paths are worth more than a reading of the YAML. Each
+# step's own `run:` body is lifted out of `.github/workflows/ci.yml` and executed
+# against a `gh` shim — no network, no token, nothing fetched — over a throwaway
+# fixture repository.
+#
+# What it pins:
+#   * an unfetchable file fails the refresh and leaves the local copy alone;
+#   * a body that is not a script fails the refresh and leaves the copy alone;
+#   * a differing, healthy copy is installed, still executable;
+#   * an identical copy is left alone;
+#   * a copy that is valid bash but breaks the pin contract fails the refresh —
+#     the gate that stops ungated bytes riding the job's commit;
+#   * the move step builds a moved pin, reports it for the commit step, fails
+#     the job when the new core does not compile, and does none of that when
+#     the pin is already current.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+WORKFLOW="${REPO_ROOT}/.github/workflows/ci.yml"
+CANONICAL="${SCRIPT_DIR}/family-pins.sh"
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "${WORK_DIR}"' EXIT
+
+PASSED=0
+FAILED=0
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [[ "${expected}" == "${actual}" ]]; then
+    echo "  PASS: ${desc}"
+    PASSED=$((PASSED + 1))
+  else
+    echo "  FAIL: ${desc}"
+    echo "    expected: '${expected}'"
+    echo "    actual:   '${actual}'"
+    FAILED=$((FAILED + 1))
+  fi
+}
+
+# The `run:` body of the step named $2 in workflow $1, dedented to column 0 —
+# the same lines the runner executes.
+extract_step() {
+  awk -v want="      - name: $2" '
+    $0 == want { found = 1; next }
+    !found { next }
+    !collecting && /^        run: \|$/ { collecting = 1; next }
+    !collecting { next }
+    /^ {0,9}[^ ]/ { exit }
+    { print substr($0, 11) }
+  ' "$1"
+}
+
+extract_to() {
+  local dest="$1" name="$2"
+  extract_step "${WORKFLOW}" "${name}" >"${dest}"
+  if [[ ! -s "${dest}" ]]; then
+    echo "FAIL: could not extract the step '${name}' from ${WORKFLOW}" >&2
+    exit 2
+  fi
+  bash -n "${dest}" || {
+    echo "FAIL: the extracted step '${name}' is not valid bash" >&2
+    exit 2
+  }
+}
+
+REFRESH_STEP="${WORK_DIR}/refresh.sh"
+MOVE_STEP="${WORK_DIR}/move.sh"
+extract_to "${REFRESH_STEP}" "Refresh scripts/family-pins.sh from NEAT-AI-core"
+extract_to "${MOVE_STEP}" "Move the neat-core pin to core's latest release"
+
+# A `gh` that prints the file $1 instead of fetching it, or fails when $1 is
+# the literal `FAIL`. Nothing here touches the network.
+install_gh_shim() {
+  local bin_dir="$1" payload="$2"
+  mkdir -p "${bin_dir}"
+  cat >"${bin_dir}/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${payload}" == "FAIL" ]]; then
+  echo "gh: simulated fetch failure" >&2
+  exit 1
+fi
+cat "${payload}"
+EOF
+  chmod +x "${bin_dir}/gh"
+}
+
+# A fixture repository carrying a stale copy of the script being refreshed,
+# plus the contract test the refresh step runs over the new bytes.
+new_fixture() {
+  local dir="${WORK_DIR}/$1"
+  mkdir -p "${dir}/scripts"
+  printf '#!/usr/bin/env bash\n# a stale copy\nexit 0\n' >"${dir}/scripts/family-pins.sh"
+  chmod +x "${dir}/scripts/family-pins.sh"
+  cp "${SCRIPT_DIR}/test-family-pins.sh" "${dir}/scripts/test-family-pins.sh"
+  printf '%s' "${dir}"
+}
+
+run_refresh() {
+  local dir="$1" payload="$2" name="$3"
+  install_gh_shim "${WORK_DIR}/${name}-bin" "${payload}"
+  (
+    cd "${dir}"
+    PATH="${WORK_DIR}/${name}-bin:${PATH}" \
+      RUNNER_TEMP="${WORK_DIR}" \
+      CORE_REF=Develop \
+      CORE_REPO=stSoftwareAU/NEAT-AI-core \
+      bash "${REFRESH_STEP}"
+  ) >"${WORK_DIR}/${name}.out" 2>"${WORK_DIR}/${name}.err"
+}
+
+echo "=== an unfetchable scripts/family-pins.sh fails the step ==="
+DIR="$(new_fixture unfetchable)"
+BEFORE="$(cksum <"${DIR}/scripts/family-pins.sh")"
+run_refresh "${DIR}" FAIL unfetchable && RC=0 || RC=$?
+assert_eq "unfetchable exits non-zero" "1" "${RC}"
+assert_eq "unfetchable names the repository and ref" "0" \
+  "$(grep -q 'Cannot fetch scripts/family-pins.sh from stSoftwareAU/NEAT-AI-core@Develop' \
+    "${WORK_DIR}/unfetchable.err"; echo $?)"
+assert_eq "unfetchable leaves the local copy alone" "${BEFORE}" \
+  "$(cksum <"${DIR}/scripts/family-pins.sh")"
+
+echo ""
+echo "=== a body that is not a script fails the step ==="
+DIR="$(new_fixture notascript)"
+BEFORE="$(cksum <"${DIR}/scripts/family-pins.sh")"
+printf '<html><body>404: Not Found</body></html>\n' >"${WORK_DIR}/notascript.payload"
+run_refresh "${DIR}" "${WORK_DIR}/notascript.payload" notascript && RC=0 || RC=$?
+assert_eq "a non-script body exits non-zero" "1" "${RC}"
+assert_eq "a non-script body says so" "0" \
+  "$(grep -q 'is not a bash script' "${WORK_DIR}/notascript.err"; echo $?)"
+assert_eq "a non-script body leaves the local copy alone" "${BEFORE}" \
+  "$(cksum <"${DIR}/scripts/family-pins.sh")"
+
+echo ""
+echo "=== a differing, healthy copy is installed ==="
+DIR="$(new_fixture differs)"
+run_refresh "${DIR}" "${CANONICAL}" differs && RC=0 || RC=$?
+assert_eq "a differing copy exits 0" "0" "${RC}"
+assert_eq "a differing copy is overwritten byte for byte" \
+  "$(cksum <"${CANONICAL}")" "$(cksum <"${DIR}/scripts/family-pins.sh")"
+EXECUTABLE=no
+[[ -x "${DIR}/scripts/family-pins.sh" ]] && EXECUTABLE=yes
+assert_eq "the refreshed copy stays executable" "yes" "${EXECUTABLE}"
+
+echo ""
+echo "=== an identical copy is left alone ==="
+run_refresh "${DIR}" "${CANONICAL}" identical && RC=0 || RC=$?
+assert_eq "an identical copy exits 0" "0" "${RC}"
+assert_eq "an identical copy is reported as already matching" "0" \
+  "$(grep -q 'already matches' "${WORK_DIR}/identical.out"; echo $?)"
+
+echo ""
+echo "=== valid bash that breaks the pin contract fails the step ==="
+DIR="$(new_fixture contract)"
+BEFORE_CANONICAL="$(cksum <"${CANONICAL}")"
+printf '#!/usr/bin/env bash\n# parses, rewrites nothing, refuses nothing\nset -euo pipefail\nexit 0\n' \
+  >"${WORK_DIR}/contract.payload"
+run_refresh "${DIR}" "${WORK_DIR}/contract.payload" contract && RC=0 || RC=$?
+assert_eq "a contract-breaking copy fails the step" "1" "${RC}"
+assert_eq "the failure is the contract test, not the fetch" "0" \
+  "$(grep -q 'FAIL: ' "${WORK_DIR}/contract.out"; echo $?)"
+assert_eq "this repository's own canonical copy is untouched by these tests" \
+  "${BEFORE_CANONICAL}" "$(cksum <"${CANONICAL}")"
+
+# --- the step that runs the script ------------------------------------------
+# `family-pins.sh` and `cargo` are both replaced by shims, so the move step is
+# exercised without a network round trip and without a real build: the
+# family-pins shim rewrites the manifest exactly as the real script would, or
+# leaves it alone when told the pin is current, and the cargo shim records
+# every invocation and reports whatever the case under test needs.
+new_move_fixture() {
+  local dir="${WORK_DIR}/$1" moves="$2" cargo_rc="$3"
+  mkdir -p "${dir}/scripts" "${dir}/ockham" "${dir}/bin"
+  cat >"${dir}/scripts/family-pins.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${moves}" == "yes" ]]; then
+  # Not sed -i: BSD sed takes a mandatory backup suffix and GNU sed does not,
+  # so an in-place edit spelt one way fails on the other platform.
+  sed 's/v1\.0\.0/v1.0.1/' ockham/Cargo.toml >ockham/Cargo.toml.staged
+  mv -f ockham/Cargo.toml.staged ockham/Cargo.toml
+  echo '[family-pins] neat-core v1.0.0 → v1.0.1 (ockham/Cargo.toml)' >&2
+fi
+EOF
+  chmod +x "${dir}/scripts/family-pins.sh"
+  cat >"${dir}/bin/cargo" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"${dir}/cargo.calls"
+if [[ "${cargo_rc}" != "0" ]]; then
+  echo "error[E0432]: unresolved import neat_core::Gone" >&2
+fi
+exit ${cargo_rc}
+EOF
+  chmod +x "${dir}/bin/cargo"
+  printf 'neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v1.0.0" }\n' \
+    >"${dir}/ockham/Cargo.toml"
+  : >"${dir}/Cargo.lock"
+  git -C "${dir}" init --quiet
+  git -C "${dir}" add -A
+  git -C "${dir}" -c user.email=t@t -c user.name=t commit --quiet -m fixture
+  printf '%s' "${dir}"
+}
+
+run_move() {
+  local dir="$1" name="$2"
+  : >"${WORK_DIR}/${name}.env"
+  (
+    cd "${dir}"
+    PATH="${dir}/bin:${PATH}" \
+      GITHUB_ENV="${WORK_DIR}/${name}.env" \
+      bash "${MOVE_STEP}"
+  ) >"${WORK_DIR}/${name}.out" 2>"${WORK_DIR}/${name}.err"
+}
+
+echo ""
+echo "=== a moved pin is built and recorded for the commit step ==="
+DIR="$(new_move_fixture moved yes 0)"
+run_move "${DIR}" moved && RC=0 || RC=$?
+assert_eq "the move step exits 0" "0" "${RC}"
+assert_eq "the moved pin reaches the manifest" "0" \
+  "$(grep -q 'tag = "v1.0.1"' "${DIR}/ockham/Cargo.toml"; echo $?)"
+assert_eq "the move is recorded in GITHUB_ENV" "0" \
+  "$(grep -q '^FAMILY_PIN_MOVED=1$' "${WORK_DIR}/moved.env"; echo $?)"
+assert_eq "the moved pin is compiled before the job can commit it" "0" \
+  "$(grep -q -- '--workspace' "${DIR}/cargo.calls"; echo $?)"
+
+echo ""
+echo "=== a breaking core release fails the step rather than being committed ==="
+DIR="$(new_move_fixture breaking yes 101)"
+run_move "${DIR}" breaking && RC=0 || RC=$?
+assert_eq "a pin that does not compile fails the step" "101" "${RC}"
+assert_eq "the compiler error is surfaced, not swallowed" "0" \
+  "$(grep -q 'unresolved import' "${WORK_DIR}/breaking.err"; echo $?)"
+
+echo ""
+echo "=== a pin already on the latest release records nothing ==="
+DIR="$(new_move_fixture current no 0)"
+run_move "${DIR}" current && RC=0 || RC=$?
+assert_eq "an unchanged pin exits 0" "0" "${RC}"
+assert_eq "an unchanged pin records no move" "1" \
+  "$(grep -q '^FAMILY_PIN_MOVED=1$' "${WORK_DIR}/current.env"; echo $?)"
+assert_eq "an unchanged pin runs no build" "1" \
+  "$([ -s "${DIR}/cargo.calls" ]; echo $?)"
+
+echo ""
+echo "=== summary: ${PASSED} passed, ${FAILED} failed ==="
+[[ "${FAILED}" -eq 0 ]]

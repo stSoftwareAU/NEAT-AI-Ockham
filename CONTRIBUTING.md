@@ -4,16 +4,19 @@
 
 ```text
 parent/
-├── NEAT-AI-core/      # sibling clone; ockham/Cargo.toml depends on ../../NEAT-AI-core/neat-core
 ├── NEAT-AI-scorer/    # build it for integration tests: cargo build --release
 └── NEAT-AI-Ockham/
 ```
 
-CI checks NEAT-AI-core out beside the workspace and installs the pinned Rust
-toolchain via `.github/actions/setup-rust-workspace` — the shared preamble
-every Cargo job runs after its own checkout, so a toolchain bump is one edit.
-`neat-core.expected-version` records the last handled neat-core version;
-`scripts/check-neat-core-version.sh` fails on an unhandled breaking bump.
+`neat-core` needs no sibling clone: `ockham/Cargo.toml` pins it to a released
+git tag of [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core), so
+Cargo fetches it (Issue #210). `.github/actions/setup-rust-workspace` installs
+the pinned Rust toolchain — the shared preamble every Cargo job runs after its
+own checkout, so a toolchain bump is one edit.
+
+Never edit the pin by hand: the `version-increment` job runs
+`scripts/family-pins.sh`, which moves it to core's latest release and lands the
+moved tag, `Cargo.lock` and the version bump in one commit on your PR branch.
 
 ## Prerequisites
 
@@ -48,8 +51,8 @@ otherwise valid commits solely because the emoji is absent.
 ./quality.sh < /dev/null
 ```
 
-mirrors CI: shell syntax + shellcheck, neat-core version gate, codespell,
-markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy with
+mirrors CI: shell syntax + shellcheck, the canonical-script contract tests,
+codespell, markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy with
 `-D warnings -D clippy::filter_next -D clippy::collapsible_if`,
 `cargo test --all-features`, rustdoc with `-D warnings`.
 

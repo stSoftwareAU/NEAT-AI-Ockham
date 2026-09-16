@@ -1,12 +1,12 @@
 //! Workflow-as-contract test: the Cargo preamble stays in one place.
 //!
-//! Every Cargo job needs the same two things before it can run: the
-//! NEAT-AI-core sibling checkout the `../../NEAT-AI-core/neat-core` path
-//! dependency resolves through, and the pinned Rust toolchain. Both live in
-//! `.github/actions/setup-rust-workspace`, so a toolchain bump is one edit
-//! rather than six (Issue #126). A workflow that calls the composite action
-//! and *also* installs the toolchain itself has re-introduced the copy-paste
-//! this test exists to prevent.
+//! Every Cargo job needs the same thing before it can run: the pinned Rust
+//! toolchain. It lives in `.github/actions/setup-rust-workspace`, so a
+//! toolchain bump is one edit rather than six (Issue #126). The sibling
+//! NEAT-AI-core checkout that action also used to stage is gone: `neat-core`
+//! is a released git tag Cargo fetches itself (Issue #210). A workflow that
+//! calls the composite action and *also* installs the toolchain itself has
+//! re-introduced the copy-paste this test exists to prevent.
 
 use std::path::{Path, PathBuf};
 
