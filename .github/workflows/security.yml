@@ -38,7 +38,7 @@ jobs:
       # (Issue #126) via the shared composite action (Issue #401); the composite
       # sets persist-credentials: false, so this read-only job keeps the token
       # off disk (Issue #388).
-      - name: Set up Rust workspace (neat-core sibling + toolchain)
+      - name: Set up the Rust toolchain
         uses: ./.github/actions/setup-rust-workspace
 
       # Official RustSec GitHub Action — wraps cargo-audit and annotates the PR /
