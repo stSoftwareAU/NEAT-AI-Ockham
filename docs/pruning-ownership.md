@@ -57,9 +57,9 @@ the issue thread that stated them:
 - Ockham owns candidate choice/scoring, not structural-rewrite semantics.
 
 Each one is enforced by named structure in core rather than by convention, and
-`ockham/tests/pruning_ownership.rs` asserts them against the sibling neat-core
-this repository compiles against — so a core release that dropped one fails
-here rather than in a reviewer's memory:
+`ockham/tests/pruning_ownership.rs` asserts them against the neat-core release
+this repository pins — so a core release that dropped one fails here rather than
+in a reviewer's memory:
 
 | Principle | What enforces it in core |
 |---|---|

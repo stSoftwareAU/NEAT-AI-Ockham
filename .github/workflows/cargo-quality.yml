@@ -56,11 +56,11 @@ jobs:
           # persisted to .git/config where a later step could read it (#374).
           persist-credentials: false
 
-      # NEAT-AI-core is a path dependency required for `cargo fmt --all` and
-      # `cargo clippy` to resolve the workspace. The checkout + sibling symlink
-      # (Issue #401) and the toolchain pin (Issue #126) live in the shared
+      # `neat-core` is a released git tag Cargo fetches itself (Issue #210), so
+      # `cargo fmt --all` and `cargo clippy` resolve the workspace with nothing
+      # staged beside it. The toolchain pin (Issue #126) lives in the shared
       # composite action.
-      - name: Set up Rust workspace (neat-core sibling + toolchain)
+      - name: Set up the Rust toolchain
         uses: ./.github/actions/setup-rust-workspace
         with:
           components: rustfmt, clippy
