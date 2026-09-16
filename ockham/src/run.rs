@@ -3113,9 +3113,18 @@ mod tests {
 
     /// Creature with one parallel hidden IDENTITY neuron per uuid.
     fn hidden_creature(uuids: &[&str]) -> CreatureExport {
+        hidden_creature_with(uuids, "IDENTITY")
+    }
+
+    /// [`hidden_creature`] with every hidden neuron under `squash`. A hidden
+    /// `IDENTITY` is a pass-through core splices out of *any* candidate it
+    /// builds since neat-core 0.22.0 (Issue #221), so one accepted cut can
+    /// retire every relay at once; a test that counts one neuron per accept
+    /// asks for a squash the splice leaves in place.
+    fn hidden_creature_with(uuids: &[&str], squash: &str) -> CreatureExport {
         let mut neurons: Vec<neat_core::NeuronExport> = uuids
             .iter()
-            .map(|u| crate::fixtures::neuron("hidden", u, 0.0, Some("IDENTITY")))
+            .map(|u| crate::fixtures::neuron("hidden", u, 0.0, Some(squash)))
             .collect();
         neurons.push(crate::fixtures::neuron(
             "output",
@@ -3136,8 +3145,17 @@ mod tests {
         tmp: &std::path::Path,
         uuids: &[&str],
     ) -> (std::path::PathBuf, std::path::PathBuf) {
+        hidden_paths_with(tmp, uuids, "IDENTITY")
+    }
+
+    /// [`hidden_paths`] built from [`hidden_creature_with`].
+    fn hidden_paths_with(
+        tmp: &std::path::Path,
+        uuids: &[&str],
+        squash: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
         let creature = tmp.join("creature.json");
-        let c = hidden_creature(uuids);
+        let c = hidden_creature_with(uuids, squash);
         std::fs::write(&creature, neat_core::creature_to_json_pretty(&c).unwrap()).unwrap();
         let train = tmp.join("train");
         std::fs::create_dir(&train).unwrap();
@@ -4992,7 +5010,14 @@ mod tests {
     #[test]
     fn a_search_accept_keeps_searching_instead_of_opening_a_tail() {
         let tmp = tempfile::tempdir().unwrap();
-        let (creature, train) = hidden_paths(tmp.path(), &["h_a", "h_b", "h_c", "h_d"]);
+        // `TANH` relays, and enough of them: every accept must remove one
+        // neuron, never every relay at once, for the creature to outlast the
+        // six-experiment budget this test spends.
+        let (creature, train) = hidden_paths_with(
+            tmp.path(),
+            &["h_a", "h_b", "h_c", "h_d", "h_e", "h_f", "h_g", "h_h"],
+            "TANH",
+        );
         let learnings_dir = tmp.path().join("learnings");
         let store = screens_store(&learnings_dir, &train);
         // Threshold 0 so the first batch's candidates clear the screen, reach
@@ -6758,7 +6783,10 @@ mod tests {
 
     /// Two batches over parallel hidden neurons, one accept per batch.
     fn carried_winner_run(tmp: &std::path::Path) -> (OckhamConfig, BaselineRun) {
-        let (creature, train) = hidden_paths(tmp, &["h_a", "h_b", "h_c", "h_d", "h_e", "h_f"]);
+        // `TANH` relays: the tests below count cuts per bundle, so one accept
+        // must remove one neuron rather than splice every relay away.
+        let (creature, train) =
+            hidden_paths_with(tmp, &["h_a", "h_b", "h_c", "h_d", "h_e", "h_f"], "TANH");
         let cfg = OckhamConfig {
             creature,
             training_data: train,

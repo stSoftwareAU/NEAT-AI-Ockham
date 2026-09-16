@@ -163,38 +163,62 @@
 # `Develop` (0.17.0, 282bc18): `./quality.sh` is green here, including
 # `scripts/check-neat-core-version.sh` and the full suite.
 
-# 0.18.0 -> 0.20.0: acknowledge neat-core #685/#686 (Issue #682, 0.19.0), the
-# only behavioural change since 0.18.0. `compile_creature` used to resolve a
-# synapse's `toUUID` by grouping synapses per listed neuron, so an edge naming
-# a neuron the creature does not carry was never looked up and silently
-# dropped — the compiled network came back `Ok` with one fewer synapse than
-# the creature declared. `CreatureError` gains `UnknownTargetUuid(String)`, and
-# `compile_creature` now refuses that creature instead. Pre-1.0 that is a
-# minor bump because `CreatureError` is not `#[non_exhaustive]`, so an
-# exhaustive downstream `match` gains a new arm to handle. Ockham names
-# `CreatureError` nowhere in `ockham/src` (every `compile_creature` call
-# reports the error generically via `.to_string()`/`map_err`, or `.unwrap()`s
-# a fixture creature that never carries a dangling `toUUID`), so no Ockham
-# source change was required. 0.19.1 and 0.20.0 are unrelated dependency and
-# tooling bumps (wasm-bindgen, the canonical runlib.sh build step) with no
-# library change Ockham names. Verified against the sibling clone at Develop
-# 0.20.0 (ae71f44): `cargo check`, `cargo clippy --workspace --all-targets
-# --locked -- -D warnings` and the full `cargo test --workspace --locked`
-# suite are green with no edit.
+# 0.18.0 -> 0.22.1: acknowledge Ockham #221, which covers four core minors at
+# once — 0.19.0 (core #685/#686, Issue #682), 0.20.0 (#689, Issue #680), 0.21.0
+# (#698) and 0.22.0 (#703, Issue #688) — and the 0.19.1, 0.21.1, 0.21.2 and
+# 0.22.1 patches (a wasm-bindgen bump, two runlib.sh / family-pin script fixes
+# and a stale `wasm-bench/Cargo.lock`), none of which touches `neat-core/src`.
+# Two of the minors carry nothing Ockham can see: 0.20.0 made `scripts/runlib.sh`
+# the canonical build-install-clean helper (adopted here by #222) and 0.21.0 is
+# the Scan 20260911 milestone roll-up, both recorded in core's RELEASING.md as
+# "no public-API or behaviour change". 0.19.0 adds
+# `CreatureError::UnknownTargetUuid(String)` and makes `compile_creature` refuse
+# a synapse whose `toUUID` names no listed neuron, where it used to drop the
+# edge silently and compile a network one synapse smaller than declared.
+# Pre-1.0 that is breaking twice over: the enum is not `#[non_exhaustive]`, so
+# an exhaustive `match` must gain an arm, and input that compiled is now
+# refused. Ockham names `CreatureError` nowhere (no reference in `ockham/src`
+# or `ockham/tests`; it renders a compile error with `to_string()`), and every
+# creature it prunes is a real export core validates, whose every `toUUID` is
+# a listed neuron, so a refusal names a defect that was already scored wrong.
+# No Ockham source change for it. 0.22.0 is the one that reaches Ockham:
+# `prune_neuron` and `prune_synapse` now ask cleanup to splice out a hidden
+# `IDENTITY` pass-through — the shape the `IF` rewrite and the single-edge
+# aggregate conversion both leave behind — wiring its sources straight into its
+# targets at `w_in · w_out` and folding its bias into each target, and
+# `CleanupOptions`, `CleanupOutcome`, `PruneResult` and `PruneResponse` each
+# gain a field (`splice_identity` / `spliced_neurons`) with no
+# `#[non_exhaustive]`. Ockham builds none of the four by struct literal and
+# destructures none, so it compiles unchanged; what it sees is a candidate that
+# comes back without any hidden `IDENTITY` relay it carried — not only the one
+# the conversion made (`single_edge_minimum_target` now returns with no `h_min`
+# at all, its `convertedNeurons` row still naming the rewrite that preceded the
+# splice) but every relay elsewhere in the creature, since the cleanup walks
+# the whole creature on every request. Every splice computes the same number,
+# so `TransformClass` does not move and no candidate becomes approximate for
+# it. In a run this changes little: the exact cleanup pre-pass
+# (`ockham/src/canonical.rs`, `identity-collapse`) already retires every hidden
+# `IDENTITY` before the sweep starts, so core only meets one under
+# `--no-exact-cleanup`. Two Ockham edits follow. First, `PruneDetail::absorb`
+# now copies `PruneResult::spliced_neurons` onto `PruneDetail::spliced_neurons`
+# (`splicedNeurons`), so a run's journal names which neurons the splice retired
+# instead of leaving a reader to reconcile a neuron count against the requested
+# and cascade lists alone. Second, thirteen unit tests in `prune.rs`, `sweep.rs`
+# and `run.rs` used a hidden `IDENTITY` as a bystander that had to survive a
+# neighbour's cut — `h_keep`, `h_b`, the parallel relays of `hidden_paths` —
+# and the splice took it; those bystanders are now `TANH`, through
+# squash-parameterised fixtures, so each test still proves the cascade, fold,
+# group and bundle bookkeeping it was written for, while the `IDENTITY`
+# defaults stay for the tests about Ockham's own collapse rung. Verified
+# against the sibling clone at Develop 0.22.1 (4a10d7b): every check
+# `./quality.sh` runs is green here — `scripts/check-neat-core-version.sh`,
+# codespell, markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy
+# with `-D warnings`, rustdoc with `-D warnings` and the full suite (704 lib +
+# 73 integration tests).
 
-# 0.20.0 -> 0.21.0: acknowledge neat-core's "Milestone: Scan 20260911" roll-up
-# (#698), a 785-line refactor of `safe_zone.rs` into a declarative per-variant
-# table (`squash_profile.rs`) shared with `range.rs`, plus a `loss.rs` rewrite.
-# `squash_profile` is `mod`, not `pub mod` (crate-internal), and `range.rs` /
-# `loss.rs` carry no `pub` signature change. `safe_zone.rs` keeps both public
-# entry points, `apply_safe_zone_adjustment` and `_batch`, under the same
-# names and signatures; the doc comment added to `SynapseExport` (Issue #672)
-# is comment-only. Ockham references none of `safe_zone`, `loss`, `range` or
-# `squash_profile` anywhere in `ockham/src` or `ockham/tests`, so no Ockham
-# source change was required. Pre-1.0 this is still a minor bump per neat-core's
-# milestone-roll-up policy. Verified against the sibling clone at Develop
-# 0.21.0 (2aca272): `cargo check`, `cargo clippy --workspace --all-targets
-# --locked -- -D warnings` and `cargo test --workspace --locked` (703 lib + 72
-# integration tests) are green with no edit.
+0.22.1
+# (4a10d7b): `./quality.sh` is green here, including
+# `scripts/check-neat-core-version.sh` and the full suite (LIBTESTS lib +
+# INTTESTS integration tests).
 
-0.21.0
+0.22.1

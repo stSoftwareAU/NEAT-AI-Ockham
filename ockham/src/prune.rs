@@ -201,6 +201,19 @@ pub struct PruneDetail {
     /// [`Self::uncompensated`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub converted_neurons: Vec<SquashConversionRecord>,
+    /// Hidden `IDENTITY` pass-throughs the cleanup spliced out — their sources
+    /// wired straight into their targets at the product of the two weights, and
+    /// their bias folded into each target — in removal order (neat-core 0.22.0,
+    /// Issue #221). That is the shape the `IF` rewrite and the single-edge
+    /// aggregate conversion both leave behind, so a neuron named on
+    /// [`Self::converted_neurons`] usually appears here too.
+    ///
+    /// Separate from [`Self::cascade_neurons`]: a cascade neuron was structure
+    /// nothing read any more, a spliced one carried terms the rewired edges
+    /// carry now. Every splice is exact, so none of them moves
+    /// [`Self::transform_class`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spliced_neurons: Vec<String>,
 }
 
 impl PruneDetail {
@@ -232,6 +245,8 @@ impl PruneDetail {
             }));
         self.restored_if_roles
             .extend(result.restored_if_roles.iter().map(SynapseRef::of));
+        self.spliced_neurons
+            .extend(result.spliced_neurons.iter().cloned());
         self.bias_folds
             .extend(result.bias_folds.iter().map(|f| BiasFoldRecord {
                 target_uuid: f.target_uuid.clone(),
@@ -696,12 +711,16 @@ mod tests {
     fn two_hidden() -> CreatureExport {
         // input → h_a → output (weight 3)
         // input → h_b → output (weight 1)
+        // `TANH`, not `IDENTITY`: a hidden `IDENTITY` is a pass-through core
+        // splices out of any candidate it builds since neat-core 0.22.0
+        // (Issue #221), and the tests here need the other neuron still
+        // standing after one is cut.
         creature(
             1,
             1,
             vec![
-                neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
-                neuron("hidden", "h_b", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_a", 0.0, Some("TANH")),
+                neuron("hidden", "h_b", 0.0, Some("TANH")),
                 neuron("output", "output-0", 0.25, Some("IDENTITY")),
             ],
             vec![
@@ -716,13 +735,15 @@ mod tests {
     fn chain_plus_keep() -> CreatureExport {
         // input → h_up → h_leaf → output
         // input → h_keep → output
+        // `h_keep` is `TANH` so the splice (Issue #221) leaves it standing:
+        // it is the bystander every test on this fixture expects to survive.
         creature(
             1,
             1,
             vec![
                 neuron("hidden", "h_up", 0.1, Some("IDENTITY")),
                 neuron("hidden", "h_leaf", 0.0, Some("IDENTITY")),
-                neuron("hidden", "h_keep", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_keep", 0.0, Some("TANH")),
                 neuron("output", "output-0", 0.0, Some("IDENTITY")),
             ],
             vec![
@@ -779,12 +800,20 @@ mod tests {
     /// `h_a` feeds both outputs, `h_b` only the first, so cutting
     /// `h_a`→`output-0` strands nothing: a pure edge removal.
     fn shared_output_fan_out() -> CreatureExport {
+        shared_output_fan_out_with("IDENTITY")
+    }
+
+    /// [`shared_output_fan_out`] with both hidden neurons under `squash`. A
+    /// hidden `IDENTITY` is a pass-through core splices out since neat-core
+    /// 0.22.0 (Issue #221), so a test about the edge cut alone asks for a
+    /// squash the splice leaves in place.
+    fn shared_output_fan_out_with(squash: &str) -> CreatureExport {
         creature(
             1,
             2,
             vec![
-                neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
-                neuron("hidden", "h_b", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_a", 0.0, Some(squash)),
+                neuron("hidden", "h_b", 0.0, Some(squash)),
                 neuron("output", "output-0", 0.25, Some("IDENTITY")),
                 neuron("output", "output-1", 0.0, Some("IDENTITY")),
             ],
@@ -1097,6 +1126,61 @@ mod tests {
             incumbent,
             single_edge_minimum_target(),
             "the source must not move"
+        );
+    }
+
+    /// Since neat-core 0.22.0 (Issue #221) the bare `IDENTITY` that conversion
+    /// leaves is spliced out in the same call — `input-0` wired straight into
+    /// `output-0` — and core names it on `PruneResult::spliced_neurons`. The
+    /// journal copies the list, so a reader can account for every neuron the
+    /// candidate lost without diffing two creatures.
+    #[test]
+    fn a_converted_pass_through_is_reported_spliced() {
+        let incumbent = single_edge_minimum_target();
+        let result = prune_hidden_neuron(&incumbent, "h_src", Some(0.5), None).unwrap();
+        assert_eq!(
+            result.detail.spliced_neurons,
+            vec!["h_min".to_string()],
+            "{:?}",
+            result.detail
+        );
+        assert!(
+            result.creature.neurons.iter().all(|n| n.uuid != "h_min"),
+            "the spliced relay is gone: {:?}",
+            result.creature.neurons
+        );
+        // The splice is exact; the class this candidate carries is the cut's
+        // own doing — `h_min` lost a term no fold can replace — and the splice
+        // leaves it exactly where the cut put it.
+        assert_eq!(result.detail.transform_class, TransformClass::Approximate);
+        assert_eq!(result.detail.uncompensated.len(), 1, "{:?}", result.detail);
+        validate_creature(&result.creature).unwrap();
+
+        let grouped = prune_hidden_group(&two_minimum_targets(), &group(&["h_a", "h_b"], 0.5))
+            .expect("both members are core's to remove");
+        assert_eq!(
+            grouped.detail.spliced_neurons,
+            vec!["m_a".to_string(), "m_b".to_string()],
+            "one request per member, both splices kept: {:?}",
+            grouped.detail
+        );
+        validate_creature(&grouped.creature).unwrap();
+
+        let json = serde_json::to_string(&result.detail).unwrap();
+        assert!(json.contains("\"splicedNeurons\""), "{json}");
+        let back: PruneDetail = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, result.detail);
+        let unspliced =
+            prune_hidden_neuron(&two_edge_minimum_target(), "h_src", None, None).unwrap();
+        assert!(
+            unspliced.detail.spliced_neurons.is_empty(),
+            "{:?}",
+            unspliced.detail
+        );
+        let json = serde_json::to_string(&unspliced.detail).unwrap();
+        assert!(
+            !json.contains("\"splicedNeurons\""),
+            "an empty list is not written: {json}"
         );
     }
 
@@ -1508,7 +1592,9 @@ mod tests {
 
     #[test]
     fn a_pure_edge_cut_costs_one_tenth_of_a_growth_unit() {
-        let incumbent = shared_output_fan_out();
+        // `TANH` relays: an `IDENTITY` one would be spliced out by the same
+        // cleanup, and this test is about what the edge cut alone costs.
+        let incumbent = shared_output_fan_out_with("TANH");
         let result = prune_edge(&incumbent, "h_a", "output-0", Some(1.0), None).unwrap();
         assert!(
             result.detail.cascade_neurons.is_empty(),
