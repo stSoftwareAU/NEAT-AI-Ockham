@@ -15,8 +15,8 @@
 #   * a body that is not a script fails the refresh and leaves the copy alone;
 #   * a differing, healthy copy is installed, still executable;
 #   * an identical copy is left alone;
-#   * a copy that is valid bash but cannot run fails the refresh — the gate that
-#     stops ungated bytes riding the job's commit;
+#   * a copy that is valid bash but breaks the pin contract fails the refresh —
+#     the gate that stops ungated bytes riding the job's commit;
 #   * the move step reports a moved pin, and reports nothing when the pin is
 #     already current.
 set -euo pipefail
@@ -92,12 +92,14 @@ EOF
   chmod +x "${bin_dir}/gh"
 }
 
-# A fixture repository carrying a stale copy of the script being refreshed.
+# A fixture repository carrying a stale copy of the script being refreshed,
+# plus the contract test the refresh step runs over the new bytes.
 new_fixture() {
   local dir="${WORK_DIR}/$1"
   mkdir -p "${dir}/scripts"
   printf '#!/usr/bin/env bash\n# a stale copy\nexit 0\n' >"${dir}/scripts/family-pins.sh"
   chmod +x "${dir}/scripts/family-pins.sh"
+  cp "${SCRIPT_DIR}/test-family-pins.sh" "${dir}/scripts/test-family-pins.sh"
   printf '%s' "${dir}"
 }
 
@@ -156,13 +158,15 @@ assert_eq "an identical copy is reported as already matching" "0" \
   "$(grep -q 'already matches' "${WORK_DIR}/identical.out"; echo $?)"
 
 echo ""
-echo "=== valid bash that cannot run fails the step ==="
-DIR="$(new_fixture unrunnable)"
+echo "=== valid bash that breaks the pin contract fails the step ==="
+DIR="$(new_fixture contract)"
 BEFORE_CANONICAL="$(cksum <"${CANONICAL}")"
-printf '#!/usr/bin/env bash\n# parses, but refuses every invocation\nset -euo pipefail\nexit 3\n' \
-  >"${WORK_DIR}/unrunnable.payload"
-run_refresh "${DIR}" "${WORK_DIR}/unrunnable.payload" unrunnable && RC=0 || RC=$?
-assert_eq "an unrunnable copy fails the step" "3" "${RC}"
+printf '#!/usr/bin/env bash\n# parses, rewrites nothing, refuses nothing\nset -euo pipefail\nexit 0\n' \
+  >"${WORK_DIR}/contract.payload"
+run_refresh "${DIR}" "${WORK_DIR}/contract.payload" contract && RC=0 || RC=$?
+assert_eq "a contract-breaking copy fails the step" "1" "${RC}"
+assert_eq "the failure is the contract test, not the fetch" "0" \
+  "$(grep -q 'FAIL: ' "${WORK_DIR}/contract.out"; echo $?)"
 assert_eq "this repository's own canonical copy is untouched by these tests" \
   "${BEFORE_CANONICAL}" "$(cksum <"${CANONICAL}")"
 
@@ -177,7 +181,10 @@ new_move_fixture() {
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${moves}" == "yes" ]]; then
-  sed -i 's/v1\.0\.0/v1.0.1/' ockham/Cargo.toml
+  # Not sed -i: BSD sed takes a mandatory backup suffix and GNU sed does not,
+  # so an in-place edit spelt one way fails on the other platform.
+  sed 's/v1\.0\.0/v1.0.1/' ockham/Cargo.toml >ockham/Cargo.toml.staged
+  mv -f ockham/Cargo.toml.staged ockham/Cargo.toml
   echo '[family-pins] neat-core v1.0.0 → v1.0.1 (ockham/Cargo.toml)' >&2
 fi
 EOF

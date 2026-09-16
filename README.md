@@ -2717,7 +2717,13 @@ NEAT-AI-Ockham/
 │   └── incident-response.md # emergency dependency fast lane (SECURITY.md)
 ├── scripts/
 │   ├── runlib.sh          # canonical build → install → clean (owned by core)
-│   └── family-pins.sh     # canonical neat-core pin mover (owned by core)
+│   ├── family-pins.sh     # canonical neat-core pin mover (owned by core)
+│   ├── auto-version.sh    # crate-version bump the version-increment job runs
+│   ├── spell-check.sh     # codespell preflight
+│   ├── test-runlib.sh             # runlib.sh contract
+│   ├── test-runlib-refresh.sh     # the CI step that refreshes runlib.sh
+│   ├── test-family-pins.sh        # family-pins.sh contract
+│   └── test-family-pins-refresh.sh  # the CI steps that refresh and run it
 ├── quality.sh
 └── rust-toolchain.toml
 ```

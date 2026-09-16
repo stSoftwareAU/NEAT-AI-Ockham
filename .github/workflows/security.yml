@@ -34,10 +34,10 @@ jobs:
           # the GITHUB_TOKEN need not be written to .git/config (Issue #388).
           persist-credentials: false
 
-      # NEAT-AI-core checkout + sibling symlink (Issue #18) and toolchain pin
-      # (Issue #126) via the shared composite action (Issue #401); the composite
-      # sets persist-credentials: false, so this read-only job keeps the token
-      # off disk (Issue #388).
+      # Toolchain pin (Issue #126) via the shared composite action (Issue #401).
+      # The composite checks nothing out — `neat-core` is a release-tag git
+      # dependency Cargo fetches itself (Issue #210) — so this job's own
+      # `persist-credentials: false` above is what keeps the token off disk.
       - name: Set up the Rust toolchain
         uses: ./.github/actions/setup-rust-workspace
 

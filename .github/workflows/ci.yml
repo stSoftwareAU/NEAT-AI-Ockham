@@ -250,7 +250,7 @@ jobs:
           cp "$fetched" scripts/family-pins.sh
           chmod +x scripts/family-pins.sh
           shellcheck --severity=warning -s bash scripts/family-pins.sh
-          ./scripts/family-pins.sh --help >/dev/null
+          ./scripts/test-family-pins.sh </dev/null
 
       - name: Move the neat-core pin to core's latest release
         # The pin in `ockham/Cargo.toml` moves here and nowhere else, so it
@@ -320,7 +320,7 @@ jobs:
           git add ockham/Cargo.toml Cargo.lock scripts/runlib.sh scripts/family-pins.sh
           if [ "$bumped" -eq 1 ]; then
             subject="🪒 auto-increment crate version to ${now_version}"
-          elif [ "$pinned" -eq 1 ]; then
+          elif [ "$changed" -eq 1 ]; then
             subject="🪒 move the neat-core pin to core's latest release"
           else
             subject="🪒 refresh the canonical scripts from NEAT-AI-core"
@@ -386,6 +386,9 @@ jobs:
 
       - name: Check the CI step that refreshes scripts/runlib.sh
         run: ./scripts/test-runlib-refresh.sh
+
+      - name: Check the canonical scripts/family-pins.sh contract
+        run: ./scripts/test-family-pins.sh
 
       - name: Check the CI steps that refresh and run scripts/family-pins.sh
         run: ./scripts/test-family-pins-refresh.sh
