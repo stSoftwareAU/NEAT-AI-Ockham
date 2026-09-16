@@ -247,10 +247,27 @@ _runlib_expected_shape() {
   esac
 
   # An explicit `[[bin]]` table, or `autobins`, can rename or suppress the
-  # binary cargo would otherwise name after the package.
-  if grep -qE '^[[:space:]]*\[\[bin\]\]' "$manifest" ||
-    grep -qE '^[[:space:]]*autobins[[:space:]]*=' "$manifest"; then
+  # binary cargo would otherwise name after the package. One table that names
+  # the crate is still unambiguous, though — it is the shape every sibling
+  # shipping a CLI writes — so read it rather than paying a `cargo metadata`
+  # call on every skip. Several tables, a table naming something else (cargo
+  # may still autodiscover a second bin beside it), or an `autobins` key are
+  # not readable from one line each, and fall through to `cargo metadata`.
+  local bin_tables declared_bin
+  bin_tables="$(grep -cE '^[[:space:]]*\[\[bin\]\]' "$manifest" || true)"
+  if grep -qE '^[[:space:]]*autobins[[:space:]]*=' "$manifest"; then
     return 1
+  fi
+  if [[ "$bin_tables" -gt 1 ]]; then
+    return 1
+  fi
+  if [[ "$bin_tables" -eq 1 ]]; then
+    # `[bin]` is the section argument for a `[[bin]]` header: the reader
+    # compares the header line with the brackets it already carries.
+    declared_bin="$(_runlib_toml_value "$manifest" '[bin]' name)"
+    [[ "$declared_bin" == "$crate_underscored" ]] || return 1
+    _RUNLIB_EXPECTS_BIN=1
+    return 0
   fi
   if [[ -f "$manifest_dir/src/main.rs" ||
     -f "$manifest_dir/src/bin/${crate_underscored}.rs" ]]; then
