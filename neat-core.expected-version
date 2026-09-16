@@ -182,4 +182,19 @@
 # --locked -- -D warnings` and the full `cargo test --workspace --locked`
 # suite are green with no edit.
 
-0.20.0
+# 0.20.0 -> 0.21.0: acknowledge neat-core's "Milestone: Scan 20260911" roll-up
+# (#698), a 785-line refactor of `safe_zone.rs` into a declarative per-variant
+# table (`squash_profile.rs`) shared with `range.rs`, plus a `loss.rs` rewrite.
+# `squash_profile` is `mod`, not `pub mod` (crate-internal), and `range.rs` /
+# `loss.rs` carry no `pub` signature change. `safe_zone.rs` keeps both public
+# entry points, `apply_safe_zone_adjustment` and `_batch`, under the same
+# names and signatures; the doc comment added to `SynapseExport` (Issue #672)
+# is comment-only. Ockham references none of `safe_zone`, `loss`, `range` or
+# `squash_profile` anywhere in `ockham/src` or `ockham/tests`, so no Ockham
+# source change was required. Pre-1.0 this is still a minor bump per neat-core's
+# milestone-roll-up policy. Verified against the sibling clone at Develop
+# 0.21.0 (2aca272): `cargo check`, `cargo clippy --workspace --all-targets
+# --locked -- -D warnings` and `cargo test --workspace --locked` (703 lib + 72
+# integration tests) are green with no edit.
+
+0.21.0
