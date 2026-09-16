@@ -32,9 +32,22 @@
 #   * prints the installed bin path — or the lib path when there is no bin —
 #     on stdout, and nothing else on stdout.
 #
-# The toolchain is a precondition, not something this script installs: with
-# `cargo`, `rustc` or `jq` missing it exits non-zero naming what to install
-# (rustup.rs for the toolchain). `rustup` itself is never invoked here.
+# With no `rustc` on PATH the toolchain is bootstrapped here (Issue #699):
+# rustup is installed from the pinned `rustup-init` for the host target, whose
+# SHA-256 must match the digest inlined below before the downloaded file is
+# executed. It is never `curl https://sh.rustup.rs | sh` — that runs whatever
+# the distribution point served, and what it installs then compiles every
+# `build.rs` in the dependency graph. Every verification failure — an unknown
+# host target, no pinned digest, no SHA-256 tool, a failed download, a digest
+# mismatch — exits non-zero naming the cause, having executed nothing. With
+# `rustc` already present nothing is downloaded, and `rustup` itself is never
+# invoked. `jq` stays a plain precondition: a missing one exits non-zero
+# naming it.
+#
+# To bump rustup, change `_RUNLIB_RUSTUP_VERSION` and every digest in
+# `_runlib_pinned_rustup_digest` together — they are one pin, and a version
+# moved without its digests can only fail closed.
+#
 # MSRV comes from `rust-version` in the crate manifest when present; a
 # `rust-toolchain.toml` is honoured by rustup itself.
 #
@@ -341,15 +354,167 @@ _runlib_try_skip() {
   return 0
 }
 
-# The toolchain is a precondition. No network install happens here.
+# The pinned rustup installer (Issue #699). Bump the version and every digest
+# below together — `_runlib_pinned_rustup_digest` is the whole pin, and a
+# version moved on its own can only fail closed on the mismatch.
+_RUNLIB_RUSTUP_VERSION="1.29.0"
+_RUNLIB_RUSTUP_BASE_URL="https://static.rust-lang.org/rustup/archive"
+
+# The published SHA-256 of `rustup-init` $_RUNLIB_RUSTUP_VERSION for target $1,
+# as served at <base>/<version>/<target>/rustup-init.sha256. Prints nothing and
+# returns non-zero for a target with no pinned digest — a refusal to install,
+# never a licence to skip the check.
+_runlib_pinned_rustup_digest() {
+  case "$1" in
+    x86_64-unknown-linux-gnu)
+      printf '%s' '4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10' ;;
+    aarch64-unknown-linux-gnu)
+      printf '%s' '9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792' ;;
+    x86_64-unknown-linux-musl)
+      printf '%s' '9cd3fda5fd293890e36ab271af6a786ee22084b5f6c2b83fd8323cec6f0992c1' ;;
+    aarch64-unknown-linux-musl)
+      printf '%s' '88761caacddb92cd79b0b1f939f3990ba1997d701a38b3e8dd6746a562f2a759' ;;
+    x86_64-apple-darwin)
+      printf '%s' '33cf85df9142bc6d29cbc62fa5ca1d4c29622cddb55213a4c1a43c457fb9b2d7' ;;
+    aarch64-apple-darwin)
+      printf '%s' 'aeb4105778ca1bd3c6b0e75768f581c656633cd51368fa61289b6a71696ac7e1' ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+# The rustup target triple for this host. Returns non-zero — silently — for an
+# operating system or architecture with no pinned installer; the caller names
+# what it saw.
+_runlib_host_target() {
+  local os arch libc ldd_version
+  case "$(uname -s)" in
+    Linux) os="unknown-linux" ;;
+    Darwin) os="apple-darwin" ;;
+    *) return 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64 | amd64) arch="x86_64" ;;
+    arm64 | aarch64) arch="aarch64" ;;
+    *) return 1 ;;
+  esac
+  if [[ "$os" != "unknown-linux" ]]; then
+    printf '%s-%s' "$arch" "$os"
+    return 0
+  fi
+  # `ldd --version` exits non-zero on musl, so its output is captured first:
+  # piping it straight into grep under `pipefail` reports the failure rather
+  # than the match, and a musl host would silently take the gnu installer.
+  libc="gnu"
+  ldd_version=""
+  if command -v ldd >/dev/null 2>&1; then
+    ldd_version="$(ldd --version 2>&1 || true)"
+  fi
+  if printf '%s' "$ldd_version" | grep -qi musl; then
+    libc="musl"
+  fi
+  printf '%s-%s-%s' "$arch" "$os" "$libc"
+  return 0
+}
+
+# The SHA-256 command this host provides, as a bare word. Returns non-zero —
+# silently — when it has neither; both callers below refuse outright rather
+# than guess, because no verification means no install.
+_runlib_sha256_tool() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf 'sha256sum'
+  elif command -v shasum >/dev/null 2>&1; then
+    printf 'shasum'
+  else
+    return 1
+  fi
+  return 0
+}
+
+# The SHA-256 of file $1 as lower-case hex. With no digest tool it dies rather
+# than returning something the comparison could mistake for a digest. It dies
+# from inside the caller's command substitution: that exits the substitution's
+# subshell non-zero, which under `set -e` aborts the script — so the caller's
+# assignment must not be a `local` declaration, which would swallow the status.
+_runlib_sha256_of() {
+  local file="$1" tool
+  tool="$(_runlib_sha256_tool)" ||
+    _runlib_die "no SHA-256 tool (sha256sum or shasum) on PATH — refusing to run an unverified rustup-init; install the Rust toolchain from https://rustup.rs and re-run"
+  case "$tool" in
+    sha256sum) sha256sum "$file" | awk 'NR == 1 { print $1 }' ;;
+    shasum) shasum -a 256 "$file" | awk 'NR == 1 { print $1 }' ;;
+  esac
+  return 0
+}
+
+# Install rustup, and with it a minimal `stable`, from the pinned installer.
+# The download lands in a temporary directory the cleanup trap reaps, and is
+# executed only once its digest matches the pin above.
+_runlib_bootstrap_rustup() {
+  local target url tmp_dir installer expected actual
+
+  if ! target="$(_runlib_host_target)"; then
+    _runlib_die "no pinned rustup-init for $(uname -s)/$(uname -m) — install the Rust toolchain from https://rustup.rs and re-run"
+  fi
+  if ! expected="$(_runlib_pinned_rustup_digest "$target")"; then
+    _runlib_die "no pinned rustup-init digest for the host target $target — install the Rust toolchain from https://rustup.rs and re-run"
+  fi
+  # Checked before anything is fetched: an installer that cannot be verified
+  # is one this script will not run, so downloading it first would only make
+  # the refusal look like a network problem.
+  _runlib_sha256_tool >/dev/null ||
+    _runlib_die "no SHA-256 tool (sha256sum or shasum) on PATH — refusing to download an unverifiable rustup-init; install the Rust toolchain from https://rustup.rs and re-run"
+  # `curl` is checked for the same reason: without it the download below dies
+  # naming the URL, which blames the network for a missing tool.
+  command -v curl >/dev/null 2>&1 ||
+    _runlib_die "curl not found — it is what fetches the pinned rustup-init; install curl, or install the Rust toolchain from https://rustup.rs, and re-run"
+  url="$_RUNLIB_RUSTUP_BASE_URL/$_RUNLIB_RUSTUP_VERSION/$target/rustup-init"
+
+  # Named rather than left to `set -e`: a bare abort here reports a failure
+  # with no cause at all.
+  tmp_dir="$(mktemp -d)" ||
+    _runlib_die "could not create a temporary directory to download rustup-init into"
+  _runlib_track_temp "$tmp_dir"
+  trap _runlib_cleanup_temps EXIT INT TERM
+  installer="$tmp_dir/rustup-init"
+
+  printf 'runlib: installing rustup %s for %s\n' "$_RUNLIB_RUSTUP_VERSION" "$target" >&2
+  curl --proto "=https" --tlsv1.2 -sSfL --retry 3 --retry-delay 2 \
+    --connect-timeout 30 -o "$installer" "$url" >&2 ||
+    _runlib_die "could not download the pinned rustup-init from $url — install the Rust toolchain from https://rustup.rs and re-run"
+
+  actual="$(_runlib_sha256_of "$installer")"
+  [[ "$actual" == "$expected" ]] ||
+    _runlib_die "rustup-init digest mismatch for $url — expected $expected, got ${actual:-nothing}; refusing to execute the downloaded file"
+
+  chmod +x "$installer" ||
+    _runlib_die "could not make the verified $installer executable"
+  "$installer" -y --no-modify-path --profile minimal >&2 ||
+    _runlib_die "rustup-init failed — install the Rust toolchain from https://rustup.rs and re-run"
+
+  _runlib_cleanup_temps
+  # rustup was told not to touch the shell rc files, so the new toolchain
+  # reaches this run through PATH here and nowhere else.
+  PATH="$(_runlib_cargo_home)/bin:$PATH"
+  export PATH
+  return 0
+}
+
+# The toolchain. A missing `rustc` is bootstrapped from the digest-verified
+# pinned rustup-init above; `jq` is a plain precondition this script does not
+# install.
 _runlib_require_toolchain() {
   PATH="$(_runlib_cargo_home)/bin:$PATH"
   export PATH
-  command -v cargo >/dev/null 2>&1 ||
-    _runlib_die "cargo not found — install the Rust toolchain from https://rustup.rs and re-run"
   # `rustc`, not `rustup`: this script never invokes rustup — rustup's own
   # shims do — but it does read `rustc --version` for the MSRV gate. Demanding
-  # rustup rejected a perfectly good distro-packaged toolchain.
+  # rustup rejected a perfectly good distro-packaged toolchain, and it is also
+  # what makes the bootstrap conditional on there being no compiler at all.
+  if ! command -v rustc >/dev/null 2>&1; then
+    _runlib_bootstrap_rustup
+  fi
+  command -v cargo >/dev/null 2>&1 ||
+    _runlib_die "cargo not found — install the Rust toolchain from https://rustup.rs and re-run"
   command -v rustc >/dev/null 2>&1 ||
     _runlib_die "rustc not found — install the Rust toolchain from https://rustup.rs and re-run"
   command -v jq >/dev/null 2>&1 ||
@@ -448,7 +613,14 @@ _runlib_cleanup_temps() {
   local path
   for path in ${_RUNLIB_TEMPS[@]+"${_RUNLIB_TEMPS[@]}"}; do
     [[ -n "$path" ]] || continue
-    rm -f "$path"
+    # The staged artefacts are files; the rustup bootstrap tracks the `mktemp
+    # -d` it downloaded the installer into, and `rm -f` would leave that — and
+    # the unverified installer inside it — behind.
+    if [[ -d "$path" ]]; then
+      rm -rf "$path"
+    else
+      rm -f "$path"
+    fi
   done
   _RUNLIB_TEMPS=()
 }
