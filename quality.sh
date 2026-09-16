@@ -38,12 +38,8 @@ echo "Checking the canonical scripts/runlib.sh contract (Issue #209)..."
 echo "Checking the CI step that refreshes scripts/runlib.sh (Issue #209)..."
 ./scripts/test-runlib-refresh.sh
 
-if [ -f "./../NEAT-AI-core/Cargo.toml" ]; then
-  echo "Gating on unhandled breaking neat-core bump..."
-  ./scripts/check-neat-core-version.sh
-else
-  echo "sibling ../NEAT-AI-core not found — skipping neat-core version gate (CI runs this for real)"
-fi
+echo "Checking the canonical scripts/family-pins.sh parses and answers --help (Issue #210)..."
+./scripts/family-pins.sh --help >/dev/null
 
 echo "Running codespell preflight..."
 if ! ./scripts/spell-check.sh; then

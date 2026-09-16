@@ -55,12 +55,11 @@ jobs:
           # later step could read it and act as the token.
           persist-credentials: false
 
-      # NEAT-AI-core checkout + sibling symlink (Issue #18) and toolchain pin
-      # (Issue #126) via the shared composite action (Issue #401):
-      # cargo-cyclonedx reads the resolved workspace metadata, so the
-      # `../../NEAT-AI-core/neat-core` path dependency must resolve on the
-      # runner.
-      - name: Set up Rust workspace (neat-core sibling + toolchain)
+      # Toolchain pin (Issue #126) via the shared composite action (Issue #401).
+      # cargo-cyclonedx reads the resolved workspace metadata; `neat-core` is a
+      # git-tag pin Cargo fetches itself (Issue #210), so it resolves with
+      # nothing beside the repository.
+      - name: Set up Rust workspace (toolchain)
         uses: ./.github/actions/setup-rust-workspace
 
       # Fetch a prebuilt cargo-cyclonedx binary instead of compiling from

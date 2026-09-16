@@ -328,7 +328,8 @@ same standard: with nothing measured, every visit still goes to core
 uncompensated and comes back an approximate candidate, so `missing-activation`
 stays at zero rather than absorbing the whole sweep.
 
-Ockham builds against the sibling NEAT-AI-core at head, so these tests are also
+Ockham builds against the NEAT-AI-core release its pin names, and every PR
+moves that pin to core's newest release (Issue #210), so these tests are also
 the fleet's detector for a core pruning regression: a rewrite that starts
 refusing a shape shows up as a blocked visit on a fixture in the `cargo-quality`
 workflow rather than as a stalled sweep on a live creature.

@@ -2566,8 +2566,11 @@ done
 
 ## Development
 
-The project is pure Rust and expects sibling clones of `NEAT-AI-core` and
-`NEAT-AI-scorer` where required by the local development setup.
+The project is pure Rust. `neat-core` is a git-tag pin on
+[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core) that Cargo fetches
+itself, so the workspace builds with nothing beside the repository; only
+`ockham/tests/real_scorer.rs` looks for a sibling `NEAT-AI-scorer` build, and
+it skips when there is none.
 
 ```bash
 ./quality.sh < /dev/null
@@ -2581,15 +2584,25 @@ that path on stdout, and removes `target/` after a successful install. A second
 run on the same crate version prints `[neat_ai_ockham] already installed v<x>`
 and runs no cargo command at all.
 
-### Canonical runlib.sh
+### Canonical runlib.sh and family-pins.sh
 
-`scripts/runlib.sh` is **owned by
-[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)** — its one home is
-`scripts/runlib.sh` on that repository's `Develop` branch (NEAT-AI-core#680).
-The copy here is byte-identical and is never edited in this repository: change
-it in core, and the `version-increment` job refreshes the copy on the next PR,
-riding the same commit as the version bump. That job fails when core's file
-cannot be fetched (Issue #209).
+`scripts/runlib.sh` and `scripts/family-pins.sh` are **owned by
+[NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core)** — their one home
+is `scripts/` on that repository's `Develop` branch (NEAT-AI-core#680 and #681).
+The copies here are byte-identical and are never edited in this repository:
+change a file in core, and the `version-increment` job refreshes the copy on
+the next PR, riding the same commit as the version bump. That job fails when
+core's file cannot be fetched (Issues #209 and #210).
+
+`family-pins.sh` is also *run* by that job, after it has been refreshed and
+before the bump: it rewrites the `neat-core` pin in `ockham/Cargo.toml` to
+core's newest released `v*` tag and runs `cargo update` for `neat-core` so
+`Cargo.lock` follows, so a moved pin always lands in the job's one commit, and
+the pin moves only through this repository's own PRs (Issue #210). A pin
+already current is a silent no-op; a remote that cannot be listed fails the
+job. The `quality` job moves the pin the same way, uncommitted, before it
+builds, so a breaking core release fails the build in the same run that moved
+the pin rather than one push later.
 
 A refreshed copy is linted and contract-tested **inside the refreshing step**,
 before it is committed: a push made with the default `GITHUB_TOKEN` starts no
@@ -2606,15 +2619,17 @@ moment, by design — `Develop` is the copy contract's source of truth.
 ```mermaid
 flowchart LR
     A["PR opened / synchronised"] --> B["version-increment job"]
-    B --> C["Fetch scripts/runlib.sh<br/>from NEAT-AI-core Develop"]
+    B --> C["Fetch scripts/runlib.sh and<br/>scripts/family-pins.sh<br/>from NEAT-AI-core Develop"]
     C -->|fetch fails| D["Job fails —<br/>ci-required blocks the merge"]
     C -->|identical| F["Leave it alone"]
     C -->|differs| E["Overwrite the local copy"]
-    E --> L["shellcheck + runlib contract tests<br/>on the new bytes"]
+    E --> L["shellcheck + contract check<br/>on the new bytes"]
     L -->|fails| D
-    L -->|passes| G["Bump ockham/Cargo.toml"]
-    F --> G
-    G --> H["One commit, one push:<br/>bump + refreshed runlib.sh"]
+    L -->|passes| P["family-pins.sh: move the<br/>neat-core pin to the newest release"]
+    F --> P
+    P -->|remote unlistable| D
+    P --> G["Bump ockham/Cargo.toml"]
+    G --> H["One commit, one push:<br/>bump + moved pin + refreshed scripts"]
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the local and CI quality gates.
@@ -2685,8 +2700,7 @@ NEAT-AI-Ockham/
 │   ├── population-entry.md  # how cuts actually enter the live population
 │   └── incident-response.md # emergency dependency fast lane (SECURITY.md)
 ├── quality.sh
-├── rust-toolchain.toml
-└── neat-core.expected-version
+└── rust-toolchain.toml
 ```
 
 [docs/grq-integration.md](docs/grq-integration.md) is the checked-in audit of

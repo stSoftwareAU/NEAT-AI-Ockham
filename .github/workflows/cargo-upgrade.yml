@@ -3,8 +3,9 @@ name: Cargo Dependency Updates
 # Weekly dependency refresh (Issue #16), mirroring GRQ's `cargo-upgrade.yml`:
 # `cargo upgrade` (compatible bumps) + `cargo update`, raised as a PR so the
 # normal CI gate (clippy -D warnings, tests, cargo-deny) judges it. Every
-# action is SHA-pinned; the sibling NEAT-AI-core checkout is required for the
-# lockfile to resolve (path dependency).
+# action is SHA-pinned. `neat-core` is a git-tag pin that `cargo upgrade`
+# leaves alone; the PR's own `version-increment` job moves it to core's
+# newest release (Issue #210).
 
 on:
   schedule:
@@ -32,7 +33,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Rust workspace (neat-core sibling + toolchain)
+      - name: Set up Rust workspace (toolchain)
         uses: ./.github/actions/setup-rust-workspace
 
       - name: Install cargo-edit (prebuilt binary)

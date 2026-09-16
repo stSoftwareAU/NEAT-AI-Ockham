@@ -11,7 +11,14 @@
 #   * a missing or stale stamp rebuilds.
 #
 # A cargo shim stands in for the real toolchain and fails loud on any
-# invocation the test did not expect, so no real build ever runs.
+# invocation the test did not expect, so no real build ever runs. rustc and
+# rustup are shimmed beside it: since NEAT-AI-core#706 runlib.sh gates a build
+# on the dependency graph's highest `rust-version`, read through `rustc -vV`
+# and `cargo metadata`, and asks rustup for a toolchain when rustc is missing
+# or too old. Every case here runs under a throwaway HOME, where a real rustup
+# proxy has no default toolchain to offer, so the shim answers as an adequate
+# rustc and rustup fails loud — this toolchain needs no repair, and a run that
+# reached for one would be a contract change worth seeing.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,10 +67,14 @@ crate_version() {
   ' "${MANIFEST}"
 }
 
-# A cargo that answers `metadata` with the shape $1, refuses everything else
-# — notably `build`, which no test here may reach by accident — and records
-# every invocation in CARGO_LOG so "ran no cargo command" can be asserted on
-# the calls themselves rather than on their output.
+# A cargo that answers `metadata` with the shape $1 — the `--no-deps` shape
+# read for the crate's targets and the resolved graph read for `rust-version`
+# alike; it declares none, so no toolchain repair is ever owed — refuses
+# everything else — notably `build`, which no test here may reach by accident
+# — and records every invocation in CARGO_LOG so "ran no cargo command" can be
+# asserted on the calls themselves rather than on their output. Beside it, a
+# rustc that reports an adequate version and host, and a rustup that fails
+# loud: the toolchain gate must pass through both without a repair.
 install_cargo_shim() {
   local bin_dir="$1" metadata="$2"
   mkdir -p "${bin_dir}"
@@ -78,7 +89,21 @@ fi
 echo "UNEXPECTED cargo: \$*" >&2
 exit 99
 EOF
-  chmod +x "${bin_dir}/cargo"
+  cat >"${bin_dir}/rustc" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  --version) printf 'rustc 1.98.0 (test shim)\n' ;;
+  -vV) printf 'rustc 1.98.0 (test shim)\nhost: x86_64-unknown-linux-gnu\n' ;;
+  *) echo "UNEXPECTED rustc: $*" >&2; exit 98 ;;
+esac
+EOF
+  cat >"${bin_dir}/rustup" <<'EOF'
+#!/usr/bin/env bash
+echo "UNEXPECTED rustup: $* — the shimmed toolchain is adequate, nothing should ask for a repair" >&2
+exit 97
+EOF
+  chmod +x "${bin_dir}/cargo" "${bin_dir}/rustc" "${bin_dir}/rustup"
 }
 
 VERSION="$(crate_version)"
