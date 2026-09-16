@@ -2638,15 +2638,23 @@ neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v<sem
 
 and the `version-increment` job runs `scripts/family-pins.sh` before
 `scripts/auto-version.sh`, so a pin behind core's latest release is rewritten,
-`Cargo.lock` follows through `cargo update`, and the moved tag lands with the
-patch bump in the job's one commit. The pin therefore moves **only** through
-this repository's own PR, where the full CI gate judges the new core before it
-can merge (Issue #210).
+`Cargo.lock` follows through `cargo update`, and the moved tag lands in the
+job's one commit together with whatever bump that commit carries. (On a branch
+CI has already bumped once, `auto-version.sh` leaves the version alone — it is
+still ahead of the base branch, which is all the unattended machines need.) The
+pin therefore moves **only** through this repository's own PR.
 
 Nothing else is allowed to move it: edit the pin by hand and the next PR simply
 moves it on to the latest release again. A pin that cannot be resolved fails the
-job and `ci-required` blocks the merge; a breaking core release fails the build
-in the `quality` job, which is what makes a deliberate upgrade unavoidable.
+job and `ci-required` blocks the merge.
+
+A moved pin is **built and tested inside the move step**, before it is
+committed. It has to be: a push made with the default `GITHUB_TOKEN` starts no
+new workflow run, so the `quality` job of the same run only ever saw the
+pre-move checkout, and a breaking core release would otherwise land on the
+branch with `ci-required` already green and nothing having compiled it. Gating
+the new core where it arrives is what makes a deliberate upgrade unavoidable —
+the same reasoning the refreshed scripts above are linted in their own step.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the local and CI quality gates.
 Ockham commit messages use the **🪒** prefix.

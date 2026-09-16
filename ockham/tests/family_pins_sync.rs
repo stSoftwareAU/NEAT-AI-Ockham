@@ -9,9 +9,8 @@
 //! Three things must hold, and none is visible to a reviewer scanning YAML:
 //! the copy is refreshed *before* it is run, the run happens *before* the bump
 //! rewrites the manifest, and the moved pin is in the `git add` list that
-//! commit is built from. Drop any of them and a moved pin either never lands or
-//! lands on its own, without the version bump the unattended machines rebuild
-//! from.
+//! commit is built from. Drop any of them and a moved pin either never lands,
+//! or lands in a commit of its own that the bump cannot reach.
 //!
 //! What the steps *do* — refuse an unfetchable file, refuse a body that is not
 //! a script, overwrite a stale copy, leave an identical one alone, record a
@@ -95,8 +94,36 @@ fn the_pin_moves_before_the_bump_so_both_land_in_one_commit() {
         .expect("the version-increment job must still bump ockham/Cargo.toml");
     assert!(
         move_offset(&job) < bump,
-        "the pin must move before the bump rewrites ockham/Cargo.toml, so a moved pin always \
-         lands with a version bump rather than on its own"
+        "the pin must move before the bump rewrites ockham/Cargo.toml, so the moved tag and \
+         whatever bump the commit carries reach the same commit"
+    );
+}
+
+/// A moved pin is committed by this job, and nothing else in the run ever
+/// compiles it: the push is made with a token that starts no new workflow run,
+/// so `quality` only ever saw the pre-move checkout. The build has to happen in
+/// the move step itself, or a breaking core release merges ungated.
+#[test]
+fn a_moved_pin_is_compiled_before_it_is_committed() {
+    let workflow = ci_workflow();
+    let job = version_increment_job(&workflow);
+    let move_at = move_offset(&job);
+    let commit_at = job
+        .find("git commit")
+        .expect("the version-increment job must commit its changes");
+    let build = job[move_at..commit_at]
+        .find("cargo test --workspace")
+        .or_else(|| job[move_at..commit_at].find("cargo build --workspace"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the version-increment job must build the moved pin between moving it and \
+                 committing it — otherwise a breaking core release lands with ci-required \
+                 already green and nothing having compiled it; job:\n{job}"
+            )
+        });
+    assert!(
+        build + move_at < commit_at,
+        "the moved pin must be compiled before it is committed"
     );
 }
 

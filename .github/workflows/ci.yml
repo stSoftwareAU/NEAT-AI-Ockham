@@ -160,7 +160,9 @@ jobs:
       github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # A moved pin is compiled and tested in this job, so it needs the same
+    # budget the `quality` job gets rather than a bookkeeping job's.
+    timeout-minutes: 30
     permissions:
       contents: write
 
@@ -254,14 +256,24 @@ jobs:
 
       - name: Move the neat-core pin to core's latest release
         # The pin in `ockham/Cargo.toml` moves here and nowhere else, so it
-        # always lands inside this job's single commit — never on its own, and
-        # never without the bump the next step guarantees (Issue #210).
+        # always lands inside this job's single commit, at a crate version the
+        # base branch has not seen — never on its own (Issue #210).
+        #
+        # A moved pin is compiled and tested *here*, where it arrives, for the
+        # same reason the refreshed scripts above are linted here: a push made
+        # with the default GITHUB_TOKEN starts no new workflow run, so the
+        # `quality` job of this run only ever saw the pre-move checkout. Without
+        # this, a breaking core release would land on the branch with
+        # `ci-required` already green and nothing having built it.
         run: |
           set -euo pipefail
           ./scripts/family-pins.sh
-          if ! git diff --quiet -- ockham/Cargo.toml Cargo.lock; then
-            echo "FAMILY_PIN_MOVED=1" >>"$GITHUB_ENV"
+          if git diff --quiet -- ockham/Cargo.toml Cargo.lock; then
+            echo "The neat-core pin is already on core's latest release"
+            exit 0
           fi
+          echo "FAMILY_PIN_MOVED=1" >>"$GITHUB_ENV"
+          cargo test --workspace --all-features -- --test-threads=2
 
       - name: Bump the crate version when this PR has not already
         env:

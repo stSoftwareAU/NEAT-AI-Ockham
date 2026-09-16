@@ -17,8 +17,9 @@
 #   * an identical copy is left alone;
 #   * a copy that is valid bash but breaks the pin contract fails the refresh —
 #     the gate that stops ungated bytes riding the job's commit;
-#   * the move step reports a moved pin, and reports nothing when the pin is
-#     already current.
+#   * the move step builds a moved pin, reports it for the commit step, fails
+#     the job when the new core does not compile, and does none of that when
+#     the pin is already current.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -171,12 +172,14 @@ assert_eq "this repository's own canonical copy is untouched by these tests" \
   "${BEFORE_CANONICAL}" "$(cksum <"${CANONICAL}")"
 
 # --- the step that runs the script ------------------------------------------
-# `family-pins.sh` is replaced by a shim so the move step is exercised without
-# a network round trip: the shim rewrites the manifest exactly as the real
-# script would, or leaves it alone when told the pin is current.
+# `family-pins.sh` and `cargo` are both replaced by shims, so the move step is
+# exercised without a network round trip and without a real build: the
+# family-pins shim rewrites the manifest exactly as the real script would, or
+# leaves it alone when told the pin is current, and the cargo shim records
+# every invocation and reports whatever the case under test needs.
 new_move_fixture() {
-  local dir="${WORK_DIR}/$1" moves="$2"
-  mkdir -p "${dir}/scripts" "${dir}/ockham"
+  local dir="${WORK_DIR}/$1" moves="$2" cargo_rc="$3"
+  mkdir -p "${dir}/scripts" "${dir}/ockham" "${dir}/bin"
   cat >"${dir}/scripts/family-pins.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -189,6 +192,15 @@ if [[ "${moves}" == "yes" ]]; then
 fi
 EOF
   chmod +x "${dir}/scripts/family-pins.sh"
+  cat >"${dir}/bin/cargo" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"${dir}/cargo.calls"
+if [[ "${cargo_rc}" != "0" ]]; then
+  echo "error[E0432]: unresolved import neat_core::Gone" >&2
+fi
+exit ${cargo_rc}
+EOF
+  chmod +x "${dir}/bin/cargo"
   printf 'neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v1.0.0" }\n' \
     >"${dir}/ockham/Cargo.toml"
   : >"${dir}/Cargo.lock"
@@ -203,27 +215,41 @@ run_move() {
   : >"${WORK_DIR}/${name}.env"
   (
     cd "${dir}"
-    GITHUB_ENV="${WORK_DIR}/${name}.env" bash "${MOVE_STEP}"
+    PATH="${dir}/bin:${PATH}" \
+      GITHUB_ENV="${WORK_DIR}/${name}.env" \
+      bash "${MOVE_STEP}"
   ) >"${WORK_DIR}/${name}.out" 2>"${WORK_DIR}/${name}.err"
 }
 
 echo ""
-echo "=== a moved pin is recorded for the commit step ==="
-DIR="$(new_move_fixture moved yes)"
+echo "=== a moved pin is built and recorded for the commit step ==="
+DIR="$(new_move_fixture moved yes 0)"
 run_move "${DIR}" moved && RC=0 || RC=$?
 assert_eq "the move step exits 0" "0" "${RC}"
 assert_eq "the moved pin reaches the manifest" "0" \
   "$(grep -q 'tag = "v1.0.1"' "${DIR}/ockham/Cargo.toml"; echo $?)"
 assert_eq "the move is recorded in GITHUB_ENV" "0" \
   "$(grep -q '^FAMILY_PIN_MOVED=1$' "${WORK_DIR}/moved.env"; echo $?)"
+assert_eq "the moved pin is compiled before the job can commit it" "0" \
+  "$(grep -q -- '--workspace' "${DIR}/cargo.calls"; echo $?)"
+
+echo ""
+echo "=== a breaking core release fails the step rather than being committed ==="
+DIR="$(new_move_fixture breaking yes 101)"
+run_move "${DIR}" breaking && RC=0 || RC=$?
+assert_eq "a pin that does not compile fails the step" "101" "${RC}"
+assert_eq "the compiler error is surfaced, not swallowed" "0" \
+  "$(grep -q 'unresolved import' "${WORK_DIR}/breaking.err"; echo $?)"
 
 echo ""
 echo "=== a pin already on the latest release records nothing ==="
-DIR="$(new_move_fixture current no)"
+DIR="$(new_move_fixture current no 0)"
 run_move "${DIR}" current && RC=0 || RC=$?
 assert_eq "an unchanged pin exits 0" "0" "${RC}"
 assert_eq "an unchanged pin records no move" "1" \
   "$(grep -q '^FAMILY_PIN_MOVED=1$' "${WORK_DIR}/current.env"; echo $?)"
+assert_eq "an unchanged pin runs no build" "1" \
+  "$([ -s "${DIR}/cargo.calls" ]; echo $?)"
 
 echo ""
 echo "=== summary: ${PASSED} passed, ${FAILED} failed ==="
