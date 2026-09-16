@@ -919,7 +919,13 @@ scorer judges, so no binary files the code and a blocked record carrying it is
 dropped at load. Each conversion is named on the telemetry detail's
 `convertedNeurons` row — the neuron, the aggregate it declared and the
 point-wise squash it declares now — so the run's evidence says which aggregate
-stopped aggregating rather than leaving a reader to diff two creatures.
+stopped aggregating rather than leaving a reader to diff two creatures. Since
+neat-core 0.22.0 (Issue #221) a hidden `IDENTITY` that conversion, or the `IF`
+rewrite, leaves as a bare pass-through is spliced out in the same call — its
+sources wired straight into its targets at the product of the two weights — and
+each one is named on the detail's `splicedNeurons` row, so the journal accounts
+for every neuron a candidate lost, not only the ones the request and the
+cascade removed.
 `blocked` never meant *not pruneable forever*: it means the
 current proposal mechanism does not know how to test this neuron safely, and the
 code says which mechanism is missing.

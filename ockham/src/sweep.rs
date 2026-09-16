@@ -1132,12 +1132,21 @@ mod tests {
     use crate::stats::{ActivationStats, NeuronStats, STATS_FORMAT_VERSION, SampleSpec};
 
     fn two_hidden() -> CreatureExport {
+        two_hidden_with("IDENTITY")
+    }
+
+    /// [`two_hidden`] with both hidden neurons under `squash`. A hidden
+    /// `IDENTITY` is a pass-through core splices out of any candidate it
+    /// builds since neat-core 0.22.0 (Issue #221), so a test that needs the
+    /// second neuron still standing after the first is cut asks for a squash
+    /// the splice leaves in place.
+    fn two_hidden_with(squash: &str) -> CreatureExport {
         creature(
             1,
             1,
             vec![
-                neuron("hidden", "h_a", 0.0, Some("IDENTITY")),
-                neuron("hidden", "h_b", 0.0, Some("IDENTITY")),
+                neuron("hidden", "h_a", 0.0, Some(squash)),
+                neuron("hidden", "h_b", 0.0, Some(squash)),
                 neuron("output", "output-0", 0.0, Some("IDENTITY")),
             ],
             vec![
@@ -2323,7 +2332,9 @@ mod tests {
     /// whole group — it is cut carrying no statistic, like a lone neuron.
     #[test]
     fn an_unmeasured_group_member_no_longer_blocks_the_group() {
-        let creature = two_hidden();
+        // `TANH`, so cutting `h_a` does not splice `h_b` away before the group
+        // reaches it: the unmeasured member must be cut *by the group*.
+        let creature = two_hidden_with("TANH");
         let mut stats = stats_with_inputs(&creature);
         stats.neurons.retain(|n| n.uuid != "h_b");
         assert!(stats.by_uuid("h_a").is_some() && stats.by_uuid("h_b").is_none());
