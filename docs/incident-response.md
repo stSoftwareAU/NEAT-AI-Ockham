@@ -58,9 +58,12 @@ Then, in order:
 2. **Bump the crate directly.** Branch from `Develop` and edit
    `ockham/Cargo.toml` / `Cargo.lock` for the affected crate alone — a targeted
    `cargo update -p <crate>` beats a whole-lockfile refresh, because a smaller
-   diff reviews faster. Where the fix lives in the sibling
-   [`NEAT-AI-core`](https://github.com/stSoftwareAU/NEAT-AI-core), fix it there
-   first; this repository consumes it as a path dependency.
+   diff reviews faster. Where the fix lives in
+   [`NEAT-AI-core`](https://github.com/stSoftwareAU/NEAT-AI-core), fixing it
+   there is not enough on its own: this repository pins core to a release tag,
+   so core must also cut a release, and the pin moves here — ahead of the
+   weekly schedule, run `./scripts/family-pins.sh` on the branch and commit what
+   it rewrites.
 3. **Run the gate locally**, so review is the only thing left to wait for:
 
    ```bash

@@ -65,9 +65,9 @@ gate: `ci-required` and code-owner review still apply.
 ## Supported versions
 
 NEAT-AI-Ockham is developed as a single-consumer internal experiment and is
-not published to a registry (`neat-core` is consumed as a local `path`
-dependency). There is no semantic-version release line, so security fixes are
-applied to the active development branch only.
+not published to a registry (`neat-core` is consumed as a git dependency on a
+NEAT-AI-core release tag). There is no semantic-version release line, so
+security fixes are applied to the active development branch only.
 
 | Version            | Supported          |
 | ------------------ | ------------------ |
