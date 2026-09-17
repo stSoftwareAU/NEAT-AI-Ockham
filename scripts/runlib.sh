@@ -7,7 +7,7 @@
 # outward, never edited downstream. See README.md → "Canonical runlib.sh".
 #
 # Run it from the repository root of the sibling, or source it and call
-# `runlib_install`. It:
+# `runlib_install`. With no argument it:
 #
 #   * resolves the single workspace member — the root crate, or the one
 #     `[workspace] members` entry — and fails loud on zero or more than one;
@@ -31,6 +31,18 @@
 #   * honours the caller's RUSTFLAGS unchanged and sets no flags of its own;
 #   * prints the installed bin path — or the lib path when there is no bin —
 #     on stdout, and nothing else on stdout.
+#
+# `--toolchain-only` (Issue #701) is the other entry point — sourced, that is
+# `runlib_ensure_toolchain`. It runs the same chain (the rustup bootstrap
+# below, the unrunnable-rustc repair, the resolved dependency graph and the
+# toolchain gate), builds nothing and installs nothing, and prints the override
+# toolchain the gate selected on stdout — a bare name such as `1.93.1`, or an
+# empty line when the active toolchain already satisfies the requirement — and
+# nothing else on stdout, for a caller that runs cargo itself and exports it as
+# `RUSTUP_TOOLCHAIN`. The already-installed skip is never consulted: a caller
+# running its own cargo needs a good toolchain whatever the stamp says. Every
+# failure exits non-zero with install mode's stderr messages, and every other
+# argument exits 2 with a one-line usage on stderr, having run no cargo at all.
 #
 # With no `rustc` on PATH the toolchain is bootstrapped here (Issue #699):
 # rustup is installed from the pinned `rustup-init` for the host target, whose
@@ -732,7 +744,7 @@ _runlib_check_msrv() {
   # already satisfies the requirement needs nothing from this script — but the
   # rustc this run measured does not satisfy it, so say which one is building.
   if _runlib_version_ge "$pin" "$required"; then
-    printf 'runlib: rustc %s is below the required Rust %s, but rust-toolchain.toml pins %s, which satisfies it — building on the pinned toolchain\n' \
+    printf 'runlib: rustc %s is below the required Rust %s, but rust-toolchain.toml pins %s, which satisfies it — the pinned toolchain is what this run uses\n' \
       "$_RUNLIB_ACTIVE_RUST_VERSION" "$required" "$pin" >&2
     return 0
   fi
@@ -744,7 +756,9 @@ _runlib_check_msrv() {
   # and nothing else. A sourced caller's shell must not come away pinned to a
   # toolchain it never asked for.
   _RUNLIB_TOOLCHAIN_OVERRIDE="$required"
-  printf 'runlib: rust-toolchain.toml pins %s, below the Rust %s this dependency graph requires — building this run with %s; bump the pin in rust-toolchain.toml\n' \
+  # Worded for both entry points: `--toolchain-only` builds nothing, so a line
+  # claiming a build would be false in exactly the mode that only reports.
+  printf 'runlib: rust-toolchain.toml pins %s, below the Rust %s this dependency graph requires — using %s for this run; bump the pin in rust-toolchain.toml\n' \
     "$pin" "$required" "$required" >&2
   return 0
 }
@@ -869,6 +883,57 @@ _runlib_abort_staged() {
   _runlib_die "$message"
 }
 
+# The `cargo metadata --no-deps` reply for the single workspace member, failing
+# loud on zero members or on more than one. Both entry points resolve the
+# member through this, so the toolchain-only mode reads the crate's own
+# `rust-version` from exactly the manifest a build would have used.
+#
+# It dies from inside the caller's command substitution, so the caller's
+# assignment must not be a `local` declaration — that would swallow the status.
+_runlib_member_metadata() {
+  local repo_root="$1" metadata package_count names
+  metadata="$(cargo metadata --no-deps --format-version 1)"
+  package_count="$(printf '%s' "$metadata" | jq '.packages | length')"
+  if [[ "$package_count" -eq 0 ]]; then
+    _runlib_die "cargo metadata reports no workspace member in $repo_root"
+  fi
+  if [[ "$package_count" -gt 1 ]]; then
+    names="$(printf '%s' "$metadata" | jq -r '[.packages[].name] | join(", ")')"
+    _runlib_die "expected exactly one workspace member, found $package_count: $names"
+  fi
+  printf '%s' "$metadata"
+  return 0
+}
+
+# The toolchain-only entry point (Issue #701). It runs the same chain install
+# mode runs — the rustup bootstrap, the unrunnable-rustc repair, the resolved
+# dependency graph and the toolchain gate — builds nothing, installs nothing,
+# and prints the selected override toolchain name on stdout: a bare `1.93.1`,
+# or an empty line when the active toolchain already satisfies the requirement.
+# That is the whole of its stdout, because a caller exports it as
+# `RUSTUP_TOOLCHAIN` for a cargo command it runs itself.
+#
+# The already-installed skip is deliberately never consulted: it answers "is
+# the artefact current?", and a caller running its own cargo needs a good
+# toolchain whatever the answer is.
+runlib_ensure_toolchain() {
+  local repo_root="$PWD"
+  local root_manifest="$repo_root/Cargo.toml"
+  [[ -f "$root_manifest" ]] ||
+    _runlib_die "no Cargo.toml in $repo_root — run runlib.sh from the repository root"
+
+  _runlib_require_toolchain
+  _runlib_ensure_toolchain "$repo_root"
+
+  local metadata manifest
+  metadata="$(_runlib_member_metadata "$repo_root")"
+  manifest="$(printf '%s' "$metadata" | jq -r '.packages[0].manifest_path')"
+  _runlib_check_msrv "$manifest" "$root_manifest" "$repo_root"
+
+  printf '%s\n' "$_RUNLIB_TOOLCHAIN_OVERRIDE"
+  return 0
+}
+
 runlib_install() {
   local repo_root="$PWD"
   local root_manifest="$repo_root/Cargo.toml"
@@ -882,17 +947,8 @@ runlib_install() {
   _runlib_require_toolchain
   _runlib_ensure_toolchain "$repo_root"
 
-  local metadata package_count
-  metadata="$(cargo metadata --no-deps --format-version 1)"
-  package_count="$(printf '%s' "$metadata" | jq '.packages | length')"
-  if [[ "$package_count" -eq 0 ]]; then
-    _runlib_die "cargo metadata reports no workspace member in $repo_root"
-  fi
-  if [[ "$package_count" -gt 1 ]]; then
-    local names
-    names="$(printf '%s' "$metadata" | jq -r '[.packages[].name] | join(", ")')"
-    _runlib_die "expected exactly one workspace member, found $package_count: $names"
-  fi
+  local metadata
+  metadata="$(_runlib_member_metadata "$repo_root")"
 
   local crate version manifest target_dir crate_underscored bin_name lib_name
   crate="$(printf '%s' "$metadata" | jq -r '.packages[0].name')"
@@ -1049,6 +1105,26 @@ runlib_install() {
   return 0
 }
 
+# One line on stderr, and exit 2. A copy that ignored its arguments would run a
+# full build for a caller that asked only for the gate, so an argument this
+# script does not know is refused before any cargo command runs.
+_runlib_usage() {
+  printf 'usage: runlib.sh [--toolchain-only]\n' >&2
+  exit 2
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  runlib_install
+  case "${1-}" in
+    "")
+      [[ $# -eq 0 ]] || _runlib_usage
+      runlib_install
+      ;;
+    --toolchain-only)
+      [[ $# -eq 1 ]] || _runlib_usage
+      runlib_ensure_toolchain
+      ;;
+    *)
+      _runlib_usage
+      ;;
+  esac
 fi
