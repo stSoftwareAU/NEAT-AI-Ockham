@@ -3,7 +3,7 @@
 //! Locates `rust_scorer` via `NEAT_SCORER_BIN`, then the sibling
 //! `../../NEAT-AI-scorer/target/release/rust_scorer`, then `$PATH`. When no
 //! binary is available the test prints a skip notice and passes — CI for this
-//! repo has no built scorer beside it.
+//! repo builds no scorer.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

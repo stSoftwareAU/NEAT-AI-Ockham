@@ -17,15 +17,10 @@ workspace = true
 # for a `cargo metadata` call it does not need (Issue #209).
 
 [dependencies]
-# neat-core is pinned to a NEAT-AI-core release tag (Issue #210). The pin moves
-# only through this repository's own PRs: the `version-increment` job runs the
-# canonical scripts/family-pins.sh, which rewrites the tag to core's newest
-# released `v*` and lets Cargo.lock follow, in the one commit that job pushes.
-# Keep the declaration on a single line — that is the form family-pins.sh
-# rewrites; a pin spread over several lines is refused, not skipped. To build
-# against a local core checkout instead, override it with a [patch] in a
-# `.cargo/config.toml` outside this repository (see CONTRIBUTING.md), never in
-# a tracked file: core's downstream-consumer gate refuses a consumer carrying one.
+# neat-core is consumed as a released git tag, never as a sibling path: the pin
+# moves only through this repository's own PR, where `scripts/family-pins.sh`
+# refreshes it to core's latest release and CI judges the result (Issue #210).
+# Keep it on one line — that is the form family-pins.sh rewrites.
 neat-core = { git = "https://github.com/stSoftwareAU/NEAT-AI-core", tag = "v0.22.4" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

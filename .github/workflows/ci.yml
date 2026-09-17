@@ -48,7 +48,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Rust workspace (toolchain)
+      - name: Set up the Rust toolchain
         uses: ./.github/actions/setup-rust-workspace
         with:
           components: rustfmt, clippy
@@ -67,15 +67,6 @@ jobs:
         uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
         with:
           tool: cargo-deny
-
-      - name: Move the NEAT-AI family pins as the version-increment job will
-        # `version-increment` moves the neat-core pin to core's newest release
-        # and pushes it; when that push starts no new run (a push made with the
-        # default GITHUB_TOKEN never does), this job is the only build the
-        # moved pin gets before it merges. Moving it here too — uncommitted —
-        # keeps "the CI build fails on a breaking core release" true in the
-        # same run (Issue #210). A pin already current is a silent exit 0.
-        run: ./scripts/family-pins.sh
 
       - name: cargo deny
         run: cargo deny check
@@ -122,7 +113,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Rust workspace (toolchain)
+      - name: Set up the Rust toolchain
         uses: ./.github/actions/setup-rust-workspace
 
       - name: Check for required files
@@ -169,7 +160,9 @@ jobs:
       github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # A moved pin is compiled and tested in this job, so it needs the same
+    # budget the `quality` job gets rather than a bookkeeping job's.
+    timeout-minutes: 30
     permissions:
       contents: write
 
@@ -183,73 +176,104 @@ jobs:
           # build script could read it; it is supplied per step instead.
           persist-credentials: false
 
-      - name: Refresh the canonical NEAT-AI-core scripts
-        # `scripts/runlib.sh` (NEAT-AI-core#680, Issue #209) and
-        # `scripts/family-pins.sh` (NEAT-AI-core#681, Issue #210) each have one
-        # home — NEAT-AI-core `Develop`. Neither is ever edited here: a stale
-        # copy is overwritten from core and rides the single commit this job
-        # already pushes, so the refresh never races the bump.
+      # `scripts/family-pins.sh` shells out to `cargo update` when it moves a
+      # pin, so this job needs the toolchain the Cargo jobs already install.
+      - name: Set up the Rust toolchain
+        uses: ./.github/actions/setup-rust-workspace
+
+      - name: Refresh scripts/runlib.sh from NEAT-AI-core
+        # `scripts/runlib.sh` has one home — NEAT-AI-core `Develop`
+        # (NEAT-AI-core#680). It is never edited here: a stale copy is
+        # overwritten from core and rides the single commit this job already
+        # pushes, so the refresh never races the bump (Issue #209).
         env:
           CORE_REF: Develop
           CORE_REPO: stSoftwareAU/NEAT-AI-core
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for file in scripts/runlib.sh scripts/family-pins.sh; do
-            fetched="${RUNNER_TEMP}/core-$(basename "$file")"
-            if ! gh api "repos/${CORE_REPO}/contents/${file}?ref=${CORE_REF}" \
-              -H "Accept: application/vnd.github.raw" >"$fetched"; then
-              echo "Cannot fetch ${file} from ${CORE_REPO}@${CORE_REF}" >&2
-              exit 1
-            fi
-            # An error page or an empty body would otherwise be copied over the
-            # working script and only fail much later, somewhere else. The test
-            # is "a script bash can parse", not core's exact first line: core is
-            # free to change its shebang without hard-failing every PR here.
-            if [ ! -s "$fetched" ] || ! head -n 1 "$fetched" | grep -q '^#!' ||
-              ! bash -n "$fetched"; then
-              echo "Fetched ${CORE_REPO}@${CORE_REF} ${file} is not a bash script" >&2
-              exit 1
-            fi
-            if cmp -s "$fetched" "$file"; then
-              echo "${file} already matches ${CORE_REPO}@${CORE_REF}"
-              continue
-            fi
-            echo "Refreshing ${file} from ${CORE_REPO}@${CORE_REF}"
-            cp "$fetched" "$file"
-            chmod +x "$file"
-            # The new bytes are gated *here*, where they arrive. A push made with
-            # the default GITHUB_TOKEN starts no new workflow run, so the
-            # `shell-checks` job of this run only ever saw the pre-refresh
-            # checkout — without this, a refreshed script could merge ungated.
-            shellcheck --severity=warning -s bash "$file"
-            case "$file" in
-              scripts/runlib.sh) ./scripts/test-runlib.sh </dev/null ;;
-              scripts/family-pins.sh) ./scripts/family-pins.sh --help >/dev/null ;;
-            esac
-          done
-
-      - name: Set up Rust workspace (toolchain)
-        uses: ./.github/actions/setup-rust-workspace
-
-      - name: Move the NEAT-AI family pins to the latest release
-        # The neat-core pin in ockham/Cargo.toml moves only through this
-        # repository's own PRs, and this is where: the canonical
-        # scripts/family-pins.sh rewrites the tag to core's newest released
-        # `v*` and runs `cargo update --package neat-core` so Cargo.lock
-        # follows, before the bump, so a moved pin always lands in the one
-        # commit this job pushes (Issue #210). Its stderr is kept for that
-        # commit's message. A pin already current is a silent exit 0; a
-        # remote that cannot be listed fails the job, and `ci-required`
-        # blocks the merge rather than letting a stale pin through.
-        run: |
-          set -euo pipefail
-          if ! ./scripts/family-pins.sh 2>"${RUNNER_TEMP}/family-pins.log"; then
-            cat "${RUNNER_TEMP}/family-pins.log" >&2
-            echo "scripts/family-pins.sh failed — the neat-core pin cannot be trusted" >&2
+          fetched="${RUNNER_TEMP}/core-runlib.sh"
+          if ! gh api "repos/${CORE_REPO}/contents/scripts/runlib.sh?ref=${CORE_REF}" \
+            -H "Accept: application/vnd.github.raw" >"$fetched"; then
+            echo "Cannot fetch scripts/runlib.sh from ${CORE_REPO}@${CORE_REF}" >&2
             exit 1
           fi
-          cat "${RUNNER_TEMP}/family-pins.log" >&2
+          # An error page or an empty body would otherwise be copied over the
+          # working script and only fail much later, somewhere else. The test is
+          # "a script bash can parse", not core's exact first line: core is free
+          # to change its shebang without hard-failing every PR here.
+          if [ ! -s "$fetched" ] || ! head -n 1 "$fetched" | grep -q '^#!' ||
+            ! bash -n "$fetched"; then
+            echo "Fetched ${CORE_REPO}@${CORE_REF} scripts/runlib.sh is not a bash script" >&2
+            exit 1
+          fi
+          if cmp -s "$fetched" scripts/runlib.sh; then
+            echo "scripts/runlib.sh already matches ${CORE_REPO}@${CORE_REF}"
+            exit 0
+          fi
+          echo "Refreshing scripts/runlib.sh from ${CORE_REPO}@${CORE_REF}"
+          cp "$fetched" scripts/runlib.sh
+          chmod +x scripts/runlib.sh
+          # The new bytes are gated *here*, where they arrive. A push made with
+          # the default GITHUB_TOKEN starts no new workflow run, so the
+          # `shell-checks` job of this run only ever saw the pre-refresh
+          # checkout — without this, a refreshed script could merge ungated.
+          shellcheck --severity=warning -s bash scripts/runlib.sh
+          ./scripts/test-runlib.sh </dev/null
+
+      - name: Refresh scripts/family-pins.sh from NEAT-AI-core
+        # Copied byte-for-byte from NEAT-AI-core `Develop` exactly as
+        # `runlib.sh` is (NEAT-AI-core#681), and never edited here. The new
+        # bytes are gated where they arrive — a push made with the default
+        # GITHUB_TOKEN starts no new workflow run, so the `shell-checks` job of
+        # this run only ever saw the pre-refresh checkout (Issue #210).
+        env:
+          CORE_REF: Develop
+          CORE_REPO: stSoftwareAU/NEAT-AI-core
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          fetched="${RUNNER_TEMP}/core-family-pins.sh"
+          if ! gh api "repos/${CORE_REPO}/contents/scripts/family-pins.sh?ref=${CORE_REF}" \
+            -H "Accept: application/vnd.github.raw" >"$fetched"; then
+            echo "Cannot fetch scripts/family-pins.sh from ${CORE_REPO}@${CORE_REF}" >&2
+            exit 1
+          fi
+          if [ ! -s "$fetched" ] || ! head -n 1 "$fetched" | grep -q '^#!' ||
+            ! bash -n "$fetched"; then
+            echo "Fetched ${CORE_REPO}@${CORE_REF} scripts/family-pins.sh is not a bash script" >&2
+            exit 1
+          fi
+          if cmp -s "$fetched" scripts/family-pins.sh; then
+            echo "scripts/family-pins.sh already matches ${CORE_REPO}@${CORE_REF}"
+            exit 0
+          fi
+          echo "Refreshing scripts/family-pins.sh from ${CORE_REPO}@${CORE_REF}"
+          cp "$fetched" scripts/family-pins.sh
+          chmod +x scripts/family-pins.sh
+          shellcheck --severity=warning -s bash scripts/family-pins.sh
+          ./scripts/test-family-pins.sh </dev/null
+
+      - name: Move the neat-core pin to core's latest release
+        # The pin in `ockham/Cargo.toml` moves here and nowhere else, so it
+        # always lands inside this job's single commit, at a crate version the
+        # base branch has not seen — never on its own (Issue #210).
+        #
+        # A moved pin is compiled and tested *here*, where it arrives, for the
+        # same reason the refreshed scripts above are linted here: a push made
+        # with the default GITHUB_TOKEN starts no new workflow run, so the
+        # `quality` job of this run only ever saw the pre-move checkout. Without
+        # this, a breaking core release would land on the branch with
+        # `ci-required` already green and nothing having built it.
+        run: |
+          set -euo pipefail
+          ./scripts/family-pins.sh
+          if git diff --quiet -- ockham/Cargo.toml Cargo.lock; then
+            echo "The neat-core pin is already on core's latest release"
+            exit 0
+          fi
+          echo "FAMILY_PIN_MOVED=1" >>"$GITHUB_ENV"
+          cargo test --workspace --all-features -- --test-threads=2
 
       - name: Bump the crate version when this PR has not already
         env:
@@ -269,48 +293,56 @@ jobs:
           fi
           ./scripts/auto-version.sh ockham/Cargo.toml "$base" Cargo.lock
 
-      # One commit, one push: the bump, any moved pin and any refreshed script
-      # travel together, so none of them can race the others onto the branch.
-      - name: Commit and push the bump, moved pins and refreshed scripts
+      # One commit, one push: the bump, any moved neat-core pin and any refreshed
+      # copy of a canonical script travel together, so none of them can race the
+      # others onto the branch.
+      - name: Commit and push the bump, the pin and any refresh
         env:
           HEAD_REF: ${{ github.head_ref }}
           PUSH_TOKEN: ${{ secrets.ACTIONS_PUSH || secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- ockham/Cargo.toml Cargo.lock scripts/runlib.sh scripts/family-pins.sh; then
-            echo "Version is already ahead of ${GITHUB_BASE_REF}, the family pins are current and the canonical scripts match core — nothing to commit"
-            exit 0
-          fi
+          # The manifest is dirty for two different reasons now — a moved pin and
+          # a bump — so "did the version move?" is read from the version itself
+          # rather than from the file being dirty, and the commit subject names
+          # what actually happened.
+          git show HEAD:ockham/Cargo.toml >"${RUNNER_TEMP}/head-Cargo.toml"
+          head_version="$(./scripts/auto-version.sh --print "${RUNNER_TEMP}/head-Cargo.toml")"
+          now_version="$(./scripts/auto-version.sh --print ockham/Cargo.toml)"
           bumped=0
-          if git diff -- ockham/Cargo.toml | grep -q '^+version = '; then
+          if [ "$head_version" != "$now_version" ]; then
             bumped=1
           fi
-          # One line per pin moved, as family-pins.sh printed them.
-          moved="$(grep '^\[family-pins\] .* → ' "${RUNNER_TEMP}/family-pins.log" 2>/dev/null || true)"
-          refreshed=""
-          for file in scripts/runlib.sh scripts/family-pins.sh; do
-            if ! git diff --quiet -- "$file"; then
-              refreshed="${refreshed:+${refreshed}, }${file}"
-            fi
-          done
+          pinned="${FAMILY_PIN_MOVED:-0}"
+          changed=0
+          if ! git diff --quiet -- ockham/Cargo.toml Cargo.lock; then
+            changed=1
+          fi
+          refreshed=0
+          if ! git diff --quiet -- scripts/runlib.sh scripts/family-pins.sh; then
+            refreshed=1
+          fi
+          if [ "$changed" -eq 0 ] && [ "$refreshed" -eq 0 ]; then
+            echo "Version is already ahead of ${GITHUB_BASE_REF}, the neat-core pin is current and the canonical scripts match core — nothing to commit"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ockham/Cargo.toml Cargo.lock scripts/runlib.sh scripts/family-pins.sh
           if [ "$bumped" -eq 1 ]; then
-            version="$(./scripts/auto-version.sh --print ockham/Cargo.toml)"
-            subject="🪒 auto-increment crate version to ${version}"
-          elif [ -n "$moved" ]; then
-            subject="🪒 move the NEAT-AI family pins to the latest release"
+            subject="🪒 auto-increment crate version to ${now_version}"
+          elif [ "$changed" -eq 1 ]; then
+            subject="🪒 move the neat-core pin to core's latest release"
           else
-            subject="🪒 refresh the canonical NEAT-AI-core scripts"
+            subject="🪒 refresh the canonical scripts from NEAT-AI-core"
           fi
           body=""
-          if [ -n "$moved" ]; then
-            body="${moved}"$'\n'"(Issue #210)"
+          if [ "$pinned" -eq 1 ]; then
+            body="${body}Move the neat-core git-tag pin to core's latest release (Issue #210)."$'\n'
           fi
-          if [ -n "$refreshed" ]; then
-            body="${body:+${body}$'\n\n'}Refresh ${refreshed} from NEAT-AI-core Develop (Issue #209)."
+          if [ "$refreshed" -eq 1 ]; then
+            body="${body}Refresh the canonical scripts from NEAT-AI-core Develop (Issue #209, Issue #210)."$'\n'
           fi
           if [ -n "$body" ]; then
             git commit -m "$subject" -m "$body"
@@ -366,6 +398,12 @@ jobs:
 
       - name: Check the CI step that refreshes scripts/runlib.sh
         run: ./scripts/test-runlib-refresh.sh
+
+      - name: Check the canonical scripts/family-pins.sh contract
+        run: ./scripts/test-family-pins.sh
+
+      - name: Check the CI steps that refresh and run scripts/family-pins.sh
+        run: ./scripts/test-family-pins-refresh.sh
 
   spell-check:
     name: Spell Check

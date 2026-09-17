@@ -1,16 +1,12 @@
 //! Workflow-as-contract test: the Cargo preamble stays in one place.
 //!
-//! Every Cargo job needs the pinned Rust toolchain before it can run, and it
-//! lives in `.github/actions/setup-rust-workspace`, so a toolchain bump is
-//! one edit rather than six (Issue #126). A workflow that calls the composite
-//! action and *also* installs the toolchain itself has re-introduced the
-//! copy-paste this test exists to prevent.
-//!
-//! Until Issue #210 the action also checked NEAT-AI-core out beside the
-//! workspace for a `path` dependency. `neat-core` is a git-tag pin now, fetched
-//! by Cargo like any other dependency, so nothing may check the sibling out
-//! again: a job that did would build against whatever ref it named rather
-//! than the release the pin names, silently.
+//! Every Cargo job needs the same thing before it can run: the pinned Rust
+//! toolchain. It lives in `.github/actions/setup-rust-workspace`, so a
+//! toolchain bump is one edit rather than six (Issue #126). The sibling
+//! NEAT-AI-core checkout that action also used to stage is gone: `neat-core`
+//! is a released git tag Cargo fetches itself (Issue #210). A workflow that
+//! calls the composite action and *also* installs the toolchain itself has
+//! re-introduced the copy-paste this test exists to prevent.
 
 use std::path::{Path, PathBuf};
 
@@ -105,6 +101,11 @@ fn no_workflow_references_the_retired_action_path() {
 
 #[test]
 fn nothing_checks_the_neat_core_sibling_out_again() {
+    // Until Issue #210 `setup-rust-workspace` checked NEAT-AI-core out beside
+    // the workspace for a `path` dependency. `neat-core` is a git-tag pin now,
+    // fetched by Cargo like any other dependency, so nothing may check the
+    // sibling out again: a job that did would build against whatever ref it
+    // named rather than the release the pin names, silently.
     let action = github_dir().join("actions/setup-rust-workspace/action.yml");
     let body = std::fs::read_to_string(&action)
         .unwrap_or_else(|e| panic!("read {}: {e}", action.display()));

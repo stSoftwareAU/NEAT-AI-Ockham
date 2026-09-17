@@ -1,17 +1,11 @@
 name: Set up Rust workspace
 description: >-
-  Install the pinned Rust toolchain. Single source of truth for the preamble
-  every Cargo job in this repository repeats (Issue #126).
+  Install the pinned Rust toolchain for this workspace. Single source of truth
+  for the preamble every Cargo job in this repository repeats (Issue #126).
 
-  Until Issue #210 this action also checked stSoftwareAU/NEAT-AI-core out
-  beside the workspace and symlinked it to the sibling path a `path`
-  dependency resolved through. `neat-core` is now a git-tag pin in
-  `ockham/Cargo.toml`, fetched by Cargo like any other dependency, so no
-  checkout is needed: the workspace builds with nothing beside the repository.
-
-  The workflow's own `actions/checkout` cannot move in here: a local composite
-  action is resolved from the checked-out tree, so the repository must already
-  be on disk before this action exists to be run.
+  No sibling checkout: since Issue #210 `ockham/Cargo.toml` pins `neat-core` to
+  a released git tag, so Cargo fetches core itself and nothing beside the
+  repository has to exist for the workspace to resolve.
 
 inputs:
   components:

@@ -8,32 +8,15 @@ parent/
 └── NEAT-AI-Ockham/
 ```
 
-`neat-core` is a git-tag pin on NEAT-AI-core in `ockham/Cargo.toml`
-(Issue #210): Cargo fetches it like any other dependency, so nothing needs to
-sit beside the repository for the workspace to build. The pin moves only
-through this repository's own PRs — the `version-increment` job runs the
-canonical `scripts/family-pins.sh`, which rewrites the tag to core's newest
-released `v*` and lets `Cargo.lock` follow, in the same commit as the crate
-bump — so a breaking core release shows up as a red build on the PR that moved
-the pin, and is fixed there. CI installs the pinned Rust toolchain via
-`.github/actions/setup-rust-workspace`, the shared preamble every Cargo job
-runs after its own checkout, so a toolchain bump is one edit.
+`neat-core` needs no sibling clone: `ockham/Cargo.toml` pins it to a released
+git tag of [NEAT-AI-core](https://github.com/stSoftwareAU/NEAT-AI-core), so
+Cargo fetches it (Issue #210). `.github/actions/setup-rust-workspace` installs
+the pinned Rust toolchain — the shared preamble every Cargo job runs after its
+own checkout, so a toolchain bump is one edit.
 
-To build against a local core checkout — an unreleased change, say — override
-the pin from *outside* the repository. Cargo reads config from parent
-directories too, so a `.cargo/config.toml` in the directory that holds both
-clones does it (a path there is relative to that directory):
-
-```toml
-# parent/.cargo/config.toml
-[patch."https://github.com/stSoftwareAU/NEAT-AI-core"]
-neat-core = { path = "NEAT-AI-core/neat-core" }
-```
-
-Never put that `[patch]` in a tracked file — this repository's own
-`.cargo/config.toml` is tracked — and never in a manifest: core's
-downstream-consumer gate refuses a consumer carrying one, because it could not
-then prove which core it compiled.
+Never edit the pin by hand: the `version-increment` job runs
+`scripts/family-pins.sh`, which moves it to core's latest release and lands the
+moved tag, `Cargo.lock` and the version bump in one commit on your PR branch.
 
 ## Prerequisites
 
@@ -69,8 +52,7 @@ otherwise valid commits solely because the emoji is absent.
 ```
 
 mirrors CI: shell syntax + shellcheck, the canonical-script contract tests,
-codespell,
-markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy with
+codespell, markdownlint, actionlint, cargo-deny, `cargo fmt --check`, clippy with
 `-D warnings -D clippy::filter_next -D clippy::collapsible_if`,
 `cargo test --all-features`, rustdoc with `-D warnings`.
 

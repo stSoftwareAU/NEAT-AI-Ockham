@@ -56,10 +56,10 @@ jobs:
           persist-credentials: false
 
       # Toolchain pin (Issue #126) via the shared composite action (Issue #401).
-      # cargo-cyclonedx reads the resolved workspace metadata; `neat-core` is a
-      # git-tag pin Cargo fetches itself (Issue #210), so it resolves with
-      # nothing beside the repository.
-      - name: Set up Rust workspace (toolchain)
+      # cargo-cyclonedx reads the resolved workspace metadata; since Issue #210
+      # `neat-core` is a released git tag, so Cargo fetches it and no sibling
+      # checkout has to be staged on the runner.
+      - name: Set up the Rust toolchain
         uses: ./.github/actions/setup-rust-workspace
 
       # Fetch a prebuilt cargo-cyclonedx binary instead of compiling from

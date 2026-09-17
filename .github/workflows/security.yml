@@ -35,9 +35,10 @@ jobs:
           persist-credentials: false
 
       # Toolchain pin (Issue #126) via the shared composite action (Issue #401).
-      # `neat-core` is a git-tag pin Cargo fetches itself (Issue #210), so no
-      # sibling checkout is needed and no token reaches disk (Issue #388).
-      - name: Set up Rust workspace (toolchain)
+      # The composite checks nothing out — `neat-core` is a release-tag git
+      # dependency Cargo fetches itself (Issue #210) — so this job's own
+      # `persist-credentials: false` above is what keeps the token off disk.
+      - name: Set up the Rust toolchain
         uses: ./.github/actions/setup-rust-workspace
 
       # Official RustSec GitHub Action — wraps cargo-audit and annotates the PR /
