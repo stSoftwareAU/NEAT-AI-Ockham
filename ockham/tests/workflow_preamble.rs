@@ -98,3 +98,32 @@ fn no_workflow_references_the_retired_action_path() {
         );
     }
 }
+
+#[test]
+fn nothing_checks_the_neat_core_sibling_out_again() {
+    // Until Issue #210 `setup-rust-workspace` checked NEAT-AI-core out beside
+    // the workspace for a `path` dependency. `neat-core` is a git-tag pin now,
+    // fetched by Cargo like any other dependency, so nothing may check the
+    // sibling out again: a job that did would build against whatever ref it
+    // named rather than the release the pin names, silently.
+    let action = github_dir().join("actions/setup-rust-workspace/action.yml");
+    let body = std::fs::read_to_string(&action)
+        .unwrap_or_else(|e| panic!("read {}: {e}", action.display()));
+    let mut files: Vec<(String, String)> = workflows();
+    files.push(("actions/setup-rust-workspace/action.yml".to_string(), body));
+    for (file, body) in files {
+        for needle in ["repository: stSoftwareAU/NEAT-AI-core", "../NEAT-AI-core"] {
+            let hit = body
+                .lines()
+                .enumerate()
+                .find(|(_, line)| !line.trim_start().starts_with('#') && line.contains(needle));
+            assert!(
+                hit.is_none(),
+                ".github/{file}:{}: checks out or links the NEAT-AI-core sibling — `neat-core` \
+                 is a git-tag pin in ockham/Cargo.toml (Issue #210), so a build must resolve it \
+                 through Cargo, never through a checkout beside the workspace",
+                hit.map(|(index, _)| index + 1).unwrap_or(0)
+            );
+        }
+    }
+}
