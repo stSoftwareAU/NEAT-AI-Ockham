@@ -2,8 +2,10 @@
 //!
 //! `ci.yml`'s `quality` job already runs fmt and clippy on PRs into `Develop`
 //! and `milestone/**`. `cargo-quality.yml` exists for every *other* base (the
-//! feature-branch and stacked-PR case), so it must ignore exactly the branches
-//! `ci.yml` gates — otherwise both fire on the same PR and burn runner minutes.
+//! feature-branch and stacked-PR case), so it ignores the branches `ci.yml`
+//! gates — otherwise both fire on the same PR and burn runner minutes — except
+//! `milestone/**`, which the fleet's milestone-filter check requires every
+//! quality workflow to cover.
 
 use std::path::Path;
 
@@ -82,12 +84,18 @@ fn cargo_quality_skips_exactly_the_branches_ci_already_gates() {
         "cargo-quality.yml must ignore the branches ci.yml's quality job already gates, or \
          both run fmt + clippy on the same PR (Issue #243)",
     );
-    let mut gated = ci;
+    // The fleet's milestone-filter rule requires every quality workflow to run on
+    // milestone PRs, so only ci.yml's non-milestone bases may be ignored.
+    let mut gated: Vec<String> = ci
+        .into_iter()
+        .filter(|b| !b.starts_with("milestone/"))
+        .collect();
     ignored.sort();
     gated.sort();
     assert_eq!(
         ignored, gated,
-        "cargo-quality.yml's branches-ignore must match ci.yml's branches exactly: a branch \
-         in ci.yml only is gated twice, a branch in branches-ignore only is not gated at all"
+        "cargo-quality.yml's branches-ignore must match ci.yml's non-milestone branches \
+         exactly: a branch in ci.yml only is gated twice, a branch in branches-ignore only is \
+         not gated at all, and an ignored milestone/** base breaks the milestone-filter rule"
     );
 }
