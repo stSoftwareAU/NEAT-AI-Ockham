@@ -1,11 +1,9 @@
-//! Workflow-as-contract test: `cargo fmt`/`clippy` run once per PR (Issue #243).
+//! Workflow-as-contract tests: `cargo fmt`/`clippy` run once per PR (Issue #243),
+//! and every required status check reports on PRs into `Develop` (PR #247).
 //!
-//! `ci.yml`'s `quality` job already runs fmt and clippy on PRs into `Develop`
-//! and `milestone/**`. `cargo-quality.yml` exists for every *other* base (the
-//! feature-branch and stacked-PR case), so it ignores the branches `ci.yml`
-//! gates — otherwise both fire on the same PR and burn runner minutes — except
-//! `milestone/**`, which the fleet's milestone-filter check requires every
-//! quality workflow to cover.
+//! `cargo-quality.yml` is the single home of fmt + clippy and runs on every PR
+//! base; `ci.yml`'s `quality` job must not repeat them. A required check whose
+//! workflow skips `Develop` never reports, which blocks every PR into it.
 
 use std::path::Path;
 
@@ -69,33 +67,150 @@ fn the_filter_parser_reads_both_list_forms() {
     assert_eq!(pull_request_filter("on:\n  push:\n", "branches"), None);
 }
 
+/// Required status checks of the `Develop` ruleset (22325798). Keep in step
+/// with the ruleset: a context listed there but missing here goes unchecked.
+const REQUIRED_CONTEXTS: &[&str] = &[
+    "Cargo Format and Clippy",
+    "Generate SBOM",
+    "Gitleaks Secrets Detection",
+    "Markdown Lint",
+    "Quality Checks",
+    "Shell Script Quality",
+];
+
+/// Every `(file name, body)` under `.github/workflows`.
+fn all_workflows() -> Vec<(String, String)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.github/workflows");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .map(|entry| entry.expect("workflow dir entry").file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".yml") || name.ends_with(".yaml"))
+        .collect();
+    names.sort();
+    names
+        .into_iter()
+        .map(|n| {
+            let body = workflow(&n);
+            (n, body)
+        })
+        .collect()
+}
+
+/// Whether a GitHub branch-filter pattern matches `branch`. Handles the forms
+/// these workflows use: exact names, `**`, and a trailing `*` / `**` glob.
+fn pattern_matches(pattern: &str, branch: &str) -> bool {
+    if pattern == "**" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix("**") {
+        return branch.starts_with(prefix);
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return branch.starts_with(prefix) && !branch[prefix.len()..].contains('/');
+    }
+    pattern == branch
+}
+
+/// Whether the workflow's `pull_request` trigger fires for PRs into `base`.
+fn pull_request_runs_on(body: &str, base: &str) -> bool {
+    if !body.lines().any(|l| l.trim() == "pull_request:") {
+        return false;
+    }
+    let included = pull_request_filter(body, "branches")
+        .is_none_or(|b| b.iter().any(|p| pattern_matches(p, base)));
+    let ignored = pull_request_filter(body, "branches-ignore")
+        .is_some_and(|b| b.iter().any(|p| pattern_matches(p, base)));
+    included && !ignored
+}
+
+/// Whether the workflow's `pull_request` trigger has a path filter, which
+/// skips the run (and so the required check) on some PRs.
+fn pull_request_has_path_filter(body: &str) -> bool {
+    pull_request_filter(body, "paths").is_some()
+        || pull_request_filter(body, "paths-ignore").is_some()
+}
+
 #[test]
-fn cargo_quality_skips_exactly_the_branches_ci_already_gates() {
+fn the_branch_matcher_follows_github_globs() {
+    assert!(pattern_matches("**", "milestone/x"));
+    assert!(pattern_matches("*", "Develop"));
+    assert!(!pattern_matches("*", "milestone/x"));
+    assert!(pattern_matches("milestone/**", "milestone/x/y"));
+    assert!(!pattern_matches("milestone/*", "milestone/x/y"));
+    assert!(pattern_matches("Develop", "Develop"));
+    assert!(!pattern_matches("Develop", "Developer"));
+    let skips = "on:\n  pull_request:\n    branches-ignore: [Develop]\n";
+    assert!(!pull_request_runs_on(skips, "Develop"));
+    assert!(pull_request_runs_on(skips, "feature"));
+    assert!(!pull_request_runs_on("on:\n  push:\n", "Develop"));
+    assert!(pull_request_runs_on("on:\n  pull_request:\n", "Develop"));
+    assert!(pull_request_has_path_filter(
+        "on:\n  pull_request:\n    paths: [\"src/**\"]\n"
+    ));
+}
+
+#[test]
+fn every_required_check_reports_on_develop_prs() {
+    let bodies = all_workflows();
+    for context in REQUIRED_CONTEXTS {
+        let job = format!("name: {context}");
+        let owners: Vec<&(String, String)> = bodies
+            .iter()
+            .filter(|(_, body)| body.lines().any(|l| l.trim() == job))
+            .collect();
+        assert!(
+            !owners.is_empty(),
+            "required status check {context:?} has no job in .github/workflows — it can \
+             never report, so every PR into Develop is blocked"
+        );
+        for (file, body) in owners {
+            assert!(
+                pull_request_runs_on(body, "Develop"),
+                "{file} defines required status check {context:?} but its pull_request \
+                 trigger skips Develop — the check never reports and blocks every PR into \
+                 Develop (PR #247)"
+            );
+            assert!(
+                !pull_request_has_path_filter(body),
+                "{file} defines required status check {context:?} but filters \
+                 pull_request by path — PRs outside the filter never get the check"
+            );
+        }
+    }
+}
+
+#[test]
+fn cargo_quality_runs_on_every_base_ci_gates() {
     let ci = pull_request_filter(&workflow("ci.yml"), "branches")
         .expect("ci.yml must scope its pull_request trigger with `branches:`");
     let quality = workflow("cargo-quality.yml");
-    assert_eq!(
-        pull_request_filter(&quality, "branches"),
-        None,
-        "cargo-quality.yml must not list `branches:` — every base ci.yml does not gate needs \
-         fmt/clippy coverage, so scope it with `branches-ignore:` instead (Issue #243)"
+    for base in ci.iter().map(|b| b.replace("**", "x").replace('*', "x")) {
+        assert!(
+            pull_request_runs_on(&quality, &base),
+            "cargo-quality.yml must run on PRs into {base:?}: it is the only fmt/clippy \
+             gate, and `Cargo Format and Clippy` is a required check (Issue #243)"
+        );
+    }
+    assert!(
+        pull_request_runs_on(&quality, "feature/x"),
+        "cargo-quality.yml must also cover bases ci.yml does not gate (Issue #66)"
     );
-    let mut ignored = pull_request_filter(&quality, "branches-ignore").expect(
-        "cargo-quality.yml must ignore the branches ci.yml's quality job already gates, or \
-         both run fmt + clippy on the same PR (Issue #243)",
-    );
-    // The fleet's milestone-filter rule requires every quality workflow to run on
-    // milestone PRs, so only ci.yml's non-milestone bases may be ignored.
-    let mut gated: Vec<String> = ci
-        .into_iter()
-        .filter(|b| !b.starts_with("milestone/"))
-        .collect();
-    ignored.sort();
-    gated.sort();
-    assert_eq!(
-        ignored, gated,
-        "cargo-quality.yml's branches-ignore must match ci.yml's non-milestone branches \
-         exactly: a branch in ci.yml only is gated twice, a branch in branches-ignore only is \
-         not gated at all, and an ignored milestone/** base breaks the milestone-filter rule"
-    );
+}
+
+#[test]
+fn ci_quality_job_does_not_repeat_fmt_or_clippy() {
+    let ci = workflow("ci.yml");
+    for needle in ["cargo fmt", "cargo clippy"] {
+        let hit = ci
+            .lines()
+            .enumerate()
+            .find(|(_, l)| !l.trim_start().starts_with('#') && l.contains(needle));
+        assert!(
+            hit.is_none(),
+            ".github/workflows/ci.yml:{}: runs `{needle}`, which cargo-quality.yml already \
+             runs on every PR — the duplicate burns runner minutes (Issue #243)",
+            hit.map(|(i, _)| i + 1).unwrap_or(0)
+        );
+    }
 }

@@ -50,8 +50,6 @@ jobs:
 
       - name: Set up the Rust toolchain
         uses: ./.github/actions/setup-rust-workspace
-        with:
-          components: rustfmt, clippy
 
       - name: Cache dependencies
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
@@ -71,16 +69,8 @@ jobs:
       - name: cargo deny
         run: cargo deny check
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run linter
-        run: |
-          set -euo pipefail
-          cargo clippy --workspace --all-targets --all-features -- \
-            -D warnings \
-            -D clippy::filter_next \
-            -D clippy::collapsible_if
+      # fmt + clippy live in cargo-quality.yml alone, which runs on every PR
+      # base, so they run once per PR rather than twice (Issue #243).
 
       - name: Build workspace
         run: cargo build --workspace
