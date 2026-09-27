@@ -331,7 +331,7 @@ stays at zero rather than absorbing the whole sweep.
 Ockham builds against the NEAT-AI-core release its pin names, which the
 `version-increment` job moves to the latest release on every PR, so these tests
 are also the fleet's detector for a core pruning regression: a rewrite that starts
-refusing a shape shows up as a blocked visit on a fixture in the `cargo-quality`
+refusing a shape shows up as a blocked visit on a fixture in the `CI`
 workflow rather than as a stalled sweep on a live creature.
 
 ## Where to read the breakdown

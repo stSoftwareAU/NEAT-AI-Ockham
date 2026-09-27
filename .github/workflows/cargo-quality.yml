@@ -2,14 +2,14 @@ name: Cargo Quality
 
 # Standalone Cargo Format and Clippy workflow (Issue #66).
 #
-# Why a dedicated workflow when ci.yml already runs fmt + clippy?
-#   * ci.yml only triggers on pushes/PRs against `Develop`. This workflow
-#     fires on PRs against ANY branch (`branches: ["**"]`), so feature
-#     branches and stacked PRs targeting non-Develop bases also get fmt
-#     and clippy coverage. `**` is used rather than `*` because GitHub's
-#     `*` glob does not match across `/`, so `["*"]` would silently skip
-#     milestone/<slug> sub-issue PRs (Issue #392); `**` matches nested
-#     branch names too.
+# Why a dedicated workflow?
+#   * It is the ONE place fmt + clippy run on a PR, whatever the base. ci.yml's
+#     `quality` job no longer repeats them, so a PR runs them once (Issue #243).
+#   * It must run on every base, `Develop` included: the `Develop` ruleset
+#     lists `Cargo Format and Clippy` as a required status check, and a
+#     required check that never reports blocks every PR. `**` also satisfies
+#     the fleet's milestone-filter check (BP-MILESTONE-FILTER).
+#     `ockham/tests/workflow_overlap.rs` enforces both.
 #   * Keeps a small, fast, single-purpose gate that is cheap to re-run
 #     when iterating on style or lint fixes.
 #
@@ -23,6 +23,8 @@ name: Cargo Quality
 
 on:
   pull_request:
+    # "**" not "*": a single star does not match "/", so milestone/<slug>
+    # PRs would skip this required check.
     branches: ["**"]
   workflow_dispatch:
 
