@@ -93,8 +93,8 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
-  --version) printf 'rustc 1.98.0 (test shim)\n' ;;
-  -vV) printf 'rustc 1.98.0 (test shim)\nhost: x86_64-unknown-linux-gnu\n' ;;
+  --version) printf 'rustc 1.99.0 (test shim)\n' ;;
+  -vV) printf 'rustc 1.99.0 (test shim)\nhost: x86_64-unknown-linux-gnu\n' ;;
   *) echo "UNEXPECTED rustc: $*" >&2; exit 98 ;;
 esac
 EOF

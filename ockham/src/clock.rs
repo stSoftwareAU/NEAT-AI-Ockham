@@ -80,12 +80,12 @@ impl ManualClock {
     /// silent fault this clock exists to remove.
     pub fn advance(&self, by: Duration) {
         let ns = u64::try_from(by.as_nanos()).unwrap_or(u64::MAX);
-        let _ =
-            self.state
-                .advanced_ns
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    Some(current.saturating_add(ns))
-                });
+        let _ = self
+            .state
+            .advanced_ns
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.saturating_add(ns))
+            });
     }
 
     /// How far this clock has been advanced.
