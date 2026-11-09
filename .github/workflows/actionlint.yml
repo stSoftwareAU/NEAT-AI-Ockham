@@ -70,9 +70,24 @@ jobs:
       - name: Install actionlint
         run: |
           set -euo pipefail
-          curl -fsSL -o download-actionlint.bash \
+          curl -fsSL --retry 3 --retry-all-errors -o download-actionlint.bash \
             "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash"
-          bash download-actionlint.bash "${ACTIONLINT_VERSION}"
+          # The release download occasionally returns a short non-gzip body
+          # (PR #259: 92 bytes), which fails tar extraction; retry, then fail loud.
+          installed=0
+          for attempt in 1 2 3; do
+            if bash download-actionlint.bash "${ACTIONLINT_VERSION}"; then
+              installed=1
+              break
+            fi
+            echo "actionlint download attempt ${attempt} failed" >&2
+            rm -f actionlint actionlint_*.tar.gz
+            if [[ "${attempt}" -lt 3 ]]; then sleep $((attempt * 5)); fi
+          done
+          if [[ "${installed}" -ne 1 ]]; then
+            echo "::error::actionlint ${ACTIONLINT_VERSION} could not be downloaded after 3 attempts" >&2
+            exit 1
+          fi
           echo "${PWD}" >> "${GITHUB_PATH}"
 
       - name: Run actionlint
