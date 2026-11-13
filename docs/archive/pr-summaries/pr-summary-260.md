@@ -154,14 +154,22 @@ flowchart LR
   declaring this experiment successful; fixture-only tests are not
   experimental evidence — reviewer: partial — reason: no run over 20 elite
   parents has been done, because the elite manifest and the
-  training/validation corpora are not in this execution environment. The
-  report labels runs over fewer than 20 parents `fixture-only`, and nothing
-  here declares success.
+  training/validation corpora are not in this execution environment. A
+  second search in the completion-check run also found no elite manifest,
+  no corpora and no `rust_scorer` binary on this host. The report labels
+  runs over fewer than 20 parents `fixture-only`, and nothing here declares
+  success. Outstanding: an operator with the private elites runs
+  `bench-additivity` over a 20-parent manifest and keeps the report outside
+  the repository.
 - **missing** — A negative outcome is documented and optional code is
   removed if it does not earn its maintenance cost — reviewer: partial —
   reason: there is no outcome until the representative run exists. The
   policy is in `docs/additivity-experiment.md` § Status, and the report keeps
-  every case where random or current beats cached output.
+  every case where random or current beats cached output. The harness is
+  deliberately not removed now: removing it before a representative run
+  would decide the experiment without evidence. Outstanding: if the 20-elite
+  run is negative, record the finding in that § Status and delete
+  `ockham/src/additivity/`, the `bench-additivity` subcommand and its tests.
 - **unrequested** — manifest bounds (1–64 parents, ≤ 32 seeds, ≤ 8 budgets,
   `auditPool` 2–64, `decisionRule` ≤ 2000 characters, 1 MiB manifest cap) —
   reviewer: unrequested — reason: trust-boundary input validation that keeps
