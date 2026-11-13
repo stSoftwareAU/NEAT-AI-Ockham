@@ -21,6 +21,9 @@
 //! **refused at load**, rather than read column-by-column against a schema that
 //! has since moved.
 
+/// Pairwise logistic fits for the opt-in controlled ordering experiment.
+pub mod pairwise;
+
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
