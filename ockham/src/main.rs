@@ -3,11 +3,15 @@
 //! Issue #2: load the immutable incumbent, copy it, and score a full-corpus
 //! baseline. Pruning lands in later issues; this binary must not prune yet.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use neat_ai_ockham::additivity::bench::run_bench;
+use neat_ai_ockham::additivity::manifest::BenchManifest;
+use neat_ai_ockham::clock::SystemClock;
 use neat_ai_ockham::config::{
     DEFAULT_CANDIDATE_COUNT, DEFAULT_MAX_CONSECUTIVE_SCORER_FAILURES, DEFAULT_MIN_IMPROVEMENT,
     DEFAULT_ORDERING, DEFAULT_SCREEN_SAMPLE_RATE, DEFAULT_SCREEN_THRESHOLD,
@@ -211,10 +215,34 @@ enum Command {
         #[arg(long, default_value_t = DEFAULT_MIN_IMPROVEMENT)]
         min_improvement: f64,
     },
+    /// Opt-in offline experiment: cached single-cut outputs as a bundle ranker (#260).
+    ///
+    /// Disabled in ordinary runs. It never accepts or publishes a creature: the
+    /// full-corpus scorer stays the only acceptance authority, and predictions
+    /// only order what gets scored. Writes the report JSON to `--out`.
+    BenchAdditivity {
+        /// Benchmark manifest JSON (see docs/additivity-experiment.md).
+        manifest: PathBuf,
+        /// Where to write the report JSON.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(Command::BenchAdditivity { manifest, out }) = &cli.command {
+        return match bench_additivity(manifest, out) {
+            Ok(summary) => {
+                println!("{summary}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if let Some(Command::TrainOrdering {
         logs,
         out,
@@ -378,6 +406,31 @@ fn main() -> ExitCode {
 /// reproducible from the inputs alone — no RNG, no shuffle, no seed to carry.
 /// `0` trains and evaluates on the same rows and labels the report `train`, so
 /// an optimistic number is never presented as a held-out one.
+/// Run the additivity benchmark and write its report (#260).
+///
+/// Returns the one-line JSON summary printed to stdout.
+fn bench_additivity(manifest_path: &Path, out: &Path) -> Result<String, String> {
+    let manifest = BenchManifest::load(manifest_path)?;
+    let scorer = ExternalScorer {
+        binary: manifest.scorer.binary.clone(),
+        extra_args: manifest.scorer.args.clone(),
+    };
+    let workspace = manifest.cache_dir.join("workspace");
+    let report = run_bench(&manifest, &scorer, &SystemClock, &workspace)?;
+    let json = serde_json::to_string_pretty(&report)
+        .map_err(|e| format!("cannot serialise report: {e}"))?;
+    if let Some(dir) = out.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(dir).map_err(|e| format!("'{}': {e}", dir.display()))?;
+    }
+    fs::write(out, format!("{json}\n")).map_err(|e| format!("'{}': {e}", out.display()))?;
+    Ok(serde_json::json!({
+        "report": out.display().to_string(),
+        "rows": report.rows.len(),
+        "representative": report.representative,
+    })
+    .to_string())
+}
+
 fn train_ordering(
     logs: &[PathBuf],
     out: &Path,
