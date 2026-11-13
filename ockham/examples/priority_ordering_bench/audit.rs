@@ -236,7 +236,7 @@ pub fn collect_pool(
     }
     let stamp = RunStamp {
         host: "ordering-experiment".into(),
-        corpus_identity: task.corpus_sha256.clone(),
+        corpus_identity: task.corpus_identity.clone(),
         creature_checksum: parent.checksum.clone(),
         ordering: "random-audit".into(),
         seed,
@@ -442,10 +442,14 @@ pub fn load_history(m: &Manifest, task: &Task) -> Result<History, String> {
         loading_ms: 0,
     };
     let mut seen = std::collections::BTreeSet::new();
-    for row in records {
+    for mut row in records {
         if row.unix_secs >= m.historical_cutoff_unix {
             history.future += 1;
             continue;
+        }
+        // Earlier v1 audits wrote the full digest in the cache-identity field.
+        if row.ordering == "random-audit" && row.corpus_identity == task.corpus_sha256 {
+            row.corpus_identity.clone_from(&task.corpus_identity);
         }
         if row.creature_checksum != task.parent_sha256
             || row.corpus_identity != task.corpus_identity

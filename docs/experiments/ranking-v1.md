@@ -61,6 +61,14 @@ candidate are refused; curate one pre-target observation per candidate.
 `acquisitionMs` records the measured historical scoring/preparation cost; zero
 means no recorded charge, not proof that acquisition was free.
 
+Audit rows with neuron features embed ordinary `CandidateRecord` telemetry. Its
+`corpusIdentity` uses the manifest's corpus cache identity, so those records can
+be exported as source history for a later, independently partitioned experiment.
+The historical loader also reads earlier v1 `random-audit` records that used the
+manifest's full corpus SHA-256 in that field, normalising them in memory to the
+cache identity. Other ordering names do not receive this compatibility conversion;
+the log digest, parent checksum and remaining provenance checks still apply.
+
 Calibration uses different lineages **and** corpus/task versions from validation,
 within a declared target family. Thus this v1 adaptation uses an earlier or
 related target version, not labels from the untouched validation task itself.

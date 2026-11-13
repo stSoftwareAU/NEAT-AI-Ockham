@@ -221,6 +221,34 @@ fn audit_scores_sampled_losers_individually_and_preserves_parent() {
         assert_eq!(row.failure, None);
     }
     assert_eq!(std::fs::read_to_string(&parent).unwrap(), text);
+    let records: Vec<_> = pool
+        .rows
+        .iter()
+        .filter_map(|row| row.telemetry.clone())
+        .collect();
+    assert!(!records.is_empty());
+    assert!(
+        records
+            .iter()
+            .all(|row| row.corpus_identity == m.tasks[1].corpus_identity)
+    );
+    let history_path = tmp.path().join("audit-history.jsonl");
+    neat_ai_ockham::telemetry::append(&history_path, &records).unwrap();
+    let mut source = m.tasks[1].clone();
+    source.split = manifest::Split::Source;
+    source.history = Some(manifest::HistorySpec {
+        path: history_path.clone(),
+        sha256: hash_file(&history_path).unwrap(),
+        acquisition_ms: 1,
+    });
+    let mut later = m.clone();
+    later.historical_cutoff_unix = records.iter().map(|row| row.unix_secs).max().unwrap() + 1;
+    let history = audit::load_history(&later, &source).unwrap();
+    assert_eq!(history.records.len(), records.len());
+    for row in &history.records {
+        assert_eq!(row.corpus_identity, source.corpus_identity);
+        assert_eq!(row.full_delta, Some(0.6 - 0.5));
+    }
     let bad = audit::collect_pool(
         &neat_ai_ockham::SystemClock,
         &m,
@@ -628,6 +656,54 @@ fn historical_loader_never_labels_unscored_or_future_records() {
             .unwrap_err()
             .contains("provenance")
     );
+}
+
+#[test]
+fn historical_loader_normalises_legacy_audit_identity_and_rejects_other_corpora() {
+    let mut m = manifest();
+    let mut row = artificial_audit(&m).histories.remove(0).records.remove(0);
+    let tmp = tempfile::tempdir().unwrap();
+    for (index, identity, ordering, accepted) in [
+        (0, m.tasks[0].corpus_identity.clone(), "random", true),
+        (1, m.tasks[0].corpus_sha256.clone(), "random-audit", true),
+        (2, "unrelated-corpus".into(), "random-audit", false),
+        (3, m.tasks[0].corpus_sha256.clone(), "random", false),
+    ] {
+        row.corpus_identity = identity;
+        row.ordering = ordering.into();
+        let path = tmp.path().join(format!("history-{index}.jsonl"));
+        neat_ai_ockham::telemetry::append(&path, std::slice::from_ref(&row)).unwrap();
+        let spec = m.tasks[0].history.as_mut().unwrap();
+        spec.path = path.clone();
+        spec.sha256 = hash_file(&path).unwrap();
+        let result = audit::load_history(&m, &m.tasks[0]);
+        if accepted {
+            let history = result.unwrap();
+            assert_eq!(history.records.len(), 1);
+            assert_eq!(
+                history.records[0].corpus_identity,
+                m.tasks[0].corpus_identity
+            );
+            assert_eq!(history.records[0].full_delta, row.full_delta);
+            let mut a = artificial_audit(&m);
+            a.histories = vec![history];
+            let output =
+                serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap())
+                    .unwrap();
+            assert!(
+                output["trials"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["strategy"] == "transfer-pairwise" && t["sourceObserved"] == 1)
+            );
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                "historical parent/corpus provenance mismatch"
+            );
+        }
+    }
 }
 
 #[test]
