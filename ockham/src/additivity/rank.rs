@@ -550,7 +550,17 @@ mod tests {
         assert!(audit(&[0, 0, 1, 2], &TRUTH, None, &NO_GAIN, 0.0, 2).is_err());
         assert!(audit(&[0, 1, 2], &TRUTH, None, &NO_GAIN, 0.0, 2).is_err());
         assert!(audit(&[0, 1, 2, 4], &TRUTH, None, &NO_GAIN, 0.0, 2).is_err());
-        assert!(audit(&[0, 1, 2, 3], &[0.1, f64::NAN, 0.2, 0.3], None, &NO_GAIN, 0.0, 2).is_err());
+        assert!(
+            audit(
+                &[0, 1, 2, 3],
+                &[0.1, f64::NAN, 0.2, 0.3],
+                None,
+                &NO_GAIN,
+                0.0,
+                2
+            )
+            .is_err()
+        );
     }
 
     #[test]

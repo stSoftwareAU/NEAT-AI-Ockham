@@ -126,7 +126,8 @@ impl DirectoryScorer for MisreportingScorer {
         training_dir: &Path,
         mode: ScorerMode,
     ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
-        let mut results = FaithfulScorer::new().score_directory(creature_dir, training_dir, mode)?;
+        let mut results =
+            FaithfulScorer::new().score_directory(creature_dir, training_dir, mode)?;
         for result in results.values_mut() {
             result.cost_name = Some(self.cost.to_string());
         }
@@ -372,8 +373,14 @@ fn a_scorer_reporting_another_cost_fails_the_run_naming_it() {
 
     let err = run_bench(&manifest, &scorer, &SystemClock, &workspace).unwrap_err();
 
-    assert!(err.contains("MAE"), "error must name the reported cost: {err}");
-    assert!(err.contains("MSE"), "error must name the declared cost: {err}");
+    assert!(
+        err.contains("MAE"),
+        "error must name the reported cost: {err}"
+    );
+    assert!(
+        err.contains("MSE"),
+        "error must name the declared cost: {err}"
+    );
 }
 
 #[test]

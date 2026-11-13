@@ -679,7 +679,11 @@ mod tests {
 
         for name in ["nan", "inf"] {
             assert!(!entry_dir(tmp.path()).join(format!("{name}.f32")).exists());
-            assert!(!entry_dir(tmp.path()).join(format!("{name}.f32.tmp")).exists());
+            assert!(
+                !entry_dir(tmp.path())
+                    .join(format!("{name}.f32.tmp"))
+                    .exists()
+            );
             assert!(!cache.has(name));
         }
         assert_eq!(cache.used_bytes(), 0);

@@ -33,8 +33,8 @@ use crate::clock::Clock;
 use crate::corpus::{CorpusInfo, RecordChunk, RecordRange, corpus_info, for_each_selected_chunk};
 use crate::incumbent::{Incumbent, load_incumbent, sha256_hex};
 use crate::ordering::SplitMix64;
-use crate::prune::{GroupMember, prune_hidden_group};
 use crate::promote::{BundleMember, bundle_plans};
+use crate::prune::{GroupMember, prune_hidden_group};
 use crate::scorer::{DirectoryScorer, ScoreResult, ScorerMode, check_finite};
 use crate::stats::{
     DEFAULT_CHUNK_RECORDS, DEFAULT_SAMPLE_RECORDS, SampleSpec, compute_activation_stats,
@@ -409,7 +409,8 @@ impl<'a> ParentRun<'a> {
         let mut singles_ms = 0;
         for member in &hidden_members {
             let started = clock.now();
-            let proposal = prune_hidden_group(&run.incumbent.creature, std::slice::from_ref(member));
+            let proposal =
+                prune_hidden_group(&run.incumbent.creature, std::slice::from_ref(member));
             singles_ms += clock.ms_since(started);
             match proposal {
                 Ok(candidate) => run.add_single(member, candidate.creature)?,
@@ -720,10 +721,12 @@ impl<'a> ParentRun<'a> {
             let ranking_ms = clock.ms_since(started);
             // `predicts()` is true only for the two predictor arms, so the `_`
             // branch is the additive one.
-            let predicted: Option<&[Option<f64>]> = arm.predicts().then(|| match arm {
-                Arm::CachedOutput => cached.as_slice(),
-                _ => additive.as_slice(),
-            });
+            let predicted: Option<&[Option<f64>]> =
+                arm.predicts().then_some(if arm == Arm::CachedOutput {
+                    cached.as_slice()
+                } else {
+                    additive.as_slice()
+                });
             let metrics: AuditMetrics = rank::audit(
                 &ranking,
                 &truth,

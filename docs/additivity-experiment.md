@@ -36,9 +36,9 @@ additive logit predictors.
 flowchart TD
     M[Manifest: parents, corpora, scorer, budgets, seeds, decision rule] --> L[Load and validate, MSE only]
     L --> P[For each parent: baseline via establish_baseline]
-    P --> S[Activation stats, default sample, cached under cache_dir/stats]
+    P --> S[Activation stats, default sample, computed fresh each run]
     S --> C[Deterministic audit core: ceil core_fraction x records]
-    C --> K[Cache key: parent, dataset digest, ranges, cut semantics, scorer, cost, versions]
+    C --> K[Cache key: parent, dataset digest, ranges, cut semantics, stats digest, scorer, cost, versions]
     K --> E[Singles: prune_hidden_group per hidden neuron, refusals recorded]
     E --> O[Cache entries: targets, y0, one per proposable single, chunk by chunk]
     O --> R[For each budget and seed: pool of distinct bundles]
@@ -93,19 +93,19 @@ unknown fields are refused.
 | `budgets` | no | 1 to 8 strictly ascending fractions in (0, 1]. Default `[0.1, 0.2, 0.3, 0.4]`. A budget `b` removes `ceil(b × hidden neurons)`. |
 | `auditPool` | yes | 2 to 64 bundles per (parent, budget, seed). |
 | `fullEvaluations` | yes | Per-arm full-scorer budget `E`, between 1 and `auditPool`. |
-| `topK` | no | Top-ranked bundles counted by top-k recall. Default `3`. |
+| `topK` | no | Audit recall depth: the top-ranked bundles per arm counted by top-k recall. It does not bound full scoring; `fullEvaluations` does. Default `3`. |
 | `minImprovement` | yes | Non-negative promotion threshold used by the audit. |
 | `decisionRule` | yes | Predeclared adoption rule, echoed verbatim. At most 2000 characters. |
-| `limits.maxCacheBytes` | yes | Hard byte cap on the output cache. |
+| `limits.maxCacheBytes` | yes | Byte cap on each output-cache key directory (one per parent and key). Invalidated directories are not deleted, so the cache root as a whole is not capped. |
 | `limits.chunkRecords` | yes | Records per streamed chunk, between 1 and 1,000,000. |
-| `cacheDir` | yes | Root of the cache, the stats cache and the scoring workspace. |
+| `cacheDir` | yes | Root of the output cache (`outputs/`) and the scoring workspace (`workspace/`). No stats cache or learnings file is written. |
 
 The decision rule is written before the run and echoed into the report. Change
 it only by writing a new manifest.
 
 ## Running
 
-```bash
+```sh
 neat_ai_ockham bench-additivity manifest.json --out report.json
 ```
 
@@ -120,10 +120,14 @@ pipeline against an in-test faithful scorer.
 Every arm ranks the same pool of unique materialised bundles. Ockham's ranked
 prefix is always pool position 0.
 
-- **current**: Ockham's own order. The pool's first `k` bundles are the top
-  `k` eligible singles, ranked by single improvement `L0 − Li` descending, ties
-  by UUID, unestimated singles last. Later pool entries are seeded draws in
-  rank order. The arm keeps the emission order unchanged.
+- **current**: Ockham's ranked prefix first, then the remaining pool bundles in
+  emission order. The ranked prefix is the top `k` singles of the all-winners
+  plan that `promote::bundle_plans` emits: every proposable single with delta
+  `L0 − Li`, sorted descending, ties by UUID, unestimated singles last. The
+  remaining pool bundles are the seeded draws, in the order they were emitted.
+  In an ordinary run, Ockham's member deltas come from scorer screening. The
+  bench gives every arm the same core-sample deltas, so the comparison isolates
+  ordering.
 - **additiveLoss** (diagnostic only): ranks by `−Σ(Li − L0)`. It is reported
   to compare against the cached prediction and never selects anything on its
   own.
@@ -136,10 +140,12 @@ Each arm sends its top `E` picks to a separate full-scorer call. The selected
 bundle is the best full score among those picks, ties to the lower pool index.
 The prediction orders the picks; it never chooses the winner.
 
-Predicted improvements are loss units, while the audit compares truth in score
-units (`1 − error − penalty`). The two agree only approximately, because the
-score also subtracts the structural penalty. The audit's `minImprovement` test
-applies to whichever units the arm predicts in.
+Predicted improvements are core loss reductions `L0 − loss`, in MSE units. The
+promotion audit compares each prediction with the bundle's full-corpus error
+reduction, `parent full error − bundle full error`, in the same units. So
+`minImprovement` tests error, not score: the score also subtracts the structural
+penalty, which the promotion audit does not use. The ranking metrics (Spearman,
+top-k recall, regret) use full-corpus score truth.
 
 ## Cache
 
@@ -149,7 +155,8 @@ planned with `SampleSpec::with_max_records`, identical for every arm and seed.
 
 Entries are `targets`, `y0` (the parent's outputs) and one `cut-<digest>` per
 proposable single (the single child's outputs, with the single's activation
-mean folded in).
+mean folded in). The activation means are measured fresh on every run, with the
+default sample, and never read from a stats cache.
 
 ### Key
 
@@ -164,14 +171,19 @@ changes whenever any of these change:
 - input and output widths;
 - cut semantics: `prune_hidden_group` single member, mean fold from the stats
   sample tag;
+- stats digest: a SHA-256 over the ordered `(uuid, mean)` list handed to the
+  pruning step for every hidden neuron, with a missing mean kept distinct from
+  any present one;
 - the pinned `neat-core` line;
 - the Ockham crate version;
 - scorer identity and arguments;
 - cost function name.
 
 A changed record inside the audit core therefore opens a new directory and
-rebuilds. An existing key file must match exactly, or the cache refuses to
-open it.
+rebuilds. A changed activation mean, however it came about, changes the stats
+digest and so opens a new directory too. An existing key file must match
+exactly, or the cache refuses to open it. A `key.json` over 64 KiB is refused
+before it is read.
 
 ### Invalidation and rejections
 
@@ -188,9 +200,11 @@ If `targets` or `y0` cannot be cached, every estimate for that parent is
 
 ## Resource bounds
 
-- RAM is bounded by one cache entry plus fixed chunk buffers, never by
-  neurons × records × outputs. The reported `ramBoundBytes` is
-  `chunkRecords × 4 × (inputs + outputs + 4 × outputs) + coreRecords × outputs
+- RAM is one cache entry accumulator, fixed chunk buffers, at most `auditPool`
+  materialised bundle creatures, and the parent. It is never neurons × records ×
+  outputs. Each single's creature is dropped as soon as its cache entry is built.
+  The reported `ramBoundBytes` covers the accumulator and chunk buffers only,
+  as `chunkRecords × 4 × (inputs + outputs + 4 × outputs) + coreRecords × outputs
   × 4` bytes: the corpus stream's input and target chunks, four bench-owned
   chunk buffers, and one predicted-output accumulator the size of a cache entry.
 - At most three cache files are open at once. A cached-output estimate holds
@@ -198,8 +212,10 @@ If `targets` or `y0` cannot be cached, every estimate for that parent is
   next member. The targets reader is opened last, alone. Each reader holds one
   chunk at a time.
 - The accumulator is allocated once per parent and reused for every bundle.
-- Disk use is capped by `maxCacheBytes`. A write that would exceed it is
-  refused before any byte is written.
+- Each output-cache key directory is capped at `maxCacheBytes`. A write that
+  would take that directory over the cap is refused before any byte is written.
+  Directories of invalidated keys are not deleted, so the cache root as a whole
+  is not capped.
 
 ## Cost
 
@@ -220,7 +236,8 @@ The report is JSON in camelCase.
   rejections by kind, bytes used, peak bytes, `maxCacheBytes`,
   `ramBoundBytes`, build and read milliseconds).
 - `rows[]`, one per (parent, budget, seed): `requestedRemovals`, `feasible`,
-  `reason`, `eligible`, `poolRequested`, `poolSize`, `duplicates`, `refused`,
+  `reason`, `eligible`, `poolRequested`, `poolSize` (materialised pool bundles,
+  duplicates included; refusals are counted only in `refused`), `duplicates`, `refused`,
   `bundles[]`, `audit` (full calls, record evaluations, milliseconds),
   `poolMaterialisationMs`, `estimateMs`, `validationParentScore` and `arms[]`.
 - Each `bundles[]` entry records members, `overlaps` (members an earlier
@@ -231,8 +248,12 @@ The report is JSON in camelCase.
 - Each `arms[]` entry records `ranking`, the audit metrics (spearman, top-k
   recall, regret, false promotions and rejections, unestimated count), `picks`
   with their search scores, the selected bundle and its score, error, penalty,
-  delta, regret and reductions, `validationScore`, `fullScorerCalls`,
-  `recordEvaluations` and `costMs`.
+  delta, regret and reductions, `validationScore`, `fullScorerCalls` (always 1),
+  `recordEvaluations`, `costMs` and `inferenceLatencyMs`. For the two predictor
+  arms, `inferenceLatencyMs` is the measured prediction time (the additive sum
+  for additiveLoss, the streamed prediction for cachedOutput) divided by the
+  bundles that had an estimate. It is `null` for the other arms, and when no
+  bundle had an estimate.
 - `aggregate[]`, one per budget: distributions over feasible rows of spearman,
   top-k recall, regret, selected delta and total milliseconds per arm, plus
   paired comparisons of cachedOutput against current and against random over
@@ -256,11 +277,12 @@ reported apart from the economics.
 - `ranking`: ordering the pool.
 - `scorer`: the arm's own search call.
 
-Random is charged pool materialisation only. Its pool still needs the
-proposability screen, but that screen is shared and is reported at parent
-level, so random's cost is understated by exactly that screen. The record
-evaluations for singles count core records times the entries built, and they
-are charged the same way.
+Random is charged pool materialisation, its own ranking and its own scorer
+call. It is not charged single proposals, cache builds or cache reads. Its pool
+still needs the proposability screen, but that screen is shared and is reported
+at parent level, so random's cost is understated by exactly that screen. The
+record evaluations for singles count core records times the entries built, and
+they are charged to the arms that rank by singles.
 
 ## Status
 
