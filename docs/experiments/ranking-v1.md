@@ -225,9 +225,23 @@ Timings on this shared host are indicative, never correctness assertions.
 ## Current finding
 
 [The availability record](ranking-v1-availability.json) records an inconclusive
-result. No representative corpus, independently grouped history manifest or
-real scorer was supplied or found in the standard local locations inspected.
-No representative feasibility pilot, frozen validation manifest or validation
-comparison has been run. Deterministic fixtures validate implementation
-contracts only; they do not demonstrate an optimisation benefit. The private
-research run remains outstanding under the same issue.
+result, rechecked on 13 November 2026. The mounted checkout area contained no
+corpus `.bin` files, `candidates.jsonl` histories or `experiments.jsonl` journals
+in the search outside hidden directories and build/dependency caches. No
+representative parent/corpus/history manifest was supplied. This is a local
+availability finding, not a statement about data on other hosts.
+
+A temporary checkout of the real scorer at revision
+`742c5df30fc98ece3afe784be1aca18f925b47b3` built successfully. Its ordinary and
+bounded adapters agreed on full and sampled scores for the 32-record identity
+fixture (32 full records; one record at rate 0.05, phase 7). The availability
+record includes code, lockfile, executable and toolchain identities and commands
+to reproduce that integration check. The build used the development profile;
+these observations do not measure representative ranking performance.
+
+Preflight with the built scorer and illustrative template task paths exited 1,
+reporting 14 unavailable parent/corpus tasks. No representative feasibility
+pilot, frozen validation manifest or validation comparison has been run.
+Deterministic fixtures validate implementation contracts only; they do not
+demonstrate an optimisation benefit. The private research run remains
+outstanding under the same issue. Operational rejection remains disabled.
