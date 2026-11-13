@@ -1,0 +1,40 @@
+{
+  "formatVersion": 1,
+  "protocol": "ockham-ranking-v1",
+  "phase": "availability",
+  "observedDateUtc": "2026-11-13",
+  "scope": "single workspace, supplied inputs and standard local scorer/corpus locations",
+  "status": "inconclusive",
+  "representativeBenefitDemonstrated": false,
+  "representativeResearchExecuted": false,
+  "pilotExecuted": false,
+  "manifestFrozen": false,
+  "observations": {
+    "suppliedResearchManifest": false,
+    "scorerOnPath": false,
+    "scorerEnvironmentVariable": false,
+    "standardSiblingScorerCheckout": false,
+    "representativeCorpusFound": false,
+    "independentHistoryGroupsVerified": 0
+  },
+  "validation": {
+    "fullyScoredPools": 0,
+    "independentGroups": 0,
+    "trials": 0,
+    "top5PercentRecall": null,
+    "falseRejection": null,
+    "confidenceIntervals": null,
+    "totalResearchCostMs": null
+  },
+  "methodSourcesVerified": [
+    "https://arxiv.org/html/2610.15307v1#S3",
+    "https://arxiv.org/html/2610.32179v1#S4"
+  ],
+  "remaining": [
+    "Representative calibration-only feasibility pilot",
+    "Frozen private manifest identifying independent historical and validation groups",
+    "Individual full scoring of representative random audit pools",
+    "Paired representative validation and cost/uncertainty results"
+  ],
+  "fixtureEvidenceIsRepresentative": false
+}

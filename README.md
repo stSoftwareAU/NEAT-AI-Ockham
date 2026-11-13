@@ -2252,6 +2252,16 @@ chose, so a uuid it ranks last is never tried, never logged and never gets to
 change its own mind. Reserved exploration is what stops that loop closing — and
 every strategy still visits every eligible neuron eventually.
 
+### Controlled proxy/history comparison
+
+The existing benchmark also has an opt-in `--experiment` mode for randomly
+selected, individually full-scored audit pools, isolated source/calibration/
+validation groups and paired ranking comparisons. It reads private manifests
+and never applies a candidate. See [the versioned research protocol](docs/experiments/ranking-v1.md)
+for the calibration pilot, freeze, reproducible commands, cost accounting and
+current availability finding. The simulated benchmark below remains separate
+from representative evidence.
+
 ### Benchmark
 
 ```bash

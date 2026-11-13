@@ -110,6 +110,16 @@ fn missing_scores_are_unlabelled_and_cold_calibration_is_empty() {
     let mut scored = rows.clone();
     scored[0].full_delta = Some(0.3);
     assert_eq!(evaluation::labelled(&scored).unwrap()[0].score, 0.3);
+    let mut invalid = scored.clone();
+    invalid[0].features = Some(neat_ai_ockham::CandidateFeatures {
+        variance: f64::NAN,
+        ..Default::default()
+    });
+    assert!(
+        evaluation::labelled(&invalid)
+            .unwrap_err()
+            .contains("non-finite")
+    );
     scored[0].sample_delta = None;
     assert!(
         evaluation::labelled(&scored)
@@ -252,6 +262,92 @@ fn audit_scores_sampled_losers_individually_and_preserves_parent() {
             .unwrap()
             .contains("deliberate missing binary")
     }));
+    struct AlteredJudge {
+        inner: Judge,
+        clock: Option<neat_ai_ockham::ManualClock>,
+        non_finite: bool,
+    }
+    impl DirectoryScorer for AlteredJudge {
+        fn identity(&self) -> String {
+            self.inner.identity()
+        }
+        fn score_directory(
+            &self,
+            dir: &Path,
+            corpus: &Path,
+            mode: ScorerMode,
+        ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
+            let mut result = self.inner.score_directory(dir, corpus, mode)?;
+            if let Some(clock) = &self.clock {
+                if !mode.is_authoritative() {
+                    clock.advance(std::time::Duration::from_millis(60_000));
+                }
+            } else if mode.is_authoritative() {
+                if self.non_finite {
+                    result.get_mut("candidate").unwrap().score = f64::NAN;
+                } else {
+                    result.get_mut("candidate").unwrap().record_count = 31;
+                }
+            }
+            Ok(result)
+        }
+    }
+    for non_finite in [false, true] {
+        let altered = AlteredJudge {
+            inner: Judge {
+                omit_candidate: false,
+                fail: false,
+            },
+            clock: None,
+            non_finite,
+        };
+        let bad = audit::collect_pool(
+            &neat_ai_ockham::SystemClock,
+            &m,
+            &m.tasks[1],
+            7,
+            40,
+            &altered,
+            &tmp.path().join(format!("invalid-{non_finite}")),
+        )
+        .unwrap();
+        let scored: Vec<_> = bad.rows.iter().filter(|r| r.kind.is_some()).collect();
+        assert!(!scored.is_empty());
+        for row in scored {
+            assert!(row.sample_delta.is_some());
+            assert_eq!(row.full_delta, None);
+            assert!(row.failure.as_ref().unwrap().contains(if non_finite {
+                "non-finite"
+            } else {
+                "incomplete scoring"
+            }));
+        }
+    }
+    let clock = neat_ai_ockham::ManualClock::new();
+    let spending = AlteredJudge {
+        inner: Judge {
+            omit_candidate: false,
+            fail: false,
+        },
+        clock: Some(clock.clone()),
+        non_finite: false,
+    };
+    let limited = audit::collect_pool(
+        &clock,
+        &m,
+        &m.tasks[1],
+        7,
+        40,
+        &spending,
+        &tmp.path().join("limited"),
+    )
+    .unwrap();
+    assert!(limited.rows.iter().any(|r| r.sample_delta.is_some()));
+    assert!(
+        limited.rows.iter().filter(|r| r.kind.is_some()).all(
+            |r| r.full_delta.is_none() && r.failure.as_ref().unwrap().contains("compute limit")
+        )
+    );
     let mut changed = m.clone();
     changed.tasks[1].parent_sha256 = "f".repeat(64);
     assert!(
@@ -348,6 +444,7 @@ fn artificial_audit(m: &Manifest) -> audit::Audit {
         format_version: 1,
         manifest_sha256: m.identity().unwrap(),
         freeze_sha256: Some("b".repeat(64)),
+        executable_sha256: hash_file(&std::env::current_exe().unwrap()).unwrap(),
         phase: "audit".into(),
         pools: m
             .tasks
@@ -358,6 +455,7 @@ fn artificial_audit(m: &Manifest) -> audit::Audit {
             task: task.id.clone(),
             records,
             unlabelled: 2,
+            missing_partial: 0,
             future: 1,
             acquisition_ms: 400,
             loading_ms: 1,
@@ -369,7 +467,9 @@ fn artificial_audit(m: &Manifest) -> audit::Audit {
 
 #[test]
 fn comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted() {
-    let m = manifest();
+    let mut m = manifest();
+    // Seed 43 gives the random cold start a true top candidate in this pool.
+    m.seeds = vec![7, 43];
     let a = artificial_audit(&m);
     let output =
         serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64)).unwrap()).unwrap();
@@ -408,6 +508,24 @@ fn comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted(
                 .as_array()
                 .is_some_and(|v| !v.is_empty())
     }));
+    for cal in [0, 4] {
+        let empty_history = |strategy: &str| {
+            trials
+                .iter()
+                .find(|t| {
+                    t["strategy"] == strategy
+                        && t["seed"] == 7
+                        && t["calibrationBudget"] == cal
+                        && t["historyFraction"] == 0.0
+                        && t["evaluationBudget"] == 5
+                })
+                .unwrap()
+        };
+        assert_eq!(
+            empty_history("target-pairwise")["modelSha256"],
+            empty_history("transfer-pairwise")["modelSha256"]
+        );
+    }
     let mut changed = a.clone();
     for pool in changed.pools.iter_mut().filter(|p| p.task == "val") {
         for row in &mut pool.rows {
@@ -524,4 +642,30 @@ fn confidence_intervals_resample_independent_groups() {
     let result = evaluation::cluster_interval(&values, 200).unwrap();
     assert!(result[0] < 0.0 && result[1] > 0.0);
     assert_eq!(evaluation::cluster_interval(&values, 200), Some(result));
+}
+
+#[test]
+fn uncertainty_keeps_related_families_and_lineages_together_transitively() {
+    let m = manifest();
+    let mut tasks = Vec::new();
+    for i in 0..4 {
+        let mut t = m.tasks[2].clone();
+        t.id = format!("task-{i}");
+        t.family = format!("family-{i}");
+        t.lineage = format!("lineage-{i}");
+        t.corpus_version = format!("version-{i}");
+        t.parent_sha256 = format!("{i:064x}");
+        t.corpus_sha256 = format!("{:064x}", i + 100);
+        tasks.push(t);
+    }
+    tasks[1].family = tasks[0].family.clone();
+    tasks[2].lineage = tasks[1].lineage.clone();
+    let groups = evaluation::groups(&tasks.iter().collect::<Vec<_>>());
+    assert_eq!(
+        groups,
+        vec![
+            vec!["task-2".to_string(), "task-1".into(), "task-0".into()],
+            vec!["task-3".into()]
+        ]
+    );
 }

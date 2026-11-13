@@ -180,6 +180,8 @@ fn freeze(m: &Manifest, pilot: &audit::Audit, pilot_sha256: String) -> Result<Fr
     if pilot.format_version != 1
         || pilot.phase != "pilot"
         || pilot.manifest_sha256 != m.identity()?
+        || pilot.executable_sha256
+            != hash_file(&std::env::current_exe().map_err(|e| e.to_string())?)?
         || pilot.freeze_sha256.is_some()
         || !pilot.failures.is_empty()
     {
@@ -233,12 +235,14 @@ fn freeze(m: &Manifest, pilot: &audit::Audit, pilot_sha256: String) -> Result<Fr
         format_version: 1,
         manifest_sha256: m.identity()?,
         pilot_sha256,
+        executable_sha256: hash_file(&std::env::current_exe().map_err(|e| e.to_string())?)?,
         audit_visits,
     })
 }
 
 fn check_freeze(m: &Manifest, frozen: &Freeze) -> Result<(), String> {
-    if frozen.format_version != 1
+    if frozen.executable_sha256 != hash_file(&std::env::current_exe().map_err(|e| e.to_string())?)?
+        || frozen.format_version != 1
         || frozen.manifest_sha256 != m.identity()?
         || (frozen.pilot_sha256.len() != 64
             || !frozen.pilot_sha256.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -251,10 +255,9 @@ fn check_freeze(m: &Manifest, frozen: &Freeze) -> Result<(), String> {
 }
 
 pub fn main() -> Result<(), String> {
-    let cli = Cli::try_parse_from(
+    let cli = Cli::parse_from(
         std::iter::once("priority_ordering_bench".to_string()).chain(std::env::args().skip(2)),
-    )
-    .map_err(|e| e.to_string())?;
+    );
     match cli.command {
         Phase::Check { manifest, out } => {
             let m: Manifest = read(&manifest)?;
@@ -284,7 +287,7 @@ pub fn main() -> Result<(), String> {
             m.validate()?;
             let scorer = runtime(&m)?;
             std::fs::create_dir(&out).map_err(|e| e.to_string())?;
-            let result = audit::collect(&m, true, m.pilot_visits, None, &scorer, &out);
+            let result = audit::collect(&m, true, m.pilot_visits, None, &scorer, &out)?;
             write(&out.join("pilot.json"), &result)?;
             if !result.failures.is_empty() {
                 return Err("calibration pilot failed; see pilot.json".into());
@@ -319,7 +322,7 @@ pub fn main() -> Result<(), String> {
                 Some(hash_file(&freeze)?),
                 &scorer,
                 &out,
-            );
+            )?;
             write(&out.join("audit.json"), &result)?;
             if !result.failures.is_empty() {
                 return Err("audit incomplete; see audit.json".into());
@@ -337,6 +340,9 @@ pub fn main() -> Result<(), String> {
             let frozen: Freeze = read(&freeze)?;
             check_freeze(&m, &frozen)?;
             let collected: audit::Audit = read(&audit)?;
+            if collected.executable_sha256 != frozen.executable_sha256 {
+                return Err("audit executable mismatch".into());
+            }
             if collected.freeze_sha256.as_deref() != Some(hash_file(&freeze)?.as_str()) {
                 return Err("audit/freeze digest mismatch".into());
             }

@@ -3,8 +3,8 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
-use neat_ai_ockham::features::{self, CandidateFeatures, PriorEvidence};
 use neat_ai_ockham::clock::{Clock, SystemClock};
+use neat_ai_ockham::features::{self, CandidateFeatures, PriorEvidence};
 use neat_ai_ockham::incumbent::{load_incumbent, sha256_hex};
 use neat_ai_ockham::scorer::{DirectoryScorer, ScorerMode};
 use neat_ai_ockham::stats::{SampleSpec, compute_activation_stats};
@@ -60,6 +60,7 @@ pub struct History {
     pub task: String,
     pub records: Vec<CandidateRecord>,
     pub unlabelled: usize,
+    pub missing_partial: usize,
     pub future: usize,
     pub acquisition_ms: u64,
     pub loading_ms: u64,
@@ -71,6 +72,7 @@ pub struct Audit {
     pub format_version: u32,
     pub manifest_sha256: String,
     pub freeze_sha256: Option<String>,
+    pub executable_sha256: String,
     pub phase: String,
     pub pools: Vec<Pool>,
     pub histories: Vec<History>,
@@ -348,12 +350,13 @@ pub fn collect(
     freeze_sha256: Option<String>,
     scorer: &impl DirectoryScorer,
     dir: &Path,
-) -> Audit {
+) -> Result<Audit, String> {
     let start = Instant::now();
     let mut audit = Audit {
         format_version: 1,
-        manifest_sha256: m.identity().expect("serialisable manifest"),
+        manifest_sha256: m.identity()?,
         freeze_sha256,
+        executable_sha256: super::hash_file(&std::env::current_exe().map_err(|e| e.to_string())?)?,
         phase: if pilot { "pilot" } else { "audit" }.into(),
         pools: Vec::new(),
         histories: Vec::new(),
@@ -381,9 +384,11 @@ pub fn collect(
                     .push(format!("{} seed {seed}: maxRunMs exhausted", task.id));
                 continue;
             }
+            let mut bounded = m.clone();
+            bounded.max_task_ms = m.max_task_ms.min(m.max_run_ms.saturating_sub(ms(start)));
             match collect_pool(
                 &SystemClock,
-                m,
+                &bounded,
                 task,
                 *seed,
                 visits,
@@ -405,7 +410,7 @@ pub fn collect(
         }
     }
     audit.elapsed_ms = ms(start);
-    audit
+    Ok(audit)
 }
 
 pub fn load_history(m: &Manifest, task: &Task) -> Result<History, String> {
@@ -426,6 +431,7 @@ pub fn load_history(m: &Manifest, task: &Task) -> Result<History, String> {
         task: task.id.clone(),
         records: Vec::new(),
         unlabelled: 0,
+        missing_partial: 0,
         future: 0,
         acquisition_ms: spec.acquisition_ms,
         loading_ms: 0,
@@ -441,8 +447,12 @@ pub fn load_history(m: &Manifest, task: &Task) -> Result<History, String> {
         {
             return Err("historical parent/corpus provenance mismatch".into());
         }
-        if row.full_delta.is_none() || row.sample_delta.is_none() {
+        if row.full_delta.is_none() {
             history.unlabelled += 1;
+            continue;
+        }
+        if row.sample_delta.is_none() {
+            history.missing_partial += 1;
             continue;
         }
         if row.full_delta.is_some_and(|v| !v.is_finite())

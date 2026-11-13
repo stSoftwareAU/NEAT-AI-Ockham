@@ -101,6 +101,8 @@ impl Manifest {
             || self.minimum_complete_pool > self.audit_visits_ceiling
             || self.minimum_independent_groups < 3
             || self.max_task_ms == 0
+            || self.max_task_ms > 86_400_000
+            || self.max_run_ms > 604_800_000
             || self.max_run_ms < self.max_task_ms
             || self.scorer_timeout_secs == 0
             || self.scorer_timeout_secs > 600
@@ -239,5 +241,6 @@ pub struct Freeze {
     pub format_version: u32,
     pub manifest_sha256: String,
     pub pilot_sha256: String,
+    pub executable_sha256: String,
     pub audit_visits: usize,
 }

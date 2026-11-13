@@ -137,9 +137,7 @@ impl ExternalScorer {
             extra_args: Vec::new(),
         }
     }
-}
 
-impl ExternalScorer {
     /// Run through an explicitly selected `timeout`/`gtimeout` executable.
     /// Argument order and output validation are shared with ordinary scoring.
     pub fn score_directory_bounded(

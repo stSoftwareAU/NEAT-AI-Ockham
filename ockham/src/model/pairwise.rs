@@ -282,6 +282,18 @@ mod tests {
         let a = PairwiseModel::fit(&[source.clone()], &source, 2, config).unwrap();
         let b = PairwiseModel::fit(&[source.clone()], &source, 2, config).unwrap();
         assert_eq!(a, b);
+        let shifted: Vec<_> = source
+            .iter()
+            .map(|r| RankedRow {
+                features: r.features.clone(),
+                score: r.score * 1000.0 + 2.0,
+            })
+            .collect();
+        let shifted_model = PairwiseModel::fit(&[shifted], &source, 2, config).unwrap();
+        assert_eq!(
+            a, shifted_model,
+            "only relative labels enter the pairwise loss"
+        );
         assert!(a.score(&[5.0, 1.0]).unwrap() > a.score(&[0.0, 1.0]).unwrap());
     }
 }

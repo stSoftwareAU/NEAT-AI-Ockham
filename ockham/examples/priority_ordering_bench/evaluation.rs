@@ -184,9 +184,9 @@ fn sample_ms(pool: &Pool) -> u64 {
     pool.rows.iter().map(|r| r.sample_ms).sum()
 }
 
-// Every connected lineage/corpus component is one independent bootstrap unit.
-// Tasks sharing either dimension stay together even through transitive overlap.
-fn groups(tasks: &[&Task]) -> Vec<Vec<String>> {
+// Every connected lineage/task-family/corpus component is one bootstrap unit.
+// Tasks sharing a grouping dimension stay together through transitive overlap.
+pub(super) fn groups(tasks: &[&Task]) -> Vec<Vec<String>> {
     let mut groups: Vec<Vec<&Task>> = Vec::new();
     for task in tasks {
         let mut combined = vec![*task];
@@ -195,6 +195,7 @@ fn groups(tasks: &[&Task]) -> Vec<Vec<String>> {
                 g.iter().any(|a| {
                     combined.iter().any(|b| {
                         a.lineage == b.lineage
+                            || a.family == b.family
                             || a.corpus_version == b.corpus_version
                             || a.corpus_sha256 == b.corpus_sha256
                             || a.parent_sha256 == b.parent_sha256
@@ -242,7 +243,7 @@ pub fn cluster_interval(values: &[Vec<f64>], replicates: usize) -> Option<[f64; 
 
 fn ordered(rows: &[AuditRow], keys: &[f64], seed: u64) -> Vec<usize> {
     let ids: Vec<_> = rows.iter().map(|r| r.visit.clone()).collect();
-    let ties = seeded_order(&ids, seed);
+    let ties = seeded_order(&ids, seed ^ 0xa11d_17c0_2610_0001);
     let tie_keys: BTreeMap<_, _> = ties.iter().enumerate().map(|(i, id)| (id, i)).collect();
     let mut order: Vec<_> = (0..rows.len()).collect();
     order.sort_by(|a, b| {
@@ -275,7 +276,11 @@ fn historical_rows(
         .iter()
         .map(|r| format!("{}:{}:{:?}", r.kind, r.uuid, r.merged_with))
         .collect();
-    let order = seeded_order(&ids, seed);
+    let domain = sha256_hex(format!("history-v1:{}:{seed}", task.id).as_bytes());
+    let order = seeded_order(
+        &ids,
+        u64::from_str_radix(&domain[..16], 16).expect("SHA hex"),
+    );
     if ids.iter().collect::<BTreeSet<_>>().len() != ids.len() {
         return Err("duplicate historical candidate".into());
     }
@@ -338,7 +343,7 @@ pub fn evaluate(m: &Manifest, audit: &Audit, audit_sha256: String) -> Result<Rep
     }
     let start = Instant::now();
     let mut report=Report {format_version:1,manifest_sha256:m.identity()?,audit_sha256,feature_schema:feature_names(),verdict:"inconclusive".into(),
-        reasons:audit.failures.clone(),audit_cost_ms:audit.elapsed_ms,evaluation_cost_ms:0,history_coverage:audit.histories.iter().map(|h|serde_json::json!({"task":h.task,"labelled":h.records.len(),"unlabelled":h.unlabelled,"futureExcluded":h.future,"acquisitionMs":h.acquisition_ms,"loadingMs":h.loading_ms})).collect(),coverage:Vec::new(),trials:Vec::new(),paired:Vec::new()};
+        reasons:audit.failures.clone(),audit_cost_ms:audit.elapsed_ms,evaluation_cost_ms:0,history_coverage:audit.histories.iter().map(|h|serde_json::json!({"task":h.task,"labelled":h.records.len(),"unlabelled":h.unlabelled,"missingPartial":h.missing_partial,"futureExcluded":h.future,"acquisitionMs":h.acquisition_ms,"loadingMs":h.loading_ms})).collect(),coverage:Vec::new(),trials:Vec::new(),paired:Vec::new()};
     let mut seen = BTreeSet::new();
     for pool in &audit.pools {
         if !m.tasks.iter().any(|t| t.id == pool.task)
@@ -392,6 +397,11 @@ pub fn evaluate(m: &Manifest, audit: &Audit, audit_sha256: String) -> Result<Rep
                 pool.task, pool.seed
             ));
         }
+    }
+    if audit.histories.iter().any(|h| h.acquisition_ms == 0) {
+        report
+            .reasons
+            .push("historical acquisition cost is unknown (zero charge)".into());
     }
     let expected_histories = m.tasks.iter().filter(|t| t.split == Split::Source).count();
     if audit.histories.len() != expected_histories
