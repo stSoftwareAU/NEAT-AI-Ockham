@@ -511,3 +511,82 @@ fn bench_additivity_refuses_a_non_mse_cost_and_lists_itself_in_help() {
         "--help must list the command: {text}"
     );
 }
+
+/// Hidden neurons in the wide parent: at a 40 % budget that removes five.
+const WIDE_HIDDEN: usize = 12;
+
+/// Twelve hidden neurons, each wired from both inputs and into the output.
+fn wide_parent() -> CreatureExport {
+    let mut neurons = Vec::new();
+    let mut synapses = Vec::new();
+    for h in 0..WIDE_HIDDEN {
+        let uuid = format!("h{h}");
+        neurons.push(neuron(
+            "hidden",
+            &uuid,
+            0.02 * h as f64 - 0.1,
+            Some("LOGISTIC"),
+        ));
+        synapses.push(synapse("input-0", &uuid, 0.3 + 0.05 * h as f64));
+        synapses.push(synapse("input-1", &uuid, -0.2 + 0.04 * h as f64));
+        synapses.push(synapse(
+            &uuid,
+            "output-0",
+            (WIDE_HIDDEN - h) as f64 / WIDE_HIDDEN as f64,
+        ));
+    }
+    neurons.push(neuron("output", "output-0", 0.0, Some("IDENTITY")));
+    creature(INPUTS, OUTPUTS, neurons, synapses)
+}
+
+#[test]
+fn every_many_member_bundle_gets_a_cached_output_estimate_with_ample_limits() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.path("parents/elite.json"),
+        creature_to_json(&wide_parent()).unwrap(),
+    )
+    .unwrap();
+    let manifest = fixture.manifest(vec![0.4], vec![7], 1 << 30);
+
+    let report = run(&manifest);
+
+    let parent = &report.parents[0];
+    assert_eq!(parent.hidden_neurons, WIDE_HIDDEN);
+    assert_eq!(
+        parent.estimated, parent.proposable,
+        "every single must have a loss"
+    );
+    assert!(
+        parent.cache.rejections.is_empty(),
+        "ample limits must not reject anything, got {:?}",
+        parent.cache.rejections
+    );
+    assert!(
+        parent.cache.ram_bound_bytes >= parent.core_records * OUTPUTS as u64 * 4,
+        "the RAM bound must cover one cache entry"
+    );
+    let mut many_member_bundles = 0;
+    for row in report.rows.iter().filter(|r| r.feasible) {
+        for bundle in row.bundles.iter().filter(|b| b.members.len() >= 5) {
+            many_member_bundles += 1;
+            assert!(
+                bundle.cached_output.is_some(),
+                "bundle {} with {} members must be estimated",
+                bundle.index,
+                bundle.members.len()
+            );
+        }
+        let unestimated = row
+            .arms
+            .iter()
+            .filter(|a| a.arm == Arm::CachedOutput)
+            .map(|a| a.audit.unestimated)
+            .sum::<usize>();
+        assert_eq!(unestimated, 0, "cachedOutput must estimate every bundle");
+    }
+    assert!(
+        many_member_bundles > 0,
+        "the fixture must produce bundles of five or more members"
+    );
+}

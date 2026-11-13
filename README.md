@@ -2672,13 +2672,22 @@ Ockham commit messages use the **🪒** prefix.
 
 ## Additivity experiment (opt-in)
 
-`bench-additivity` is an opt-in offline experiment for issue #260. It asks whether cached single-cut output deltas can rank pruning bundles more economically than Ockham's current selection. It is disabled in ordinary runs, changes no default, and never accepts or publishes a creature: predictions only order candidates, and the full-corpus scorer stays the only acceptance authority.
+`bench-additivity` is an opt-in offline experiment for issue #260. It asks
+whether cached single-cut output deltas can rank pruning bundles more
+economically than Ockham's current selection. It is disabled in ordinary runs,
+changes no default, and never accepts or publishes a creature: predictions only
+order candidates, and the full-corpus scorer stays the only acceptance
+authority.
 
-```
+```sh
 neat_ai_ockham bench-additivity <manifest.json> --out <report.json>
 ```
 
-The manifest predeclares the parents, corpora, scorer, budgets, seeds and decision rule. Runs over fewer than 20 parents are fixture-only and are not evidence. See [`docs/additivity-experiment.md`](docs/additivity-experiment.md) for the manifest, the four arms, the cache, the resource bounds and the report fields.
+The manifest predeclares the parents, corpora, scorer, budgets, seeds and
+decision rule. Runs over fewer than 20 parents are fixture-only and are not
+evidence. See [`docs/additivity-experiment.md`](docs/additivity-experiment.md)
+for the manifest, the four arms, the cache, the resource bounds and the report
+fields.
 
 ## Repository layout
 

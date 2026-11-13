@@ -90,7 +90,8 @@ pub struct CacheStats {
     pub peak_bytes: u64,
     /// Configured byte limit.
     pub max_cache_bytes: u64,
-    /// Fixed chunk-buffer bound the bench allocates, in bytes.
+    /// Bound on the bench's own RAM, in bytes: one cache entry's accumulator
+    /// plus fixed chunk buffers.
     pub ram_bound_bytes: u64,
     /// Wall time spent building entries, in milliseconds.
     pub build_ms: u64,

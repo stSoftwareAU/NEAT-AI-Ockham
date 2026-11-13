@@ -188,14 +188,18 @@ If `targets` or `y0` cannot be cached, every estimate for that parent is
 
 ## Resource bounds
 
-- Memory is bounded by the chunk size, never by neurons × records × outputs.
-  The reported `ramBoundBytes` is `chunkRecords × 4 × (inputs + outputs +
-  4 × outputs)` bytes: the corpus stream's input and target chunks plus four
-  bench-owned chunk buffers.
+- RAM is bounded by one cache entry plus fixed chunk buffers, never by
+  neurons × records × outputs. The reported `ramBoundBytes` is
+  `chunkRecords × 4 × (inputs + outputs + 4 × outputs) + coreRecords × outputs
+  × 4` bytes: the corpus stream's input and target chunks, four bench-owned
+  chunk buffers, and one predicted-output accumulator the size of a cache entry.
+- At most three cache files are open at once. A cached-output estimate holds
+  two at most: one bundle member and a fresh `y0` reader, both closed before the
+  next member. The targets reader is opened last, alone. Each reader holds one
+  chunk at a time.
+- The accumulator is allocated once per parent and reused for every bundle.
 - Disk use is capped by `maxCacheBytes`. A write that would exceed it is
   refused before any byte is written.
-- Readers and writers hold one chunk each. An accumulator buffer is reused for
-  every bundle.
 
 ## Cost
 

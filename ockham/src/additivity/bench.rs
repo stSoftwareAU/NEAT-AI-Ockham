@@ -59,7 +59,9 @@ const RANDOM_STREAM: u64 = 2;
 /// Random draws allowed per wanted pool bundle before the pool is left short.
 const ATTEMPTS_PER_BUNDLE: usize = 50;
 
-/// Chunk-sized buffers the bench keeps alive (targets, y0, accumulator, member).
+/// Chunk-sized buffers the bench keeps alive (targets, y0, build buffer, member).
+/// The predicted-output accumulator is one cache entry, counted apart in
+/// `ram_bound_bytes`.
 const SCRATCH_BUFFERS: u64 = 4;
 
 /// Run the additivity benchmark described by `manifest`.
@@ -190,12 +192,16 @@ struct Tally {
     read_ms: u64,
 }
 
-/// The four chunk-sized buffers reused for every read and build.
+/// The four chunk-sized buffers reused for every read and build, and the
+/// predicted-output accumulator reused for every bundle.
 struct Scratch {
     target: Vec<f32>,
     y0: Vec<f32>,
     acc: Vec<f32>,
     member: Vec<f32>,
+    /// One cache entry's values, `core_records × outputs`. Grown once per parent
+    /// on first use, then reused.
+    predicted: Vec<f32>,
 }
 
 impl Scratch {
@@ -205,6 +211,7 @@ impl Scratch {
             y0: vec![0.0; len],
             acc: vec![0.0; len],
             member: vec![0.0; len],
+            predicted: Vec::new(),
         }
     }
 }
@@ -909,6 +916,8 @@ impl<'a> ParentRun<'a> {
             self.data.cfg.num_outputs as u64,
         );
         let chunk = self.data.chunk as u64;
+        // The predicted-output accumulator is one cache entry: core records × outputs × 4.
+        let accumulator = self.data.core_records * no * 4;
         ParentReport {
             parent: self.name.clone(),
             parent_checksum: self.incumbent.checksum.clone(),
@@ -929,7 +938,7 @@ impl<'a> ParentRun<'a> {
                 bytes_used: self.store.cache.used_bytes(),
                 peak_bytes: tally.peak_bytes,
                 max_cache_bytes: self.manifest.limits.max_cache_bytes,
-                ram_bound_bytes: chunk * 4 * (ni + no + SCRATCH_BUFFERS * no),
+                ram_bound_bytes: chunk * 4 * (ni + no + SCRATCH_BUFFERS * no) + accumulator,
                 build_ms: tally.build_ms,
                 read_ms: tally.read_ms,
             },
@@ -1137,37 +1146,60 @@ fn read_predicted_loss(
     result
 }
 
+/// Mean loss of `y0 + Σ(yi − y0)` against the core targets.
+///
+/// The accumulator (one cache entry's values) starts as `y0`. Each member is then
+/// folded in with its own reader and a fresh `y0` reader, both closed before the
+/// next member, so at most two entry files are open at once. Targets are streamed
+/// last. Every read is chunked, so RAM is the accumulator plus the chunk buffers.
 fn read_predicted(store: &mut Store, data: &Dataset, members: &[String]) -> Result<f64, Fault> {
     let cache = &store.cache;
-    let mut targets = cache.reader(TARGETS_ENTRY)?;
-    let mut y0 = cache.reader(Y0_ENTRY)?;
-    let mut readers = members
-        .iter()
-        .map(|name| cache.reader(name))
-        .collect::<Result<Vec<_>, _>>()?;
-    let width = data.cfg.num_outputs;
     let scratch = &mut store.scratch;
-    let mut total = LossSum::default();
-    let mut remaining = data.core_records;
-    while remaining > 0 {
-        let n = remaining.min(data.chunk as u64) as usize;
-        let len = n * width;
-        targets.read_chunk(&mut scratch.target[..len])?;
-        y0.read_chunk(&mut scratch.y0[..len])?;
-        scratch.acc[..len].copy_from_slice(&scratch.y0[..len]);
-        for reader in readers.iter_mut() {
-            reader.read_chunk(&mut scratch.member[..len])?;
+    let width = data.cfg.num_outputs;
+    {
+        let mut y0 = cache.reader(Y0_ENTRY)?;
+        scratch
+            .predicted
+            .resize(data.core_records as usize * width, 0.0);
+        for (start, n) in core_chunks(data) {
+            let span = start * width..(start + n) * width;
+            y0.read_chunk(&mut scratch.predicted[span])?;
+        }
+    }
+    for name in members {
+        let mut member = cache.reader(name)?;
+        let mut y0 = cache.reader(Y0_ENTRY)?;
+        for (start, n) in core_chunks(data) {
+            let len = n * width;
+            let span = start * width..start * width + len;
+            member.read_chunk(&mut scratch.member[..len])?;
+            y0.read_chunk(&mut scratch.y0[..len])?;
             add_delta(
-                &mut scratch.acc[..len],
+                &mut scratch.predicted[span],
                 &scratch.y0[..len],
                 &scratch.member[..len],
             )?;
         }
-        let sum = chunk_loss_sum(&scratch.target[..len], &scratch.acc[..len], width)?;
+    }
+    let mut targets = cache.reader(TARGETS_ENTRY)?;
+    let mut total = LossSum::default();
+    for (start, n) in core_chunks(data) {
+        let len = n * width;
+        let span = start * width..start * width + len;
+        targets.read_chunk(&mut scratch.target[..len])?;
+        let sum = chunk_loss_sum(&scratch.target[..len], &scratch.predicted[span], width)?;
         total.add(sum, n as u64);
-        remaining -= n as u64;
     }
     total
         .mean()
         .ok_or_else(|| Fault::Stream("audit core is empty".to_string()))
+}
+
+/// The audit core as `(first record, record count)` pairs, `chunk` records at a time.
+fn core_chunks(data: &Dataset) -> impl Iterator<Item = (usize, usize)> {
+    let total = data.core_records as usize;
+    let chunk = data.chunk;
+    (0..total)
+        .step_by(chunk)
+        .map(move |start| (start, chunk.min(total - start)))
 }
