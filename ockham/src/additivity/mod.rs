@@ -16,7 +16,7 @@
 //!
 //! The pieces are: [`manifest`] (the predeclared protocol), [`cache`] (keyed,
 //! byte-bounded single-cut outputs), [`predict`] (additive loss and output
-//! prediction), [`rank`] (arms and ranking audits) and [`bench`] (the driver
+//! prediction), [`rank`] (arms and ranking audits) and [`mod@bench`] (the driver
 //! that ties them to the existing pruning, corpus and scorer code, reporting
 //! through [`bench_report`]). The `bench-additivity` command runs it; see
 //! `docs/additivity-experiment.md`.
