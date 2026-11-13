@@ -80,8 +80,10 @@ Audit features read no learnings cache.
 
 ## Sampling, failures and coverage
 
-Candidates are selected by seeded SHA-256 priorities over the complete hidden
+Candidates are selected by seeded SHA-256 priorities over the existing complete
 neuron and synapse visit population, before feature extraction or proposal.
+This includes output-neuron visits, which the proposal engine skips; those
+generation failures remain in the coverage ledger.
 The selected visit list is then passed to the existing pruning sweep. Failed
 proposals are recorded without replacement. Every generated candidate is scored
 individually with its immutable parent as same-call baseline, on both the 5%
@@ -219,7 +221,12 @@ charged without amortisation (including fully collected calibration pools even
 when a smaller label budget is exposed). This is a conservative upper charge,
 not a measured amortised speed-up. The full audit scores losers for measurement;
 those extra validation scores are in audit cost, not charged as search queries.
-Output serialisation/writing and build time are outside these runtime totals.
+Recorded incomplete calibration pools still incur their measured collection
+cost even though their labels cannot enter fitting. Residual measured pool wall
+time outside the named scoring and feature stages is charged as preparation,
+including candidate file preparation. Early failures that produce no pool remain
+in the actual audit total and failure list; they have no per-pool strategy ledger.
+Final result serialisation/writing and build time are outside these runtime totals.
 Timings on this shared host are indicative, never correctness assertions.
 
 ## Current finding

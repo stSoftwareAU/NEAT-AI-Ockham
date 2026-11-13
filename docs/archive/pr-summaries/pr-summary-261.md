@@ -2,8 +2,11 @@
 
 Added the opt-in controlled proxy/history benchmark, retaining ordinary ordering
 and authoritative acceptance. Fixed its audit-to-history corpus identity mismatch
-and verified bounded scoring against a real scorer. Representative comparison
-results remain unavailable. Part of #261.
+and verified bounded scoring against a real scorer in earlier branch work.
+The completion retry fixes understated strategy costs: recorded incomplete
+calibration pools retain their acquisition cost, and validation preparation
+includes residual measured pool work. Representative comparison results remain
+unavailable. Part of #261.
 
 ## Spec
 
@@ -23,6 +26,9 @@ results remain unavailable. Part of #261.
   and cutoff checks remain in place; no persisted format version changes.
 - Missing representative data leaves metrics unknown and the verdict inconclusive.
   Absent measurements do not justify removing the optional ranker.
+- Charge recorded calibration work even when its incomplete labels cannot train
+  a model. Retain residual pool wall time as preparation; never charge less than
+  the sum of individually timed stages.
 - The linear adaptation and fixed composite are smaller components inspired by
   the papers, not reproductions of CAST or SHINE.
 
@@ -31,6 +37,9 @@ results remain unavailable. Part of #261.
 - The mounted checkout search found no corpus `.bin` files, candidate histories
   or experiment journals outside hidden directories and build/dependency caches.
   No representative manifest was supplied; availability on other hosts is unknown.
+  The completion retry repeated the search across `/home/vibe/auto-issue-work`,
+  excluding hidden directories, `target`, `node_modules`, `vendor` and
+  `lost+found`: all three input counts were zero, with no search errors.
 - The scorer built from public source revision
   `742c5df30fc98ece3afe784be1aca18f925b47b3` and ran successfully on fixtures.
   This was a development build on a shared aarch64 Linux host.
@@ -47,7 +56,9 @@ results remain unavailable. Part of #261.
   illustrative, not a frozen representative manifest.
 - `docs/experiments/ranking-v1-availability.json` records zero representative
   trials and null metrics, alongside fresh integration results, code/scorer/
-  lockfile/executable identities and reproducibility commands.
+  lockfile/executable identities and reproducibility commands from earlier branch
+  verification. Its separate `completionRetryVerification` records this retry's
+  input search, cost regression and fresh quality gate; it is fixture evidence.
 - Preflight with the real scorer and illustrative template paths exited 1 with
   14 unavailable parent/corpus tasks. It did not run a calibration pilot.
 - Backend/CLI only. Real scorer full and sampled results agreed through ordinary
@@ -65,17 +76,47 @@ flowchart LR
 
 ## Acceptance Criteria
 
-- **missing** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria. Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs. — reason: the template and enforcement exist, but verified representative provenance, a calibration pilot and a frozen private manifest remain unavailable.
-- **missing** — Audit a randomly selected fully scored pool to measure true top-5% recall, false rejection and cold-start/negative-transfer behaviour. — reason: representative parents, corpora and historical logs were not found; no representative pools were scored.
-- **missing** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit. — reason: reproducible infrastructure and integration evidence exist; paired representative results, uncertainty and research costs remain unmeasured.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — First inspect current code, merged work and repository instructions. Reuse existing mechanisms; if functionality already exists, this issue still owns the missing controlled comparison rather than a second implementation. — evidence: `docs/experiments/ranking-v1.md`, `ockham/examples/priority_ordering_bench/audit.rs` reuses features, Sweep and telemetry; `ockham/src/model/pairwise.rs` reuses numerical helpers — reviewer: met
+- **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance. No automatic deployment or default change. — evidence: `ockham/examples/priority_ordering_bench.rs` experiment dispatch; `ockham/examples/priority_ordering_bench/tests.rs::audit_scores_sampled_losers_individually_and_preserves_parent` — reviewer: met
+- **partial** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria. Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs. — evidence: `ockham/examples/priority_ordering_bench/manifest.rs`, `ockham/examples/priority_ordering_bench/experiment.rs::freeze`, `ockham/examples/priority_ordering_bench/tests.rs::comparison_charges_incomplete_calibration_and_unitemised_preparation` — reviewer: partial — reason: representative provenance, pilot and frozen manifest remain unavailable; build/final output costs are excluded and some shared preparation is only in actual research totals.
+- **partial** — Audit a randomly selected fully scored pool to measure true top-5% recall, false rejection and cold-start/negative-transfer behaviour. — evidence: `ockham/examples/priority_ordering_bench/audit.rs`, `ockham/examples/priority_ordering_bench/tests.rs::comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted` — reviewer: partial — reason: deterministic audit and metric contracts pass, but no representative parent/corpus/history inputs or fully scored representative pools are available.
+- **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks. Research runs are separate from routine feature CI. — evidence: `ockham/examples/priority_ordering_bench/tests.rs::comparison_charges_incomplete_calibration_and_unitemised_preparation`, 12 experiment tests and fresh `./quality.sh < /dev/null` — reviewer: met
+- **partial** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit. — evidence: `docs/experiments/ranking-v1.md`, `docs/experiments/ranking-v1.template.json`, `ockham/examples/priority_ordering_bench/evaluation.rs`, `docs/experiments/ranking-v1-availability.json` — reviewer: partial — reason: commands and result machinery exist, but the manifest remains illustrative and representative paired distributions, uncertainty, coverage and benefit/cost results remain unmeasured.
+- **partial** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs. — evidence: `docs/experiments/ranking-v1-availability.json`, protocol current finding — reviewer: partial — reason: input unavailability is recorded and no success claimed; representative maintenance-value assessment remains unmeasured.
+- **met** — Keep public implementation and fixtures application-agnostic; private corpora/results and operational integration remain private. — evidence: illustrative `docs/experiments/ranking-v1.template.json` and application-agnostic fixture tests; no private research artifacts in diff — reviewer: met
+- **met** — Leave unassigned until an implementer actively starts. `work-on` authorises the investigation, not skipping prerequisite verification. — evidence: active issue investigation, merged-work and method verification recorded in protocol — reviewer: met
+
+The Spec reviewer reviewed the issue body and base-branch diff, then re-reviewed
+the new accounting diff and tests. The three retry criteria remain partial;
+none is relabelled met.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — Standards reviewer checked the branch and retry diff against `CONTRIBUTING.md` and local Rust conventions: immutable parents, authoritative acceptance, opt-in isolation, reused mechanisms, existing version bump, cost-label separation, regression coverage and accurate protocol limits. No new dependency or interface; `git diff --check` passed.
+
+No `CODING-STANDARDS.md` exists in this repository. The reviewer explicitly
+recorded that absence and reviewed the available contributing principles;
+this does not claim review against a nonexistent document.
 
 ## Test Plan
 
-- `./quality.sh < /dev/null` passed with the built scorer explicitly configured:
+- Fresh completion-retry `./quality.sh < /dev/null` passed:
   shell contracts, spelling, Markdown, Actions lint, dependency audit, formatting,
-  all-target Clippy, workspace tests and rustdoc. Earlier passes were not used as
-  a substitute for this run.
-- `cargo test --locked --example priority_ordering_bench`: 11 passed.
+  all-target Clippy, workspace tests (707 library and 12 experiment tests) and
+  rustdoc. The real scorer is absent on this host, so its optional integration
+  test returned early. Earlier real-scorer evidence is retained separately.
+- `cargo test --locked --example priority_ordering_bench < /dev/null`: 12 passed.
+  The new `comparison_charges_incomplete_calibration_and_unitemised_preparation`
+  first failed with zero charged calibration milliseconds versus 6,000 expected,
+  then passed after the fix. It verifies incomplete labels never enter fitting,
+  residual validation preparation is charged, and the verdict stays inconclusive.
+  `cargo clippy --locked --example priority_ordering_bench -- -D warnings < /dev/null`
+  also passed.
+- Retained branch regression evidence:
   `ockham/examples/priority_ordering_bench/tests.rs` extends
   `audit_scores_sampled_losers_individually_and_preserves_parent` to export real
   audit telemetry and reload it as later history. The round trip failed with
@@ -88,8 +129,9 @@ flowchart LR
   corpora and digest-valued ordinary records receive the specific provenance error.
 - `cargo test --locked --lib model::pairwise`: three passed, covering ordering,
   adaptation, cold starts, invalid inputs and deterministic fits.
-- `cargo test --locked --test real_scorer --test bounded_scorer -- --nocapture`:
-  both passed with `NEAT_SCORER_BIN` pointing at the real binary.
+- Earlier branch `cargo test --locked --test real_scorer --test bounded_scorer -- --nocapture`:
+  both passed with `NEAT_SCORER_BIN` pointing at the real binary; this retry did
+  not repeat real scoring.
   `ockham/tests/real_scorer.rs::real_scorer_scores_the_incumbent_baseline` adds
   bounded full/sample comparisons; it pins supported behaviour already present
   before this change. `ockham/tests/bounded_scorer.rs` retains the negative
@@ -102,17 +144,23 @@ flowchart LR
   sections, CONTRIBUTING prerequisites, and the complete experiment protocol.
   Updated the protocol's data/separation and current-finding sections and its
   machine-readable availability record.
+  The retry clarifies that the visit population includes output-neuron skips,
+  documents incomplete-pool and residual cost charges, and records the remaining
+  early-failure/shared-preparation/build/final-output accounting limits.
 - Security: no new endpoint, dependency or privileged operation; argument-vector
   scorer execution and existing digest/finite-value checks retained. Staged paths
   contain no secrets or hidden files. No destructive operation or path guard added.
 
 ## Merge verification
 
-CI and independent code review are not yet verified.
+Independent Spec and Standards sub-agent reviews are complete for the retry
+diff. CI and merge status are not yet verified.
 
 ## Not performed and remaining risk
 
 Representative pilot, frozen private manifest, validation scoring and paired
 benefit/cost assessment were not performed because their inputs were unavailable.
 Actual lineage independence and historical acquisition costs remain unverified.
+Early collection failures have no per-pool strategy ledger; shared evaluation
+preparation is only in actual totals, and build/final result writing is excluded.
 macOS execution was not checked. No optimisation benefit or deployment is claimed.

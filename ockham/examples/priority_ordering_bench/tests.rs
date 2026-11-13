@@ -747,3 +747,59 @@ fn uncertainty_keeps_related_families_and_lineages_together_transitively() {
         ]
     );
 }
+
+#[test]
+fn comparison_charges_incomplete_calibration_and_unitemised_preparation() {
+    let m = manifest();
+    let mut a = artificial_audit(&m);
+    let cal = a
+        .pools
+        .iter_mut()
+        .find(|p| p.task == "cal" && p.seed == 7)
+        .unwrap();
+    cal.rows[0].full_delta = None;
+    cal.rows[0].failure = Some("full scorer failed after spending time".into());
+    // A failed pool is unusable supervision, but its acquisition is not free.
+    cal.elapsed_ms = 6_000;
+    let validation = a
+        .pools
+        .iter_mut()
+        .find(|p| p.task == "val" && p.seed == 7)
+        .unwrap();
+    // Includes candidate serialisation, directory creation and telemetry work
+    // outside the named feature/scoring stages.
+    validation.elapsed_ms = 5_000;
+    let output =
+        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
+    let trials = output["trials"].as_array().unwrap();
+    let trial = |strategy: &str, cal: usize| {
+        trials
+            .iter()
+            .find(|t| {
+                t["strategy"] == strategy
+                    && t["seed"] == 7
+                    && t["calibrationBudget"] == cal
+                    && t["historyFraction"] == 0.0
+                    && t["evaluationBudget"] == 5
+            })
+            .unwrap()
+    };
+    let target = trial("target-pairwise", 4);
+    assert_eq!(
+        target["calibrationScoringMs"], 6_000,
+        "a failed calibration pool retains its entire measured acquisition cost"
+    );
+    assert_eq!(target["calibrationObserved"], 0);
+    assert_eq!(
+        target["modelSha256"],
+        trial("target-pairwise", 0)["modelSha256"],
+        "incomplete calibration labels must not enter the fit"
+    );
+    assert_eq!(
+        target["preparationMs"], 4_522,
+        "charge residual pool work plus protocol, pilot and freeze costs"
+    );
+    assert_eq!(trial("random", 4)["calibrationScoringMs"], 0);
+    assert_eq!(trial("random", 4)["preparationMs"], 4_522);
+    assert_eq!(output["verdict"], "inconclusive");
+}

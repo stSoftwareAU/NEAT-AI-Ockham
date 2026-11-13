@@ -188,6 +188,24 @@ fn sample_ms(pool: &Pool) -> u64 {
     pool.rows.iter().map(|r| r.sample_ms).sum()
 }
 
+// Stage timers omit cohort writes, candidate serialisation and telemetry work.
+// Retain the measured residual as preparation rather than silently treating it
+// as free. Separate integer-millisecond timers can round differently, so never
+// charge less than the sum of the explicitly measured stages.
+fn pool_cost_ms(pool: &Pool) -> u64 {
+    pool.elapsed_ms.max(
+        pool.preparation_ms
+            + pool.generation_ms
+            + pool.features_ms
+            + sample_ms(pool)
+            + full_ms(pool),
+    )
+}
+
+fn preparation_ms(pool: &Pool) -> u64 {
+    pool_cost_ms(pool) - pool.features_ms - sample_ms(pool) - full_ms(pool)
+}
+
 // Every connected lineage/task-family/corpus component is one bootstrap unit.
 // Tasks sharing a grouping dimension stay together through transitive overlap.
 pub(super) fn groups(tasks: &[&Task]) -> Vec<Vec<String>> {
@@ -318,7 +336,7 @@ fn historical_rows(
         .collect()
 }
 
-fn training_pools<'a>(
+fn partition_pools<'a>(
     m: &'a Manifest,
     audit: &'a Audit,
     split: Split,
@@ -328,7 +346,7 @@ fn training_pools<'a>(
     audit
         .pools
         .iter()
-        .filter(|p| p.seed == seed && p.complete())
+        .filter(|p| p.seed == seed)
         .filter_map(|p| {
             let task = m.tasks.iter().find(|t| t.id == p.task)?;
             (task.split == split && family.is_none_or(|f| task.family == f)).then_some((task, p))
@@ -502,7 +520,7 @@ pub fn evaluate(
                 })
                 .collect::<Result<_, String>>()?;
             let calibration =
-                training_pools(m, audit, Split::Calibration, Some(&task.family), pool.seed);
+                partition_pools(m, audit, Split::Calibration, Some(&task.family), pool.seed);
             for fraction in &m.history_fractions {
                 let source_tasks = source
                     .iter()
@@ -519,6 +537,7 @@ pub fn evaluate(
                     // A single family-wide calibration budget, not one per parent.
                     let mut available: Vec<_> = calibration
                         .iter()
+                        .filter(|(_, p)| p.complete())
                         .flat_map(|(t, p)| {
                             retained(p).into_iter().map(|mut r| {
                                 r.visit = format!("{}:{}", t.id, r.visit);
@@ -632,13 +651,9 @@ pub fn evaluate(
                             let calibration_scoring_ms = if is_transfer || is_target {
                                 calibration
                                     .iter()
-                                    .map(|(_, p)| {
-                                        full_ms(p)
-                                            + sample_ms(p)
-                                            + p.preparation_ms
-                                            + p.features_ms
-                                            + p.generation_ms
-                                    })
+                                    // Failed pools cannot train a model, but
+                                    // still incurred acquisition/preparation.
+                                    .map(|(_, p)| pool_cost_ms(p))
                                     .sum()
                             } else {
                                 0
@@ -652,8 +667,7 @@ pub fn evaluate(
                             let feature_ms = if uses_features { pool.features_ms } else { 0 };
                             let search_scoring_ms =
                                 order.iter().take(*budget).map(|i| rows[*i].full_ms).sum();
-                            let preparation_ms = pool.preparation_ms
-                                + pool.generation_ms
+                            let preparation_ms = preparation_ms(pool)
                                 + audit.protocol_preparation_ms
                                 + audit.pilot_cost_ms
                                 + audit.freezing_cost_ms;
