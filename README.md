@@ -2254,7 +2254,7 @@ every strategy still visits every eligible neuron eventually.
 
 ### Controlled proxy/history comparison
 
-The existing benchmark also has an opt-in `--experiment` mode for randomly
+The existing benchmark also has an opt-in research mode for randomly
 selected, individually full-scored audit pools, isolated source/calibration/
 validation groups and paired ranking comparisons. It reads private manifests
 and never applies a candidate. See [the versioned research protocol](docs/experiments/ranking-v1.md)

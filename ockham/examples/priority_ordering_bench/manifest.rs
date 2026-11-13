@@ -32,7 +32,6 @@ pub struct Task {
     pub lineage: String,
     pub corpus_version: String,
     pub split: Split,
-    pub observed_unix: u64,
     pub parent: PathBuf,
     pub parent_sha256: String,
     pub corpus: PathBuf,
@@ -177,9 +176,6 @@ impl Manifest {
                 _ => return Err("source tasks require a digested historical log; target tasks cannot supply one".into()),
             }
             present.insert(t.split);
-            if t.split == Split::Source && t.observed_unix >= self.historical_cutoff_unix {
-                return Err(format!("{} violates historical cutoff", t.id));
-            }
             // Content identities also prevent renamed copies bypassing the split.
             for (kind, value) in [
                 ("lineage", &t.lineage),
@@ -243,4 +239,6 @@ pub struct Freeze {
     pub pilot_sha256: String,
     pub executable_sha256: String,
     pub audit_visits: usize,
+    pub pilot_cost_ms: u64,
+    pub freezing_cost_ms: u64,
 }

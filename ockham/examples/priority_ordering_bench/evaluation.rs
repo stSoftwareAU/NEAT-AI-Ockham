@@ -163,6 +163,10 @@ pub struct Report {
     verdict: String,
     reasons: Vec<String>,
     audit_cost_ms: u64,
+    pilot_cost_ms: u64,
+    freezing_cost_ms: u64,
+    historical_acquisition_ms: u64,
+    total_research_ms: u64,
     evaluation_cost_ms: u64,
     history_coverage: Vec<serde_json::Value>,
     coverage: Vec<Coverage>,
@@ -332,7 +336,12 @@ fn training_pools<'a>(
         .collect()
 }
 
-pub fn evaluate(m: &Manifest, audit: &Audit, audit_sha256: String) -> Result<Report, String> {
+pub fn evaluate(
+    m: &Manifest,
+    audit: &Audit,
+    audit_sha256: String,
+    setup_ms: u64,
+) -> Result<Report, String> {
     m.validate()?;
     if audit.format_version != 1
         || audit.phase != "audit"
@@ -342,8 +351,35 @@ pub fn evaluate(m: &Manifest, audit: &Audit, audit_sha256: String) -> Result<Rep
         return Err("audit protocol/manifest/freeze mismatch".into());
     }
     let start = Instant::now();
-    let mut report=Report {format_version:1,manifest_sha256:m.identity()?,audit_sha256,feature_schema:feature_names(),verdict:"inconclusive".into(),
-        reasons:audit.failures.clone(),audit_cost_ms:audit.elapsed_ms,evaluation_cost_ms:0,history_coverage:audit.histories.iter().map(|h|serde_json::json!({"task":h.task,"labelled":h.records.len(),"unlabelled":h.unlabelled,"missingPartial":h.missing_partial,"futureExcluded":h.future,"acquisitionMs":h.acquisition_ms,"loadingMs":h.loading_ms})).collect(),coverage:Vec::new(),trials:Vec::new(),paired:Vec::new()};
+    let history_coverage = audit
+        .histories
+        .iter()
+        .map(|h| {
+            serde_json::json!({
+                "task":h.task,"labelled":h.records.len(),"unlabelled":h.unlabelled,
+                "missingPartial":h.missing_partial,"futureExcluded":h.future,
+                "acquisitionMs":h.acquisition_ms,"loadingMs":h.loading_ms
+            })
+        })
+        .collect();
+    let mut report = Report {
+        format_version: 1,
+        manifest_sha256: m.identity()?,
+        audit_sha256,
+        feature_schema: feature_names(),
+        verdict: "inconclusive".into(),
+        reasons: audit.failures.clone(),
+        audit_cost_ms: audit.elapsed_ms,
+        pilot_cost_ms: audit.pilot_cost_ms,
+        freezing_cost_ms: audit.freezing_cost_ms,
+        historical_acquisition_ms: audit.histories.iter().map(|h| h.acquisition_ms).sum(),
+        total_research_ms: 0,
+        evaluation_cost_ms: 0,
+        history_coverage,
+        coverage: Vec::new(),
+        trials: Vec::new(),
+        paired: Vec::new(),
+    };
     let mut seen = BTreeSet::new();
     for pool in &audit.pools {
         if !m.tasks.iter().any(|t| t.id == pool.task)
@@ -474,7 +510,7 @@ pub fn evaluate(m: &Manifest, audit: &Audit, audit_sha256: String) -> Result<Rep
                     .collect::<Result<Vec<_>, _>>()?;
                 let source_count = source_tasks.iter().map(Vec::len).sum();
                 for cal_budget in &m.calibration_budgets {
-                    if ms(start) >= m.max_run_ms {
+                    if ms(start) + setup_ms >= m.max_run_ms {
                         report
                             .reasons
                             .push("evaluation compute limit exhausted".into());
@@ -616,7 +652,11 @@ pub fn evaluate(m: &Manifest, audit: &Audit, audit_sha256: String) -> Result<Rep
                             let feature_ms = if uses_features { pool.features_ms } else { 0 };
                             let search_scoring_ms =
                                 order.iter().take(*budget).map(|i| rows[*i].full_ms).sum();
-                            let preparation_ms = pool.preparation_ms + pool.generation_ms;
+                            let preparation_ms = pool.preparation_ms
+                                + pool.generation_ms
+                                + audit.protocol_preparation_ms
+                                + audit.pilot_cost_ms
+                                + audit.freezing_cost_ms;
                             let total_strategy_ms = preparation_ms
                                 + historical_scoring_ms
                                 + calibration_scoring_ms
@@ -815,6 +855,11 @@ pub fn evaluate(m: &Manifest, audit: &Audit, audit_sha256: String) -> Result<Rep
             report.reasons.push(format!("predeclared thresholds: recall={quality}, false rejection={safe}, total cost={cheap}"));
         }
     }
-    report.evaluation_cost_ms = ms(start);
+    report.evaluation_cost_ms = ms(start) + setup_ms;
+    report.total_research_ms = report.audit_cost_ms
+        + report.pilot_cost_ms
+        + report.freezing_cost_ms
+        + report.historical_acquisition_ms
+        + report.evaluation_cost_ms;
     Ok(report)
 }

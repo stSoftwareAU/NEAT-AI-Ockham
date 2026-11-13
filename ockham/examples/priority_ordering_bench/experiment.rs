@@ -122,6 +122,9 @@ impl DirectoryScorer for BoundedScorer {
 fn runtime(m: &Manifest) -> Result<BoundedScorer, String> {
     // Freeze against a clean source revision. Cargo's normal dependency tracking
     // rebuilds this example when its source or the library changes.
+    if m.historical_cutoff_unix > neat_ai_ockham::incumbent::now_unix() {
+        return Err("historical cutoff is in the future".into());
+    }
     let head = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .stdin(Stdio::null())
@@ -237,6 +240,8 @@ fn freeze(m: &Manifest, pilot: &audit::Audit, pilot_sha256: String) -> Result<Fr
         pilot_sha256,
         executable_sha256: hash_file(&std::env::current_exe().map_err(|e| e.to_string())?)?,
         audit_visits,
+        pilot_cost_ms: pilot.elapsed_ms,
+        freezing_cost_ms: 0,
     })
 }
 
@@ -258,6 +263,7 @@ pub fn main() -> Result<(), String> {
     let cli = Cli::parse_from(
         std::iter::once("priority_ordering_bench".to_string()).chain(std::env::args().skip(2)),
     );
+    let phase_start = std::time::Instant::now();
     match cli.command {
         Phase::Check { manifest, out } => {
             let m: Manifest = read(&manifest)?;
@@ -287,7 +293,10 @@ pub fn main() -> Result<(), String> {
             m.validate()?;
             let scorer = runtime(&m)?;
             std::fs::create_dir(&out).map_err(|e| e.to_string())?;
-            let result = audit::collect(&m, true, m.pilot_visits, None, &scorer, &out)?;
+            let setup_ms = audit::ms(phase_start);
+            let mut result = audit::collect(&m, true, m.pilot_visits, None, &scorer, &out)?;
+            result.protocol_preparation_ms = setup_ms;
+            result.elapsed_ms += setup_ms;
             write(&out.join("pilot.json"), &result)?;
             if !result.failures.is_empty() {
                 return Err("calibration pilot failed; see pilot.json".into());
@@ -301,7 +310,8 @@ pub fn main() -> Result<(), String> {
             let m: Manifest = read(&manifest)?;
             m.validate()?;
             runtime(&m)?;
-            let result = freeze(&m, &read(&pilot)?, hash_file(&pilot)?)?;
+            let mut result = freeze(&m, &read(&pilot)?, hash_file(&pilot)?)?;
+            result.freezing_cost_ms = audit::ms(phase_start);
             write(&out, &result)?;
         }
         Phase::Audit {
@@ -315,7 +325,8 @@ pub fn main() -> Result<(), String> {
             let frozen: Freeze = read(&freeze)?;
             check_freeze(&m, &frozen)?;
             std::fs::create_dir(&out).map_err(|e| e.to_string())?;
-            let result = audit::collect(
+            let setup_ms = audit::ms(phase_start);
+            let mut result = audit::collect(
                 &m,
                 false,
                 frozen.audit_visits,
@@ -323,6 +334,10 @@ pub fn main() -> Result<(), String> {
                 &scorer,
                 &out,
             )?;
+            result.protocol_preparation_ms = setup_ms;
+            result.elapsed_ms += setup_ms;
+            result.pilot_cost_ms = frozen.pilot_cost_ms;
+            result.freezing_cost_ms = frozen.freezing_cost_ms;
             write(&out.join("audit.json"), &result)?;
             if !result.failures.is_empty() {
                 return Err("audit incomplete; see audit.json".into());
@@ -346,7 +361,8 @@ pub fn main() -> Result<(), String> {
             if collected.freeze_sha256.as_deref() != Some(hash_file(&freeze)?.as_str()) {
                 return Err("audit/freeze digest mismatch".into());
             }
-            let result = evaluation::evaluate(&m, &collected, hash_file(&audit)?)?;
+            let result =
+                evaluation::evaluate(&m, &collected, hash_file(&audit)?, audit::ms(phase_start))?;
             write(&out, &result)?;
         }
     }

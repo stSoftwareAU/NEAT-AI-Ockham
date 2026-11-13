@@ -4,9 +4,9 @@ use serde_json::json;
 
 fn manifest() -> Manifest {
     let tasks = json!([
-      {"id":"source", "family":"family", "lineage":"l1", "corpusVersion":"v1", "split":"source", "observedUnix":90, "parent":"p1", "parentSha256":"1".repeat(64), "corpus":"c1", "corpusSha256":"4".repeat(64), "corpusIdentity":"c1", "history":{"path":"/private/history.jsonl","sha256":"7".repeat(64),"acquisitionMs":1000}},
-      {"id":"cal", "family":"family", "lineage":"l2", "corpusVersion":"v2", "split":"calibration", "observedUnix":101, "parent":"p2", "parentSha256":"2".repeat(64), "corpus":"c2", "corpusSha256":"5".repeat(64), "corpusIdentity":"c2", "history":null},
-      {"id":"val", "family":"family", "lineage":"l3", "corpusVersion":"v3", "split":"validation", "observedUnix":102, "parent":"p3", "parentSha256":"3".repeat(64), "corpus":"c3", "corpusSha256":"6".repeat(64), "corpusIdentity":"c3", "history":null}
+      {"id":"source", "family":"family", "lineage":"l1", "corpusVersion":"v1", "split":"source", "parent":"p1", "parentSha256":"1".repeat(64), "corpus":"c1", "corpusSha256":"4".repeat(64), "corpusIdentity":"c1", "history":{"path":"/private/history.jsonl","sha256":"7".repeat(64),"acquisitionMs":1000}},
+      {"id":"cal", "family":"family", "lineage":"l2", "corpusVersion":"v2", "split":"calibration", "parent":"p2", "parentSha256":"2".repeat(64), "corpus":"c2", "corpusSha256":"5".repeat(64), "corpusIdentity":"c2", "history":null},
+      {"id":"val", "family":"family", "lineage":"l3", "corpusVersion":"v3", "split":"validation", "parent":"p3", "parentSha256":"3".repeat(64), "corpus":"c3", "corpusSha256":"6".repeat(64), "corpusIdentity":"c3", "history":null}
     ]);
     serde_json::from_value(json!({
         "formatVersion": 1, "protocol": "ockham-ranking-v1", "codeRevision": "a".repeat(40),
@@ -36,11 +36,6 @@ fn split_leakage_checks_lineages_versions_and_content_not_only_names() {
             "{field}"
         );
     }
-    let mut late = base.clone();
-    late.tasks[0].observed_unix = 100;
-    assert!(late.validate().unwrap_err().contains("historical cutoff"));
-    late.tasks[0].observed_unix = 99;
-    late.validate().unwrap();
 }
 
 #[test]
@@ -446,6 +441,9 @@ fn artificial_audit(m: &Manifest) -> audit::Audit {
         freeze_sha256: Some("b".repeat(64)),
         executable_sha256: hash_file(&std::env::current_exe().unwrap()).unwrap(),
         phase: "audit".into(),
+        protocol_preparation_ms: 1,
+        pilot_cost_ms: 1,
+        freezing_cost_ms: 1,
         pools: m
             .tasks
             .iter()
@@ -472,7 +470,7 @@ fn comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted(
     m.seeds = vec![7, 43];
     let a = artificial_audit(&m);
     let output =
-        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64)).unwrap()).unwrap();
+        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
     assert_eq!(
         output["verdict"], "inconclusive",
         "one lineage group cannot establish a benefit"
@@ -495,6 +493,9 @@ fn comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted(
         trial("random")["metrics"]
     );
     assert_eq!(trial("target-pairwise")["calibrationObserved"], 0);
+    assert_eq!(trial("transfer-pairwise")["historicalScoringMs"], 401);
+    assert_eq!(trial("target-pairwise")["historicalScoringMs"], 0);
+    assert_eq!(trial("transfer-pairwise")["preparationMs"], 5);
     assert!(
         trial("transfer-pairwise")["metrics"]["topRecall"]
             .as_f64()
@@ -533,7 +534,8 @@ fn comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted(
         }
     }
     let altered =
-        serde_json::to_value(evaluation::evaluate(&m, &changed, "d".repeat(64)).unwrap()).unwrap();
+        serde_json::to_value(evaluation::evaluate(&m, &changed, "d".repeat(64), 0).unwrap())
+            .unwrap();
     let signature = |value: &serde_json::Value| {
         value["trials"]
             .as_array()
@@ -552,7 +554,7 @@ fn comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted(
         altered["trials"][1]["metrics"]
     );
     let repeated =
-        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64)).unwrap()).unwrap();
+        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
     assert_eq!(signature(&output), signature(&repeated));
     assert_eq!(output["paired"], repeated["paired"]);
 }

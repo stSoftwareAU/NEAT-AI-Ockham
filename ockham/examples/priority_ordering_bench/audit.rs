@@ -76,6 +76,9 @@ pub struct Audit {
     pub phase: String,
     pub pools: Vec<Pool>,
     pub histories: Vec<History>,
+    pub protocol_preparation_ms: u64,
+    pub pilot_cost_ms: u64,
+    pub freezing_cost_ms: u64,
     pub failures: Vec<String>,
     pub elapsed_ms: u64,
 }
@@ -313,7 +316,6 @@ pub fn collect_pool(
                     CandidateOutcome::ScreenedOut
                 },
             );
-            record.unix_secs = task.observed_unix;
             record.sample_delta = row.sample_delta;
             record.full_delta = row.full_delta;
             record.scorer_ms = row.sample_ms + row.full_ms;
@@ -360,6 +362,9 @@ pub fn collect(
         phase: if pilot { "pilot" } else { "audit" }.into(),
         pools: Vec::new(),
         histories: Vec::new(),
+        protocol_preparation_ms: 0,
+        pilot_cost_ms: 0,
+        freezing_cost_ms: 0,
         failures: Vec::new(),
         elapsed_ms: 0,
     };

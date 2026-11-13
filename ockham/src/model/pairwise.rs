@@ -227,7 +227,8 @@ mod tests {
             l2: 0.001,
             max_pairs: 100,
         };
-        let mut model = PairwiseModel::fit(&[source.clone()], &source, 2, config).unwrap();
+        let mut model =
+            PairwiseModel::fit(std::slice::from_ref(&source), &source, 2, config).unwrap();
         assert!(model.score(&[5.0, 1.0]).unwrap() > model.score(&[0.0, 1.0]).unwrap());
         model.adapt(&[target], config).unwrap();
         assert!(model.score(&[5.0, 1.0]).unwrap() < model.score(&[0.0, 1.0]).unwrap());
@@ -255,7 +256,7 @@ mod tests {
             score: 1.0,
         }];
         assert!(
-            PairwiseModel::fit(&[invalid.clone()], &invalid, 2, config)
+            PairwiseModel::fit(std::slice::from_ref(&invalid), &invalid, 2, config)
                 .unwrap_err()
                 .contains("finite")
         );
@@ -266,7 +267,7 @@ mod tests {
             };
             3
         ];
-        let model = PairwiseModel::fit(&[tied.clone()], &tied, 2, config).unwrap();
+        let model = PairwiseModel::fit(std::slice::from_ref(&tied), &tied, 2, config).unwrap();
         assert_eq!(model.score(&[5.0, 1.0]).unwrap(), 0.0);
     }
 
@@ -279,8 +280,8 @@ mod tests {
             l2: 0.001,
             max_pairs: 10,
         };
-        let a = PairwiseModel::fit(&[source.clone()], &source, 2, config).unwrap();
-        let b = PairwiseModel::fit(&[source.clone()], &source, 2, config).unwrap();
+        let a = PairwiseModel::fit(std::slice::from_ref(&source), &source, 2, config).unwrap();
+        let b = PairwiseModel::fit(std::slice::from_ref(&source), &source, 2, config).unwrap();
         assert_eq!(a, b);
         let shifted: Vec<_> = source
             .iter()

@@ -201,7 +201,9 @@ positive verdict. Other grid cells diagnose cold starts and sparsity, not pick
 a favourable result after validation. An inconclusive or unsupported result
 never enables deployment or real rejection.
 
-Cost reporting separates the actual audit wall time from counterfactual
+Cost reporting retains pilot, freeze, historical acquisition, audit and
+evaluation totals, including protocol identity checks. It separates the actual
+audit wall time from counterfactual
 strategy ledgers: preparation/generation, feature extraction, historical
 acquisition/loading, calibration acquisition, partial scoring, fit, adaptation,
 ranking and selected full scoring. Historical and calibration acquisition is
@@ -209,6 +211,7 @@ charged without amortisation (including fully collected calibration pools even
 when a smaller label budget is exposed). This is a conservative upper charge,
 not a measured amortised speed-up. The full audit scores losers for measurement;
 those extra validation scores are in audit cost, not charged as search queries.
+Output serialisation/writing and build time are outside these runtime totals.
 Timings on this shared host are indicative, never correctness assertions.
 
 ## Current finding
