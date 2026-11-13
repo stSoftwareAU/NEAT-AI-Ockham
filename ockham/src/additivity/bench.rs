@@ -7,7 +7,6 @@
 //! full-scorer call. Predictions only order the picks; the best full score among
 //! an arm's picks is its selection. Nothing here accepts a creature.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::ops::ControlFlow;
@@ -35,10 +34,12 @@ use crate::corpus::{CorpusInfo, RecordChunk, RecordRange, corpus_info, for_each_
 use crate::incumbent::{Incumbent, load_incumbent, sha256_hex};
 use crate::ordering::SplitMix64;
 use crate::prune::{GroupMember, prune_hidden_group};
+use crate::promote::{BundleMember, bundle_plans};
 use crate::scorer::{DirectoryScorer, ScoreResult, ScorerMode, check_finite};
 use crate::stats::{
-    DEFAULT_CHUNK_RECORDS, DEFAULT_SAMPLE_RECORDS, SampleSpec, ensure_activation_stats,
+    DEFAULT_CHUNK_RECORDS, DEFAULT_SAMPLE_RECORDS, SampleSpec, compute_activation_stats,
 };
+use crate::sweep::CandidateKind;
 
 /// Meaning of a single-cut output entry, part of every cache key. Changing the
 /// cut recipe must change this string so old entries are never served.
@@ -72,8 +73,9 @@ const SCRATCH_BUFFERS: u64 = 4;
 /// # Errors
 ///
 /// A manifest or parent that cannot be read, a corpus that cannot be streamed,
-/// or a full-scorer call that breaks its contract (missing or non-finite
-/// results). A cache rejection is never an error: it means no estimate.
+/// or a full-scorer call that breaks its contract: missing or non-finite
+/// results, or a reported cost or record count that disagrees with the manifest
+/// or corpus. A cache rejection is never an error: it means no estimate.
 pub fn run_bench(
     manifest: &BenchManifest,
     scorer: &dyn DirectoryScorer,
@@ -216,11 +218,11 @@ impl Scratch {
     }
 }
 
-/// One proposable single cut.
+/// One proposable single cut. Its creature is not kept: only the cache entry
+/// built from it outlives the proposal.
 struct Single {
     uuid: String,
     mean: Option<f64>,
-    creature: CreatureExport,
     entry: String,
     /// Mean loss of the single's outputs, when its entry is readable.
     loss: Option<f64>,
@@ -292,14 +294,22 @@ impl<'a> ParentRun<'a> {
             &manifest.scorer.args,
             &workdir,
         )?;
+        check_report(
+            "baseline",
+            baseline.cost_name.as_deref(),
+            baseline.record_count,
+            &manifest.cost,
+            corpus.record_count,
+        )?;
 
-        // The same default sample an ordinary run uses (config.stats_sample_spec).
+        // A fresh sample every run, with the same spec an ordinary run uses. The
+        // single cuts fold these means in, so they are never read from a cache.
         let sample = SampleSpec::with_max_records(DEFAULT_SAMPLE_RECORDS);
-        let activation = ensure_activation_stats(
-            &incumbent,
+        let activation = compute_activation_stats(
+            &incumbent.creature,
+            &incumbent.checksum,
             &manifest.training_data,
             &corpus,
-            &manifest.cache_dir.join("stats"),
             DEFAULT_CHUNK_RECORDS,
             &sample,
         )?;
@@ -307,6 +317,17 @@ impl<'a> ParentRun<'a> {
             .neurons
             .iter()
             .map(|n| (n.uuid.clone(), n.mean))
+            .collect();
+        // The exact members handed to the pruning step, in hidden-neuron order.
+        let hidden_members: Vec<GroupMember> = incumbent
+            .creature
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .map(|n| GroupMember {
+                uuid: n.uuid.clone(),
+                mean: means.get(&n.uuid).copied(),
+            })
             .collect();
 
         let wanted = ((manifest.core_fraction * corpus.record_count as f64).ceil() as u64).max(1);
@@ -332,7 +353,8 @@ impl<'a> ParentRun<'a> {
             input_count: cfg.num_inputs,
             output_count: cfg.num_outputs,
             cut_semantics: format!("{CUT_SEMANTICS} {}", sample.tag()),
-            core_pin: core_pin(),
+            stats_digest: stats_digest(&hidden_members),
+            core_pin: core_pin()?,
             ockham_version: env!("CARGO_PKG_VERSION").to_string(),
             scorer_identity: scorer.identity(),
             cost: manifest.cost.clone(),
@@ -343,39 +365,6 @@ impl<'a> ParentRun<'a> {
             key,
             manifest.limits.max_cache_bytes,
         )?;
-
-        let started = clock.now();
-        let mut singles = Vec::new();
-        let mut failed = Vec::new();
-        let mut hidden = HashSet::new();
-        for neuron in incumbent
-            .creature
-            .neurons
-            .iter()
-            .filter(|n| n.neuron_type == "hidden")
-        {
-            let uuid = neuron.uuid.clone();
-            hidden.insert(uuid.clone());
-            let mean = means.get(&uuid).copied();
-            let member = GroupMember {
-                uuid: uuid.clone(),
-                mean,
-            };
-            match prune_hidden_group(&incumbent.creature, &[member]) {
-                Ok(candidate) => singles.push(Single {
-                    entry: cut_entry_name(&uuid),
-                    uuid,
-                    mean,
-                    creature: candidate.creature,
-                    loss: None,
-                }),
-                Err(refusal) => failed.push(FailedProposal {
-                    uuid,
-                    reason: refusal.to_string(),
-                }),
-            }
-        }
-        let singles_ms = clock.ms_since(started);
 
         let parent_json = creature_to_json(&incumbent.creature).map_err(|e| e.to_string())?;
         let width = cfg.num_outputs;
@@ -390,7 +379,7 @@ impl<'a> ParentRun<'a> {
             corpus,
             baseline,
             workdir,
-            hidden,
+            hidden: hidden_members.iter().map(|m| m.uuid.clone()).collect(),
             data: Dataset {
                 dir: manifest.training_data.clone(),
                 cfg,
@@ -403,21 +392,42 @@ impl<'a> ParentRun<'a> {
                 tally: Tally::default(),
                 scratch: Scratch::new(chunk * width),
             },
-            singles,
-            failed,
+            singles: Vec::new(),
+            failed: Vec::new(),
             base_loss: None,
             estimate_blocked: None,
-            singles_ms,
+            singles_ms: 0,
             setup_build_ms: 0,
             setup_read_ms: 0,
             setup_builds: 0,
         };
         run.build_setup()?;
+
+        // Proposals in creature order. Each cut's entry is built, and its loss
+        // read, straight after its proposal, so its candidate creature is dropped
+        // before the next cut is proposed.
+        let mut singles_ms = 0;
+        for member in &hidden_members {
+            let started = clock.now();
+            let proposal = prune_hidden_group(&run.incumbent.creature, std::slice::from_ref(member));
+            singles_ms += clock.ms_since(started);
+            match proposal {
+                Ok(candidate) => run.add_single(member, candidate.creature)?,
+                Err(refusal) => run.failed.push(FailedProposal {
+                    uuid: member.uuid.clone(),
+                    reason: refusal.to_string(),
+                }),
+            }
+        }
+        run.singles_ms = singles_ms;
+        run.setup_build_ms = run.store.tally.build_ms;
+        run.setup_read_ms = run.store.tally.read_ms;
+        run.setup_builds = run.store.tally.builds;
         Ok(run)
     }
 
-    /// Build targets, the parent's outputs and every single's outputs, then
-    /// read each single's loss. A rejection leaves that cut without an estimate.
+    /// Build the targets and the parent's outputs, then read the parent's loss.
+    /// A rejection leaves the whole parent without estimates.
     fn build_setup(&mut self) -> Result<(), String> {
         let clock = self.clock;
         let data = &self.data;
@@ -454,26 +464,42 @@ impl<'a> ParentRun<'a> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Record one proposable single: build its cache entry and read its loss.
+    /// The creature is taken by value and dropped on return. A rejection leaves
+    /// that cut without an estimate.
+    fn add_single(&mut self, member: &GroupMember, creature: CreatureExport) -> Result<(), String> {
+        let clock = self.clock;
+        let entry = cut_entry_name(&member.uuid);
+        let mut loss = None;
         if self.base_loss.is_some() {
-            for i in 0..self.singles.len() {
-                let entry = self.singles[i].entry.clone();
-                let source = Source::Network(&self.singles[i].creature);
-                match build_entry(&mut self.store, data, clock, &entry, source) {
-                    Ok(()) => {}
-                    Err(Fault::Stream(message)) => return Err(message),
-                    Err(_) => continue,
+            match build_entry(
+                &mut self.store,
+                &self.data,
+                clock,
+                &entry,
+                Source::Network(&creature),
+            ) {
+                Ok(()) => {
+                    let read = mean_loss(&mut self.store, &self.data, clock, &entry);
+                    if let Some(value) = settle(&mut self.store.tally, read)?
+                        && value.is_finite()
+                    {
+                        loss = Some(value);
+                    }
                 }
-                let read = mean_loss(&mut self.store, data, clock, &entry);
-                if let Some(loss) = settle(&mut self.store.tally, read)?
-                    && loss.is_finite()
-                {
-                    self.singles[i].loss = Some(loss);
-                }
+                Err(Fault::Stream(message)) => return Err(message),
+                Err(_) => {}
             }
         }
-        self.setup_build_ms = self.store.tally.build_ms;
-        self.setup_read_ms = self.store.tally.read_ms;
-        self.setup_builds = self.store.tally.builds;
+        self.singles.push(Single {
+            uuid: member.uuid.clone(),
+            mean: member.mean,
+            entry,
+            loss,
+        });
         Ok(())
     }
 
@@ -537,7 +563,7 @@ impl<'a> ParentRun<'a> {
         }
 
         // Pool: Ockham's ranked prefix first, then seeded distinct draws.
-        let ranked = self.rank_singles();
+        let ranked = self.rank_singles()?;
         let started = clock.now();
         let pool_seed = derive_seed(&[seed, self.index as u64, budget_index as u64, POOL_STREAM]);
         let pool = build_pool(row.eligible, k, manifest.audit_pool, pool_seed);
@@ -557,13 +583,13 @@ impl<'a> ParentRun<'a> {
                     mean: self.singles[i].mean,
                 })
                 .collect();
-            row.pool_size += 1;
             match prune_hidden_group(&self.incumbent.creature, &group) {
                 Err(refusal) => row.refused.push(Refusal {
                     members: member_uuids,
                     reason: refusal.to_string(),
                 }),
                 Ok(candidate) => {
+                    row.pool_size += 1;
                     let json = creature_to_json(&candidate.creature).map_err(|e| e.to_string())?;
                     let digest = sha256_hex(json.as_bytes());
                     if let Some(&first) = digests.get(&digest) {
@@ -597,9 +623,12 @@ impl<'a> ParentRun<'a> {
         let started = clock.now();
         let mut additive = Vec::with_capacity(scored.len());
         let mut cached = Vec::with_capacity(scored.len());
+        let mut additive_ms = 0;
         let mut cached_read_ms = 0;
         for bundle in &scored {
-            additive.push(self.additive_estimate(&bundle.members));
+            let additive_started = clock.now();
+            additive.push(self.additive_estimate(&bundle.members)?);
+            additive_ms += clock.ms_since(additive_started);
             let read_started = clock.now();
             cached.push(self.cached_estimate(&bundle.members)?);
             cached_read_ms += clock.ms_since(read_started);
@@ -609,6 +638,7 @@ impl<'a> ParentRun<'a> {
         // Audit: one full-scorer call over every unique bundle.
         let n = scored.len();
         let parent_score = self.baseline.score;
+        let parent_error = self.baseline.error;
         let started = clock.now();
         let refs: Vec<(usize, &CreatureExport)> = scored
             .iter()
@@ -629,6 +659,11 @@ impl<'a> ParentRun<'a> {
             .map(|i| audit_results[&bundle_name(i)].score)
             .collect();
         let best_truth = truth.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        // Full-corpus error reduction, in the prediction's units: the actual side
+        // of the promotion audits. Ranking metrics stay on `truth`.
+        let actual_gain: Vec<f64> = (0..n)
+            .map(|i| parent_error - audit_results[&bundle_name(i)].error)
+            .collect();
         row.bundles = scored
             .iter()
             .enumerate()
@@ -683,19 +718,29 @@ impl<'a> ParentRun<'a> {
                 Arm::CachedOutput => rank::rank_by_estimate(&cached),
             };
             let ranking_ms = clock.ms_since(started);
-            let predicted: Option<&[Option<f64>]> = match arm {
-                Arm::AdditiveLoss => Some(additive.as_slice()),
-                Arm::CachedOutput => Some(cached.as_slice()),
-                Arm::Current | Arm::Random => None,
-            };
+            // `predicts()` is true only for the two predictor arms, so the `_`
+            // branch is the additive one.
+            let predicted: Option<&[Option<f64>]> = arm.predicts().then(|| match arm {
+                Arm::CachedOutput => cached.as_slice(),
+                _ => additive.as_slice(),
+            });
             let metrics: AuditMetrics = rank::audit(
                 &ranking,
                 &truth,
                 predicted,
-                parent_score,
+                &actual_gain,
                 manifest.min_improvement,
                 manifest.top_k,
             )?;
+            let inference_ms = match arm {
+                Arm::AdditiveLoss => additive_ms,
+                Arm::CachedOutput => cached_read_ms,
+                Arm::Current | Arm::Random => 0,
+            };
+            let inference_latency_ms = predicted.and_then(|values| {
+                let estimated = values.iter().flatten().filter(|v| v.is_finite()).count();
+                (estimated > 0).then(|| inference_ms as f64 / estimated as f64)
+            });
 
             let picks_n = ranking.len().min(manifest.full_evaluations);
             let picks_idx: Vec<usize> = ranking[..picks_n].to_vec();
@@ -785,6 +830,7 @@ impl<'a> ParentRun<'a> {
                         0
                     },
                 cost_ms: cost,
+                inference_latency_ms,
             });
         }
 
@@ -812,33 +858,70 @@ impl<'a> ParentRun<'a> {
         Ok(row)
     }
 
-    /// Singles ordered like `promote::bundle_plans`: delta descending, ties by
-    /// UUID, with unestimated singles after every estimated one.
-    fn rank_singles(&self) -> Vec<usize> {
-        let delta = |i: usize| match (self.base_loss, self.singles[i].loss) {
-            (Some(base), Some(loss)) => Some(base - loss),
-            _ => None,
+    /// Singles in Ockham's ranked order, as `promote::bundle_plans` ranks them.
+    ///
+    /// Every proposable single is a member with delta `L0 − Li`. A single with no
+    /// loss gets `NEG_INFINITY`, so it sorts after every estimated single and ties
+    /// by UUID. The order is the all-winners plan, the first plan `bundle_plans`
+    /// emits for two or more members.
+    ///
+    /// # Errors
+    ///
+    /// When `bundle_plans` emits no all-winners plan for two or more members.
+    fn rank_singles(&self) -> Result<Vec<usize>, String> {
+        let members: Vec<BundleMember> = self
+            .singles
+            .iter()
+            .map(|single| BundleMember {
+                uuid: single.uuid.clone(),
+                kind: CandidateKind::Ablation,
+                delta: match (self.base_loss, single.loss) {
+                    (Some(base), Some(loss)) => base - loss,
+                    _ => f64::NEG_INFINITY,
+                },
+            })
+            .collect();
+        let ordered: Vec<String> = match members.len() {
+            0 => Vec::new(),
+            1 => vec![members[0].uuid.clone()],
+            _ => bundle_plans(&members)
+                .plans
+                .into_iter()
+                .next()
+                .ok_or("bundle_plans emitted no all-winners plan")?,
         };
-        let mut order: Vec<usize> = (0..self.singles.len()).collect();
-        order.sort_by(|&a, &b| match (delta(a), delta(b)) {
-            (Some(x), Some(y)) => y
-                .partial_cmp(&x)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| self.singles[a].uuid.cmp(&self.singles[b].uuid)),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => self.singles[a].uuid.cmp(&self.singles[b].uuid),
-        });
-        order
+        let position: HashMap<&str, usize> = self
+            .singles
+            .iter()
+            .enumerate()
+            .map(|(i, single)| (single.uuid.as_str(), i))
+            .collect();
+        ordered
+            .iter()
+            .map(|uuid| {
+                position
+                    .get(uuid.as_str())
+                    .copied()
+                    .ok_or_else(|| format!("ranked uuid '{uuid}' is not a proposable single"))
+            })
+            .collect()
     }
 
-    /// Diagnostic `-Σ(Li − L0)` over the members, `None` if any is unestimated.
-    fn additive_estimate(&self, members: &[usize]) -> Option<f64> {
-        let base = self.base_loss?;
-        let losses: Option<Vec<f64>> = members.iter().map(|&i| self.singles[i].loss).collect();
-        additive_loss_change(base, &losses?)
-            .ok()
-            .map(|change| -change)
+    /// Diagnostic `-Σ(Li − L0)` over the members. `None` if any is unestimated;
+    /// a fault in the sum is counted in the rejection tally.
+    fn additive_estimate(&mut self, members: &[usize]) -> Result<Option<f64>, String> {
+        let Some(base) = self.base_loss else {
+            return Ok(None);
+        };
+        let Some(losses) = members
+            .iter()
+            .map(|&i| self.singles[i].loss)
+            .collect::<Option<Vec<f64>>>()
+        else {
+            return Ok(None);
+        };
+        let change = additive_loss_change(base, &losses).map_err(Fault::from);
+        Ok(settle(&mut self.store.tally, change)?.map(|change| -change))
     }
 
     /// Cached-output improvement `L0 − predicted loss`, streamed chunk by chunk.
@@ -905,6 +988,15 @@ impl<'a> ParentRun<'a> {
             return Err(format!("full scorer returned no result for '{missing}'"));
         }
         check_finite(&results).map_err(|e| format!("full scorer: {e}"))?;
+        for (name, result) in &results {
+            check_report(
+                &format!("full scorer, result '{name}'"),
+                result.cost_name.as_deref(),
+                result.record_count,
+                &self.manifest.cost,
+                self.corpus.record_count,
+            )?;
+        }
         Ok(results)
     }
 
@@ -944,6 +1036,51 @@ impl<'a> ParentRun<'a> {
             },
         }
     }
+}
+
+/// Refuses a scorer report whose cost or record count disagrees with the manifest
+/// or the corpus. Mirrors `crate::baseline::establish_baseline`: a cost name is
+/// compared case-insensitively, and a record count of zero means "not reported".
+fn check_report(
+    label: &str,
+    cost_name: Option<&str>,
+    record_count: u64,
+    declared_cost: &str,
+    corpus_records: u64,
+) -> Result<(), String> {
+    if let Some(reported) = cost_name
+        && !reported.eq_ignore_ascii_case(declared_cost)
+    {
+        return Err(format!(
+            "{label}: scorer reported cost '{reported}', but the manifest declares '{declared_cost}'"
+        ));
+    }
+    if record_count != 0 && record_count != corpus_records {
+        return Err(format!(
+            "{label}: scorer saw {record_count} records but the corpus has {corpus_records}"
+        ));
+    }
+    Ok(())
+}
+
+/// SHA-256 over the `(uuid, mean)` list handed to the pruning step, in order.
+///
+/// Each uuid is length-prefixed. A missing mean is one zero byte and a present
+/// one is a one byte then the mean's `f64` bits, so the two never collide.
+fn stats_digest(members: &[GroupMember]) -> String {
+    let mut bytes = Vec::new();
+    for member in members {
+        bytes.extend_from_slice(&(member.uuid.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(member.uuid.as_bytes());
+        match member.mean {
+            None => bytes.push(0),
+            Some(mean) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&mean.to_bits().to_le_bytes());
+            }
+        }
+    }
+    sha256_hex(&bytes)
 }
 
 /// Turn a read fault into "no estimate", counting it by kind; a stream fault aborts.

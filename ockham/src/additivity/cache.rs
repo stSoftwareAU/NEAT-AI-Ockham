@@ -21,10 +21,13 @@ use crate::corpus::{RecordRange, for_each_selected_chunk};
 use crate::incumbent::sha256_hex;
 
 /// Version of the entry layout; part of every [`CacheKey`].
-pub const CACHE_FORMAT_VERSION: u32 = 1;
+pub const CACHE_FORMAT_VERSION: u32 = 2;
 
 /// Name of the file that records the key owning a cache directory.
 const KEY_FILE: &str = "key.json";
+
+/// Largest `key.json` accepted, checked before the file is read.
+const KEY_FILE_MAX_BYTES: u64 = 64 * 1024;
 
 /// Extension of a finished entry file.
 const ENTRY_EXT: &str = "f32";
@@ -51,6 +54,10 @@ pub struct CacheKey {
     pub output_count: usize,
     /// Semantics of the cut the outputs were taken at.
     pub cut_semantics: String,
+    /// Digest of the ordered `(uuid, mean)` list handed to the pruning step for
+    /// every hidden neuron. Each single cut folds its neuron's mean in, so the
+    /// outputs depend on these values, not only on the corpus fingerprint.
+    pub stats_digest: String,
     /// Pinned `neat-core` version line, see [`core_pin`].
     pub core_pin: String,
     /// Ockham crate version that produced the outputs.
@@ -73,14 +80,19 @@ impl CacheKey {
 
 /// The `neat-core` pin line from `ockham/Cargo.toml`, trimmed.
 ///
-/// Returns `neat-core = <unknown>` if the line is absent.
-pub fn core_pin() -> String {
+/// # Errors
+///
+/// When `ockham/Cargo.toml` has no `neat-core =` line. A cache key must never
+/// be built around a pin it cannot name.
+pub fn core_pin() -> Result<String, String> {
     include_str!("../../Cargo.toml")
         .lines()
         .map(str::trim)
         .find(|line| line.starts_with("neat-core ="))
         .map(str::to_string)
-        .unwrap_or_else(|| "neat-core = <unknown>".to_string())
+        .ok_or_else(|| {
+            "ockham/Cargo.toml has no `neat-core =` line to pin the output cache to".to_string()
+        })
 }
 
 /// Hex SHA-256 of the serialised, ordered record ranges.
@@ -244,6 +256,15 @@ impl OutputCache {
         let dir = root.join(key.digest());
         let key_path = dir.join(KEY_FILE);
         if key_path.is_file() {
+            let size = fs::metadata(&key_path)
+                .map_err(|e| format!("cannot read '{}': {e}", key_path.display()))?
+                .len();
+            if size > KEY_FILE_MAX_BYTES {
+                return Err(format!(
+                    "'{}' is {size} bytes, over the {KEY_FILE_MAX_BYTES}-byte limit for a cache key",
+                    key_path.display()
+                ));
+            }
             let text = fs::read_to_string(&key_path)
                 .map_err(|e| format!("cannot read '{}': {e}", key_path.display()))?;
             let stored: CacheKey = serde_json::from_str(&text)
@@ -269,16 +290,6 @@ impl OutputCache {
             limit: max_bytes,
             used,
         })
-    }
-
-    /// Directory holding this key's entries.
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    /// The key this cache was opened with.
-    pub fn key(&self) -> &CacheKey {
-        &self.key
     }
 
     /// Bytes currently held by finished entries.
@@ -532,12 +543,18 @@ mod tests {
             input_count: 2,
             output_count: 2,
             cut_semantics: "cut-v1".to_string(),
+            stats_digest: "stats-a".to_string(),
             core_pin: "neat-core = v0".to_string(),
             ockham_version: "0.1.90".to_string(),
             scorer_identity: "scorer-a".to_string(),
             cost: "MSE".to_string(),
             scorer_args: vec!["--fast".to_string()],
         }
+    }
+
+    /// The directory [`OutputCache::open`] uses for `key()` under `root`.
+    fn entry_dir(root: &Path) -> PathBuf {
+        root.join(key().digest())
     }
 
     fn write_entry(
@@ -579,7 +596,7 @@ mod tests {
     #[test]
     fn changing_one_key_field_gives_a_fresh_directory_without_the_entry() {
         type Mutate = fn(&mut CacheKey);
-        let mutations: [(&str, Mutate); 5] = [
+        let mutations: [(&str, Mutate); 6] = [
             ("parent_digest", |k| {
                 k.parent_digest = "parent-b".to_string()
             }),
@@ -593,6 +610,7 @@ mod tests {
             ("scorer_identity", |k| {
                 k.scorer_identity = "scorer-b".to_string()
             }),
+            ("stats_digest", |k| k.stats_digest = "stats-b".to_string()),
         ];
         let tmp = tempfile::tempdir().unwrap();
         let mut base = OutputCache::open(tmp.path(), key(), LIMIT).unwrap();
@@ -601,8 +619,12 @@ mod tests {
         for (field, mutate) in mutations {
             let mut other_key = key();
             mutate(&mut other_key);
+            assert_ne!(
+                other_key.digest(),
+                key().digest(),
+                "{field} must change the directory"
+            );
             let other = OutputCache::open(tmp.path(), other_key, LIMIT).unwrap();
-            assert_ne!(other.dir(), base.dir(), "{field} must change the directory");
             assert!(!other.has("y0"), "{field} must not reuse the entry");
             assert!(
                 matches!(other.reader("y0"), Err(CacheRejection::Missing)),
@@ -615,13 +637,25 @@ mod tests {
     #[test]
     fn key_json_disagreeing_with_its_directory_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
-        let cache = OutputCache::open(tmp.path(), key(), LIMIT).unwrap();
-        let key_path = cache.dir().join(KEY_FILE);
+        OutputCache::open(tmp.path(), key(), LIMIT).unwrap();
+        let key_path = entry_dir(tmp.path()).join(KEY_FILE);
         let mut tampered = key();
         tampered.records = 99;
         fs::write(&key_path, serde_json::to_string(&tampered).unwrap()).unwrap();
         let err = OutputCache::open(tmp.path(), key(), LIMIT).unwrap_err();
         assert!(err.contains("does not match"), "error was: {err}");
+    }
+
+    #[test]
+    fn oversized_key_json_is_refused_before_it_is_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        OutputCache::open(tmp.path(), key(), LIMIT).unwrap();
+        let key_path = entry_dir(tmp.path()).join(KEY_FILE);
+        let size = KEY_FILE_MAX_BYTES + 1;
+        fs::write(&key_path, vec![b' '; size as usize]).unwrap();
+        let err = OutputCache::open(tmp.path(), key(), LIMIT).unwrap_err();
+        assert!(err.contains(&size.to_string()), "error was: {err}");
+        assert!(err.contains("key.json"), "error was: {err}");
     }
 
     #[test]
@@ -644,8 +678,8 @@ mod tests {
         drop(writer);
 
         for name in ["nan", "inf"] {
-            assert!(!cache.dir().join(format!("{name}.f32")).exists());
-            assert!(!cache.dir().join(format!("{name}.f32.tmp")).exists());
+            assert!(!entry_dir(tmp.path()).join(format!("{name}.f32")).exists());
+            assert!(!entry_dir(tmp.path()).join(format!("{name}.f32.tmp")).exists());
             assert!(!cache.has(name));
         }
         assert_eq!(cache.used_bytes(), 0);
@@ -664,8 +698,8 @@ mod tests {
                 actual_bytes: 16
             })
         ));
-        assert!(!cache.dir().join("short.f32").exists());
-        assert!(!cache.dir().join("short.f32.tmp").exists());
+        assert!(!entry_dir(tmp.path()).join("short.f32").exists());
+        assert!(!entry_dir(tmp.path()).join("short.f32.tmp").exists());
     }
 
     #[test]
@@ -673,7 +707,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut cache = OutputCache::open(tmp.path(), key(), LIMIT).unwrap();
         write_entry(&mut cache, "y0", &six_values()).unwrap();
-        let path = cache.dir().join("y0.f32");
+        let path = entry_dir(tmp.path()).join("y0.f32");
         fs::OpenOptions::new()
             .write(true)
             .open(&path)
@@ -716,8 +750,8 @@ mod tests {
                 limit_bytes: 24
             })
         ));
-        assert!(!cache.dir().join("y1.f32").exists());
-        assert!(!cache.dir().join("y1.f32.tmp").exists());
+        assert!(!entry_dir(tmp.path()).join("y1.f32").exists());
+        assert!(!entry_dir(tmp.path()).join("y1.f32.tmp").exists());
         assert_eq!(cache.used_bytes(), 24);
 
         // Replacing the existing entry releases its bytes first, so this fits.
@@ -768,7 +802,9 @@ mod tests {
         let k = key();
         assert_eq!(k.digest(), key().digest());
         assert_eq!(k.digest().len(), 64);
-        assert!(core_pin().starts_with("neat-core ="));
+        let pin = core_pin().unwrap();
+        assert!(pin.starts_with("neat-core ="), "pin was: {pin}");
+        assert!(pin.contains("tag = \"v"), "pin was: {pin}");
         let name = cut_entry_name("3f2a");
         assert_eq!(name.len(), 36);
         assert!(valid_entry_name(&name));

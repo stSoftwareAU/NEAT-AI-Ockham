@@ -90,8 +90,10 @@ pub struct CacheStats {
     pub peak_bytes: u64,
     /// Configured byte limit.
     pub max_cache_bytes: u64,
-    /// Bound on the bench's own RAM, in bytes: one cache entry's accumulator
-    /// plus fixed chunk buffers.
+    /// Bound on the bench's own RAM, in bytes, excluding the parent and the
+    /// bundle creatures: one cache entry's accumulator plus fixed chunk buffers.
+    /// The bench also holds at most `auditPool` materialised bundle creatures
+    /// and the parent at once. It never holds neurons × records × outputs.
     pub ram_bound_bytes: u64,
     /// Wall time spent building entries, in milliseconds.
     pub build_ms: u64,
@@ -203,8 +205,9 @@ pub struct Pick {
 ///
 /// Single proposals and cache build or read are charged to arms that rank by
 /// singles (`current`, `additiveLoss`, `cachedOutput`). `random` is charged
-/// pool materialisation only; the proposability screen is shared and reported
-/// at parent level.
+/// pool materialisation, its own ranking and its own scorer call; it is not
+/// charged single proposals, cache build or cache reads. The proposability
+/// screen is shared and reported at parent level.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArmCost {
@@ -256,12 +259,18 @@ pub struct ArmRow {
     pub validation_score: Option<f64>,
     /// Held-out error of the selected creature, when validation data is set.
     pub validation_error: Option<f64>,
-    /// Full-scorer calls made for the arm's search (0 or 1).
+    /// Full-scorer calls made for the arm's search. Always 1: each arm makes
+    /// one search call over its own picks.
     pub full_scorer_calls: u64,
     /// Record evaluations: picks times corpus records, plus core records for singles.
     pub record_evaluations: u64,
     /// Cost breakdown in milliseconds.
     pub cost_ms: ArmCost,
+    /// Measured prediction time per estimated bundle, in milliseconds, for
+    /// predictor arms: the time spent forming their predictions, divided by
+    /// the bundles that had an estimate. `None` for non-predictor arms, and
+    /// when no bundle had an estimate.
+    pub inference_latency_ms: Option<f64>,
 }
 
 /// Audit call accounting, reported apart from the economics.

@@ -114,6 +114,30 @@ impl DirectoryScorer for FaithfulScorer {
     }
 }
 
+/// Delegates to the faithful scorer, then reports a different cost function.
+struct MisreportingScorer {
+    cost: &'static str,
+}
+
+impl DirectoryScorer for MisreportingScorer {
+    fn score_directory(
+        &self,
+        creature_dir: &Path,
+        training_dir: &Path,
+        mode: ScorerMode,
+    ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
+        let mut results = FaithfulScorer::new().score_directory(creature_dir, training_dir, mode)?;
+        for result in results.values_mut() {
+            result.cost_name = Some(self.cost.to_string());
+        }
+        Ok(results)
+    }
+
+    fn identity(&self) -> String {
+        "misreporting-test-scorer".to_string()
+    }
+}
+
 /// Six hidden neurons with differing output weights, so their usefulness differs.
 fn fixture_parent() -> CreatureExport {
     let mut neurons = Vec::new();
@@ -179,6 +203,10 @@ impl Fixture {
         Self { root }
     }
 
+    fn root(&self) -> &Path {
+        self.root.path()
+    }
+
     fn path(&self, rel: &str) -> PathBuf {
         self.root.path().join(rel)
     }
@@ -221,6 +249,23 @@ fn run(manifest: &BenchManifest) -> BenchReport {
     run_bench(manifest, &scorer, &SystemClock, &workspace).expect("bench runs")
 }
 
+/// Every path under `root`, relative to it, sorted.
+fn all_paths(root: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            found.push(path.strip_prefix(root).unwrap().display().to_string());
+            if path.is_dir() {
+                pending.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 fn listing(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir)
         .unwrap()
@@ -258,10 +303,26 @@ fn end_to_end_reports_every_arm_and_leaves_the_parent_alone() {
         }
         assert!(row.pool_size <= manifest.audit_pool);
         assert_eq!(
-            row.bundles.len() + row.duplicates.len() + row.refused.len(),
+            row.bundles.len() + row.duplicates.len(),
             row.pool_size,
-            "every pool bundle is scored, a duplicate or a refusal"
+            "every materialised pool bundle is scored or a duplicate"
         );
+        assert_eq!(
+            row.pool_size + row.refused.len(),
+            row.pool_requested,
+            "every requested pool bundle is materialised or refused"
+        );
+        for arm_row in &row.arms {
+            if !arm_row.arm.predicts() {
+                assert!(
+                    arm_row.inference_latency_ms.is_none(),
+                    "only predictor arms carry an inference latency"
+                );
+            }
+            if let Some(ms) = arm_row.inference_latency_ms {
+                assert!(ms.is_finite() && ms >= 0.0, "latency was {ms}");
+            }
+        }
         assert_eq!(row.audit.full_calls, 1);
         assert_eq!(
             row.audit.record_evaluations,
@@ -280,6 +341,39 @@ fn end_to_end_reports_every_arm_and_leaves_the_parent_alone() {
         "scoring directories must be removed after use: {:?}",
         listing(&workspace)
     );
+    // The bench leaves nothing an ordinary run would read: no experiment log,
+    // no learnings, no stats cache. Only the output cache and the workspace.
+    let paths = all_paths(fixture.root());
+    assert!(
+        !paths.iter().any(|p| p.ends_with("experiments.jsonl")),
+        "an experiment log was written: {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p.contains("learnings")),
+        "a learnings file was written: {paths:?}"
+    );
+    assert!(
+        !fixture.path("cache/stats").exists(),
+        "the bench must not write the stats cache"
+    );
+    assert_eq!(
+        listing(&manifest.cache_dir),
+        vec!["outputs".to_string(), "workspace".to_string()],
+        "cache dir holds only the output cache and the workspace"
+    );
+}
+
+#[test]
+fn a_scorer_reporting_another_cost_fails_the_run_naming_it() {
+    let fixture = Fixture::new();
+    let manifest = fixture.manifest(vec![0.2], vec![1], 1 << 30);
+    let scorer = MisreportingScorer { cost: "MAE" };
+    let workspace = manifest.cache_dir.join("workspace");
+
+    let err = run_bench(&manifest, &scorer, &SystemClock, &workspace).unwrap_err();
+
+    assert!(err.contains("MAE"), "error must name the reported cost: {err}");
+    assert!(err.contains("MSE"), "error must name the declared cost: {err}");
 }
 
 #[test]

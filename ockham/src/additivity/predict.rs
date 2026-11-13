@@ -160,36 +160,6 @@ impl LossSum {
     }
 }
 
-/// Mean loss of the predicted bundle outputs `y0 + Σ(yi − y0)` against
-/// `targets`, computed entirely in memory over whole slices.
-///
-/// `members` are the cached single-cut outputs, each the same length as `y0`.
-/// Shape errors come from [`add_delta`] and [`chunk_loss_sum`]. With no
-/// records to average the result is `Mismatched { expected: 1, actual: 0 }`.
-///
-/// # Errors
-///
-/// Any [`PredictError`] raised while accumulating the prediction or summing
-/// its loss.
-pub fn predict_bundle_loss(
-    targets: &[f32],
-    y0: &[f32],
-    members: &[&[f32]],
-    output_count: usize,
-) -> Result<f64, PredictError> {
-    let mut predicted = y0.to_vec();
-    for yi in members {
-        add_delta(&mut predicted, y0, yi)?;
-    }
-    let sum = chunk_loss_sum(targets, &predicted, output_count)?;
-    let mut total = LossSum::default();
-    total.add(sum, (targets.len() / output_count) as u64);
-    total.mean().ok_or(PredictError::Mismatched {
-        expected: 1,
-        actual: 0,
-    })
-}
-
 /// Diagnostic baseline: the additive change `Σ (L_i − L_0)` over the member
 /// losses, against the unpruned base loss `L_0`.
 ///
@@ -349,7 +319,12 @@ mod tests {
             );
         }
 
-        let predicted_loss = predict_bundle_loss(&TARGETS, &y0, &[&ya, &yb], 1).unwrap();
+        let mut predicted_total = LossSum::default();
+        predicted_total.add(
+            chunk_loss_sum(&TARGETS, &predicted, 1).unwrap(),
+            LINEAR_XS.len() as u64,
+        );
+        let predicted_loss = predicted_total.mean().unwrap();
         let mut actual_sum = LossSum::default();
         actual_sum.add(
             chunk_loss_sum(&TARGETS, &actual, 1).unwrap(),
@@ -472,11 +447,6 @@ mod tests {
             Err(PredictError::NonFinite { index: 1 })
         );
         assert_eq!(additive_loss_change(1.0, &[2.0, 0.5]), Ok(0.5));
-
-        assert_eq!(
-            predict_bundle_loss(&[0.0], &[f32::NAN], &[&[0.0]], 1),
-            Err(PredictError::NonFinite { index: 0 })
-        );
     }
 
     #[test]

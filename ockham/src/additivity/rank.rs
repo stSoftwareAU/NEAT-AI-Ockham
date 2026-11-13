@@ -13,7 +13,8 @@ use std::cmp::Ordering;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Arm {
-    /// Ockham's own emission order, unchanged.
+    /// Ockham's ranked prefix first (from `promote::bundle_plans`), then the
+    /// remaining pool bundles in emission order.
     Current,
     /// Ordered by the additive loss prediction.
     AdditiveLoss,
@@ -50,10 +51,10 @@ impl Arm {
     }
 }
 
-/// The pool in its current Ockham emission order, `0..n`.
+/// The pool in emission order, `0..n`.
 ///
-/// The caller places Ockham's own ranked prefix first, so this is the
-/// unmodified order the pool arrived in.
+/// The caller emits Ockham's ranked prefix first, so this order is that prefix
+/// followed by the remaining pool bundles in the order they were emitted.
 #[must_use]
 pub fn rank_current(n: usize) -> Vec<usize> {
     (0..n).collect()
@@ -129,9 +130,12 @@ pub struct AuditMetrics {
 
 /// Audits one arm's `ranking` against `truth`.
 ///
-/// `truth[i]` is the full-corpus score of pool bundle `i`, higher better.
-/// `ranking` must be a permutation of `0..truth.len()`, and `truth` must be
-/// finite. `predicted`, when given, holds one estimate per bundle.
+/// `truth[i]` is the full-corpus score of pool bundle `i`, higher better. It
+/// drives every ranking metric and nothing else. `ranking` must be a permutation
+/// of `0..truth.len()`, and `truth` must be finite. `predicted`, when given,
+/// holds one estimate per bundle, in the same units as `actual_gain`.
+/// `actual_gain[i]` is bundle `i`'s full-corpus error reduction (parent full
+/// error minus bundle full error), the actual side of the prediction audits.
 ///
 /// - `spearman` is the Pearson correlation of `n - 1 - position` against the
 ///   average-tie ranks of `truth`. It is `None` when `n < 2` or either side
@@ -142,20 +146,22 @@ pub struct AuditMetrics {
 /// - `regret` is the best truth minus `truth[ranking[0]]`, and `None` when
 ///   `n == 0`.
 /// - With `predicted`, a bundle is a predicted win when its estimate is at
-///   least `min_improvement`, and an actual win when `truth - parent_score`
-///   is. A `None` or non-finite estimate is excluded and counted in
-///   `unestimated`. Non-finite estimates are treated as absent, so a NaN
-///   never reads as a rejection.
+///   least `min_improvement`, and an actual win when `actual_gain` is. A
+///   `None` or non-finite estimate is excluded and counted in `unestimated`.
+///   Non-finite estimates are treated as absent, so a NaN never reads as a
+///   rejection.
 ///
 /// # Errors
 ///
 /// When `ranking` is not a permutation of the pool, `truth` holds a
-/// non-finite value, or `predicted` does not match the pool's length.
+/// non-finite value, `predicted` does not match the pool's length, or, with
+/// `predicted` given, `actual_gain` does not match the pool's length or holds
+/// a non-finite value.
 pub fn audit(
     ranking: &[usize],
     truth: &[f64],
     predicted: Option<&[Option<f64>]>,
-    parent_score: f64,
+    actual_gain: &[f64],
     min_improvement: f64,
     top_k: usize,
 ) -> Result<AuditMetrics, String> {
@@ -169,6 +175,17 @@ pub fn audit(
             "predicted has {} estimates for {n} bundles",
             estimates.len()
         ));
+    }
+    if predicted.is_some() {
+        if actual_gain.len() != n {
+            return Err(format!(
+                "actualGain has {} values for {n} bundles",
+                actual_gain.len()
+            ));
+        }
+        if let Some(index) = actual_gain.iter().position(|value| !value.is_finite()) {
+            return Err(format!("actual_gain[{index}] is not finite"));
+        }
     }
 
     let spearman = if n < 2 {
@@ -216,13 +233,13 @@ pub fn audit(
             let mut rejections = 0_usize;
             let mut rejection_base = 0_usize;
             let mut unestimated = 0_usize;
-            for (estimate, &score) in estimates.iter().zip(truth) {
+            for (estimate, &gain) in estimates.iter().zip(actual_gain) {
                 let Some(value) = estimate.filter(|value| value.is_finite()) else {
                     unestimated += 1;
                     continue;
                 };
                 let predicted_win = value >= min_improvement;
-                let actual_win = score - parent_score >= min_improvement;
+                let actual_win = gain >= min_improvement;
                 if actual_win {
                     rejection_base += 1;
                     if !predicted_win {
@@ -427,6 +444,8 @@ mod tests {
 
     /// Truth for a four-bundle pool: bundle 0 best, then 2, 3, 1.
     const TRUTH: [f64; 4] = [0.9, 0.1, 0.5, 0.3];
+    /// Gains for audits that pass no predictions, where they are never read.
+    const NO_GAIN: [f64; 4] = [0.0; 4];
 
     #[test]
     fn arm_names_and_prediction_flags() {
@@ -472,7 +491,7 @@ mod tests {
 
     #[test]
     fn a_perfect_ranking_audits_perfectly() {
-        let metrics = audit(&[0, 2, 3, 1], &TRUTH, None, 0.0, 0.0, 2).unwrap();
+        let metrics = audit(&[0, 2, 3, 1], &TRUTH, None, &NO_GAIN, 0.0, 2).unwrap();
         assert!((metrics.spearman.unwrap() - 1.0).abs() < 1e-12);
         assert!((metrics.top_k_recall.unwrap() - 1.0).abs() < 1e-12);
         assert!(metrics.regret.unwrap().abs() < 1e-12);
@@ -485,32 +504,53 @@ mod tests {
     #[test]
     fn a_reversed_ranking_is_anti_correlated_and_regretful() {
         // Ranks the worst bundle (1, truth 0.1) first: regret is 0.9 - 0.1.
-        let metrics = audit(&[1, 3, 2, 0], &TRUTH, None, 0.0, 0.0, 2).unwrap();
+        let metrics = audit(&[1, 3, 2, 0], &TRUTH, None, &NO_GAIN, 0.0, 2).unwrap();
         assert!((metrics.spearman.unwrap() + 1.0).abs() < 1e-12);
         assert!((metrics.regret.unwrap() - 0.8).abs() < 1e-12);
         assert_eq!(metrics.top_k_recall, Some(0.0));
     }
 
     #[test]
-    fn prediction_audits_count_promotions_and_rejections_over_estimated_bundles() {
-        // Parent 0.5, min improvement 0.1: actual wins are truth >= 0.6, so
-        // bundles 0, 2 and 3 win and bundle 1 does not.
-        let truth = [0.9, 0.55, 0.8, 0.7];
-        // Bundle 1 is a false promotion (predicted win, not a win), bundle 3 a
-        // false rejection (predicted non-win, a win), bundle 2 is unestimated.
+    fn prediction_audits_judge_actual_gain_not_truth() {
+        // Truth drives only the ranking metrics. Here truth and actual gain
+        // disagree: bundle 3 scores 0.55 (a score delta of 0.05 from a parent
+        // at 0.5), yet its full error reduction is 0.12, which is a win.
+        let truth = [0.9, 0.55, 0.8, 0.55];
+        // Gain is parent error minus bundle error, in the prediction's units.
+        let gain = [0.4, 0.05, 0.3, 0.12];
+        // Bundle 1 is a false promotion (predicted win, actual non-win), bundle
+        // 3 a false rejection (predicted non-win, actual win), bundle 2 is
+        // unestimated and so excluded from both audits.
         let estimates = [Some(0.2), Some(0.15), None, Some(-0.05)];
-        let metrics = audit(&[0, 2, 3, 1], &truth, Some(&estimates), 0.5, 0.1, 2).unwrap();
+        let metrics = audit(&[0, 2, 3, 1], &truth, Some(&estimates), &gain, 0.1, 2).unwrap();
         assert_eq!(metrics.unestimated, 1);
         assert_eq!(metrics.false_promotions, Some(Rate { count: 1, of: 1 }));
         assert_eq!(metrics.false_rejections, Some(Rate { count: 1, of: 2 }));
     }
 
     #[test]
+    fn prediction_audits_need_one_finite_gain_per_bundle() {
+        let estimates = [Some(0.2), None, None, None];
+        assert!(audit(&[0, 1, 2, 3], &TRUTH, Some(&estimates), &[0.2; 3], 0.1, 2).is_err());
+        assert!(
+            audit(
+                &[0, 1, 2, 3],
+                &TRUTH,
+                Some(&estimates),
+                &[0.2, f64::NAN, 0.0, 0.0],
+                0.1,
+                2
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn a_non_permutation_ranking_is_refused() {
-        assert!(audit(&[0, 0, 1, 2], &TRUTH, None, 0.0, 0.0, 2).is_err());
-        assert!(audit(&[0, 1, 2], &TRUTH, None, 0.0, 0.0, 2).is_err());
-        assert!(audit(&[0, 1, 2, 4], &TRUTH, None, 0.0, 0.0, 2).is_err());
-        assert!(audit(&[0, 1, 2, 3], &[0.1, f64::NAN, 0.2, 0.3], None, 0.0, 0.0, 2).is_err());
+        assert!(audit(&[0, 0, 1, 2], &TRUTH, None, &NO_GAIN, 0.0, 2).is_err());
+        assert!(audit(&[0, 1, 2], &TRUTH, None, &NO_GAIN, 0.0, 2).is_err());
+        assert!(audit(&[0, 1, 2, 4], &TRUTH, None, &NO_GAIN, 0.0, 2).is_err());
+        assert!(audit(&[0, 1, 2, 3], &[0.1, f64::NAN, 0.2, 0.3], None, &NO_GAIN, 0.0, 2).is_err());
     }
 
     #[test]

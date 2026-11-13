@@ -400,12 +400,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// Fit and evaluate the learned ranker, returning the JSON report to print.
-///
-/// The holdout is every `holdout_every`-th row by position, so the split is
-/// reproducible from the inputs alone — no RNG, no shuffle, no seed to carry.
-/// `0` trains and evaluates on the same rows and labels the report `train`, so
-/// an optimistic number is never presented as a held-out one.
 /// Run the additivity benchmark and write its report (#260).
 ///
 /// Returns the one-line JSON summary printed to stdout.
@@ -431,6 +425,12 @@ fn bench_additivity(manifest_path: &Path, out: &Path) -> Result<String, String> 
     .to_string())
 }
 
+/// Fit and evaluate the learned ranker, returning the JSON report to print.
+///
+/// The holdout is every `holdout_every`-th row by position, so the split is
+/// reproducible from the inputs alone — no RNG, no shuffle, no seed to carry.
+/// `0` trains and evaluates on the same rows and labels the report `train`, so
+/// an optimistic number is never presented as a held-out one.
 fn train_ordering(
     logs: &[PathBuf],
     out: &Path,

@@ -17,10 +17,11 @@ pub const MANIFEST_FORMAT_VERSION: u32 = 1;
 /// Default fraction of the training corpus used as the audit core.
 pub const DEFAULT_CORE_FRACTION: f64 = 0.02;
 
-/// Default pruning budgets, as fractions of each parent's prunable mass.
+/// Default pruning budgets, as fractions of each parent's initial hidden neurons.
 pub const DEFAULT_BUDGETS: [f64; 4] = [0.1, 0.2, 0.3, 0.4];
 
-/// Default number of top-ranked bundles promoted to full scoring.
+/// Default audit recall depth: how many top-ranked bundles per arm are checked
+/// against the best true bundle. It does not bound full scoring; see `full_evaluations`.
 pub const DEFAULT_TOP_K: usize = 3;
 
 /// Parent count below which results are fixture-only, not evidence.
@@ -45,7 +46,9 @@ pub struct ScorerSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceLimits {
-    /// Total bytes the output cache may hold on disk.
+    /// Byte limit on each output-cache key directory (one per parent and key).
+    /// Invalidated key directories are not deleted, so the cache dir as a whole
+    /// is not capped.
     pub max_cache_bytes: u64,
     /// Records streamed per chunk, bounding memory per reader or writer.
     pub chunk_records: usize,
@@ -80,7 +83,8 @@ pub struct BenchManifest {
     pub audit_pool: usize,
     /// Predeclared per-arm budget of full-scorer evaluations.
     pub full_evaluations: usize,
-    /// Number of top-ranked bundles promoted to full scoring.
+    /// Audit recall depth: each arm's top-ranked bundles checked against the
+    /// best true bundle in `rank::audit`. It does not bound full scoring.
     #[serde(default = "default_top_k")]
     pub top_k: usize,
     /// Promotion threshold on the full-score delta.
