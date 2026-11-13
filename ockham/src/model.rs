@@ -11,6 +11,10 @@
 //! the same rows and the same hyper-parameters produce the same model on every
 //! host and every rerun.
 //!
+//! The opt-in research harness also uses [`pairwise`] for within-task score
+//! comparisons and historical adaptation. Its result format is separate from
+//! the pointwise model loaded by ordinary ordering.
+//!
 //! **The model only ranks.** It decides which neuron is tested sooner and
 //! nothing else: every candidate it promotes still passes `creature.validate()`,
 //! the sampled screen and full-corpus scoring, and only that scorer accepts a
