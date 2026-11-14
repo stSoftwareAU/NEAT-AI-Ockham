@@ -650,7 +650,9 @@ pub fn prune_edge_by_key(
             reason: BlockedReason::Other,
             detail: format!(
                 "no synapse `{}`→`{}` with role {}",
-                key.from_uuid, key.to_uuid, role_label(key.role)
+                key.from_uuid,
+                key.to_uuid,
+                role_label(key.role)
             ),
         });
     }
