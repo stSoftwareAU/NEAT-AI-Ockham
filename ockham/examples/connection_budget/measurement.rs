@@ -19,6 +19,7 @@ use super::manifest::{Latency, Limits, Spec};
 pub struct Usage {
     pub proposal_attempts: u64,
     pub statistics_records: u64,
+    pub reserved_statistics_records: u64,
     pub scorer_calls: u64,
     pub reserved_record_evaluations: u64,
     pub reported_record_evaluations: u64,
@@ -61,11 +62,11 @@ impl Metered<'_> {
             > self
                 .limits
                 .statistics_records
-                .saturating_sub(usage.statistics_records)
+                .saturating_sub(usage.reserved_statistics_records)
         {
             return Err("statistics-record-limit".into());
         }
-        usage.statistics_records += records;
+        usage.reserved_statistics_records += records;
         Ok(())
     }
 }

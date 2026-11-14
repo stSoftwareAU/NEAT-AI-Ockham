@@ -93,6 +93,9 @@ fn calibrate(
         4096,
         &SampleSpec::full(),
     );
+    if let Ok(stats) = &result {
+        meter.usage.borrow_mut().statistics_records += stats.record_count;
+    }
     meter.usage.borrow_mut().preparation_ms += start.elapsed().as_secs_f64() * 1000.0;
     result
 }

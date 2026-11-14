@@ -123,7 +123,10 @@ kill is indistinguishable, so the cause text is retained too.
 Reservations charge every requested creature for the entire corpus even on a
 sampled call; actual returned record counts are recorded separately. Failures
 retain their reservations and their cause, without inventing evaluated-record
-counts. Final measurement has a separate fixed allowance of two full scorer
+counts. Statistics
+scans likewise reserve their entire calibration corpus up front; completed scan
+records are reported separately, and a failed scan does not invent a completed
+count. Final measurement has a separate fixed allowance of two full scorer
 calls over parent/proposal pairs: training and held-out validation. This
 measurement cannot accept a cut after search stops. Freeze/verification hashing,
 statistics scans, proposal visits, scorer costs, diagnostic inference and
