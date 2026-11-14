@@ -104,6 +104,10 @@ fn compute_matches(a: &RunRecord, b: &RunRecord, tolerance: f64) -> bool {
             a.search.reserved_record_evaluations,
             b.search.reserved_record_evaluations,
         ),
+        (
+            a.search.reported_record_evaluations,
+            b.search.reported_record_evaluations,
+        ),
         (a.search.scorer_calls, b.search.scorer_calls),
     ]
     .into_iter()
@@ -181,6 +185,9 @@ pub fn summarise(spec: &Spec, records: &[RunRecord]) -> Summary {
                     }
                     Some(_) if global.achieved_connections >= global.opening_connections => {
                         Some("no connection saving")
+                    }
+                    Some(_) if global.accepted_connections != global.achieved_connections => {
+                        Some("global proposal not accepted")
                     }
                     Some(other)
                         if !compute_matches(
@@ -271,10 +278,27 @@ pub fn summarise(spec: &Spec, records: &[RunRecord]) -> Summary {
     };
     let supported = representative >= spec.success.minimum_independent_units
         && comparisons.iter().all(|c| c.passes_predeclared_criteria);
+    let negative = representative >= spec.success.minimum_independent_units
+        && comparisons.iter().any(|c| {
+            c.independent_units >= spec.success.minimum_independent_units
+                && c.matched_pairs as f64 / c.expected_pairs as f64
+                    >= spec.success.minimum_matched_fraction
+                && (c
+                    .full_score_gain
+                    .as_ref()
+                    .is_some_and(|i| i.upper <= spec.success.minimum_score_gain)
+                    || c.held_out_score_gain
+                        .as_ref()
+                        .is_some_and(|i| i.upper <= spec.success.minimum_score_gain)
+                    || c.global_worst_output_mse_increase
+                        .is_some_and(|d| d > spec.success.maximum_worst_output_mse_increase))
+        });
     Summary {
         format_version: 1,
         conclusion: if supported {
             "supported-within-declared-study"
+        } else if negative {
+            "not-supported-within-declared-study"
         } else {
             "inconclusive"
         },
@@ -323,5 +347,187 @@ pub fn summarise(spec: &Spec, records: &[RunRecord]) -> Summary {
                     * 2
             })
             .sum(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::manifest::Subject;
+    use crate::measurement::{Diagnostics, Usage};
+    use crate::pilot::specification;
+    use crate::runner::Scores;
+    use neat_ai_ockham::scorer::ScoreResult;
+
+    fn spec() -> Spec {
+        let subjects = ["a", "b"]
+            .into_iter()
+            .map(|id| Subject {
+                id: id.into(),
+                independent_unit: id.into(),
+                provenance: "independent analysis fixture".into(),
+                creature: "parent.json".into(),
+                training: "training".into(),
+                calibration: "calibration".into(),
+                validation: "validation".into(),
+            })
+            .collect();
+        let mut spec = specification(subjects, Path::new("scorer"));
+        spec.seeds = vec![7, 19];
+        spec.connection_targets = vec![6];
+        spec.success.minimum_independent_units = 2;
+        spec
+    }
+
+    fn rows(spec: &Spec, global_score: f64) -> Vec<RunRecord> {
+        let score = |value| ScoreResult {
+            score: value,
+            error: 1.0 - value,
+            complexity_penalty: 0.0,
+            record_count: 4,
+            sample_rate: None,
+            gpu_backend: None,
+            cost_name: Some("MSE".into()),
+            time_taken: 0.0,
+        };
+        let mut rows = Vec::new();
+        for subject in &spec.creatures {
+            for seed in &spec.seeds {
+                for arm in Arm::ALL {
+                    let scores = Scores {
+                        parent: score(0.5),
+                        proposal: score(if arm == Arm::Global {
+                            global_score
+                        } else {
+                            0.6
+                        }),
+                    };
+                    rows.push(RunRecord {
+                        format_version: 1,
+                        manifest_sha256: "analysis-fixture".into(),
+                        subject: subject.id.clone(),
+                        independent_unit: subject.independent_unit.clone(),
+                        seed: *seed,
+                        arm,
+                        requested_connections: 6,
+                        opening_connections: 7,
+                        achieved_connections: 6,
+                        accepted_connections: 6,
+                        target_reached: true,
+                        stop_reason: "target-reached".into(),
+                        error: None,
+                        search: Usage {
+                            proposal_attempts: 2,
+                            statistics_records: 8,
+                            scorer_calls: 2,
+                            reserved_record_evaluations: 12,
+                            reported_record_evaluations: 12,
+                            ..Default::default()
+                        },
+                        evaluation: Usage::default(),
+                        quotas: BTreeMap::new(),
+                        region_connections: BTreeMap::new(),
+                        opening_depth_connections: BTreeMap::new(),
+                        depth_connections: BTreeMap::new(),
+                        opening_neuron_connections: BTreeMap::new(),
+                        neuron_connections: BTreeMap::new(),
+                        opening_output_support: BTreeMap::new(),
+                        output_support: BTreeMap::new(),
+                        full: Some(scores.clone()),
+                        held_out: Some(scores),
+                        diagnostics: Some(Diagnostics {
+                            records: 4,
+                            per_output_mse_increase: vec![0.0],
+                            worst_output_mse_increase: 0.0,
+                            stratum_mse_increase: vec![Some(0.0); 4],
+                            stratum_records: vec![1; 4],
+                            parent_latency_ns_per_record: Vec::new(),
+                            proposal_latency_ns_per_record: Vec::new(),
+                            compilation_ms: 0.0,
+                        }),
+                        directory: "unused-analysis-fixture".into(),
+                    });
+                }
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn bootstrap_is_repeatable_and_requires_independent_units() {
+        assert!(interval(&[1.0], 200, 0.025).is_none());
+        let interval = interval(&[1.0, 3.0], 200, 0.025).unwrap();
+        assert_eq!(
+            (interval.mean, interval.lower, interval.upper),
+            (2.0, 1.0, 3.0)
+        );
+    }
+
+    #[test]
+    fn repeated_seeds_are_clustered_and_synthetic_evidence_cannot_support_the_hypothesis() {
+        let mut spec = spec();
+        let mut rows = rows(&spec, 0.8);
+        let report = summarise(&spec, &rows);
+        assert_eq!(report.conclusion, "inconclusive");
+        assert_eq!(report.comparisons[0].matched_pairs, 4);
+        assert_eq!(report.comparisons[0].independent_units, 2);
+        assert!(
+            report
+                .comparisons
+                .iter()
+                .all(|c| c.passes_predeclared_criteria)
+        );
+        for row in &mut rows {
+            row.independent_unit = "same-unit".into();
+        }
+        let clustered = summarise(&spec, &rows);
+        assert_eq!(clustered.comparisons[0].independent_units, 1);
+        assert!(clustered.comparisons[0].full_score_gain.is_none());
+        spec.study_kind = StudyKind::Representative;
+        let report = summarise(&spec, &self::rows(&spec, 0.8));
+        assert_eq!(report.conclusion, "supported-within-declared-study");
+        let negative = summarise(&spec, &self::rows(&spec, 0.55));
+        assert_eq!(negative.conclusion, "not-supported-within-declared-study");
+    }
+
+    #[test]
+    fn comparisons_exclude_mismatches_failures_rejected_global_plans_and_missing_coverage() {
+        let spec = spec();
+        let base = rows(&spec, 0.8);
+        for (case, expected) in [
+            (0, "unmatched achieved connections"),
+            (1, "unmatched compute"),
+            (2, "failed or timed out"),
+            (3, "missing evaluation"),
+            (4, "no connection saving"),
+            (5, "global proposal not accepted"),
+        ] {
+            let mut rows = base.clone();
+            for row in rows.iter_mut().filter(|r| r.arm == Arm::Global) {
+                match case {
+                    0 => row.achieved_connections = 5,
+                    1 => row.search.reported_record_evaluations = 100,
+                    2 => row.error = Some("connection-budget: scorer failed".into()),
+                    3 => row.held_out = None,
+                    4 => row.achieved_connections = 7,
+                    _ => row.accepted_connections = 7,
+                }
+            }
+            if case == 4 {
+                for row in &mut rows {
+                    row.achieved_connections = 7;
+                }
+            }
+            let report = summarise(&spec, &rows);
+            assert_eq!(report.comparisons[0].matched_pairs, 0, "{case}");
+            assert_eq!(report.comparisons[0].exclusions[expected], 4, "{case}");
+        }
+        let missing = summarise(&spec, &[]);
+        assert_eq!(missing.comparisons[0].exclusions["missing global arm"], 4);
+        let without_control: Vec<_> = base.into_iter().filter(|r| r.arm == Arm::Global).collect();
+        let missing = summarise(&spec, &without_control);
+        assert_eq!(missing.comparisons[0].exclusions["missing arm"], 4);
     }
 }

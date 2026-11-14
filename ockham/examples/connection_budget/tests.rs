@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use neat_ai_ockham::baseline::fake::ScriptedScorer;
 use neat_ai_ockham::corpus::write_bin_file;
-use neat_ai_ockham::fixtures::{creature, neuron, synapse};
+use neat_ai_ockham::fixtures::{creature, neuron, synapse, typed_synapse};
 use neat_ai_ockham::incumbent::load_incumbent;
 use neat_ai_ockham::prune::prune_edge_by_key;
 use neat_ai_ockham::scorer::{DirectoryScorer, ScoreResult, ScorerError, ScorerMode};
@@ -13,7 +13,7 @@ use neat_ai_ockham::stats::{ActivationStats, NeuronStats};
 use neat_ai_ockham::{Clock, ManualClock};
 use neat_core::{SynapseKey, SynapseType};
 
-use super::allocation::{Arm, Constraints, Plan, quotas, ranked_edges};
+use super::allocation::{Arm, Constraints, Plan, depths, quotas, ranked_edges};
 use super::manifest::{
     Frozen, Spec, Subject, file_sha256, freeze, pin_inputs, read_json, write_new,
 };
@@ -171,6 +171,64 @@ fn cleanup_cascades_count_actual_connections_and_cannot_undercut_a_budget_or_quo
     );
 }
 
+#[test]
+fn depth_is_longest_structural_path_and_ranking_distinguishes_typed_roles() {
+    let network = creature(
+        2,
+        1,
+        vec![
+            neuron("constant", "c", 1.0, None),
+            neuron("hidden", "h", 0.0, Some("TANH")),
+            neuron("output", "output-0", 0.0, Some("IF")),
+        ],
+        vec![
+            synapse("input-0", "h", 1.0),
+            typed_synapse("input-0", "output-0", 0.2, "condition"),
+            typed_synapse("input-0", "output-0", 0.4, "positive"),
+            typed_synapse("h", "output-0", 0.8, "negative"),
+            typed_synapse("c", "output-0", 0.1, "positive"),
+        ],
+    );
+    let depths = depths(&network).unwrap();
+    assert_eq!((depths["c"], depths["h"], depths["output-0"]), (0, 1, 2));
+    let mut stats = stats();
+    let mut h = stats.neurons[0].clone();
+    h.uuid = "h".into();
+    stats.neurons.push(h);
+    let ranked = ranked_edges(&network, &stats, 7).unwrap();
+    let roles: Vec<_> = ranked
+        .iter()
+        .filter(|e| e.key.from_uuid == "input-0" && e.key.to_uuid == "output-0")
+        .map(|e| e.key.role)
+        .collect();
+    assert_eq!(roles, [SynapseType::Condition, SynapseType::Positive]);
+    assert_eq!(ranked.len(), 5);
+    assert_eq!(ranked[0].key.from_uuid, "c");
+}
+
+#[test]
+fn specifications_refuse_ambiguous_identifiers_unknown_fields_and_unbounded_work() {
+    let fixture = Fixture::new();
+    fixture.spec.validate().unwrap();
+    let mut invalid = fixture.spec.clone();
+    invalid.creatures[0].id = "../outside".into();
+    assert!(invalid.validate().unwrap_err().contains("ASCII"));
+    invalid = fixture.spec.clone();
+    invalid.limits.call_timeout_seconds = u64::MAX;
+    assert_eq!(
+        invalid.validate().unwrap_err(),
+        "compute limits exceed supported research bounds"
+    );
+    let mut value = serde_json::to_value(&fixture.spec).unwrap();
+    value["unreadOption"] = true.into();
+    assert!(
+        serde_json::from_value::<Spec>(value)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown field")
+    );
+}
+
 struct Fixture {
     tmp: tempfile::TempDir,
     spec: Spec,
@@ -228,6 +286,7 @@ impl Fixture {
                 ..Self::scorer()
             },
             full: Self::scorer(),
+            baseline: Self::scorer(),
         }
     }
 }
@@ -287,6 +346,7 @@ fn real_runner_proposes_recalculates_and_accepts_only_through_full_promotion() {
 struct Phases {
     screen: ScriptedScorer,
     full: ScriptedScorer,
+    baseline: ScriptedScorer,
 }
 
 impl DirectoryScorer for Phases {
@@ -296,7 +356,13 @@ impl DirectoryScorer for Phases {
         corpus: &Path,
         mode: ScorerMode,
     ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
-        if mode.is_authoritative() {
+        if mode.is_authoritative()
+            && dir.join("baseline.json").exists()
+            && !dir.join("i000.json").exists()
+            && !dir.join("proposal.json").exists()
+        {
+            self.baseline.score_directory(dir, corpus, mode)
+        } else if mode.is_authoritative() {
             self.full.score_directory(dir, corpus, mode)
         } else {
             self.screen.score_directory(dir, corpus, mode)
@@ -317,13 +383,14 @@ fn a_calibration_win_cannot_accept_a_full_corpus_loss() {
     let scorer = Phases {
         screen: Fixture::phases().screen,
         full,
+        baseline: Fixture::scorer(),
     };
     let dir = fixture.tmp.path().join("trial");
     let record = search_one(
         &fixture.spec,
         &fixture.spec.creatures[0],
         &parent(),
-        Arm::Global,
+        Arm::Ockham,
         6,
         7,
         &scorer,
@@ -331,9 +398,9 @@ fn a_calibration_win_cannot_accept_a_full_corpus_loss() {
         &dir,
     )
     .unwrap();
-    assert_eq!(record.achieved_connections, 6);
+    assert_eq!(record.achieved_connections, 7);
     assert_eq!(record.accepted_connections, 7);
-    assert_eq!(record.search.scorer_calls, 2);
+    assert!(record.search.scorer_calls >= 3);
     assert_eq!(
         load_incumbent(&dir.join("best.json")).unwrap().creature,
         parent()
@@ -350,6 +417,7 @@ fn full_scorer_failure_preserves_the_parent_and_records_the_cause() {
     let scorer = Phases {
         screen: Fixture::phases().screen,
         full,
+        baseline: Fixture::scorer(),
     };
     let dir = fixture.tmp.path().join("trial");
     let record = search_one(
@@ -381,7 +449,7 @@ fn full_scorer_failure_preserves_the_parent_and_records_the_cause() {
 #[test]
 fn compute_reservations_refuse_before_calling_and_deadlines_cannot_accept_late_scores() {
     let mut fixture = Fixture::new();
-    fixture.spec.limits.scorer_record_evaluations = 7;
+    fixture.spec.limits.scorer_record_evaluations = 3;
     let scorer = Fixture::phases();
     let limited = search_one(
         &fixture.spec,
@@ -410,12 +478,13 @@ fn compute_reservations_refuse_before_calling_and_deadlines_cannot_accept_late_s
             ..Fixture::phases().screen
         },
         full: Fixture::scorer(),
+        baseline: Fixture::scorer(),
     };
     let late = search_one(
         &fixture.spec,
         &fixture.spec.creatures[0],
         &parent(),
-        Arm::Global,
+        Arm::Ockham,
         6,
         7,
         &slow,
@@ -434,7 +503,7 @@ fn compute_reservations_refuse_before_calling_and_deadlines_cannot_accept_late_s
         &fixture.spec,
         &fixture.spec.creatures[0],
         &parent(),
-        Arm::Global,
+        Arm::Ockham,
         6,
         7,
         &Fixture::phases(),

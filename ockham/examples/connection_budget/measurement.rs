@@ -165,7 +165,10 @@ impl DirectoryScorer for Metered<'_> {
     }
 }
 
-pub struct TimedExternal(ExternalScorer);
+pub struct TimedExternal {
+    scorer: ExternalScorer,
+    identity: String,
+}
 
 impl DirectoryScorer for TimedExternal {
     fn score_directory(
@@ -174,7 +177,7 @@ impl DirectoryScorer for TimedExternal {
         corpus: &Path,
         mode: ScorerMode,
     ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
-        let mut scorer = self.0.clone();
+        let mut scorer = self.scorer.clone();
         if let ScorerMode::Sample { rate, phase } = mode {
             scorer.extra_args.extend([
                 "--sample-rate".into(),
@@ -187,7 +190,7 @@ impl DirectoryScorer for TimedExternal {
     }
 
     fn identity(&self) -> String {
-        self.0.identity()
+        self.identity.clone()
     }
 }
 
@@ -207,10 +210,13 @@ pub fn external(spec: &Spec) -> Result<TimedExternal, String> {
         spec.scorer.to_string_lossy().into_owned(),
     ];
     args.extend(spec.scorer_args.clone());
-    Ok(TimedExternal(ExternalScorer {
-        binary: timeout,
-        extra_args: args,
-    }))
+    Ok(TimedExternal {
+        scorer: ExternalScorer {
+            binary: timeout,
+            extra_args: args,
+        },
+        identity: format!("sha256:{}", super::manifest::file_sha256(&spec.scorer)?),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

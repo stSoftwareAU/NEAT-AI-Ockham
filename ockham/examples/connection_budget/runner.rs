@@ -8,11 +8,11 @@ use std::time::Instant;
 use neat_ai_ockham::clock::{Clock, SystemClock};
 use neat_ai_ockham::corpus::corpus_info;
 use neat_ai_ockham::incumbent::{Incumbent, load_incumbent, sha256_hex};
-use neat_ai_ockham::promote::{FullConfig, evaluate_full};
+use neat_ai_ockham::promote::{FullConfig, evaluate_full, evaluate_full_proposal};
 use neat_ai_ockham::prune::prune_edge_by_key;
 use neat_ai_ockham::scorer::{DirectoryScorer, ScoreResult, ScorerMode};
 use neat_ai_ockham::stats::{ActivationStats, SampleSpec, compute_activation_stats, source_value};
-use neat_ai_ockham::sweep::{CandidateKind, ScreenConfig, Sweep, SweepCandidate, screen_batch};
+use neat_ai_ockham::sweep::{ScreenConfig, Sweep, SweepCandidate, screen_batch};
 use neat_core::training_data::TrainingDataConfig;
 use neat_core::{CreatureExport, creature_to_json};
 use serde::{Deserialize, Serialize};
@@ -98,7 +98,6 @@ fn calibrate(
 }
 
 // Use the existing screen and authoritative promotion, with no bundle or acceptance rule added.
-#[allow(clippy::too_many_arguments)]
 fn judge(
     parent: &CreatureExport,
     stats: &ActivationStats,
@@ -107,7 +106,6 @@ fn judge(
     spec: &Spec,
     meter: &Metered<'_>,
     dir: &Path,
-    force_measurement: bool,
 ) -> Result<Option<CreatureExport>, String> {
     let screen_dir = dir.join("screen");
     let screened = screen_batch(
@@ -119,8 +117,7 @@ fn judge(
         ScreenConfig {
             sample_rate: spec.screen_rate,
             sample_phase: 0,
-            // Budget proposals are all measured; a calibration loss is recorded, not used to hide a full result.
-            threshold: if force_measurement { -f64::MAX } else { 0.0 },
+            threshold: 0.0,
             remaining_after: 0,
             dir: &screen_dir,
         },
@@ -174,9 +171,21 @@ pub fn search_one(
     let mut stop = "target-reached".to_string();
     let mut step = 0;
     let result = (|| -> Result<(), String> {
-        let incumbent = Incumbent::from_creature(parent.clone(), &subject.id).map_err(|e| e.to_string())?;
-        let corpus = corpus_info(&subject.training, &TrainingDataConfig::new(parent.input, parent.output))?;
-        neat_ai_ockham::establish_baseline(clock, &incumbent, &subject.training, &corpus, &meter, &spec.scorer_args, &dir.join("baseline"))?;
+        let incumbent =
+            Incumbent::from_creature(parent.clone(), &subject.id).map_err(|e| e.to_string())?;
+        let corpus = corpus_info(
+            &subject.training,
+            &TrainingDataConfig::new(parent.input, parent.output),
+        )?;
+        neat_ai_ockham::establish_baseline(
+            clock,
+            &incumbent,
+            &subject.training,
+            &corpus,
+            &meter,
+            &spec.scorer_args,
+            &dir.join("baseline"),
+        )?;
         let mut stats = calibrate(&proposal, subject, &meter)?;
         if arm == Arm::Ockham {
             let mut sweep = Sweep::new(&proposal, seed);
@@ -221,7 +230,7 @@ pub fn search_one(
                 step += 1;
                 std::fs::create_dir(&step_dir).map_err(|e| e.to_string())?;
                 if let Some(winner) = judge(
-                    &proposal, &stats, candidate, subject, spec, &meter, &step_dir, false,
+                    &proposal, &stats, candidate, subject, spec, &meter, &step_dir,
                 )? {
                     proposal = winner;
                     accepted = proposal.clone();
@@ -303,23 +312,16 @@ pub fn search_one(
                 }
             }
             if proposal != *parent && !meter.expired() {
-                let candidate = SweepCandidate {
-                    uuid: "budget-proposal".into(),
-                    members: vec!["budget-proposal".into()],
-                    permutation_index: 0,
-                    kind: CandidateKind::Group,
-                    merged_with: None,
-                    from_uuid: None,
-                    to_uuid: None,
-                    weight: None,
-                    prune: None,
-                    stem: "proposal".into(),
-                    creature: proposal.clone(),
-                };
-                if let Some(winner) =
-                    judge(parent, &stats, candidate, subject, spec, &meter, dir, true)?
-                {
-                    accepted = winner;
+                let (_, winner) = evaluate_full_proposal(
+                    &meter,
+                    &subject.training,
+                    parent,
+                    &proposal,
+                    spec.min_improvement,
+                    &dir.join("full"),
+                )?;
+                if let Some(winner) = winner {
+                    accepted = winner.creature;
                 }
             }
         }
