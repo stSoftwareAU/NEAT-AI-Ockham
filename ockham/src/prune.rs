@@ -622,8 +622,27 @@ pub fn prune_edge(
         to_uuid: to_uuid.to_string(),
         role,
     };
+    prune_edge_by_key(incumbent, &key, source_value, source_stats)
+}
+
+/// Prune the exact `(from, to, role)` edge through the canonical core engine.
+///
+/// Unlike [`prune_edge`], this request distinguishes roles sharing a pair.
+/// Compensation, cleanup, validation and reporting use the same path as the
+/// pair-based wrapper. The supplied creature remains immutable.
+///
+/// # Errors
+///
+/// [`PruneRefusal`] when the exact key is absent, core refuses the request, or
+/// the returned creature fails validation.
+pub fn prune_edge_by_key(
+    incumbent: &CreatureExport,
+    key: &SynapseKey,
+    source_value: Option<f64>,
+    source_stats: Option<&NeuronStats>,
+) -> Result<PrunedCandidate, PruneRefusal> {
     let before = StructureSnapshot::of(incumbent);
-    let result = prune_synapse(incumbent, &key, hint(source_value, source_stats).as_ref())
+    let result = prune_synapse(incumbent, key, hint(source_value, source_stats).as_ref())
         .map_err(|e| PruneRefusal::of(&e))?;
     let mut detail = PruneDetail::default();
     detail.absorb(&result);
