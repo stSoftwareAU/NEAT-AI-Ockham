@@ -1,0 +1,858 @@
+{
+  "formatVersion": 1,
+  "conclusion": "inconclusive",
+  "studyKind": "synthetic-pilot",
+  "plannedRuns": 128,
+  "completedRuns": 128,
+  "failedRuns": 0,
+  "timeouts": 0,
+  "targetMisses": 0,
+  "representativeIndependentUnits": 0,
+  "uncertainty": "paired seed/model means clustered by independent unit; deterministic percentile bootstrap; Bonferroni familywise 95% across arms and targets; null for fewer than two units",
+  "timingEnvironment": "indicative measurements on a shared, parallel host; latency excludes scorer execution, IO and compilation",
+  "comparisons": [
+    {
+      "comparator": "per-neuron",
+      "requestedConnections": 18,
+      "expectedPairs": 16,
+      "matchedPairs": 16,
+      "independentUnits": 8,
+      "exclusions": {},
+      "pairs": [
+        {
+          "subject": "layered-0",
+          "independentUnit": "layered-0",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-0",
+          "independentUnit": "layered-0",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-3",
+          "independentUnit": "layered-3",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-3",
+          "independentUnit": "layered-3",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-6",
+          "independentUnit": "layered-6",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-6",
+          "independentUnit": "layered-6",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        }
+      ],
+      "fullScoreGain": {
+        "mean": 0.0,
+        "lower": 0.0,
+        "upper": 0.0
+      },
+      "heldOutScoreGain": {
+        "mean": 0.0,
+        "lower": 0.0,
+        "upper": 0.0
+      },
+      "globalWorstOutputMseIncrease": 6.481497454082154e-11,
+      "passesPredeclaredCriteria": false
+    },
+    {
+      "comparator": "per-depth",
+      "requestedConnections": 18,
+      "expectedPairs": 16,
+      "matchedPairs": 16,
+      "independentUnits": 8,
+      "exclusions": {},
+      "pairs": [
+        {
+          "subject": "layered-0",
+          "independentUnit": "layered-0",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-0",
+          "independentUnit": "layered-0",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-3",
+          "independentUnit": "layered-3",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-3",
+          "independentUnit": "layered-3",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-6",
+          "independentUnit": "layered-6",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-6",
+          "independentUnit": "layered-6",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        }
+      ],
+      "fullScoreGain": {
+        "mean": 0.0,
+        "lower": 0.0,
+        "upper": 0.0
+      },
+      "heldOutScoreGain": {
+        "mean": 0.0,
+        "lower": 0.0,
+        "upper": 0.0
+      },
+      "globalWorstOutputMseIncrease": 6.481497454082154e-11,
+      "passesPredeclaredCriteria": false
+    },
+    {
+      "comparator": "ockham",
+      "requestedConnections": 18,
+      "expectedPairs": 16,
+      "matchedPairs": 12,
+      "independentUnits": 7,
+      "exclusions": {
+        "unmatched compute": 4
+      },
+      "pairs": [
+        {
+          "subject": "layered-0",
+          "independentUnit": "layered-0",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": -0.000015082632734753076,
+          "heldOutScoreGain": -0.000011873120779881674
+        },
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": -8.944117389830808e-6,
+          "heldOutScoreGain": -6.111224045479702e-6
+        },
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": -6.362543765403572e-6,
+          "heldOutScoreGain": -4.341298597720922e-6
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": -8.030708702588818e-6,
+          "heldOutScoreGain": -4.716813323257796e-6
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": -5.416089464138629e-6,
+          "heldOutScoreGain": -2.8443831975311085e-6
+        },
+        {
+          "subject": "layered-3",
+          "independentUnit": "layered-3",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": -4.985088913778135e-6,
+          "heldOutScoreGain": -7.70932555538284e-6
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": -0.000015998698731145566,
+          "heldOutScoreGain": -0.000013319595198457712
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": -0.000010706635237389683,
+          "heldOutScoreGain": -9.048949976442344e-6
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": -8.164634032192808e-6,
+          "heldOutScoreGain": -0.000014268140576700894
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": -6.037622054089198e-6,
+          "heldOutScoreGain": -0.000011355386608791207
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 7,
+          "achievedConnections": 18,
+          "fullScoreGain": -8.138839357685335e-6,
+          "heldOutScoreGain": -8.23014013384693e-6
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 19,
+          "achievedConnections": 18,
+          "fullScoreGain": -7.145045804013428e-6,
+          "heldOutScoreGain": -6.932394200465097e-6
+        }
+      ],
+      "fullScoreGain": {
+        "mean": -8.93431270253859e-6,
+        "lower": -0.000012711210154535215,
+        "upper": -6.244103723328033e-6
+      },
+      "heldOutScoreGain": {
+        "mean": -8.595229894944481e-6,
+        "lower": -0.000011680568381895145,
+        "upper": -5.297844306703262e-6
+      },
+      "globalWorstOutputMseIncrease": 6.481497454082154e-11,
+      "passesPredeclaredCriteria": false
+    },
+    {
+      "comparator": "per-neuron",
+      "requestedConnections": 16,
+      "expectedPairs": 16,
+      "matchedPairs": 16,
+      "independentUnits": 8,
+      "exclusions": {},
+      "pairs": [
+        {
+          "subject": "layered-0",
+          "independentUnit": "layered-0",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-0",
+          "independentUnit": "layered-0",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-3",
+          "independentUnit": "layered-3",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-3",
+          "independentUnit": "layered-3",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-6",
+          "independentUnit": "layered-6",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-6",
+          "independentUnit": "layered-6",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        }
+      ],
+      "fullScoreGain": {
+        "mean": 0.0,
+        "lower": 0.0,
+        "upper": 0.0
+      },
+      "heldOutScoreGain": {
+        "mean": 0.0,
+        "lower": 0.0,
+        "upper": 0.0
+      },
+      "globalWorstOutputMseIncrease": 6.481497454082154e-11,
+      "passesPredeclaredCriteria": false
+    },
+    {
+      "comparator": "per-depth",
+      "requestedConnections": 16,
+      "expectedPairs": 16,
+      "matchedPairs": 16,
+      "independentUnits": 8,
+      "exclusions": {},
+      "pairs": [
+        {
+          "subject": "layered-0",
+          "independentUnit": "layered-0",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-0",
+          "independentUnit": "layered-0",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-3",
+          "independentUnit": "layered-3",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-3",
+          "independentUnit": "layered-3",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-6",
+          "independentUnit": "layered-6",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-6",
+          "independentUnit": "layered-6",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        }
+      ],
+      "fullScoreGain": {
+        "mean": 0.0,
+        "lower": 0.0,
+        "upper": 0.0
+      },
+      "heldOutScoreGain": {
+        "mean": 0.0,
+        "lower": 0.0,
+        "upper": 0.0
+      },
+      "globalWorstOutputMseIncrease": 6.481497454082154e-11,
+      "passesPredeclaredCriteria": false
+    },
+    {
+      "comparator": "ockham",
+      "requestedConnections": 16,
+      "expectedPairs": 16,
+      "matchedPairs": 11,
+      "independentUnits": 6,
+      "exclusions": {
+        "unmatched compute": 5
+      },
+      "pairs": [
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": -0.000015383093776244472,
+          "heldOutScoreGain": -9.940970131516735e-6
+        },
+        {
+          "subject": "layered-1",
+          "independentUnit": "layered-1",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": -0.000013706750918274224,
+          "heldOutScoreGain": -7.495495058962298e-6
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": -0.000015401078578336502,
+          "heldOutScoreGain": -0.000015105436934947924
+        },
+        {
+          "subject": "layered-2",
+          "independentUnit": "layered-2",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": -0.000018783944146893994,
+          "heldOutScoreGain": -3.169374070632891e-6
+        },
+        {
+          "subject": "layered-3",
+          "independentUnit": "layered-3",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": -0.000013816947991518447,
+          "heldOutScoreGain": -0.00001792597790117867
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": -0.000027141143973952175,
+          "heldOutScoreGain": -0.000028749261463900666
+        },
+        {
+          "subject": "layered-4",
+          "independentUnit": "layered-4",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": -0.0000392687453671936,
+          "heldOutScoreGain": -0.000029149971225939098
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": -0.000018928291053432744,
+          "heldOutScoreGain": -0.00003195879773287835
+        },
+        {
+          "subject": "layered-5",
+          "independentUnit": "layered-5",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": -0.000013392483207641526,
+          "heldOutScoreGain": -0.00002730133413253455
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 7,
+          "achievedConnections": 16,
+          "fullScoreGain": -0.00001613782597709168,
+          "heldOutScoreGain": -0.00001709761029244916
+        },
+        {
+          "subject": "layered-7",
+          "independentUnit": "layered-7",
+          "seed": 19,
+          "achievedConnections": 16,
+          "fullScoreGain": -0.000012948105309940061,
+          "heldOutScoreGain": -0.00001301163602274169
+        }
+      ],
+      "fullScoreGain": {
+        "mean": -0.000018227113191003157,
+        "lower": -0.000027254181360014673,
+        "upper": -0.000014180609052098317
+      },
+      "heldOutScoreGain": {
+        "mean": -0.000018235986905738393,
+        "lower": -0.000027225751535594107,
+        "upper": -0.00001005374629399943
+      },
+      "globalWorstOutputMseIncrease": 2.3810998555044564e-12,
+      "passesPredeclaredCriteria": false
+    }
+  ],
+  "freezeMs": 38.318208999999996,
+  "verificationMs": 58.344375,
+  "totalRunMs": 1791.2159589999999,
+  "freezeRecordsHashed": 3584,
+  "verificationRecordsHashed": 7168,
+  "searchStatisticsRecords": 24576,
+  "searchProposalAttempts": 395,
+  "scorerReportedRecordEvaluations": 358016,
+  "scorerReservedRecordEvaluations": 383232,
+  "diagnosticRecordEvaluations": 32768,
+  "latencyRecordEvaluations": 393216
+}
