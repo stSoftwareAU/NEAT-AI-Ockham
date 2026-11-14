@@ -641,6 +641,19 @@ pub fn prune_edge_by_key(
     source_value: Option<f64>,
     source_stats: Option<&NeuronStats>,
 ) -> Result<PrunedCandidate, PruneRefusal> {
+    if !incumbent.synapses.iter().any(|edge| {
+        edge.from_uuid == key.from_uuid
+            && edge.to_uuid == key.to_uuid
+            && parse_synapse_type(edge.synapse_type.as_deref()) == key.role
+    }) {
+        return Err(PruneRefusal {
+            reason: BlockedReason::Other,
+            detail: format!(
+                "no synapse `{}`→`{}` with role {}",
+                key.from_uuid, key.to_uuid, role_label(key.role)
+            ),
+        });
+    }
     let before = StructureSnapshot::of(incumbent);
     let result = prune_synapse(incumbent, key, hint(source_value, source_stats).as_ref())
         .map_err(|e| PruneRefusal::of(&e))?;
