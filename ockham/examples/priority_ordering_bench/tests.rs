@@ -803,3 +803,216 @@ fn comparison_charges_incomplete_calibration_and_unitemised_preparation() {
     assert_eq!(trial("random", 4)["preparationMs"], 4_522);
     assert_eq!(output["verdict"], "inconclusive");
 }
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?} failed");
+}
+
+#[test]
+fn clean_source_guard_is_independent_of_the_working_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    git(root, &["init", "--quiet"]);
+    let package = root.join("ockham");
+    std::fs::create_dir_all(package.join("src")).unwrap();
+    std::fs::write(package.join("src/lib.rs"), "// v1\n").unwrap();
+    for name in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"] {
+        std::fs::write(root.join(name), "v1\n").unwrap();
+    }
+    git(root, &["add", "."]);
+    git(root, &["commit", "--quiet", "-m", "initial"]);
+    // Run from the repository root, the package directory and a nested one.
+    let places = [root.to_path_buf(), package.clone(), package.join("src")];
+    for place in &places {
+        assert!(source_is_clean(place).unwrap(), "clean from {place:?}");
+    }
+    for file in [
+        package.join("src/lib.rs"),
+        root.join("Cargo.lock"),
+        root.join("rust-toolchain.toml"),
+        root.join("Cargo.toml"),
+    ] {
+        let original = std::fs::read(&file).unwrap();
+        std::fs::write(&file, "edited\n").unwrap();
+        for place in &places {
+            assert!(
+                !source_is_clean(place).unwrap(),
+                "edit to {file:?} must be detected from {place:?}"
+            );
+        }
+        std::fs::write(&file, original).unwrap();
+        assert!(source_is_clean(&package).unwrap());
+    }
+    // Staged but uncommitted edits are also uncommitted.
+    std::fs::write(package.join("src/lib.rs"), "staged\n").unwrap();
+    git(root, &["add", "."]);
+    assert!(!source_is_clean(&package).unwrap());
+}
+
+/// Three independent validation groups, each with a same-family calibration
+/// task, plus one source task. Source history and validation pools carry a
+/// signal that only the learned features can see: the partial score is
+/// constant and calibration labels are uninformative, so random, partial and
+/// target-only ordering are all chance-level. Six of forty candidates
+/// improve; the budget of five therefore rejects one of them.
+fn verdict_manifest(gain: f64, false_rejection: f64, cost_ratio: f64) -> Manifest {
+    let digest = |n: usize| format!("{n:064x}");
+    let mut tasks = vec![json!({
+        "id":"source", "family":"fs", "lineage":"ls", "corpusVersion":"vs", "split":"source",
+        "parent":"ps", "parentSha256":digest(1), "corpus":"cs", "corpusSha256":digest(2),
+        "corpusIdentity":"cs",
+        "history":{"path":"/private/history.jsonl","sha256":digest(3),"acquisitionMs":1000}
+    })];
+    for n in 0..3 {
+        for (kind, split) in [("cal", "calibration"), ("val", "validation")] {
+            let offset = 10 + n * 10 + if kind == "cal" { 0 } else { 5 };
+            tasks.push(json!({
+                "id":format!("{kind}{n}"), "family":format!("family{n}"),
+                "lineage":format!("lineage-{kind}{n}"), "corpusVersion":format!("version-{kind}{n}"),
+                "split":split, "parent":format!("p-{kind}{n}"), "parentSha256":digest(offset),
+                "corpus":format!("c-{kind}{n}"), "corpusSha256":digest(offset + 1),
+                "corpusIdentity":format!("c-{kind}{n}"), "history":null
+            }));
+        }
+    }
+    let mut m = manifest();
+    m.tasks = serde_json::from_value(json!(tasks)).unwrap();
+    m.seeds = vec![7, 19];
+    m.minimum_recall_gain = gain;
+    m.maximum_false_rejection = false_rejection;
+    m.maximum_cost_ratio = cost_ratio;
+    m.validate().unwrap();
+    m
+}
+
+fn verdict_signal(i: usize) -> f64 {
+    if i >= 34 {
+        0.1 + i as f64 * 0.01
+    } else {
+        -0.5 + i as f64 * 0.001
+    }
+}
+
+fn verdict_audit(m: &Manifest) -> audit::Audit {
+    let mut a = artificial_audit(m);
+    for pool in &mut a.pools {
+        let informative = pool.task.starts_with("val");
+        for row in &mut pool.rows {
+            let i = row.visit[1..].parse::<usize>().unwrap();
+            row.sample_delta = Some(0.0);
+            row.full_delta = Some(if informative || pool.task == "source" {
+                verdict_signal(i)
+            } else {
+                -0.5
+            });
+        }
+    }
+    let source = &m.tasks[0];
+    let stamp = neat_ai_ockham::RunStamp {
+        host: "test".into(),
+        corpus_identity: source.corpus_identity.clone(),
+        creature_checksum: source.parent_sha256.clone(),
+        ordering: "random".into(),
+        seed: 7,
+    };
+    a.histories[0].task = source.id.clone();
+    a.histories[0].records = (0..40)
+        .map(|i| {
+            let f = neat_ai_ockham::CandidateFeatures {
+                measured: true,
+                mean_abs: i as f64 / 40.0,
+                outgoing_weight: 1.0,
+                cascade_growth_units: 1.0,
+                ..Default::default()
+            };
+            let mut row = neat_ai_ockham::CandidateRecord::new(
+                &stamp,
+                &format!("h{i}"),
+                "ablation",
+                &f,
+                neat_ai_ockham::CandidateOutcome::Rejected,
+            );
+            row.unix_secs = 90;
+            row.sample_delta = Some(0.0);
+            row.full_delta = Some(verdict_signal(i));
+            row
+        })
+        .collect();
+    a
+}
+
+fn verdict(m: &Manifest) -> (String, Vec<String>) {
+    let report = serde_json::to_value(
+        evaluation::evaluate(m, &verdict_audit(m), "c".repeat(64), 0).unwrap(),
+    )
+    .unwrap();
+    let reasons = report["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r.as_str().unwrap().to_string())
+        .collect();
+    (report["verdict"].as_str().unwrap().to_string(), reasons)
+}
+
+#[test]
+fn verdict_requires_recall_false_rejection_and_cost_thresholds() {
+    let (verdict_name, reasons) = verdict(&verdict_manifest(0.05, 0.2, 100.0));
+    assert_eq!(
+        verdict_name, "supported-for-further-research",
+        "{reasons:?}"
+    );
+    assert!(reasons.is_empty(), "{reasons:?}");
+
+    for (m, expected) in [
+        // The gain cannot be exceeded when recall is at most one.
+        (
+            verdict_manifest(1.0, 0.2, 100.0),
+            "recall=false, false rejection=true, total cost=true",
+        ),
+        // Five evaluations miss one of six improvements: 1/6 > 0.1.
+        (
+            verdict_manifest(0.05, 0.1, 100.0),
+            "recall=true, false rejection=false, total cost=true",
+        ),
+        // Transfer also pays for history and calibration, so it cannot be
+        // no more expensive than the partial-score control.
+        (
+            verdict_manifest(0.05, 0.2, 1.0),
+            "recall=true, false rejection=true, total cost=false",
+        ),
+    ] {
+        let (verdict_name, reasons) = verdict(&m);
+        assert_eq!(verdict_name, "no-demonstrated-benefit", "{reasons:?}");
+        assert_eq!(reasons, vec![format!("predeclared thresholds: {expected}")]);
+    }
+}
+
+#[test]
+fn verdict_is_inconclusive_when_fewer_than_three_groups_validate() {
+    let mut m = verdict_manifest(0.05, 0.2, 100.0);
+    m.tasks.retain(|t| !t.id.ends_with('2'));
+    m.validate().unwrap();
+    let (verdict_name, reasons) = verdict(&m);
+    assert_eq!(verdict_name, "inconclusive");
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r.contains("independent validation groups"))
+    );
+}

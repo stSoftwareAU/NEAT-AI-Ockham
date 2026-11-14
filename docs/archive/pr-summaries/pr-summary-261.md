@@ -5,8 +5,10 @@ and authoritative acceptance. Fixed its audit-to-history corpus identity mismatc
 and verified bounded scoring against a real scorer in earlier branch work.
 The completion retry fixes understated strategy costs: recorded incomplete
 calibration pools retain their acquisition cost, and validation preparation
-includes residual measured pool work. Representative comparison results remain
-unavailable. Part of #261.
+includes residual measured pool work. The review round fixes the clean-source
+guard, which now holds when the command runs from `ockham/`, and adds tests for
+the verdict decision rule. Representative comparison results remain unavailable.
+Part of #261.
 
 ## Spec
 
@@ -26,6 +28,9 @@ unavailable. Part of #261.
   and cutoff checks remain in place; no persisted format version changes.
 - Missing representative data leaves metrics unknown and the verdict inconclusive.
   Absent measurements do not justify removing the optional ranker.
+- The clean-source guard uses repository-root pathspecs (`:/ockham`,
+  `:/Cargo.toml`, `:/Cargo.lock`, `:/rust-toolchain.toml`) and `git -C`, so
+  uncommitted edits are detected from any directory of the checkout.
 - Charge recorded calibration work even when its incomplete labels cannot train
   a model. Retain residual pool wall time as preparation; never charge less than
   the sum of individually timed stages.
@@ -82,7 +87,7 @@ flowchart LR
 - **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance. No automatic deployment or default change. — evidence: `ockham/examples/priority_ordering_bench.rs` experiment dispatch; `ockham/examples/priority_ordering_bench/tests.rs::audit_scores_sampled_losers_individually_and_preserves_parent` — reviewer: met
 - **partial** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria. Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs. — evidence: `ockham/examples/priority_ordering_bench/manifest.rs`, `ockham/examples/priority_ordering_bench/experiment.rs::freeze`, `ockham/examples/priority_ordering_bench/tests.rs::comparison_charges_incomplete_calibration_and_unitemised_preparation` — reviewer: partial — reason: representative provenance, pilot and frozen manifest remain unavailable; build/final output costs are excluded and some shared preparation is only in actual research totals.
 - **partial** — Audit a randomly selected fully scored pool to measure true top-5% recall, false rejection and cold-start/negative-transfer behaviour. — evidence: `ockham/examples/priority_ordering_bench/audit.rs`, `ockham/examples/priority_ordering_bench/tests.rs::comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted` — reviewer: partial — reason: deterministic audit and metric contracts pass, but no representative parent/corpus/history inputs or fully scored representative pools are available.
-- **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks. Research runs are separate from routine feature CI. — evidence: `ockham/examples/priority_ordering_bench/tests.rs::comparison_charges_incomplete_calibration_and_unitemised_preparation`, 12 experiment tests and fresh `./quality.sh < /dev/null` — reviewer: met
+- **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks. Research runs are separate from routine feature CI. — evidence: `ockham/examples/priority_ordering_bench/tests.rs::verdict_requires_recall_false_rejection_and_cost_thresholds`, `ockham/examples/priority_ordering_bench/tests.rs::clean_source_guard_is_independent_of_the_working_directory`, `ockham/examples/priority_ordering_bench/tests.rs::comparison_charges_incomplete_calibration_and_unitemised_preparation`, 15 experiment tests and fresh `./quality.sh < /dev/null` — reviewer: met
 - **partial** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit. — evidence: `docs/experiments/ranking-v1.md`, `docs/experiments/ranking-v1.template.json`, `ockham/examples/priority_ordering_bench/evaluation.rs`, `docs/experiments/ranking-v1-availability.json` — reviewer: partial — reason: commands and result machinery exist, but the manifest remains illustrative and representative paired distributions, uncertainty, coverage and benefit/cost results remain unmeasured.
 - **partial** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs. — evidence: `docs/experiments/ranking-v1-availability.json`, protocol current finding — reviewer: partial — reason: input unavailability is recorded and no success claimed; representative maintenance-value assessment remains unmeasured.
 - **met** — Keep public implementation and fixtures application-agnostic; private corpora/results and operational integration remain private. — evidence: illustrative `docs/experiments/ranking-v1.template.json` and application-agnostic fixture tests; no private research artifacts in diff — reviewer: met
@@ -90,7 +95,8 @@ flowchart LR
 
 The Spec reviewer reviewed the issue body and base-branch diff, then re-reviewed
 the new accounting diff and tests. The three retry criteria remain partial;
-none is relabelled met.
+none is relabelled met. The later automated review found that the verdict
+rule and the clean-source guard had no tests; both now do, as described below.
 
 ## Standards Review
 
@@ -106,16 +112,34 @@ this does not claim review against a nonexistent document.
 
 - Fresh completion-retry `./quality.sh < /dev/null` passed:
   shell contracts, spelling, Markdown, Actions lint, dependency audit, formatting,
-  all-target Clippy, workspace tests (707 library and 12 experiment tests) and
-  rustdoc. The real scorer is absent on this host, so its optional integration
+  all-target Clippy, workspace tests (707 library and 15 experiment tests) and
+  rustdoc. This was rerun after the review fixes below. The real scorer is absent on this host, so its optional integration
   test returned early. Earlier real-scorer evidence is retained separately.
-- `cargo test --locked --example priority_ordering_bench < /dev/null`: 12 passed.
+- `cargo test --locked --example priority_ordering_bench < /dev/null`: 15 passed.
   The new `comparison_charges_incomplete_calibration_and_unitemised_preparation`
   first failed with zero charged calibration milliseconds versus 6,000 expected,
   then passed after the fix. It verifies incomplete labels never enter fitting,
   residual validation preparation is charged, and the verdict stays inconclusive.
   `cargo clippy --locked --example priority_ordering_bench -- -D warnings < /dev/null`
   also passed.
+- Review fix, verdict rule: `verdict_requires_recall_false_rejection_and_cost_thresholds`
+  drives `evaluation::evaluate` with three independent validation groups, each
+  with a same-family calibration task, one source history and non-zero
+  acquisition cost. Its fixture hides the signal from the partial score and
+  calibration labels, so only transfer ranks well. It asserts
+  `supported-for-further-research` when all gates pass, and
+  `no-demonstrated-benefit` with the exact `predeclared thresholds` reason when
+  only the recall, only the false-rejection, or only the cost threshold fails.
+  `verdict_is_inconclusive_when_fewer_than_three_groups_validate` keeps the
+  inconclusive path. Mutation checks confirmed that inverting the recall
+  comparison, dropping the cost term, and loosening the false-rejection or cost
+  threshold each fail the first test.
+- Review fix, clean-source guard: `clean_source_guard_is_independent_of_the_working_directory`
+  creates a temporary repository and checks `source_is_clean` from the root,
+  `ockham/` and `ockham/src`. Edits to a source file, `Cargo.toml`, `Cargo.lock`,
+  `rust-toolchain.toml` and a staged edit are all detected, and a clean tree
+  passes. With the earlier unanchored pathspecs the test fails from the
+  subdirectories. No existing assertions were removed or weakened.
 - Retained branch regression evidence:
   `ockham/examples/priority_ordering_bench/tests.rs` extends
   `audit_scores_sampled_losers_individually_and_preserves_parent` to export real
@@ -153,8 +177,9 @@ this does not claim review against a nonexistent document.
 
 ## Merge verification
 
-Independent Spec and Standards sub-agent reviews are complete for the retry
-diff. CI and merge status are not yet verified.
+Independent Spec and Standards sub-agent reviews covered the retry diff. The
+later review-fix diff (clean-source guard and verdict tests) has had only the
+automated PR review that requested it; CI and merge status are not yet verified.
 
 ## Not performed and remaining risk
 

@@ -119,6 +119,29 @@ impl DirectoryScorer for BoundedScorer {
     }
 }
 
+/// Whether the sources and lockfile match `HEAD`. The pathspecs are anchored at
+/// the repository root (`:/`), so the answer does not depend on which
+/// subdirectory of the checkout `dir` is.
+fn source_is_clean(dir: &Path) -> Result<bool, String> {
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "diff",
+            "--quiet",
+            "HEAD",
+            "--",
+            ":/ockham",
+            ":/Cargo.toml",
+            ":/Cargo.lock",
+            ":/rust-toolchain.toml",
+        ])
+        .stdin(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .map_err(|e| e.to_string())
+}
+
 fn runtime(m: &Manifest) -> Result<BoundedScorer, String> {
     // Freeze against a clean source revision. Cargo's normal dependency tracking
     // rebuilds this example when its source or the library changes.
@@ -136,21 +159,7 @@ fn runtime(m: &Manifest) -> Result<BoundedScorer, String> {
     if String::from_utf8_lossy(&head.stdout).trim() != m.code_revision {
         return Err("code revision mismatch".into());
     }
-    let dirty = Command::new("git")
-        .args([
-            "diff",
-            "--quiet",
-            "HEAD",
-            "--",
-            "ockham",
-            "Cargo.toml",
-            "Cargo.lock",
-            "rust-toolchain.toml",
-        ])
-        .stdin(Stdio::null())
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !dirty.success() {
+    if !source_is_clean(Path::new("."))? {
         return Err("experiment requires committed source and lockfile".into());
     }
     if hash_file(&m.scorer)? != m.scorer_sha256 {
