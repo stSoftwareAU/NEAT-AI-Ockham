@@ -1,22 +1,26 @@
 //! `bench-strata` end to end (issue #263).
 //!
-//! The scorer here is an in-test fixture, not NEAT-AI's: it prices each
+//! The scorer here is an in-test stub, not `rust_scorer`. It prices each
 //! removed neuron per stratum from a table, so every score is a literal
-//! function of the cut. The corpora are real `.bin` directories, so the
-//! activation statistics, the manifest and the scratch directory all run for
-//! real. Nothing here depends on wall-clock time.
+//! function of the cut. It mirrors the directory-mode contract stated in the
+//! module doc of `ockham/src/scorer.rs`: one JSON object keyed by creature file
+//! stem, a `baseline` entry that is required, and any failure is an error. The
+//! corpora are real `.bin` directories, so the activation statistics, the
+//! manifest and the scratch directory all run for real. Nothing here depends on
+//! wall-clock time.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use neat_ai_ockham::corpus::write_bin_file;
-use neat_ai_ockham::fixtures::{creature, neuron, synapse};
-use neat_ai_ockham::incumbent::sha256_hex;
+use neat_ai_ockham::corpus::{corpus_info, write_bin_file};
+use neat_ai_ockham::fixtures::{creature, neuron, synapse, wide_creature};
+use neat_ai_ockham::incumbent::{sha256_hex, validate_creature};
 use neat_ai_ockham::scorer::{DirectoryScorer, ScoreResult, ScorerError, ScorerMode};
 use neat_ai_ockham::strata::bench::run_bench;
-use neat_ai_ockham::strata::report::{ArmSummary, RunRecord, StrataReport};
+use neat_ai_ockham::strata::report::{ArchiveEntry, ArmSummary, RunRecord, StrataReport};
+use neat_core::training_data::TrainingDataConfig;
 use neat_core::{CreatureExport, creature_to_json_pretty, parse_creature_json};
 use serde_json::{Value, json};
 
@@ -28,21 +32,20 @@ type Costs = BTreeMap<(String, String), f64>;
 
 /// Prices every absent neuron per stratum. The stratum is the training
 /// directory's final path component. Every call is recorded for assertions.
+///
+/// As a stand-in for `rust_scorer` in directory mode, it parses and validates
+/// every creature, refuses a creature whose widths differ from the corpus,
+/// takes record counts from `corpus_info`, requires `baseline.json`, and
+/// refuses sample mode.
 struct StratumScorer {
     costs: Costs,
-    records: BTreeMap<String, u64>,
     calls: RefCell<Vec<(PathBuf, Vec<String>)>>,
 }
 
 impl StratumScorer {
     fn new(costs: Costs) -> Self {
-        let records = [("north", 1000u64), ("south", 1000), ("rare", 100)]
-            .into_iter()
-            .map(|(n, c)| (n.to_string(), c))
-            .collect();
         Self {
             costs,
-            records,
             calls: RefCell::new(Vec::new()),
         }
     }
@@ -55,6 +58,14 @@ fn read_creature(path: &Path) -> Result<CreatureExport, ScorerError> {
         .map_err(|e| ScorerError::Malformed(format!("{}: {e}", path.display())))
 }
 
+/// A refusal, reported as a failed scorer run with its reason on stderr.
+fn refused(detail: String) -> ScorerError {
+    ScorerError::Failed {
+        status: "refused".to_string(),
+        stderr: detail,
+    }
+}
+
 impl DirectoryScorer for StratumScorer {
     fn score_directory(
         &self,
@@ -62,17 +73,27 @@ impl DirectoryScorer for StratumScorer {
         training_dir: &Path,
         mode: ScorerMode,
     ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
-        assert_eq!(
-            mode,
-            ScorerMode::Full,
-            "the bench must score authoritatively"
-        );
+        if !mode.is_authoritative() {
+            return Err(refused(format!(
+                "{} mode is not authoritative; only the full corpus is scored",
+                mode.label()
+            )));
+        }
         let stratum = training_dir
             .file_name()
             .expect("training dir has a name")
             .to_string_lossy()
             .into_owned();
-        let parent = read_creature(&creature_dir.join("baseline.json"))?;
+        let baseline_path = creature_dir.join("baseline.json");
+        if !baseline_path.is_file() {
+            return Err(ScorerError::MissingBaseline);
+        }
+        let parent = read_creature(&baseline_path)?;
+        let info = corpus_info(
+            training_dir,
+            &TrainingDataConfig::new(parent.input, parent.output),
+        )
+        .map_err(|e| refused(format!("corpus '{}': {e}", training_dir.display())))?;
         let hidden: Vec<String> = parent
             .neurons
             .iter()
@@ -94,6 +115,18 @@ impl DirectoryScorer for StratumScorer {
                 .to_string_lossy()
                 .into_owned();
             let candidate = read_creature(&path)?;
+            if candidate.input != info.input_count || candidate.output != info.output_count {
+                return Err(refused(format!(
+                    "'{}' has widths {} in, {} out; the corpus has {} in, {} out",
+                    path.display(),
+                    candidate.input,
+                    candidate.output,
+                    info.input_count,
+                    info.output_count
+                )));
+            }
+            validate_creature(&candidate)
+                .map_err(|e| refused(format!("'{}': {e}", path.display())))?;
             let present: Vec<&str> = candidate.neurons.iter().map(|n| n.uuid.as_str()).collect();
             let absent: Vec<&String> = hidden
                 .iter()
@@ -115,7 +148,7 @@ impl DirectoryScorer for StratumScorer {
                     score,
                     error: 1.0 - score,
                     complexity_penalty: 0.0,
-                    record_count: self.records.get(&stratum).copied().unwrap_or(0),
+                    record_count: info.record_count,
                     sample_rate: None,
                     gpu_backend: None,
                     cost_name: Some("MSE".to_string()),
@@ -339,7 +372,9 @@ fn end_to_end_worst_stratum_avoids_the_minority_regression_that_aggregate_walks_
         for arm in ["aggregate", "worst-stratum", "pareto", "random"] {
             run_of(&report, seed, arm);
         }
-        // Every arm scored exactly bundlesPerArm bundles on this seed.
+        // Every arm scored bundlesPerArm bundles on this seed. Pareto's budget
+        // is min(bundlesPerArm, distinct built candidates); this fixture builds
+        // at least two distinct candidates, so it is exactly bundlesPerArm too.
         for arm in ["aggregate", "worst-stratum", "pareto", "random"] {
             assert_eq!(
                 run_of(&report, seed, arm).bundles_scored,
@@ -364,6 +399,61 @@ fn end_to_end_worst_stratum_avoids_the_minority_regression_that_aggregate_walks_
             "seed {seed}: {selected:?}"
         );
     }
+
+    // Pareto: its archive is recorded on its own runs only, and its selected
+    // bundle, when there is one, is the lowest-loss archived win.
+    for seed in [1, 2, 3, 4, 5] {
+        let pareto = run_of(&report, seed, "pareto");
+        let archive = pareto.archive.as_ref().expect("pareto records its archive");
+        assert_eq!(pareto.archive_size, Some(archive.len()), "seed {seed}");
+        assert!(archive.len() <= pareto.bundles_scored, "seed {seed}");
+        for arm in ["aggregate", "worst-stratum", "random"] {
+            assert!(
+                run_of(&report, seed, arm).archive.is_none(),
+                "seed {seed} {arm}"
+            );
+        }
+        let wins: Vec<&ArchiveEntry> = archive.iter().filter(|e| e.win).collect();
+        match &pareto.selected {
+            None => assert!(
+                wins.is_empty(),
+                "seed {seed}: an archived win was not selected"
+            ),
+            Some(members) => {
+                let chosen = archive
+                    .iter()
+                    .find(|e| &e.members == members)
+                    .unwrap_or_else(|| panic!("seed {seed}: the selected bundle is not archived"));
+                assert!(chosen.win, "seed {seed}: {chosen:?}");
+                let lowest = wins
+                    .iter()
+                    .map(|e| e.worst_stratum_loss)
+                    .fold(f64::INFINITY, f64::min);
+                assert!(
+                    chosen.worst_stratum_loss <= lowest,
+                    "seed {seed}: {chosen:?} is not the lowest-loss win ({lowest})"
+                );
+            }
+        }
+    }
+
+    // Positive control: the pareto selection branch above must actually run,
+    // and the lowest-loss rule must have more than one win to discriminate.
+    assert!(
+        [1, 2, 3, 4, 5]
+            .iter()
+            .any(|&seed| run_of(&report, seed, "pareto").selected.is_some()),
+        "no seed selected a pareto bundle, so the lowest-loss check never ran"
+    );
+    assert!(
+        [1, 2, 3, 4, 5].iter().any(|&seed| {
+            run_of(&report, seed, "pareto")
+                .archive
+                .as_ref()
+                .is_some_and(|a| a.iter().filter(|e| e.win).count() >= 2)
+        }),
+        "no seed archived two or more wins, so lowest-loss was never discriminated"
+    );
 
     // The predeclared criterion holds for worst-stratum.
     let criterion = report
@@ -416,6 +506,43 @@ fn uniform_costs_do_not_meet_the_worst_stratum_criterion() {
         "minRegressionReduction is 1, so 0 must not meet it"
     );
     assert!(!criterion.met, "{criterion:?}");
+}
+
+#[test]
+fn stub_refuses_a_creature_whose_input_width_differs_from_the_corpus() {
+    let fx = Fixture::new();
+    let creatures = fx.root().join("widths");
+    std::fs::create_dir_all(&creatures).unwrap();
+    std::fs::write(
+        creatures.join("baseline.json"),
+        creature_to_json_pretty(&parent_creature()).unwrap(),
+    )
+    .unwrap();
+    // Three inputs where the corpus and the parent have four.
+    let narrow = wide_creature(3, 2, "HARD_TANH");
+    std::fs::write(
+        creatures.join("narrow.json"),
+        creature_to_json_pretty(&narrow).unwrap(),
+    )
+    .unwrap();
+    let scorer = StratumScorer::new(trap_costs());
+
+    let err = scorer
+        .score_directory(
+            &creatures,
+            &fx.root().join("cal").join("north"),
+            ScorerMode::Full,
+        )
+        .expect_err("a width mismatch must be refused");
+
+    match &err {
+        ScorerError::Failed { stderr, .. } => {
+            assert!(stderr.contains("narrow.json"), "{stderr}");
+            assert!(stderr.contains("width"), "{stderr}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert!(scorer.calls.borrow().is_empty(), "nothing may be recorded");
 }
 
 #[test]

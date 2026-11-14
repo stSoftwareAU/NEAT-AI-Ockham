@@ -9,8 +9,9 @@
 //!   normalised removal cost is low;
 //! - `worst-stratum` — bundles drawn towards neurons whose worst normalised
 //!   removal cost over the strata is low;
-//! - `pareto` — candidate bundles from both samplers, kept as a non-dominated
-//!   archive on predicted worst-stratum cost, synapse count and latency;
+//! - `pareto` — candidate bundles from both samplers, pre-screened by predicted
+//!   worst-stratum cost, then kept as a non-dominated archive on measured
+//!   worst-stratum loss, synapse count and latency;
 //! - `random` — the control: uniform draws.
 //!
 //! Authority is strict. Predictions (the importance statistics, the

@@ -236,6 +236,9 @@ pub struct Versions {
     pub ockham_version: String,
     /// Scorer identity from [`crate::scorer::DirectoryScorer::identity`].
     pub scorer_identity: String,
+    /// The `source` line of the `neat-core` package in the workspace
+    /// `Cargo.lock`, which pins the core that compiled and scored the run.
+    pub neat_core_source: String,
     /// SHA-256 of the parent creature's bytes.
     pub parent_checksum: String,
     /// SHA-256 of the manifest's bytes.
@@ -302,7 +305,8 @@ pub struct Coverage {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Costs {
-    /// Wall time of preparation (steps 1 to 6), in milliseconds.
+    /// Wall time of preparation (steps 1 to 6, including the parent latency
+    /// probe), in milliseconds.
     pub prep_ms: f64,
     /// Scorer calls made during preparation.
     pub prep_scorer_calls: u64,
@@ -336,6 +340,25 @@ pub struct Method {
     pub validation: String,
     /// How latency is measured.
     pub latency: String,
+}
+
+/// One member of the Pareto archive, with its measured objectives.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveEntry {
+    /// Member neuron UUIDs, sorted.
+    pub members: Vec<String>,
+    /// Worst-stratum loss on calibration, `max_t (parent − bundle)`; lower is
+    /// better.
+    pub worst_stratum_loss: f64,
+    /// Synapse count of the bundle's creature after the cut.
+    pub synapses: usize,
+    /// Measured latency of the bundle, in milliseconds per record.
+    pub latency_ms: f64,
+    /// Full calibration delta against the parent.
+    pub calibration_delta: f64,
+    /// Whether the calibration delta beat `minImprovement`.
+    pub win: bool,
 }
 
 /// One arm's result for one seed.
@@ -380,6 +403,9 @@ pub struct RunRecord {
     pub wins_per_hour: Option<f64>,
     /// Pareto archive size after the cap; `null` for other arms.
     pub archive_size: Option<usize>,
+    /// The Pareto archive with its measured objectives, in archive order;
+    /// `null` for other arms.
+    pub archive: Option<Vec<ArchiveEntry>>,
 }
 
 /// One arm's distributions over all seeds.

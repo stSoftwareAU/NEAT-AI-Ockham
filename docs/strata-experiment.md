@@ -28,12 +28,18 @@ effect sizes are comparable: `N[t][i] = I[t][i] / s_t`, not raw `I`.
 Arms are fixed and reported in this order: `aggregate`, `worst-stratum`,
 `pareto`, `random`.
 
-- **aggregate** is the control. It uses the same sampler on
-  `a_i = Σ_t w_t N[t][i]`, with a temperature fitted the same way.
+- **aggregate** is the control. It uses the same sampler and temperature fit
+  on `a_i = Σ_t w_t N[t][i]`. It therefore differs from worst-stratum only in
+  the importance statistic: the aggregate weighted mean rather than the worst
+  stratum. It is not Ockham's ordinary pruning loop, which this bench does not
+  run.
 - **worst-stratum** is the hypothesis: the sampler on `m_i = max_t N[t][i]`.
 - **pareto** draws candidates alternately from the aggregate and worst-stratum
-  samplers, keeps a non-dominated archive and full-scores its members. Each
-  sampler uses its own fitted temperature.
+  samplers. A deterministic pre-screen, ordered by predicted worst-stratum
+  cost, chooses which candidates are full-scored. The scored bundles form a
+  non-dominated archive on measured calibration loss, synapses and latency, and
+  the selection is the archived win with the lowest loss. Each sampler uses its
+  own fitted temperature.
 - **random** is the negative control: uniform draws, with equal weights and
   no temperature.
 
@@ -50,8 +56,9 @@ Arms are fixed and reported in this order: `aggregate`, `worst-stratum`,
 ## Compute limits
 
 - `bundlesPerArm` (default 6) is the number of full calibration evaluations
-  each arm spends per seed. Pareto full-scores the first
-  `min(bundlesPerArm, archive size)` members, so it may spend fewer.
+  each arm spends per seed. Pareto spends
+  `min(bundlesPerArm, distinct built candidates)` evaluations, so it may spend
+  fewer.
 - `paretoCandidates` (default 24) is the number of canonical builds per seed
   for the pareto arm. It must be at least `bundlesPerArm`.
 - `bundleSizes` (default `[2, 4]`) cycles across bundles: bundle `j` has size
@@ -87,9 +94,10 @@ name. The rule is written as text in each `criteria` entry of the report.
 
 Calibration alone drives every choice: the importance and scales, the sampler
 statistics, the temperature fit and selection by full calibration scores.
-Validation strata are not read during preparation. They are scored only after
-every arm of a seed has made its selection, and no validation score feeds back
-into a choice.
+Before selection, only the metadata of each validation stratum is read: its
+corpus identity and record counts. Its records are scored only after every arm
+of a seed has made its selection, and no validation score feeds back into a
+choice.
 
 ## Manifest
 
@@ -109,6 +117,7 @@ against the manifest's directory. This is the full example from the spec:
   "bundlesPerArm": 6,
   "paretoCandidates": 24,
   "archiveCap": 8,
+  "latencyTolerance": 0.05,
   "latencyRecords": 256,
   "statsRecords": 4096,
   "minImprovement": 0.0,
@@ -120,9 +129,9 @@ against the manifest's directory. This is the full example from the spec:
 Required: `parent`, `calibration`, `validation`, `seeds`, `fitSeed`, `success`.
 
 Defaults: `temperatures` `[0.25, 0.5, 1, 2, 4]`; `bundleSizes` `[2, 4]`;
-`bundlesPerArm` 6; `paretoCandidates` 24; `archiveCap` 8; `latencyRecords`
-256; `statsRecords` 4096 (0 means every record); `minImprovement` 0.0;
-`regressionTolerance` 1e-6.
+`bundlesPerArm` 6; `paretoCandidates` 24; `archiveCap` 8; `latencyTolerance`
+0.05; `latencyRecords` 256; `statsRecords` 4096 (0 means every record);
+`minImprovement` 0.0; `regressionTolerance` 1e-6.
 
 Each of these is refused with an error naming the field:
 
@@ -132,6 +141,7 @@ Each of these is refused with an error naming the field:
 - `temperatures` empty, or any value not finite and above zero;
 - `bundleSizes` empty, or containing 0; `bundlesPerArm` 0;
 - `paretoCandidates` below `bundlesPerArm`; `archiveCap` 0; `latencyRecords` 0;
+- `latencyTolerance` not finite, negative, or 1 or more;
 - `minImprovement`, `regressionTolerance` or `maxFitnessLoss` not finite, or
   negative.
 
@@ -165,13 +175,36 @@ Each of these is refused with an error naming the field:
 7. **Evaluation.** For each seed and arm, bundles are built canonically. A
    refused build is a failure at stage `evaluate` and still uses its slot. The
    calibration delta is `Σ_t w_t score_t(bundle) − Σ_t w_t score_t(parent)`.
-   A win has a delta above `minImprovement`. The selection is the win with the
-   largest delta, and ties go to the lowest index.
-   Pareto builds `paretoCandidates` bundles and ranks them on three minimised
-   objectives: predicted worst-stratum cost `max_t Σ_{i∈B} N[t][i]`, synapses
-   after the cut, and measured latency. It keeps the non-dominated set, capped
-   at `archiveCap` by (predicted cost, synapses, latency, members). Predictions
-   only set the order; the selection comes from full scores alone.
+   A win has a delta above `minImprovement`. For `aggregate`, `worst-stratum`
+   and `random`, the selection is the win with the largest delta, and ties go
+   to the lowest index.
+
+   Pareto works in four parts, in order:
+
+   - **Pre-screen.** It draws `paretoCandidates` bundles, alternating the
+     aggregate and worst-stratum samplers, and builds each canonically. Exact
+     duplicate member sets are dropped, keeping the first. The built candidates
+     are ordered by predicted worst-stratum cost `max_t Σ_{i∈B} N[t][i]`, then
+     by synapses after the cut, then by sorted members, and the first
+     `bundlesPerArm` are kept. This ordering only chooses what is scored; it
+     never selects.
+   - **Measurement.** Each kept bundle is full-scored on every calibration
+     stratum, so the arm spends `min(bundlesPerArm, distinct built candidates)`
+     evaluations. Each scored bundle is then timed with the injected latency
+     probe.
+   - **Archive.** Three measured objectives are minimised: worst-stratum loss
+     `max_t (parentScore_t − bundleScore_t)` on calibration, synapses after the
+     cut, and latency in milliseconds per record. A dominates B when A's loss
+     and synapses are no greater than B's, A's latency is no greater than B's
+     times `1 + latencyTolerance`, and at least one of these holds: A's loss is
+     lower, A has fewer synapses, or A's latency is below B's times
+     `1 − latencyTolerance`. Exact duplicate points keep the first. Over
+     `archiveCap`, the lowest by (loss, synapses, latency, members) are kept.
+   - **Selection.** Among archived wins (calibration delta above
+     `minImprovement`), the lowest worst-stratum loss is chosen. Ties go to the
+     larger calibration delta, then to the lowest index. With no archived win
+     the arm reports `noChange`. Latency noise can change this choice only
+     between exactly tied losses.
 8. **Validation.** Once every arm of a seed has selected, the baseline and each
    arm's selected creature are written to one subdirectory and scored once per
    validation stratum. An arm with no win reports `noChange`: delta 0, nothing
@@ -179,7 +212,9 @@ Each of these is refused with an error naming the field:
 9. **Latency.** The probe compiles each creature with
    `neat_core::compile_creature`, activates the first `latencyRecords` records
    of the first calibration stratum three times, and reports the median
-   milliseconds per record.
+   milliseconds per record. The parent's probe runs during preparation, so it
+   is counted in `prepMs`. The pareto arm applies the same probe to each scored
+   bundle.
 
 ## Phases
 
@@ -204,13 +239,19 @@ The report is camelCase JSON. Its top-level fields are:
 - `method` holds a short string for each step, including the source note.
 - `versions`, `manifest` and `fitted` record the identities, the effective
   manifest with defaults applied, the scales, the chosen temperatures and every
-  fit criterion.
+  fit criterion. `versions.neatCoreSource` is the `source` line of the
+  `neat-core` package in the workspace `Cargo.lock`, read at compile time so
+  that it is compiled into the binary. If that line cannot be found, the run
+  fails.
 - `coverage` and `costs` record the neurons measured and refused, and the
   preparation time and scorer calls.
 - `runs` holds one entry per seed and arm: bundles scored, refusals, wins,
   selection, calibration and validation deltas, per-stratum validation deltas,
   minority regression, removals, latency, timings, scorer calls and
-  `winsPerHour`. `archiveSize` is set for pareto only.
+  `winsPerHour`. `archive` holds, for pareto, each archived member as
+  `members`, `worstStratumLoss`, `synapses`, `latencyMs`,
+  `calibrationDelta` and `win`; it is `null` for the other arms.
+  `archiveSize` is set for pareto only.
 - `arms` gives, per arm, a distribution of each metric as `Dist` (`n`, `mean`,
   `median`, `min`, `max`, `std`, all `null` when `n` is 0) plus counts.
 - `paired` gives per-seed differences, means and 95% intervals for each
@@ -221,7 +262,8 @@ The report is camelCase JSON. Its top-level fields are:
 
 ## Cost accounting
 
-- `prepMs` is the wall time of steps 1 to 6, which every arm shares.
+- `prepMs` is the wall time of steps 1 to 6, including the parent latency
+  probe from step 9, which every arm shares.
 - `winsPerHour` for a (seed, arm) is `wins / hours`, where
   `hours = (armMs + prepMs / (arms × seeds)) / 3.6e6`. Preparation is amortised
   over the four arms. It is `null` when `hours` is zero.

@@ -23,11 +23,11 @@ use crate::scorer::{DirectoryScorer, ScoreResult, ScorerMode};
 use crate::stats::{DEFAULT_CHUNK_RECORDS, SampleSpec, compute_activation_stats};
 use crate::strata::ARMS;
 use crate::strata::manifest::{self, Loaded, Manifest, StratumDir};
-use crate::strata::pareto::{self, Point};
+use crate::strata::pareto::{self, Candidate, Choice, Point};
 use crate::strata::report::{
-    ArmSummary, Costs, Coverage, Criterion, CriterionInput, Dist, EVIDENCE, Failure, FitCriterion,
-    Fitted, Method, Paired, REPORT_SCHEMA, RunRecord, StrataReport, StratumVersion, Temperatures,
-    Versions, criterion,
+    ArchiveEntry, ArmSummary, Costs, Coverage, Criterion, CriterionInput, Dist, EVIDENCE, Failure,
+    FitCriterion, Fitted, Method, Paired, REPORT_SCHEMA, RunRecord, StrataReport, StratumVersion,
+    Temperatures, Versions, criterion,
 };
 use crate::strata::sampler::{
     aggregate_statistic, draw_bundle, fit_scales, normalise, pick_temperature, pooled_mean,
@@ -44,6 +44,33 @@ const MS_PER_HOUR: f64 = 3.6e6;
 
 /// Latency measurements per creature. The median is reported.
 const LATENCY_REPETITIONS: usize = 3;
+
+/// The workspace `Cargo.lock`, compiled in. Its `neat-core` entry names the
+/// core the run was built and scored with.
+const CARGO_LOCK: &str = include_str!("../../../Cargo.lock");
+
+/// The `source` line of the `neat-core` package in `lock`, if it has one.
+fn neat_core_source_in(lock: &str) -> Option<String> {
+    let block = lock
+        .split("[[package]]")
+        .find(|b| b.lines().any(|l| l.trim() == "name = \"neat-core\""))?;
+    block
+        .lines()
+        .find_map(|l| l.strip_prefix("source = \"")?.strip_suffix('"'))
+        .map(str::to_string)
+}
+
+/// The `neat-core` source recorded in `versions.neatCoreSource`.
+///
+/// # Errors
+///
+/// A message when the compiled-in `Cargo.lock` has no `neat-core` source.
+fn neat_core_source() -> Result<String, String> {
+    neat_core_source_in(CARGO_LOCK).ok_or_else(|| {
+        "versions.neatCoreSource: no `neat-core` source line in the workspace Cargo.lock"
+            .to_string()
+    })
+}
 
 /// The scratch directory for a report: a sibling named `<report>.work`.
 pub fn work_dir_for(out: &Path) -> PathBuf {
@@ -169,6 +196,7 @@ fn execute(
 ) -> Result<StrataReport, String> {
     let started = Instant::now();
     let m = &loaded.manifest;
+    let neat_core = neat_core_source()?;
     let incumbent = load_incumbent(&m.parent).map_err(|e| format!("stage 'parent': {e}"))?;
     let cfg = TrainingDataConfig::new(incumbent.creature.input, incumbent.creature.output);
     let cal = open_strata(&m.calibration, &cfg, "calibration")?;
@@ -178,6 +206,7 @@ fn execute(
     let mut run = Run {
         manifest: m,
         manifest_sha256: loaded.sha256.clone(),
+        neat_core,
         incumbent,
         work: work.to_path_buf(),
         scorer,
@@ -195,9 +224,8 @@ fn execute(
         failures: RefCell::new(Vec::new()),
     };
     let prep = run.prepare(started)?;
-    let parent_latency = run.probe(&run.incumbent.creature)?;
     let (runs, validation_calls) = run.run_seeds(&prep)?;
-    Ok(run.assemble(&prep, runs, validation_calls, parent_latency))
+    Ok(run.assemble(&prep, runs, validation_calls))
 }
 
 fn open_strata(
@@ -248,8 +276,13 @@ struct Built {
     /// Member UUIDs in draw order.
     members: Vec<String>,
     pruned: PrunedCandidate,
-    /// Measured latency, when the arm already probed it (Pareto).
-    latency: Option<f64>,
+}
+
+/// One bundle's calibration evaluation: its delta against the parent and its
+/// worst-stratum loss, `max_t (parent − bundle)`.
+struct Eval {
+    delta: f64,
+    loss: f64,
 }
 
 /// The selected bundle of one arm for one seed.
@@ -258,7 +291,7 @@ struct Winner {
     creature: CreatureExport,
     hidden_removed: usize,
     synapses_removed: usize,
-    latency_ms: Option<f64>,
+    latency_ms: f64,
 }
 
 /// One arm's outcome for one seed, before validation.
@@ -272,6 +305,7 @@ struct ArmRun {
     arm_ms: f64,
     scorer_calls: u64,
     archive_size: Option<usize>,
+    archive: Option<Vec<ArchiveEntry>>,
 }
 
 /// Validation deltas of one arm for one seed.
@@ -284,6 +318,7 @@ struct ValidationDelta {
 struct Prep {
     prep_ms: f64,
     prep_calls: u64,
+    parent_latency: f64,
     scales: BTreeMap<String, f64>,
     tau_agg: f64,
     tau_worst: f64,
@@ -303,6 +338,7 @@ struct ArmTimer {
 struct Run<'a> {
     manifest: &'a Manifest,
     manifest_sha256: String,
+    neat_core: String,
     incumbent: Incumbent,
     work: PathBuf,
     scorer: &'a dyn DirectoryScorer,
@@ -397,7 +433,8 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// Steps 1 to 6: means, importance, scales and temperatures.
+    /// Steps 1 to 6: means, importance, scales and temperatures. The parent's
+    /// latency probe runs last and is counted in `prepMs`.
     fn prepare(&mut self, started: Instant) -> Result<Prep, String> {
         let m = self.manifest;
         let creature = self.incumbent.creature.clone();
@@ -575,9 +612,11 @@ impl Run<'_> {
             refused_singles: refused,
             stats_records,
         };
+        let parent_latency = self.probe(&creature)?;
         Ok(Prep {
             prep_ms: started.elapsed().as_secs_f64() * 1000.0,
             prep_calls: self.calls.get(),
+            parent_latency,
             scales,
             tau_agg,
             tau_worst,
@@ -596,13 +635,13 @@ impl Run<'_> {
     }
 
     /// Score `bundles` against every calibration stratum in `dir` and return
-    /// each bundle's calibration delta, in input order.
+    /// each bundle's evaluation, in input order.
     fn score_bundles(
         &self,
         dir: &Path,
         stage: &str,
         bundles: &[&Built],
-    ) -> Result<Vec<f64>, String> {
+    ) -> Result<Vec<Eval>, String> {
         let names: Vec<String> = bundles.iter().map(|b| format!("bundle-{}", b.j)).collect();
         let refs: Vec<(String, &CreatureExport)> = names
             .iter()
@@ -611,16 +650,31 @@ impl Run<'_> {
             .collect();
         self.write_dir(dir, &refs)?;
         let mut totals = vec![0.0; bundles.len()];
+        let mut losses = vec![f64::NEG_INFINITY; bundles.len()];
         for (t, s) in self.cal.iter().enumerate() {
             let results = self.score(dir, &s.dir, stage, &s.name)?;
             for (b, name) in names.iter().enumerate() {
-                totals[b] += self.cal_weights[t] * require(&results, name, stage, &s.name)?;
+                let score = require(&results, name, stage, &s.name)?;
+                totals[b] += self.cal_weights[t] * score;
+                losses[b] = losses[b].max(self.base_cal[t] - score);
             }
         }
-        Ok(totals.into_iter().map(|v| v - self.base_total).collect())
+        Ok(totals
+            .into_iter()
+            .zip(losses)
+            .map(|(total, loss)| Eval {
+                delta: total - self.base_total,
+                loss,
+            })
+            .collect())
     }
 
-    /// Select the winner among scored bundles and assemble the arm's outcome.
+    /// Score the scored bundles, then select and assemble the arm's outcome.
+    ///
+    /// `archive_cap` is `Some` for the Pareto arm, which measures latency for
+    /// every scored bundle and selects the lowest-loss win of its archive.
+    /// `None` takes the largest calibration delta above `minImprovement`, and
+    /// probes latency for the winner only.
     fn finish_arm(
         &self,
         timer: ArmTimer,
@@ -628,7 +682,7 @@ impl Run<'_> {
         arm: &'static str,
         refused: usize,
         scored: &[&Built],
-        archive_size: Option<usize>,
+        archive_cap: Option<usize>,
     ) -> Result<ArmRun, String> {
         let m = self.manifest;
         let dir = self
@@ -636,28 +690,61 @@ impl Run<'_> {
             .join("eval")
             .join(format!("seed-{seed}"))
             .join(arm);
-        let deltas = self.score_bundles(&dir, "evaluate", scored)?;
+        let evals = self.score_bundles(&dir, "evaluate", scored)?;
+        let deltas: Vec<f64> = evals.iter().map(|e| e.delta).collect();
         let wins = deltas.iter().filter(|d| **d > m.min_improvement).count();
-        let (winner, calibration_delta) = match select_winner(&deltas, m.min_improvement) {
-            None => (None, None),
-            Some(b) => {
-                let chosen = scored[b];
-                let before = &chosen.pruned.before;
-                let after = &chosen.pruned.after;
-                let latency_ms = match chosen.latency {
-                    Some(l) => Some(l),
-                    None => Some(self.probe(&chosen.pruned.creature)?),
-                };
-                (
-                    Some(Winner {
-                        members: chosen.members.clone(),
-                        creature: chosen.pruned.creature.clone(),
-                        hidden_removed: before.hidden_neurons.saturating_sub(after.hidden_neurons),
-                        synapses_removed: before.synapses.saturating_sub(after.synapses),
-                        latency_ms,
-                    }),
-                    Some(deltas[b]),
-                )
+        let (winner, calibration_delta, archive) = match archive_cap {
+            None => match select_winner(&deltas, m.min_improvement) {
+                None => (None, None, None),
+                Some(b) => {
+                    let latency = self.probe(&scored[b].pruned.creature)?;
+                    (Some(winner_of(scored[b], latency)), Some(deltas[b]), None)
+                }
+            },
+            Some(cap) => {
+                let mut latencies = Vec::with_capacity(scored.len());
+                for b in scored {
+                    latencies.push(self.probe(&b.pruned.creature)?);
+                }
+                let points: Vec<Point> = scored
+                    .iter()
+                    .zip(&evals)
+                    .zip(&latencies)
+                    .map(|((b, e), &latency)| {
+                        Point::new(e.loss, b.pruned.after.synapses, latency, b.members.clone())
+                    })
+                    .collect();
+                let arch = pareto::archive(&points, cap, m.latency_tolerance);
+                let choices: Vec<Choice> = arch
+                    .iter()
+                    .map(|&p| Choice {
+                        loss: points[p].loss,
+                        delta: deltas[p],
+                        j: scored[p].j,
+                    })
+                    .collect();
+                let entries: Vec<ArchiveEntry> = arch
+                    .iter()
+                    .map(|&p| ArchiveEntry {
+                        members: points[p].members.clone(),
+                        worst_stratum_loss: points[p].loss,
+                        synapses: points[p].synapses,
+                        latency_ms: points[p].latency,
+                        calibration_delta: deltas[p],
+                        win: deltas[p] > m.min_improvement,
+                    })
+                    .collect();
+                match pareto::select_win(&choices, m.min_improvement) {
+                    None => (None, None, Some(entries)),
+                    Some(c) => {
+                        let p = arch[c];
+                        (
+                            Some(winner_of(scored[p], latencies[p])),
+                            Some(deltas[p]),
+                            Some(entries),
+                        )
+                    }
+                }
             }
         };
         Ok(ArmRun {
@@ -669,7 +756,8 @@ impl Run<'_> {
             calibration_delta,
             arm_ms: timer.started.elapsed().as_secs_f64() * 1000.0,
             scorer_calls: self.calls.get() - timer.calls,
-            archive_size,
+            archive_size: archive.as_ref().map(Vec::len),
+            archive,
         })
     }
 
@@ -692,7 +780,6 @@ impl Run<'_> {
                     j,
                     members: self.members_of(&positions),
                     pruned,
-                    latency: None,
                 }),
                 Err(e) => {
                     refused += 1;
@@ -704,14 +791,16 @@ impl Run<'_> {
         self.finish_arm(timer, seed, arm, refused, &scored, None)
     }
 
-    /// The Pareto arm: alternate samplers, keep the non-dominated archive,
-    /// full-score its lowest members.
+    /// The Pareto arm. Draws alternate between the two informed samplers and
+    /// are built canonically. Duplicates are dropped and the `bundlesPerArm`
+    /// lowest by predicted cost are full-scored. Selection is from the measured
+    /// archive of those scored bundles.
     fn pareto_arm(&self, seed: u64, prep: &Prep) -> Result<ArmRun, String> {
         let m = self.manifest;
         let timer = self.timer();
         let mut rng = SplitMix64(seed);
         let mut built: Vec<Built> = Vec::new();
-        let mut points: Vec<Point> = Vec::new();
+        let mut screen: Vec<Candidate> = Vec::new();
         let mut refused = 0usize;
         for j in 0..m.pareto_candidates {
             let (x, tau) = if j % 2 == 0 {
@@ -722,20 +811,13 @@ impl Run<'_> {
             let positions = draw_bundle(&mut rng, x, self.bundle_size(j), Some(tau));
             match self.build(&positions) {
                 Ok(pruned) => {
-                    let latency = self.probe(&pruned.creature)?;
                     let members = self.members_of(&positions);
-                    points.push(Point::new(
+                    screen.push(Candidate::new(
                         predicted_cost(&self.norm, &positions),
                         pruned.after.synapses,
-                        latency,
                         members.clone(),
                     ));
-                    built.push(Built {
-                        j,
-                        members,
-                        pruned,
-                        latency: Some(latency),
-                    });
+                    built.push(Built { j, members, pruned });
                 }
                 Err(e) => {
                     refused += 1;
@@ -743,11 +825,17 @@ impl Run<'_> {
                 }
             }
         }
-        let arch = pareto::archive(&points, m.archive_cap);
-        let take = arch.len().min(m.bundles_per_arm);
-        let mut chosen: Vec<&Built> = arch[..take].iter().map(|&c| &built[c]).collect();
-        chosen.sort_by_key(|b| b.j);
-        self.finish_arm(timer, seed, PARETO, refused, &chosen, Some(arch.len()))
+        let mut kept = vec![false; built.len()];
+        for i in pareto::prescreen(&screen, m.bundles_per_arm) {
+            kept[i] = true;
+        }
+        let scored: Vec<&Built> = built
+            .iter()
+            .zip(&kept)
+            .filter(|(_, k)| **k)
+            .map(|(b, _)| b)
+            .collect();
+        self.finish_arm(timer, seed, PARETO, refused, &scored, Some(m.archive_cap))
     }
 
     /// All four arms for one seed, in report order.
@@ -806,7 +894,7 @@ impl Run<'_> {
         Ok((deltas, self.calls.get() - calls_before))
     }
 
-    /// Steps 7: every seed, every arm, then validation.
+    /// Step 7: every seed, every arm, then validation.
     fn run_seeds(&self, prep: &Prep) -> Result<(Vec<RunRecord>, u64), String> {
         let minority = minority_index(&self.val);
         let mut runs = Vec::new();
@@ -832,7 +920,7 @@ impl Run<'_> {
                 Some(w.members),
                 w.hidden_removed,
                 w.synapses_removed,
-                w.latency_ms,
+                Some(w.latency_ms),
             ),
             None => (None, 0, 0, None),
         };
@@ -856,6 +944,7 @@ impl Run<'_> {
             scorer_calls: arm.scorer_calls,
             wins_per_hour: None,
             archive_size: arm.archive_size,
+            archive: arm.archive,
         }
     }
 
@@ -864,7 +953,6 @@ impl Run<'_> {
         prep: &Prep,
         mut runs: Vec<RunRecord>,
         validation_calls: u64,
-        parent_latency: f64,
     ) -> StrataReport {
         let m = self.manifest;
         let arm_count = ARMS.len() as f64;
@@ -887,6 +975,7 @@ impl Run<'_> {
             versions: Versions {
                 ockham_version: crate::crate_version().to_string(),
                 scorer_identity: self.scorer.identity(),
+                neat_core_source: self.neat_core.clone(),
                 parent_checksum: self.incumbent.checksum.clone(),
                 manifest_sha256: self.manifest_sha256.clone(),
                 calibration: versions_of(&self.cal),
@@ -906,7 +995,7 @@ impl Run<'_> {
                 prep_ms: prep.prep_ms,
                 prep_scorer_calls: prep.prep_calls,
                 latency_probe_ms: self.probe_ms.get(),
-                parent_latency_ms: Some(parent_latency),
+                parent_latency_ms: Some(prep.parent_latency),
                 validation_scorer_calls: validation_calls,
             },
             runs,
@@ -935,6 +1024,19 @@ fn require(
     results.get(stem).map(|r| r.score).ok_or_else(|| {
         format!("stage '{stage}' (stratum '{stratum}'): scorer output has no entry for '{stem}'")
     })
+}
+
+/// The winner record of one scored bundle, with its measured latency.
+fn winner_of(b: &Built, latency_ms: f64) -> Winner {
+    let before = &b.pruned.before;
+    let after = &b.pruned.after;
+    Winner {
+        members: b.members.clone(),
+        creature: b.pruned.creature.clone(),
+        hidden_removed: before.hidden_neurons.saturating_sub(after.hidden_neurons),
+        synapses_removed: before.synapses.saturating_sub(after.synapses),
+        latency_ms,
+    }
 }
 
 fn write_file(path: &Path, text: &str) -> Result<(), String> {
@@ -1054,7 +1156,7 @@ fn method() -> Method {
         statistics: "aggregate a_i = sum_t w_t N[t][i] with calibration record weights; worst m_i = max_t N[t][i]".into(),
         sampler: "k distinct neurons drawn without replacement, P(i) proportional to exp(-(x_i - min x) / tau); the random arm draws uniformly".into(),
         temperature_fit: "per informed arm and candidate tau, bundlesPerArm bundles from fitSeed scored on calibration; highest mean calibration score wins, ties to the earliest tau".into(),
-        evaluation: "per seed and arm: bundlesPerArm bundles built canonically; pareto keeps the non-dominated archive of paretoCandidates and full-scores its lowest members; the winner is the largest calibration delta above minImprovement".into(),
+        evaluation: "per seed and arm: bundlesPerArm bundles built canonically; pareto draws paretoCandidates, drops repeated member sets, full-scores the bundlesPerArm lowest by predicted cost, and keeps the non-dominated archive on measured worst-stratum loss, synapses and latency; the winner is the largest calibration delta above minImprovement, and pareto takes the lowest-loss archived win instead".into(),
         validation: "after every arm of a seed has selected, the winners are scored once per validation stratum; validation never feeds back into a choice".into(),
         latency: "median of three wall-clock passes over the first latencyRecords calibration records, ms per record (indicative only)".into(),
     }
@@ -1087,6 +1189,19 @@ mod tests {
         let empty = tempfile::tempdir().unwrap();
         let empty_probe = wall_clock_probe(empty.path().to_path_buf(), 4);
         assert!(empty_probe(&creature).is_err());
+    }
+
+    #[test]
+    fn neat_core_source_is_read_from_the_workspace_lock() {
+        let source = neat_core_source().expect("the workspace lock names neat-core");
+        assert!(source.contains("NEAT-AI-core"), "{source}");
+        assert!(source.contains("tag="), "{source}");
+    }
+
+    #[test]
+    fn a_lock_without_neat_core_has_no_source() {
+        let lock = "[[package]]\nname = \"other\"\nversion = \"1\"\nsource = \"registry+x\"\n";
+        assert_eq!(neat_core_source_in(lock), None);
     }
 
     #[test]

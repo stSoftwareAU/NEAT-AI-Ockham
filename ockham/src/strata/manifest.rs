@@ -52,6 +52,10 @@ fn default_regression_tolerance() -> f64 {
     1e-6
 }
 
+fn default_latency_tolerance() -> f64 {
+    0.05
+}
+
 /// One named stratum: a training directory of `.bin` files.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -97,12 +101,17 @@ pub struct Manifest {
     /// Bundles each arm scores per seed.
     #[serde(default = "default_bundles_per_arm")]
     pub bundles_per_arm: usize,
-    /// Candidate bundles the Pareto arm builds per seed.
+    /// Candidate bundles the Pareto arm draws and builds per seed; the
+    /// cheapest by predicted cost are full-scored.
     #[serde(default = "default_pareto_candidates")]
     pub pareto_candidates: usize,
-    /// Largest Pareto archive kept before full scoring.
+    /// Largest Pareto archive kept over the scored bundles.
     #[serde(default = "default_archive_cap")]
     pub archive_cap: usize,
+    /// Relative latency band within which two latencies do not decide Pareto
+    /// dominance. Finite, at least `0` and below `1`.
+    #[serde(default = "default_latency_tolerance")]
+    pub latency_tolerance: f64,
     /// Records per latency measurement.
     #[serde(default = "default_latency_records")]
     pub latency_records: u64,
@@ -255,6 +264,12 @@ fn validate(m: &Manifest) -> Result<(), String> {
             "must be finite and not negative",
         ));
     }
+    if !m.latency_tolerance.is_finite() || m.latency_tolerance < 0.0 || m.latency_tolerance >= 1.0 {
+        return Err(refuse(
+            "latencyTolerance",
+            "must be finite, at least 0 and below 1",
+        ));
+    }
     if !m.success.max_fitness_loss.is_finite() || m.success.max_fitness_loss < 0.0 {
         return Err(refuse("maxFitnessLoss", "must be finite and not negative"));
     }
@@ -375,6 +390,7 @@ mod tests {
         assert_eq!(m.bundles_per_arm, 6);
         assert_eq!(m.pareto_candidates, 24);
         assert_eq!(m.archive_cap, 8);
+        assert_eq!(m.latency_tolerance, 0.05);
         assert_eq!(m.latency_records, 256);
         assert_eq!(m.stats_records, 4096);
         assert_eq!(m.min_improvement, 0.0);
@@ -563,6 +579,20 @@ mod tests {
             "regressionTolerance",
             |v| v["regressionTolerance"] = json!(-1e-6),
             |v| v["regressionTolerance"] = json!(0.0),
+        );
+    }
+
+    #[test]
+    fn latency_tolerance_outside_zero_to_one_is_refused_by_name() {
+        refusal(
+            "latencyTolerance",
+            |v| v["latencyTolerance"] = json!(1.0),
+            |v| v["latencyTolerance"] = json!(0.0),
+        );
+        refusal(
+            "latencyTolerance",
+            |v| v["latencyTolerance"] = json!(-0.01),
+            |v| v["latencyTolerance"] = json!(0.99),
         );
     }
 
