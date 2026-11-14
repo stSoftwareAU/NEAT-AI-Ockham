@@ -1,0 +1,2208 @@
+{
+  "schema": "ockham-strata-bench/1",
+  "evidence": "fixture-or-unreviewed: this report is data, not a claim; an optimisation benefit needs representative private corpora",
+  "method": {
+    "source": "arXiv:2610.27812v1 (version, title and method notes per unverified search-index excerpts; full text not retrieved). The excerpts name it (SliMOO, submitted 2026-10-20). This reproduces the issue's formula. Excerpts, unverified, describe: single-unit removal probing per task and a max-over-tasks prior. Deviations from the excerpts: neurons not transformer layers; fixed fitSeed temperature grid, not tau adapted from hypervolume progress; bounded archive on worst-stratum loss, synapses and latency, not NSGA-II on per-task losses; lowest-loss selection, not hypervolume contribution; no mixed random initial population",
+    "importance": "I[t][i] = baseline score minus the score with neuron i removed alone (core prune, step-2 mean), per calibration stratum",
+    "scales": "s_t = median over measured neurons of |I[t][i]|; 1.0 when that median is not above 1e-12; N = I / s",
+    "statistics": "aggregate a_i = sum_t w_t N[t][i] with calibration record weights; worst m_i = max_t N[t][i]",
+    "sampler": "k distinct neurons drawn without replacement, P(i) proportional to exp(-(x_i - min x) / tau); the random arm draws uniformly",
+    "temperatureFit": "per informed arm and candidate tau, bundlesPerArm bundles from fitSeed scored on calibration; highest mean calibration score wins, ties to the earliest tau",
+    "evaluation": "per seed and arm: bundlesPerArm bundles built canonically; pareto draws paretoCandidates, drops repeated member sets, full-scores the bundlesPerArm lowest by predicted cost, and keeps the non-dominated archive on measured worst-stratum loss, synapses and latency; the winner is the largest calibration delta above minImprovement, and pareto takes the lowest-loss archived win instead",
+    "validation": "after every arm of a seed has selected, the winners are scored once per validation stratum; validation never feeds back into a choice",
+    "latency": "median of three wall-clock passes over the first latencyRecords calibration records, ms per record (indicative only)"
+  },
+  "versions": {
+    "ockhamVersion": "0.1.93",
+    "scorerIdentity": "sha256:d057a3349da1c28e",
+    "neatCoreSource": "git+https://github.com/stSoftwareAU/NEAT-AI-core?tag=v0.23.4#e86c342e72e85172b2f9e557329aca3b15bf5229",
+    "parentChecksum": "f6ddc1d650bbc1a2e9d5180bdc8446117c0b06737035d62748041e3f3c3f2013",
+    "manifestSha256": "054522f1447fea20ded7868285754d3a1487b5f378f224bf4f759a7092407259",
+    "calibration": [
+      {
+        "name": "alpha",
+        "identity": "c0d7b2037f71918b",
+        "records": 192
+      },
+      {
+        "name": "beta",
+        "identity": "2795e0bb09c141bb",
+        "records": 192
+      },
+      {
+        "name": "gamma",
+        "identity": "99ea447e9b7a8ccd",
+        "records": 192
+      },
+      {
+        "name": "rare",
+        "identity": "f0e14b914857ebe7",
+        "records": 48
+      }
+    ],
+    "validation": [
+      {
+        "name": "alpha",
+        "identity": "2a52caeb0bd01afb",
+        "records": 192
+      },
+      {
+        "name": "beta",
+        "identity": "76aeab84a86ec26f",
+        "records": 192
+      },
+      {
+        "name": "gamma",
+        "identity": "e8572089f34c59e6",
+        "records": 192
+      },
+      {
+        "name": "rare",
+        "identity": "d137ce5404f43d58",
+        "records": 48
+      }
+    ]
+  },
+  "manifest": {
+    "parent": "pilot-v1/parent.json",
+    "calibration": [
+      {
+        "name": "alpha",
+        "dir": "pilot-v1/cal/alpha"
+      },
+      {
+        "name": "beta",
+        "dir": "pilot-v1/cal/beta"
+      },
+      {
+        "name": "gamma",
+        "dir": "pilot-v1/cal/gamma"
+      },
+      {
+        "name": "rare",
+        "dir": "pilot-v1/cal/rare"
+      }
+    ],
+    "validation": [
+      {
+        "name": "alpha",
+        "dir": "pilot-v1/val/alpha"
+      },
+      {
+        "name": "beta",
+        "dir": "pilot-v1/val/beta"
+      },
+      {
+        "name": "gamma",
+        "dir": "pilot-v1/val/gamma"
+      },
+      {
+        "name": "rare",
+        "dir": "pilot-v1/val/rare"
+      }
+    ],
+    "seeds": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "fitSeed": 9001,
+    "temperatures": [
+      0.25,
+      0.5,
+      1.0,
+      2.0,
+      4.0
+    ],
+    "bundleSizes": [
+      2,
+      4
+    ],
+    "bundlesPerArm": 6,
+    "paretoCandidates": 24,
+    "archiveCap": 8,
+    "latencyTolerance": 0.05,
+    "latencyRecords": 48,
+    "statsRecords": 0,
+    "minImprovement": 0.0,
+    "regressionTolerance": 1e-6,
+    "success": {
+      "maxFitnessLoss": 0.0,
+      "minRegressionReduction": 1
+    }
+  },
+  "fitted": {
+    "scales": {
+      "alpha": 0.002156914297453516,
+      "beta": 0.002024283047730391,
+      "gamma": 0.001618850231117408,
+      "rare": 0.0016791193324443565
+    },
+    "temperatures": {
+      "aggregate": 0.25,
+      "worstStratum": 0.25
+    },
+    "fitCriteria": [
+      {
+        "arm": "aggregate",
+        "temperature": 0.25,
+        "criterion": 0.9999988973165572,
+        "built": 6,
+        "refused": 0
+      },
+      {
+        "arm": "aggregate",
+        "temperature": 0.5,
+        "criterion": 0.9999988973165572,
+        "built": 6,
+        "refused": 0
+      },
+      {
+        "arm": "aggregate",
+        "temperature": 1.0,
+        "criterion": 0.9999988973163764,
+        "built": 6,
+        "refused": 0
+      },
+      {
+        "arm": "aggregate",
+        "temperature": 2.0,
+        "criterion": 0.9992648894607811,
+        "built": 6,
+        "refused": 0
+      },
+      {
+        "arm": "aggregate",
+        "temperature": 4.0,
+        "criterion": 0.9992648894611769,
+        "built": 6,
+        "refused": 0
+      },
+      {
+        "arm": "worst-stratum",
+        "temperature": 0.25,
+        "criterion": 0.9999988973165572,
+        "built": 6,
+        "refused": 0
+      },
+      {
+        "arm": "worst-stratum",
+        "temperature": 0.5,
+        "criterion": 0.9999988973165572,
+        "built": 6,
+        "refused": 0
+      },
+      {
+        "arm": "worst-stratum",
+        "temperature": 1.0,
+        "criterion": 0.9999988973165572,
+        "built": 6,
+        "refused": 0
+      },
+      {
+        "arm": "worst-stratum",
+        "temperature": 2.0,
+        "criterion": 0.9999988973163764,
+        "built": 6,
+        "refused": 0
+      },
+      {
+        "arm": "worst-stratum",
+        "temperature": 4.0,
+        "criterion": 0.9992648894607811,
+        "built": 6,
+        "refused": 0
+      }
+    ]
+  },
+  "coverage": {
+    "hiddenNeurons": 10,
+    "measured": 10,
+    "refusedSingles": 0,
+    "statsRecords": {
+      "alpha": 192,
+      "beta": 192,
+      "gamma": 192,
+      "rare": 48
+    }
+  },
+  "costs": {
+    "prepMs": 35.182917,
+    "prepScorerCalls": 8,
+    "latencyProbeMs": 4.795585000000002,
+    "parentLatencyMs": 0.0004331666666666667,
+    "validationScorerCalls": 40
+  },
+  "runs": [
+    {
+      "seed": 1,
+      "arm": "aggregate",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.0003038125,
+      "armMs": 6.0413749999999995,
+      "scorerCalls": 4,
+      "winsPerHour": 3120959.7636150406,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 1,
+      "arm": "worst-stratum",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.000328125,
+      "armMs": 5.277083,
+      "scorerCalls": 4,
+      "winsPerHour": 3508398.108182406,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 1,
+      "arm": "pareto",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00024131250000000002,
+      "armMs": 7.7794170000000005,
+      "scorerCalls": 4,
+      "winsPerHour": 2494517.280547592,
+      "archiveSize": 1,
+      "archive": [
+        {
+          "members": [
+            "d0",
+            "d1",
+            "d2",
+            "d3"
+          ],
+          "worstStratumLoss": -5.94720085733691e-7,
+          "synapses": 34,
+          "latencyMs": 0.00024131250000000002,
+          "calibrationDelta": 5.947211643153594e-7,
+          "win": true
+        }
+      ]
+    },
+    {
+      "seed": 1,
+      "arm": "random",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 0,
+      "selected": null,
+      "calibrationDelta": null,
+      "validationDelta": 0.0,
+      "validationStrata": {
+        "alpha": 0.0,
+        "beta": 0.0,
+        "gamma": 0.0,
+        "rare": 0.0
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 0,
+      "synapsesRemoved": 0,
+      "latencyMs": null,
+      "armMs": 4.8826670000000005,
+      "scorerCalls": 4,
+      "winsPerHour": 0.0,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 2,
+      "arm": "aggregate",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.000267375,
+      "armMs": 4.926458,
+      "scorerCalls": 4,
+      "winsPerHour": 3720269.540245344,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 2,
+      "arm": "worst-stratum",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00031510416666666666,
+      "armMs": 4.728209,
+      "scorerCalls": 4,
+      "winsPerHour": 3851790.2958574845,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 2,
+      "arm": "pareto",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00023004166666666667,
+      "armMs": 7.086916,
+      "scorerCalls": 4,
+      "winsPerHour": 2711357.56333208,
+      "archiveSize": 1,
+      "archive": [
+        {
+          "members": [
+            "d0",
+            "d1",
+            "d2",
+            "d3"
+          ],
+          "worstStratumLoss": -5.94720085733691e-7,
+          "synapses": 34,
+          "latencyMs": 0.00023004166666666667,
+          "calibrationDelta": 5.947211643153594e-7,
+          "win": true
+        }
+      ]
+    },
+    {
+      "seed": 2,
+      "arm": "random",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 1,
+      "selected": [
+        "d0",
+        "d1"
+      ],
+      "calibrationDelta": 2.9795839284751935e-7,
+      "validationDelta": 2.979584469495414e-7,
+      "validationStrata": {
+        "alpha": 2.979596445129573e-7,
+        "beta": 2.979586756213237e-7,
+        "gamma": 2.9795681122379847e-7,
+        "rare": 2.9795928491171964e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 2,
+      "synapsesRemoved": 10,
+      "latencyMs": 0.00024825000000000004,
+      "armMs": 4.764625,
+      "scorerCalls": 4,
+      "winsPerHour": 637823.132327522,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 3,
+      "arm": "aggregate",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00025781249999999996,
+      "armMs": 5.147334,
+      "scorerCalls": 4,
+      "winsPerHour": 3583927.9200416724,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 3,
+      "arm": "worst-stratum",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.0002482708333333333,
+      "armMs": 4.769125,
+      "scorerCalls": 4,
+      "winsPerHour": 3823890.087023905,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 3,
+      "arm": "pareto",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00024479166666666665,
+      "armMs": 7.026916,
+      "scorerCalls": 4,
+      "winsPerHour": 2731933.251901697,
+      "archiveSize": 1,
+      "archive": [
+        {
+          "members": [
+            "d0",
+            "d1",
+            "d2",
+            "d3"
+          ],
+          "worstStratumLoss": -5.94720085733691e-7,
+          "synapses": 34,
+          "latencyMs": 0.00024479166666666665,
+          "calibrationDelta": 5.947211643153594e-7,
+          "win": true
+        }
+      ]
+    },
+    {
+      "seed": 3,
+      "arm": "random",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 0,
+      "selected": null,
+      "calibrationDelta": null,
+      "validationDelta": 0.0,
+      "validationStrata": {
+        "alpha": 0.0,
+        "beta": 0.0,
+        "gamma": 0.0,
+        "rare": 0.0
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 0,
+      "synapsesRemoved": 0,
+      "latencyMs": null,
+      "armMs": 4.9811250000000005,
+      "scorerCalls": 4,
+      "winsPerHour": 0.0,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 4,
+      "arm": "aggregate",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.0002743125,
+      "armMs": 4.738417,
+      "scorerCalls": 4,
+      "winsPerHour": 3844791.515890802,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 4,
+      "arm": "worst-stratum",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00024566666666666666,
+      "armMs": 5.031458,
+      "scorerCalls": 4,
+      "winsPerHour": 3654184.90853184,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 4,
+      "arm": "pareto",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.0002404375,
+      "armMs": 7.352791,
+      "scorerCalls": 4,
+      "winsPerHour": 2623790.711487527,
+      "archiveSize": 1,
+      "archive": [
+        {
+          "members": [
+            "d0",
+            "d1",
+            "d2",
+            "d3"
+          ],
+          "worstStratumLoss": -5.94720085733691e-7,
+          "synapses": 34,
+          "latencyMs": 0.0002404375,
+          "calibrationDelta": 5.947211643153594e-7,
+          "win": true
+        }
+      ]
+    },
+    {
+      "seed": 4,
+      "arm": "random",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 0,
+      "selected": null,
+      "calibrationDelta": null,
+      "validationDelta": 0.0,
+      "validationStrata": {
+        "alpha": 0.0,
+        "beta": 0.0,
+        "gamma": 0.0,
+        "rare": 0.0
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 0,
+      "synapsesRemoved": 0,
+      "latencyMs": null,
+      "armMs": 4.719125,
+      "scorerCalls": 4,
+      "winsPerHour": 0.0,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 5,
+      "arm": "aggregate",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00025608333333333337,
+      "armMs": 4.877875,
+      "scorerCalls": 4,
+      "winsPerHour": 3751662.2436493854,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 5,
+      "arm": "worst-stratum",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00024654166666666666,
+      "armMs": 5.266667,
+      "scorerCalls": 4,
+      "winsPerHour": 3514343.771732927,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 5,
+      "arm": "pareto",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00024391666666666667,
+      "armMs": 7.28,
+      "scorerCalls": 4,
+      "winsPerHour": 2647197.3715462564,
+      "archiveSize": 1,
+      "archive": [
+        {
+          "members": [
+            "d0",
+            "d1",
+            "d2",
+            "d3"
+          ],
+          "worstStratumLoss": -5.94720085733691e-7,
+          "synapses": 34,
+          "latencyMs": 0.00024391666666666667,
+          "calibrationDelta": 5.947211643153594e-7,
+          "win": true
+        }
+      ]
+    },
+    {
+      "seed": 5,
+      "arm": "random",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 0,
+      "selected": null,
+      "calibrationDelta": null,
+      "validationDelta": 0.0,
+      "validationStrata": {
+        "alpha": 0.0,
+        "beta": 0.0,
+        "gamma": 0.0,
+        "rare": 0.0
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 0,
+      "synapsesRemoved": 0,
+      "latencyMs": null,
+      "armMs": 4.570125,
+      "scorerCalls": 4,
+      "winsPerHour": 0.0,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 6,
+      "arm": "aggregate",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00024566666666666666,
+      "armMs": 4.9782910000000005,
+      "scorerCalls": 4,
+      "winsPerHour": 3687350.931423351,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 6,
+      "arm": "worst-stratum",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.0002482708333333333,
+      "armMs": 4.596208,
+      "scorerCalls": 4,
+      "winsPerHour": 3944642.8364918563,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 6,
+      "arm": "pareto",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00023352083333333333,
+      "armMs": 6.676833,
+      "scorerCalls": 4,
+      "winsPerHour": 2858501.808186013,
+      "archiveSize": 1,
+      "archive": [
+        {
+          "members": [
+            "d0",
+            "d1",
+            "d2",
+            "d3"
+          ],
+          "worstStratumLoss": -5.94720085733691e-7,
+          "synapses": 34,
+          "latencyMs": 0.00023352083333333333,
+          "calibrationDelta": 5.947211643153594e-7,
+          "win": true
+        }
+      ]
+    },
+    {
+      "seed": 6,
+      "arm": "random",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 0,
+      "selected": null,
+      "calibrationDelta": null,
+      "validationDelta": 0.0,
+      "validationStrata": {
+        "alpha": 0.0,
+        "beta": 0.0,
+        "gamma": 0.0,
+        "rare": 0.0
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 0,
+      "synapsesRemoved": 0,
+      "latencyMs": null,
+      "armMs": 4.98525,
+      "scorerCalls": 4,
+      "winsPerHour": 0.0,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 7,
+      "arm": "aggregate",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00024045833333333333,
+      "armMs": 4.97775,
+      "scorerCalls": 4,
+      "winsPerHour": 3687691.5062694787,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 7,
+      "arm": "worst-stratum",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.0002482708333333333,
+      "armMs": 4.796334,
+      "scorerCalls": 4,
+      "winsPerHour": 3805559.2322807517,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 7,
+      "arm": "pareto",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00023264583333333332,
+      "armMs": 6.965584000000001,
+      "scorerCalls": 4,
+      "winsPerHour": 2753291.005711782,
+      "archiveSize": 1,
+      "archive": [
+        {
+          "members": [
+            "d0",
+            "d1",
+            "d2",
+            "d3"
+          ],
+          "worstStratumLoss": -5.94720085733691e-7,
+          "synapses": 34,
+          "latencyMs": 0.00023264583333333332,
+          "calibrationDelta": 5.947211643153594e-7,
+          "win": true
+        }
+      ]
+    },
+    {
+      "seed": 7,
+      "arm": "random",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 1,
+      "selected": [
+        "d1",
+        "d3"
+      ],
+      "calibrationDelta": 2.9795903699891824e-7,
+      "validationDelta": 2.9795908203981236e-7,
+      "validationStrata": {
+        "alpha": 2.9795927725118077e-7,
+        "beta": 2.979593927143753e-7,
+        "gamma": 2.979579895034945e-7,
+        "rare": 2.979614286413579e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 2,
+      "synapsesRemoved": 10,
+      "latencyMs": 0.0003177083333333333,
+      "armMs": 4.8862499999999995,
+      "scorerCalls": 4,
+      "winsPerHour": 624368.8102856542,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 8,
+      "arm": "aggregate",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00030729166666666665,
+      "armMs": 4.658834,
+      "scorerCalls": 4,
+      "winsPerHour": 3900038.457358386,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 8,
+      "arm": "worst-stratum",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00023785416666666668,
+      "armMs": 4.923042,
+      "scorerCalls": 4,
+      "winsPerHour": 3722459.663304299,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 8,
+      "arm": "pareto",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00023522916666666668,
+      "armMs": 6.603375,
+      "scorerCalls": 4,
+      "winsPerHour": 2886562.918316714,
+      "archiveSize": 1,
+      "archive": [
+        {
+          "members": [
+            "d0",
+            "d1",
+            "d2",
+            "d3"
+          ],
+          "worstStratumLoss": -5.94720085733691e-7,
+          "synapses": 34,
+          "latencyMs": 0.00023522916666666668,
+          "calibrationDelta": 5.947211643153594e-7,
+          "win": true
+        }
+      ]
+    },
+    {
+      "seed": 8,
+      "arm": "random",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 0,
+      "selected": null,
+      "calibrationDelta": null,
+      "validationDelta": 0.0,
+      "validationStrata": {
+        "alpha": 0.0,
+        "beta": 0.0,
+        "gamma": 0.0,
+        "rare": 0.0
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 0,
+      "synapsesRemoved": 0,
+      "latencyMs": null,
+      "armMs": 4.6489590000000005,
+      "scorerCalls": 4,
+      "winsPerHour": 0.0,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 9,
+      "arm": "aggregate",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.0002421875,
+      "armMs": 4.96425,
+      "scorerCalls": 4,
+      "winsPerHour": 3696210.558946736,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 9,
+      "arm": "worst-stratum",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.0003567708333333333,
+      "armMs": 4.78925,
+      "scorerCalls": 4,
+      "winsPerHour": 3810314.8194561047,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 9,
+      "arm": "pareto",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.0003046875,
+      "armMs": 6.920833,
+      "scorerCalls": 4,
+      "winsPerHour": 2769086.6613457683,
+      "archiveSize": 3,
+      "archive": [
+        {
+          "members": [
+            "d0",
+            "d1",
+            "d2",
+            "d3"
+          ],
+          "worstStratumLoss": -5.94720085733691e-7,
+          "synapses": 34,
+          "latencyMs": 0.0003046875,
+          "calibrationDelta": 5.947211643153594e-7,
+          "win": true
+        },
+        {
+          "members": [
+            "d2",
+            "d3"
+          ],
+          "worstStratumLoss": -2.9795815947863957e-7,
+          "synapses": 44,
+          "latencyMs": 0.00026129166666666667,
+          "calibrationDelta": 2.9795893030648557e-7,
+          "win": true
+        },
+        {
+          "members": [
+            "d1",
+            "d3"
+          ],
+          "worstStratumLoss": -2.979580570050544e-7,
+          "synapses": 44,
+          "latencyMs": 0.00023610416666666666,
+          "calibrationDelta": 2.9795903699891824e-7,
+          "win": true
+        }
+      ]
+    },
+    {
+      "seed": 9,
+      "arm": "random",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 2,
+      "selected": [
+        "d0",
+        "d3"
+      ],
+      "calibrationDelta": 2.9795893430328846e-7,
+      "validationDelta": 2.979589593943288e-7,
+      "validationStrata": {
+        "alpha": 2.979595671304125e-7,
+        "beta": 2.979585166373866e-7,
+        "gamma": 2.9795819900257925e-7,
+        "rare": 2.9796134104476124e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 2,
+      "synapsesRemoved": 10,
+      "latencyMs": 0.00025172916666666665,
+      "armMs": 5.111,
+      "scorerCalls": 4,
+      "winsPerHour": 1201888.381986436,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 10,
+      "arm": "aggregate",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00026735416666666666,
+      "armMs": 4.970916,
+      "scorerCalls": 4,
+      "winsPerHour": 3691999.1263807067,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 10,
+      "arm": "worst-stratum",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00047829166666666663,
+      "armMs": 4.930541,
+      "scorerCalls": 4,
+      "winsPerHour": 3717655.157682644,
+      "archiveSize": null,
+      "archive": null
+    },
+    {
+      "seed": 10,
+      "arm": "pareto",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 6,
+      "selected": [
+        "d0",
+        "d1",
+        "d2",
+        "d3"
+      ],
+      "calibrationDelta": 5.947211643153594e-7,
+      "validationDelta": 5.947212181184752e-7,
+      "validationStrata": {
+        "alpha": 5.947219121615888e-7,
+        "beta": 5.947212219359344e-7,
+        "gamma": 5.94720013458172e-7,
+        "rare": 5.947232453173967e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 4,
+      "synapsesRemoved": 20,
+      "latencyMs": 0.00023004166666666667,
+      "armMs": 6.75375,
+      "scorerCalls": 4,
+      "winsPerHour": 2829698.1815426075,
+      "archiveSize": 1,
+      "archive": [
+        {
+          "members": [
+            "d0",
+            "d1",
+            "d2",
+            "d3"
+          ],
+          "worstStratumLoss": -5.94720085733691e-7,
+          "synapses": 34,
+          "latencyMs": 0.00023004166666666667,
+          "calibrationDelta": 5.947211643153594e-7,
+          "win": true
+        }
+      ]
+    },
+    {
+      "seed": 10,
+      "arm": "random",
+      "bundlesScored": 6,
+      "refused": 0,
+      "wins": 1,
+      "selected": [
+        "d1",
+        "d2"
+      ],
+      "calibrationDelta": 2.9795710376756546e-7,
+      "validationDelta": 2.9795712003660287e-7,
+      "validationStrata": {
+        "alpha": 2.9795451195191447e-7,
+        "beta": 2.979591221530242e-7,
+        "gamma": 2.9795735512205823e-7,
+        "rare": 2.979586035678494e-7
+      },
+      "minorityStratum": "rare",
+      "minorityRegression": false,
+      "regressedStrata": 0,
+      "hiddenRemoved": 2,
+      "synapsesRemoved": 10,
+      "latencyMs": 0.00028125,
+      "armMs": 4.953,
+      "scorerCalls": 4,
+      "winsPerHour": 617223.3157290528,
+      "archiveSize": null,
+      "archive": null
+    }
+  ],
+  "arms": [
+    {
+      "name": "aggregate",
+      "validationDelta": {
+        "n": 10,
+        "mean": 5.947212181184753e-7,
+        "median": 5.947212181184752e-7,
+        "min": 5.947212181184752e-7,
+        "max": 5.947212181184752e-7,
+        "std": 1.1160639027203564e-22
+      },
+      "calibrationDelta": {
+        "n": 10,
+        "mean": 5.947211643153594e-7,
+        "median": 5.947211643153594e-7,
+        "min": 5.947211643153594e-7,
+        "max": 5.947211643153594e-7,
+        "std": 0.0
+      },
+      "minorityRegressions": 0,
+      "hiddenRemoved": {
+        "n": 10,
+        "mean": 4.0,
+        "median": 4.0,
+        "min": 4.0,
+        "max": 4.0,
+        "std": 0.0
+      },
+      "synapsesRemoved": {
+        "n": 10,
+        "mean": 20.0,
+        "median": 20.0,
+        "min": 20.0,
+        "max": 20.0,
+        "std": 0.0
+      },
+      "wins": {
+        "n": 10,
+        "mean": 6.0,
+        "median": 6.0,
+        "min": 6.0,
+        "max": 6.0,
+        "std": 0.0
+      },
+      "winsPerHour": {
+        "n": 10,
+        "mean": 3668490.15638209,
+        "median": 3694104.842663721,
+        "min": 3120959.7636150406,
+        "max": 3900038.457358386,
+        "std": 211681.4434797972
+      }
+    },
+    {
+      "name": "worst-stratum",
+      "validationDelta": {
+        "n": 10,
+        "mean": 5.947212181184753e-7,
+        "median": 5.947212181184752e-7,
+        "min": 5.947212181184752e-7,
+        "max": 5.947212181184752e-7,
+        "std": 1.1160639027203564e-22
+      },
+      "calibrationDelta": {
+        "n": 10,
+        "mean": 5.947211643153594e-7,
+        "median": 5.947211643153594e-7,
+        "min": 5.947211643153594e-7,
+        "max": 5.947211643153594e-7,
+        "std": 0.0
+      },
+      "minorityRegressions": 0,
+      "hiddenRemoved": {
+        "n": 10,
+        "mean": 4.0,
+        "median": 4.0,
+        "min": 4.0,
+        "max": 4.0,
+        "std": 0.0
+      },
+      "synapsesRemoved": {
+        "n": 10,
+        "mean": 20.0,
+        "median": 20.0,
+        "min": 20.0,
+        "max": 20.0,
+        "std": 0.0
+      },
+      "wins": {
+        "n": 10,
+        "mean": 6.0,
+        "median": 6.0,
+        "min": 6.0,
+        "max": 6.0,
+        "std": 0.0
+      },
+      "winsPerHour": {
+        "n": 10,
+        "mean": 3735323.888054422,
+        "median": 3764009.4477925254,
+        "min": 3508398.108182406,
+        "max": 3944642.8364918563,
+        "std": 142660.5095952586
+      }
+    },
+    {
+      "name": "pareto",
+      "validationDelta": {
+        "n": 10,
+        "mean": 5.947212181184753e-7,
+        "median": 5.947212181184752e-7,
+        "min": 5.947212181184752e-7,
+        "max": 5.947212181184752e-7,
+        "std": 1.1160639027203564e-22
+      },
+      "calibrationDelta": {
+        "n": 10,
+        "mean": 5.947211643153594e-7,
+        "median": 5.947211643153594e-7,
+        "min": 5.947211643153594e-7,
+        "max": 5.947211643153594e-7,
+        "std": 0.0
+      },
+      "minorityRegressions": 0,
+      "hiddenRemoved": {
+        "n": 10,
+        "mean": 4.0,
+        "median": 4.0,
+        "min": 4.0,
+        "max": 4.0,
+        "std": 0.0
+      },
+      "synapsesRemoved": {
+        "n": 10,
+        "mean": 20.0,
+        "median": 20.0,
+        "min": 20.0,
+        "max": 20.0,
+        "std": 0.0
+      },
+      "wins": {
+        "n": 10,
+        "mean": 6.0,
+        "median": 6.0,
+        "min": 6.0,
+        "max": 6.0,
+        "std": 0.0
+      },
+      "winsPerHour": {
+        "n": 10,
+        "mean": 2730593.675391804,
+        "median": 2742612.128806739,
+        "min": 2494517.280547592,
+        "max": 2886562.918316714,
+        "std": 118776.7187967262
+      }
+    },
+    {
+      "name": "random",
+      "validationDelta": {
+        "n": 10,
+        "mean": 1.1918336084202854e-7,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 2.9795908203981236e-7,
+        "std": 1.5386505722960853e-7
+      },
+      "calibrationDelta": {
+        "n": 4,
+        "mean": 2.979583669793229e-7,
+        "median": 2.979586635754039e-7,
+        "min": 2.9795710376756546e-7,
+        "max": 2.9795903699891824e-7,
+        "std": 8.882859614190657e-13
+      },
+      "minorityRegressions": 0,
+      "hiddenRemoved": {
+        "n": 10,
+        "mean": 0.8,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 2.0,
+        "std": 1.0327955589886444
+      },
+      "synapsesRemoved": {
+        "n": 10,
+        "mean": 4.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 10.0,
+        "std": 5.163977794943222
+      },
+      "wins": {
+        "n": 10,
+        "mean": 0.5,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 2.0,
+        "std": 0.7071067811865476
+      },
+      "winsPerHour": {
+        "n": 10,
+        "mean": 308130.3640328665,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 1201888.381986436,
+        "std": 431111.206487618
+      }
+    }
+  ],
+  "paired": [
+    {
+      "treatment": "worst-stratum",
+      "control": "aggregate",
+      "metric": "validationDelta",
+      "differences": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "treatment": "worst-stratum",
+      "control": "aggregate",
+      "metric": "minorityRegression",
+      "differences": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "treatment": "worst-stratum",
+      "control": "aggregate",
+      "metric": "hiddenRemoved",
+      "differences": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "treatment": "pareto",
+      "control": "aggregate",
+      "metric": "validationDelta",
+      "differences": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "treatment": "pareto",
+      "control": "aggregate",
+      "metric": "minorityRegression",
+      "differences": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "treatment": "pareto",
+      "control": "aggregate",
+      "metric": "hiddenRemoved",
+      "differences": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "treatment": "worst-stratum",
+      "control": "random",
+      "metric": "validationDelta",
+      "differences": [
+        5.947212181184752e-7,
+        2.9676277116893385e-7,
+        5.947212181184752e-7,
+        5.947212181184752e-7,
+        5.947212181184752e-7,
+        5.947212181184752e-7,
+        2.967621360786629e-7,
+        5.947212181184752e-7,
+        2.967622587241464e-7,
+        2.9676409808187236e-7
+      ],
+      "mean": 4.7553785727644666e-7,
+      "ci95": [
+        3.8615022070262686e-7,
+        5.649253734235213e-7
+      ]
+    },
+    {
+      "treatment": "worst-stratum",
+      "control": "random",
+      "metric": "minorityRegression",
+      "differences": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "treatment": "worst-stratum",
+      "control": "random",
+      "metric": "hiddenRemoved",
+      "differences": [
+        4.0,
+        2.0,
+        4.0,
+        4.0,
+        4.0,
+        4.0,
+        2.0,
+        4.0,
+        2.0,
+        2.0
+      ],
+      "mean": 3.2,
+      "ci95": [
+        2.6,
+        3.8
+      ]
+    },
+    {
+      "treatment": "pareto",
+      "control": "random",
+      "metric": "validationDelta",
+      "differences": [
+        5.947212181184752e-7,
+        2.9676277116893385e-7,
+        5.947212181184752e-7,
+        5.947212181184752e-7,
+        5.947212181184752e-7,
+        5.947212181184752e-7,
+        2.967621360786629e-7,
+        5.947212181184752e-7,
+        2.967622587241464e-7,
+        2.9676409808187236e-7
+      ],
+      "mean": 4.7553785727644666e-7,
+      "ci95": [
+        3.8615022070262686e-7,
+        5.649253734235213e-7
+      ]
+    },
+    {
+      "treatment": "pareto",
+      "control": "random",
+      "metric": "minorityRegression",
+      "differences": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "treatment": "pareto",
+      "control": "random",
+      "metric": "hiddenRemoved",
+      "differences": [
+        4.0,
+        2.0,
+        4.0,
+        4.0,
+        4.0,
+        4.0,
+        2.0,
+        4.0,
+        2.0,
+        2.0
+      ],
+      "mean": 3.2,
+      "ci95": [
+        2.6,
+        3.8
+      ]
+    },
+    {
+      "treatment": "aggregate",
+      "control": "random",
+      "metric": "validationDelta",
+      "differences": [
+        5.947212181184752e-7,
+        2.9676277116893385e-7,
+        5.947212181184752e-7,
+        5.947212181184752e-7,
+        5.947212181184752e-7,
+        5.947212181184752e-7,
+        2.967621360786629e-7,
+        5.947212181184752e-7,
+        2.967622587241464e-7,
+        2.9676409808187236e-7
+      ],
+      "mean": 4.7553785727644666e-7,
+      "ci95": [
+        3.8615022070262686e-7,
+        5.649253734235213e-7
+      ]
+    },
+    {
+      "treatment": "aggregate",
+      "control": "random",
+      "metric": "minorityRegression",
+      "differences": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "treatment": "aggregate",
+      "control": "random",
+      "metric": "hiddenRemoved",
+      "differences": [
+        4.0,
+        2.0,
+        4.0,
+        4.0,
+        4.0,
+        4.0,
+        2.0,
+        4.0,
+        2.0,
+        2.0
+      ],
+      "mean": 3.2,
+      "ci95": [
+        2.6,
+        3.8
+      ]
+    }
+  ],
+  "criteria": [
+    {
+      "arm": "worst-stratum",
+      "regressionReduction": 0,
+      "meanFitnessDifference": 0.0,
+      "met": false,
+      "rule": "met iff regressionReduction >= minRegressionReduction AND meanFitnessDifference >= -maxFitnessLoss, where regressionReduction = aggregate minority regressions - arm minority regressions and meanFitnessDifference = arm mean validationDelta - aggregate mean validationDelta"
+    },
+    {
+      "arm": "pareto",
+      "regressionReduction": 0,
+      "meanFitnessDifference": 0.0,
+      "met": false,
+      "rule": "met iff regressionReduction >= minRegressionReduction AND meanFitnessDifference >= -maxFitnessLoss, where regressionReduction = aggregate minority regressions - arm minority regressions and meanFitnessDifference = arm mean validationDelta - aggregate mean validationDelta"
+    }
+  ],
+  "failures": []
+}
