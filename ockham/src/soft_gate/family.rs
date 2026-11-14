@@ -1,3 +1,82 @@
+use std::collections::BTreeSet;
+
+use neat_core::CreatureExport;
+use serde::Serialize;
+
+use crate::ablation::StructureSnapshot;
+use crate::prune::{PruneDetail, prune_hidden_neuron};
+use crate::stats::ActivationStats;
+
+use super::Budget;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Candidate {
+    #[serde(skip)]
+    pub creature: CreatureExport,
+    pub target: f64,
+    pub target_hidden: usize,
+    pub size: StructureSnapshot,
+    pub retained_original_hidden: BTreeSet<String>,
+    pub support_nodes: BTreeSet<String>,
+    pub reachable: bool,
+    pub target_growth_units: f64,
+    pub overshoot_growth_units: f64,
+    pub overshoot_hidden: usize,
+    pub rewrites: Vec<PruneDetail>,
+    pub refusals: Vec<String>,
+}
+
+pub(super) fn materialise(parent: &CreatureExport, removal_order: &[String], targets: &[f64], stats: &ActivationStats, budget: &mut Budget) -> Result<Vec<Candidate>, String> {
+    let original: BTreeSet<_> = parent.neurons.iter().filter(|n| n.neuron_type == "hidden").map(|n| n.uuid.clone()).collect();
+    let outputs: BTreeSet<_> = parent.neurons.iter().filter(|n| n.neuron_type == "output").map(|n| n.uuid.clone()).collect();
+    if removal_order.iter().any(|id| !original.contains(id)) {
+        return Err("removal sequence contains a protected or unknown neuron".into());
+    }
+    let mut working = parent.clone();
+    let mut sequence = removal_order.iter();
+    let mut rewrites = Vec::new();
+    let mut refusals = Vec::new();
+    let full_size = StructureSnapshot::of(parent);
+    let mut result = Vec::new();
+    for &target in targets {
+        let target_hidden = (target * original.len() as f64).floor() as usize;
+        while retained_hidden(&working, &original).len() > target_hidden {
+            let Some(uuid) = sequence.next() else { break; };
+            if !working.neurons.iter().any(|n| n.neuron_type == "hidden" && n.uuid == *uuid) { continue; }
+            budget.rewrite()?;
+            let stat = stats.by_uuid(uuid);
+            match prune_hidden_neuron(&working, uuid, stat.map(|s| s.mean), stat) {
+                Ok(candidate) => {
+                    working = candidate.creature;
+                    rewrites.push(candidate.detail);
+                }
+                Err(e) => refusals.push(format!("{uuid}: {e}")),
+            }
+        }
+        neat_core::creature_validate(&working, &crate::incumbent::OCKHAM_VALIDATE_OPTIONS).map_err(|e| format!("invalid experiment candidate: {e}"))?;
+        if working.input != parent.input || working.output != parent.output
+            || working.neurons.iter().filter(|n| n.neuron_type == "output").map(|n| n.uuid.clone()).collect::<BTreeSet<_>>() != outputs
+        { return Err("core rewrite changed protected inputs or outputs".into()); }
+        let size = StructureSnapshot::of(&working);
+        let retained_original_hidden = retained_hidden(&working, &original);
+        let retained_count = retained_original_hidden.len();
+        let support_nodes = working.neurons.iter().filter(|n| n.neuron_type != "output" && !retained_original_hidden.contains(&n.uuid) && !parent.neurons.iter().any(|p| p.neuron_type == "constant" && p.uuid == n.uuid)).map(|n| n.uuid.clone()).collect();
+        result.push(Candidate {
+            creature: working.clone(), target, target_hidden, reachable: retained_count <= target_hidden,
+            target_growth_units: target * full_size.growth_units,
+            overshoot_growth_units: (target * full_size.growth_units - size.growth_units).max(0.0),
+            overshoot_hidden: target_hidden.saturating_sub(retained_count), size,
+            retained_original_hidden, support_nodes, rewrites: rewrites.clone(), refusals: refusals.clone(),
+        });
+    }
+    Ok(result)
+}
+
+fn retained_hidden(creature: &CreatureExport, original: &BTreeSet<String>) -> BTreeSet<String> {
+    creature.neurons.iter().filter(|n| n.neuron_type == "hidden" && original.contains(&n.uuid)).map(|n| n.uuid.clone()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
