@@ -2591,6 +2591,12 @@ done
 
 ## Development
 
+The opt-in [connection-budget comparison](docs/connection-budgets.md) provides a
+frozen-manifest research runner for global, per-neuron and per-depth allocations
+against a configured current-Ockham pipeline control. Synthetic pilot results
+do not establish a benefit on evolved creatures; the ordinary CLI defaults stay
+as documented above.
+
 The project is pure Rust. `neat-core` arrives as a released git tag pinned in
 `ockham/Cargo.toml`, so the workspace builds with nothing checked out beside it;
 `NEAT-AI-scorer` is still expected as a sibling clone by the integration tests
