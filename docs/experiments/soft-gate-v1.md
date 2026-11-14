@@ -110,7 +110,7 @@ bound a hung external scorer. An overrun is a failed family, never success.
 Failures write `results.json` and return a non-zero exit. Existing output
 directories and manifest destinations are refused.
 
-Retention requires a representative-data declaration, ten or more complete
+The initial manifest's retention criteria require a representative-data declaration, ten or more complete
 seed pairs, a conservative 95% paired-score interval wholly above 0.001, no
 more than 1% relative held-out MSE degradation against the paired control
 (absolute tolerance `1e-12`), at least 5% latency reduction at 75% and 50%,
@@ -119,6 +119,9 @@ arms, and matched total cost. The interval uses 2.263 standard errors, a
 conservative t critical value for at least ten pairs. It describes seed
 variation conditional on this one creature/corpus/host, not uncertainty across
 creatures. Latency is indicative on a shared host and never a CI assertion.
+Numerical thresholds may be edited before locking; the runtime reads those
+thresholds from the manifest. Representative status, complete pairs and a
+minimum of ten pairs remain prerequisites for retention.
 A completed, cost-matched representative study with at least ten pairs missing
 the performance criteria records a removal decision for the optional
 implementation; an absent or cost-unmatched representative study is
@@ -146,7 +149,8 @@ the outer timeout must also cover every requested paired seed.
 contains paired distributions/uncertainty, failures, actual split coverage,
 costs, candidate counts/identities, rewrite compensation, full scorer results,
 held-out MSE, inference latency samples and error/growth and error/latency
-Pareto flags. Candidate JSON files remain under `seed-<seed>-<arm>/candidates/`.
+Pareto flags. Candidate JSON files remain under `seed-<seed>-<arm>/candidates/`:
+`baseline.json` is the full parent and `c1.json`–`c3.json` are the reduced targets.
 Only a full MSE scorer response with the complete corpus record count and no
 sub-sampling may mark an authoritative improvement over the full parent.
 This diagnostic flag does not publish `best.json` or adopt a prune.
@@ -170,3 +174,9 @@ For a public wiring run, generate data with
 against its `parent.json` and `data/`. Keep `representative: false`. Reduced
 steps are appropriate for this smoke check; lock that change before running.
 Representative studies stay outside routine CI.
+
+The archived [preflight manifest](soft-gate-smoke-preflight-manifest-v1.json)
+and [failed preflight results](soft-gate-smoke-preflight-results-v1.json) record
+an adapter-contract failure found by the real scorer: the first harness omitted
+the reserved `baseline` stem. No family completed that preflight. The test scorer
+now uses the real output parser, and the harness writes `baseline.json`.
