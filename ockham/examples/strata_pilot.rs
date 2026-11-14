@@ -192,8 +192,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use neat_ai_ockham::corpus::corpus_info;
-    use neat_core::training_data::TrainingDataConfig;
+    use neat_ai_ockham::corpus::{corpus_info, for_each_chunk};
+    use neat_ai_ockham::strata::manifest::StratumDir;
+    use neat_core::{parse_creature_json, training_data::TrainingDataConfig};
 
     #[test]
     fn two_fresh_directories_are_byte_identical_and_load() {
@@ -217,20 +218,119 @@ mod tests {
             );
         }
 
+        // The held-out split is generated from its own seeds, not copied from calibration.
+        for name in STRATA {
+            assert_ne!(
+                std::fs::read(first.join(format!("val/{name}/records.bin"))).unwrap(),
+                std::fs::read(first.join(format!("cal/{name}/records.bin"))).unwrap(),
+                "val/{name}/records.bin is a copy of cal/{name}/records.bin"
+            );
+        }
+
+        // The committed pilot record must still be exactly what the generator produces.
+        let committed =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/research/strata-pilot-v1");
+        for file in ["manifest.json", "parent.json"] {
+            assert_eq!(
+                std::fs::read(first.join(file)).unwrap(),
+                std::fs::read(committed.join(file)).unwrap(),
+                "committed pilot record no longer matches the generator: {file} differs from docs/research/strata-pilot-v1/{file}"
+            );
+        }
+
         let loaded = load(&first.join("manifest.json")).unwrap();
         assert_eq!(loaded.manifest.calibration.len(), 4);
         let config = TrainingDataConfig::new(4, 1);
-        let count_of = |name: &str| {
-            let stratum = loaded
-                .manifest
-                .calibration
+        let count_of = |strata: &[StratumDir], name: &str| {
+            let stratum = strata
                 .iter()
                 .find(|s| s.name == name)
-                .unwrap_or_else(|| panic!("no calibration stratum '{name}'"));
+                .unwrap_or_else(|| panic!("no stratum '{name}'"));
             corpus_info(&stratum.dir, &config).unwrap().record_count
         };
-        assert_eq!(count_of("rare"), 48);
-        assert_eq!(count_of("alpha"), 192);
+        assert_eq!(count_of(&loaded.manifest.calibration, "rare"), 48);
+        assert_eq!(count_of(&loaded.manifest.calibration, "alpha"), 192);
+        for (label, strata) in [
+            ("calibration", &loaded.manifest.calibration),
+            ("validation", &loaded.manifest.validation),
+        ] {
+            for (name, expected) in [("alpha", 192), ("beta", 192), ("gamma", 192), ("rare", 48)] {
+                assert_eq!(
+                    count_of(strata, name),
+                    expected,
+                    "{label} '{name}' record count"
+                );
+            }
+        }
+
+        let parent_text = std::fs::read_to_string(first.join("parent.json")).unwrap();
+        let parent = parse_creature_json(&parent_text).unwrap();
+        let hidden = parent
+            .neurons
+            .iter()
+            .filter(|n| n.neuron_type == "hidden")
+            .count();
+        assert_eq!(hidden, 10, "parent should have 10 hidden neurons");
+        let dead_wood: Vec<_> = parent
+            .synapses
+            .iter()
+            .filter(|s| s.to_uuid == "output-0" && (0..4).any(|d| s.from_uuid == format!("d{d}")))
+            .collect();
+        assert_eq!(dead_wood.len(), 4, "every d0..d3 should feed output-0");
+        for edge in dead_wood {
+            assert!(
+                edge.weight.abs() < 1e-4,
+                "dead-wood synapse {} -> {} has weight {}",
+                edge.from_uuid,
+                edge.to_uuid,
+                edge.weight
+            );
+        }
+        let h3 = parent
+            .synapses
+            .iter()
+            .find(|s| s.from_uuid == "h3" && s.to_uuid == "output-0")
+            .expect("h3 -> output-0 synapse");
+        assert!(
+            (h3.weight - 0.8).abs() < 1e-12,
+            "h3 -> output-0 weight is {}, expected 0.8",
+            h3.weight
+        );
+    }
+
+    #[test]
+    fn rare_calibration_is_full_scale_in_input_three_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pilot");
+        write(&dir).unwrap();
+
+        let mut max_abs = [0f32; 4];
+        let visited = for_each_chunk(
+            &dir.join("cal").join("rare"),
+            &TrainingDataConfig::new(4, 1),
+            16,
+            |chunk| {
+                for row in chunk.inputs.chunks_exact(4) {
+                    for (max, value) in max_abs.iter_mut().zip(row) {
+                        *max = max.max(value.abs());
+                    }
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(visited, 48, "calibration rare record count");
+        assert!(
+            max_abs[3] > 0.5,
+            "rare input 3 should be full scale, max |value| is {}",
+            max_abs[3]
+        );
+        for (input, max) in max_abs.iter().enumerate().take(3) {
+            assert!(
+                *max <= 0.1,
+                "rare input {input} should be scaled down, max |value| is {max}"
+            );
+        }
     }
 
     #[test]
