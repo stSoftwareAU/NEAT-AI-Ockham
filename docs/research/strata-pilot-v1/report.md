@@ -60,7 +60,10 @@ inputs. The [raw report](report.json) is the unedited output of
 Every informed arm won on six of its six scored bundles on each seed. The
 aggregate, worst-stratum and pareto arms selected the same bundle on every
 seed, with a validation delta of 5.947e-7 on every seed. Each removed 4 hidden
-neurons and 20 synapses. Pareto's archive had size 1 on seed 1.
+neurons and 20 synapses. Pareto's archive held one entry on nine seeds and
+three on seed 9 (where `{d2, d3}` and `{d1, d3}` were also archived); its
+selection was still `{d0, d1, d2, d3}`. Archive size depends on wall-clock
+latency, so it varied between runs, but the selection did not.
 
 The random arm had a mean of 0.5 wins per seed and removed a mean of 4.0
 synapses per seed. Every arm had 0 minority regressions and 0 regressed strata.
@@ -82,7 +85,7 @@ synapses per seed. Every arm had 0 minority regressions and 0 regressed strata.
 ## Interpretation
 
 The result is inconclusive. The fixture's dead wood is cheap on every stratum,
-so at temperature 0.25 every informed sampler converges on the same four
+so at temperature 0.25 the informed arms' selections converge on the same four
 neurons. The aggregate control never walked into a minority regression, so
 there was nothing for worst-stratum guidance to avoid. The arms are tied, and
 the success criterion is not met for either treatment.
@@ -93,8 +96,9 @@ claimed, and no representative negative result is claimed.
 
 ## Costs
 
-- The run log records 208 scorer invocations. Of these, 8 were preparation calls
-  and 40 were validation calls.
+- 208 scorer invocations, from `report.json`: 8 preparation calls
+  (`costs.prepScorerCalls`), 160 per-arm calls (4 per seed and arm, summed over
+  `runs[].scorerCalls`) and 40 validation calls (`costs.validationScorerCalls`).
 - `prepMs` was 35.2. Wall-clock times were taken on a shared host and are
   indicative only. They do not establish a speed-up.
 
@@ -125,25 +129,38 @@ git checkout 742c5df30fc98ece3afe784be1aca18f925b47b3
 cargo build --release --locked -p rust_scorer
 ```
 
-Generate the inputs with an Ockham checkout that contains
-`ockham/examples/strata_pilot.rs`. The target directory must not already exist:
+The committed run was made from a working directory holding the generated
+`pilot-v1/` directory (the report's `manifest` echo records
+`pilot-v1/parent.json` and `pilot-v1/cal/...`), with `--out report-v1.json`,
+later committed as `report.json`. From the root of an Ockham checkout, generate
+the inputs in `runs/`, which is gitignored. `pilot-v1` must not already exist,
+because the example refuses it:
 
 ```sh
-cargo run --release --example strata_pilot -- runs/strata-pilot-v1
+mkdir -p runs && cd runs
+cargo run --release --manifest-path ../Cargo.toml --example strata_pilot -- pilot-v1
 ```
 
 The generated `manifest.json` and `parent.json` are byte-identical to the
 committed copies, as the checksums above show. The manifest's relative paths
-resolve inside the generated directory.
+resolve inside the generated directory. The test
+`two_fresh_directories_are_byte_identical_and_load` in
+`ockham/examples/strata_pilot.rs` checks the committed copies against fresh
+generator output.
 
 Run the benchmark, replacing `/path/to/rust_scorer` with the built binary's
 path:
 
 ```sh
-neat_ai_ockham bench-strata runs/strata-pilot-v1/manifest.json \
+neat_ai_ockham bench-strata pilot-v1/manifest.json \
   --out report-v1.json --scorer /path/to/rust_scorer \
   --scorer-arg=--gpu --scorer-arg=off --scorer-arg=--cost --scorer-arg=MSE
 ```
 
-The run exits 0. The committed `report.json` is the raw output of this run,
-under its committed name.
+The run exits 0. The committed `report.json` is the unedited `report-v1.json`
+of the original run, renamed. A fresh rerun, with the same scorer and
+arguments, reproduces the selections, scores, paired results and criteria. It
+does not reproduce archive membership, because Pareto's archive depends on
+latency through `latencyTolerance`. Wall-clock fields (`prepMs`, `armMs`,
+latency and `winsPerHour`) also vary, so the file checksum is not expected to
+match.
