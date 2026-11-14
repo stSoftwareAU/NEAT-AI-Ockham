@@ -97,7 +97,9 @@ checked against them afterwards.
 | `bootstrapSeed` | Default `0`. Must not appear in `shuffleSeeds`. |
 | `bootstrapResamples` | Default `1000`. Range `100..=100000`. |
 | `maxRecords` | Default `4096`. Range `1..=1000000`. Sample size per split. |
-| `children` | Range `1..=256`. Names must be unique and non-empty. |
+| `children` | Range `1..=256`. Names must be unique and non-empty. At least one child per `role`. |
+| `children[].role` | Required: `"calibration"` or `"validation"`. |
+| `children[].preparationMs` | Optional. Finite and `>= 0`. |
 | `sampleTolerance` | Default `0.0`. Finite and `>= 0`. |
 | `minAucGain` | Required. Finite. |
 
@@ -106,7 +108,10 @@ must not resolve to the same path.
 
 ## Calibration and validation
 
-The threshold `theta` is fitted on the calibration split only.
+The threshold `theta` is fitted on the calibration split only. Both the records
+and the children are split: every child carries a `role`. Calibration children,
+scored on the calibration corpus, fit `theta`. Validation children, scored on the
+validation corpus, are the only ones the gates count. A child is never in both.
 
 1. Each calibration `preservationVsMean` score is a candidate `theta`.
 2. The chosen `theta` maximises balanced accuracy, `(TPR + TNR) / 2`. A child is
@@ -132,11 +137,14 @@ For each gate, the report gives:
 - `falseRejections`: children rejected that are genuinely better.
 - `falseRejectionRate`: `falseRejections / betterChildren`. It is `null` when no
   child is better.
-- `AUC`: the Mann–Whitney area under the curve of the gate's score for
+- `AUC`: the Mann–Whitney area under the curve (reusing `model::auc`) of the gate's score for
   predicting "better". Ties count as 0.5. It is `null` when undefined.
 
-Each child also appears as a paired row, `{name, better, sampleRejects,
-preservationRejects}`. A bootstrap 95% interval over children (seeded by
+Each child also appears as a paired row, `{name, role, better, fullDelta,
+sampleDelta, preservationVsMean, sampleRejects, preservationRejects}`. The rows
+hold the paired score distributions. `preservationVsMean` is the child's score
+on its own role's corpus. `preservationRejects` is `null` for calibration
+children. A bootstrap 95% interval over children (seeded by
 `bootstrapSeed`) gives `aucGain = AUC_preservation - AUC_sample`.
 
 The rule is fixed before the run:
@@ -148,15 +156,20 @@ The rule is fixed before the run:
 Even `met` is only a statement about the fixtures or runs supplied. It is not a
 demonstration of benefit until representative runs exist.
 
-## Known limitation
+## Known limitations and negative findings
 
-Calibration and validation use two corpora, which separates their records. The
-children do not get the same separation. The same children, and their manifest
-`fullDelta` labels, are used both to fit `theta` and to score the validation
-gates. Validation false-rejection rates and AUC are therefore not measured on
-unseen children, and should not be read as out-of-sample. Also, `fullDelta` and
-`sampleDelta` are supplied in the manifest from earlier scorer runs. The audit
-does not compute them. `latencyMsPer1kRecords` times the whole streamed pass, so
+- `fullDelta` and `sampleDelta` are supplied in the manifest from earlier scorer
+  runs. The audit does not compute them, and it does not run the sampled screen
+  in `promote.rs`.
+- neat-core clamps non-finite activations, so a NaN or infinite corpus input
+  produces a huge finite output, not a non-finite one. The `nonFiniteOutput`
+  paths are defensive: the unit test drives them directly. A fixture with a NaN
+  input showed that one clamped record dominates every error term. The child
+  with a doubled weight still scored `preservationVsMean = 1.0`, the same as
+  an exact copy. The score cannot tell children apart when the corpus holds
+  such records.
+- The arXiv full text could not be fetched here (no network access), so the
+  method is still not pinned to the paper. `latencyMsPer1kRecords` times the whole streamed pass, so
 it includes corpus reading and per-record scoring, not only the activation loop.
 
 ## Manifest example
@@ -165,7 +178,10 @@ it includes corpus reading and per-record scoring, not only the activation loop.
 {
   "parent": "parent.json",
   "children": [
-    { "name": "c1", "creature": "c1.json", "fullDelta": 0.01, "sampleDelta": -0.002 }
+    { "name": "c1", "creature": "c1.json", "fullDelta": 0.01, "sampleDelta": -0.002,
+      "role": "calibration", "preparationMs": 1200 },
+    { "name": "c2", "creature": "c2.json", "fullDelta": -0.02, "sampleDelta": 0.001,
+      "role": "validation", "preparationMs": 900 }
   ],
   "calibration": "calib-corpus-dir",
   "validation": "valid-corpus-dir",
@@ -181,6 +197,9 @@ it includes corpus reading and per-record scoring, not only the activation loop.
 Paths are resolved relative to the manifest's directory when they are relative.
 The manifest uses `deny_unknown_fields`, and it is capped at 1 MiB, checked by
 metadata before the file is read.
+
+`preparationMs` is the declared cost of producing the child, such as pruning,
+search and scorer time. The audit cannot measure that cost itself.
 
 `fullDelta` is the authoritative full-scorer fitness change of the child against
 the parent, larger is better, taken from an earlier full-scorer run such as an
@@ -198,21 +217,32 @@ top-level fields are:
   sentence is a separate top-level field, not part of `evidence`.
 - `method`: the formula text and the source note, which says the abstract only
   was used.
-- `versions`: the crate version, SHA-256 of the parent and of each child, and the
+- `versions`: the crate version, `gitCommit` (from `git rev-parse HEAD` at
+  build time, or `"unknown"` without git; uncommitted edits are not detected),
+  SHA-256 of the parent and of each child, and the
   identity of each corpus.
 - `manifest`: an echo of the input manifest.
 - `threshold`: the fitted `theta`, or `null`.
 - `splits`: `calibration` and `validation`, each with per-child scores,
   `ci95`, `collapsedChild`, `degenerate`, `taskLoss` and
-  `latencyMsPer1kRecords`.
+  `latencyMsPer1kRecords`. The split's `parent` entry carries `failure` (a
+  non-finite parent output) and `null` task loss and control error when it
+  fails.
 - `gates`: `sample` and `preservation`.
 - `paired`, `aucGain` (value and `ci95`).
 - `criterion`: `status` and `rule`.
-- `coverage`: children supplied and scored, and validation records.
-- `costs`: calibration and validation milliseconds, and records activated.
+- `coverage`: children supplied and scored (in total and per role), and
+  validation records.
+- `costs`: calibration and validation activation milliseconds, `evaluationMs`
+  (θ search, gates and the AUC-gain bootstrap), `totalMs` (whole audit wall
+  clock), records activated, and `childPreparationMs`. That is the sum of the
+  declared `preparationMs`, or `null` unless every child declares one, with
+  `childrenWithPreparationCost`.
 - `failures`: the refusals that stop a child or the threshold being used. It
-  has two kinds of entry: `"<split> child '<name>': nonFiniteOutput at record
-  N"` for a child with a non-finite output, and `"threshold not fittable:
+  has these kinds of entry: `"<split> child '<name>': nonFiniteOutput at
+  record N"` for a child with a non-finite output, `"<split> child '<name>':
+  parent nonFiniteOutput at record N (<split> split)"` for every child on a split
+  where the parent's output is non-finite (the report is still written), and `"threshold not fittable:
   <why>"` when `theta` cannot be fitted. Degenerate reasons and
   `collapsedChild` are not listed here. They appear on each child's entry under
   `splits`.

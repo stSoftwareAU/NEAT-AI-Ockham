@@ -28,6 +28,8 @@
 //!
 //! The threshold is fitted on calibration only, maximising balanced accuracy
 //! with the smallest-θ tie-break. Validation is untouched until θ is fixed.
+//! Children are split too: each has a `role`, so θ is fitted on calibration
+//! children and the gates count only the disjoint validation children.
 
 use std::collections::HashSet;
 use std::ops::ControlFlow;
@@ -61,6 +63,15 @@ gates and AUC evaluated on validation; aucGain bootstrap over children; \
 denominators below 1e-24 give null";
 const SOURCE: &str = "arXiv:2611.13681 (abstract only; full method not retrieved)";
 
+/// Which corpus a child is judged on: calibration children fit θ, validation
+/// children are scored by both gates. A child is never in both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum Role {
+    Calibration,
+    Validation,
+}
+
 /// One child creature with its authoritative and sampled fitness changes.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -69,6 +80,10 @@ struct ChildSpec {
     creature: PathBuf,
     full_delta: f64,
     sample_delta: f64,
+    role: Role,
+    /// Declared cost of producing this child (scorer, pruning, search), in ms.
+    #[serde(default)]
+    preparation_ms: Option<f64>,
 }
 
 /// The audit manifest, validated by [`validate_manifest`].
@@ -126,6 +141,19 @@ fn validate_manifest(m: &Manifest, base: &Path) -> Result<(), String> {
         if !c.sample_delta.is_finite() {
             return Err(format!("children[{i}].sampleDelta must be finite"));
         }
+        if c.preparation_ms.is_some_and(|v| !v.is_finite() || v < 0.0) {
+            return Err(format!(
+                "children[{i}].preparationMs must be finite and >= 0"
+            ));
+        }
+    }
+    for role in [Role::Calibration, Role::Validation] {
+        if !m.children.iter().any(|c| c.role == role) {
+            return Err(format!(
+                "children: at least one child must have role '{}'",
+                role.as_str()
+            ));
+        }
     }
     if m.shuffle_seeds.is_empty() {
         return Err("shuffleSeeds must be non-empty".into());
@@ -169,6 +197,15 @@ fn validate_manifest(m: &Manifest, base: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+impl Role {
+    fn as_str(self) -> &'static str {
+        match self {
+            Role::Calibration => "calibration",
+            Role::Validation => "validation",
+        }
+    }
 }
 
 /// Resolve a manifest path against the manifest's directory.
@@ -352,6 +389,7 @@ struct ParentPass {
     columns: ColumnRange,
     task_sum: f64,
     stats: PassStats,
+    failure: Option<String>,
 }
 
 fn parent_pass(
@@ -376,16 +414,13 @@ fn parent_pass(
         task_sum += task_sq(out, targets);
         ControlFlow::Continue(())
     })?;
-    if let Some(index) = bad {
-        return Err(format!(
-            "parent creature: nonFiniteOutput at record {index} ({split} split)"
-        ));
-    }
     Ok(ParentPass {
         rows,
         columns,
         task_sum,
         stats,
+        failure: bad
+            .map(|index| format!("parent nonFiniteOutput at record {index} ({split} split)")),
     })
 }
 
@@ -535,30 +570,22 @@ fn bootstrap_ci(
 
 /// Mann–Whitney AUC for predicting `positives` from `scores` (ties count 0.5).
 ///
-/// `None` when there are no positives or no negatives.
+/// Reuses the selector model's [`crate::model::auc`]; `None` (rather than its
+/// 0.5) when there are no positives or no negatives.
 fn auc(scores: &[f64], positives: &[bool]) -> Option<f64> {
-    let n_pos = positives.iter().filter(|&&p| p).count();
-    let n_neg = positives.len() - n_pos;
-    if n_pos == 0 || n_neg == 0 {
+    let mut wins = Vec::new();
+    let mut losses = Vec::new();
+    for (&score, &positive) in scores.iter().zip(positives) {
+        if positive {
+            wins.push(score);
+        } else {
+            losses.push(score);
+        }
+    }
+    if wins.is_empty() || losses.is_empty() {
         return None;
     }
-    let mut order: Vec<usize> = (0..scores.len()).collect();
-    order.sort_by(|&a, &b| scores[a].total_cmp(&scores[b]));
-    let mut rank_sum = 0.0;
-    let mut start = 0;
-    while start < order.len() {
-        let value = scores[order[start]];
-        let mut end = start;
-        while end + 1 < order.len() && scores[order[end + 1]] == value {
-            end += 1;
-        }
-        let mid_rank = (start + end) as f64 / 2.0 + 1.0;
-        let positives_here = order[start..=end].iter().filter(|&&i| positives[i]).count();
-        rank_sum += positives_here as f64 * mid_rank;
-        start = end + 1;
-    }
-    let (p, n) = (n_pos as f64, n_neg as f64);
-    Some((rank_sum - p * (p + 1.0) / 2.0) / (p * n))
+    Some(crate::model::auc(&wins, &losses))
 }
 
 /// Bootstrap 95% CI of `AUC_preserved − AUC_sample`, resampling children.
@@ -657,6 +684,8 @@ struct Child {
     creature: CreatureExport,
     full_delta: f64,
     sample_delta: f64,
+    role: Role,
+    preparation_ms: Option<f64>,
 }
 
 fn load_children(
@@ -682,6 +711,8 @@ fn load_children(
                 creature: inc.creature,
                 full_delta: spec.full_delta,
                 sample_delta: spec.sample_delta,
+                role: spec.role,
+                preparation_ms: spec.preparation_ms,
             })
         })
         .collect()
@@ -705,9 +736,10 @@ struct Split<'a> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ParentReport {
-    task_loss: f64,
+    failure: Option<String>,
+    task_loss: Option<f64>,
     latency_ms_per_1k_records: f64,
-    mean_control_error: f64,
+    mean_control_error: Option<f64>,
     shuffle_control_errors: Vec<f64>,
 }
 
@@ -800,6 +832,38 @@ fn score_child(
     (report, vs_mean)
 }
 
+/// The split result when the parent produced a non-finite output: nothing to
+/// compare against, so every child fails on this split and the report is
+/// still written rather than the audit aborting.
+fn parent_failed_split(
+    split: &Split<'_>,
+    children: &[Child],
+    failure: String,
+    stats: PassStats,
+) -> SplitRun {
+    SplitRun {
+        report: SplitReport {
+            records: split.records,
+            corpus_records: split.corpus_records,
+            parent: ParentReport {
+                failure: Some(failure.clone()),
+                task_loss: None,
+                latency_ms_per_1k_records: per_1k(stats),
+                mean_control_error: None,
+                shuffle_control_errors: Vec::new(),
+            },
+            children: children
+                .iter()
+                .map(|c| failed_child(&c.name, failure.clone()))
+                .collect(),
+        },
+        preserved: vec![None; children.len()],
+        failures: vec![Some(failure); children.len()],
+        activated: stats.activated,
+        elapsed_ms: stats.elapsed_ms,
+    }
+}
+
 /// Score the parent and every child on one split.
 fn run_split(
     split: Split<'_>,
@@ -810,6 +874,9 @@ fn run_split(
     let k = parent.output;
     let records = split.records as usize;
     let pp = parent_pass(parent, split.dir, split.records, split.name)?;
+    if let Some(failure) = pp.failure {
+        return Ok(parent_failed_split(&split, children, failure, pp.stats));
+    }
     let ctrl = controls(&pp.rows, records, k, &settings.shuffle_seeds);
     let parent_varies = pp.columns.varies();
     let mut activated = pp.stats.activated;
@@ -838,9 +905,10 @@ fn run_split(
         records: split.records,
         corpus_records: split.corpus_records,
         parent: ParentReport {
-            task_loss: pp.task_sum / cells,
+            failure: None,
+            task_loss: Some(pp.task_sum / cells),
             latency_ms_per_1k_records: per_1k(pp.stats),
-            mean_control_error: ctrl.mean_error,
+            mean_control_error: Some(ctrl.mean_error),
             shuffle_control_errors: ctrl.shuffle_errors,
         },
         children: child_reports,
@@ -873,6 +941,7 @@ struct NamedDigest {
 #[serde(rename_all = "camelCase")]
 struct Versions {
     ockham: &'static str,
+    git_commit: &'static str,
     parent_sha256: String,
     children: Vec<NamedDigest>,
     calibration_corpus: String,
@@ -899,8 +968,14 @@ struct Gates {
 #[serde(rename_all = "camelCase")]
 struct PairedRow {
     name: String,
+    role: Role,
     better: bool,
+    full_delta: f64,
+    sample_delta: f64,
+    /// `preservationVsMean` on the child's own split (calibration or validation).
+    preservation_vs_mean: Option<f64>,
     sample_rejects: bool,
+    /// θ applied to validation children only; `null` for calibration children.
     preservation_rejects: Option<bool>,
 }
 
@@ -923,6 +998,8 @@ struct Criterion {
 struct Coverage {
     children_supplied: usize,
     children_scored: usize,
+    calibration_children_scored: usize,
+    validation_children_scored: usize,
     validation_records: u64,
     validation_corpus_records: u64,
 }
@@ -932,7 +1009,14 @@ struct Coverage {
 struct Costs {
     calibration_ms: u64,
     validation_ms: u64,
+    /// θ search, gates and the AUC-gain bootstrap.
+    evaluation_ms: u64,
+    /// Wall clock of the whole audit, including loading and per-child bootstraps.
+    total_ms: u64,
     records_activated: u64,
+    /// Sum of declared `preparationMs`; `null` unless every child declares one.
+    child_preparation_ms: Option<f64>,
+    children_with_preparation_cost: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -1002,29 +1086,34 @@ struct Evaluation {
     paired: Vec<PairedRow>,
     auc_gain: AucGain,
     criterion: Criterion,
-    scored: usize,
+    calibration_scored: usize,
+    validation_scored: usize,
 }
 
+/// θ is fitted on calibration children scored on the calibration corpus; the
+/// gates compare validation children, disjoint from them, on the validation
+/// corpus. Neither a validation child nor a validation record informs θ.
 fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) -> Evaluation {
-    // A child takes part only when it scored on both splits.
+    let cal_children: Vec<usize> = (0..children.len())
+        .filter(|&i| children[i].role == Role::Calibration && cal.failures[i].is_none())
+        .collect();
     let comparison: Vec<usize> = (0..children.len())
-        .filter(|&i| cal.failures[i].is_none() && val.failures[i].is_none())
+        .filter(|&i| children[i].role == Role::Validation && val.failures[i].is_none())
         .collect();
-    let better: Vec<bool> = comparison
-        .iter()
-        .map(|&i| children[i].full_delta > 0.0)
-        .collect();
-    let cal_preserved: Vec<Option<f64>> = comparison.iter().map(|&i| cal.preserved[i]).collect();
-    let (threshold, threshold_failure) = match fit_threshold_checked(&cal_preserved, &better) {
+    let is_better = |i: usize| children[i].full_delta > 0.0;
+    let cal_better: Vec<bool> = cal_children.iter().map(|&i| is_better(i)).collect();
+    let cal_preserved: Vec<Option<f64>> = cal_children.iter().map(|&i| cal.preserved[i]).collect();
+    let (threshold, threshold_failure) = match fit_threshold_checked(&cal_preserved, &cal_better) {
         Ok(t) => (Some(t), None),
         Err(why) => (None, Some(why)),
     };
 
-    let sample_rej: Vec<bool> = comparison
+    let better: Vec<bool> = comparison.iter().map(|&i| is_better(i)).collect();
+    let sample_rejects_at = |i: usize| children[i].sample_delta < -m.sample_tolerance;
+    let sample_rejects: Vec<Option<bool>> = comparison
         .iter()
-        .map(|&i| children[i].sample_delta < -m.sample_tolerance)
+        .map(|&i| Some(sample_rejects_at(i)))
         .collect();
-    let sample_rejects: Vec<Option<bool>> = sample_rej.iter().map(|&r| Some(r)).collect();
     let sample_scores: Vec<Option<f64>> = comparison
         .iter()
         .map(|&i| Some(children[i].sample_delta))
@@ -1043,16 +1132,26 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
         &val_preserved,
     );
 
-    let paired: Vec<PairedRow> = comparison
+    let row = |i: usize, preserved: Option<f64>, rejects: Option<bool>| PairedRow {
+        name: children[i].name.clone(),
+        role: children[i].role,
+        better: is_better(i),
+        full_delta: children[i].full_delta,
+        sample_delta: children[i].sample_delta,
+        preservation_vs_mean: preserved,
+        sample_rejects: sample_rejects_at(i),
+        preservation_rejects: rejects,
+    };
+    let mut paired: Vec<PairedRow> = cal_children
         .iter()
-        .enumerate()
-        .map(|(j, &i)| PairedRow {
-            name: children[i].name.clone(),
-            better: better[j],
-            sample_rejects: sample_rej[j],
-            preservation_rejects: preserved_rejects[j],
-        })
+        .map(|&i| row(i, cal.preserved[i], None))
         .collect();
+    paired.extend(
+        comparison
+            .iter()
+            .enumerate()
+            .map(|(j, &i)| row(i, val.preserved[i], preserved_rejects[j])),
+    );
 
     let preserved_all: Option<Vec<f64>> = val_preserved.iter().copied().collect();
     let sample_all: Vec<f64> = comparison
@@ -1106,7 +1205,8 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
         paired,
         auc_gain: AucGain { value, ci95 },
         criterion: Criterion { status, rule },
-        scored: comparison.len(),
+        calibration_scored: cal_children.len(),
+        validation_scored: comparison.len(),
     }
 }
 
@@ -1144,6 +1244,7 @@ fn write_atomically(out: &Path, value: &serde_json::Value) -> Result<(), String>
 /// report is written atomically and the same value is returned. Report-only:
 /// this never writes a creature and never changes acceptance.
 pub fn run_audit(manifest_path: &Path, out_path: &Path) -> Result<serde_json::Value, String> {
+    let started = Instant::now();
     let text = read_manifest(manifest_path)?;
     let manifest = parse_manifest(&text)?;
     let echo: serde_json::Value =
@@ -1192,7 +1293,9 @@ pub fn run_audit(manifest_path: &Path, out_path: &Path) -> Result<serde_json::Va
         &settings,
     )?;
 
+    let evaluation_started = Instant::now();
     let eval = evaluate(&children, &cal, &val, &manifest);
+    let evaluation_ms = evaluation_started.elapsed().as_secs_f64() * 1000.0;
     let mut failures = Vec::new();
     for (split, run) in [("calibration", &cal), ("validation", &val)] {
         for (child, failure) in children.iter().zip(&run.failures) {
@@ -1215,6 +1318,7 @@ pub fn run_audit(manifest_path: &Path, out_path: &Path) -> Result<serde_json::Va
         },
         versions: Versions {
             ockham: env!("CARGO_PKG_VERSION"),
+            git_commit: env!("OCKHAM_GIT_COMMIT"),
             parent_sha256: parent.checksum.clone(),
             children: children
                 .iter()
@@ -1238,14 +1342,26 @@ pub fn run_audit(manifest_path: &Path, out_path: &Path) -> Result<serde_json::Va
         criterion: eval.criterion,
         coverage: Coverage {
             children_supplied: children.len(),
-            children_scored: eval.scored,
+            children_scored: eval.calibration_scored + eval.validation_scored,
+            calibration_children_scored: eval.calibration_scored,
+            validation_children_scored: eval.validation_scored,
             validation_records: val_records,
             validation_corpus_records: val_info.record_count,
         },
         costs: Costs {
             calibration_ms: cal.elapsed_ms.round() as u64,
             validation_ms: val.elapsed_ms.round() as u64,
+            evaluation_ms: evaluation_ms.round() as u64,
+            total_ms: started.elapsed().as_millis() as u64,
             records_activated: cal.activated + val.activated,
+            child_preparation_ms: children
+                .iter()
+                .map(|c| c.preparation_ms)
+                .sum::<Option<f64>>(),
+            children_with_preparation_cost: children
+                .iter()
+                .filter(|c| c.preparation_ms.is_some())
+                .count(),
         },
         failures,
     };
@@ -1266,8 +1382,8 @@ mod tests {
         json!({
             "parent": "parent.json",
             "children": [
-                {"name": "c1", "creature": "c1.json", "fullDelta": 0.01, "sampleDelta": -0.002},
-                {"name": "c2", "creature": "c2.json", "fullDelta": -0.02, "sampleDelta": 0.001}
+                {"name": "c1", "creature": "c1.json", "fullDelta": 0.01, "sampleDelta": -0.002, "role": "calibration"},
+                {"name": "c2", "creature": "c2.json", "fullDelta": -0.02, "sampleDelta": 0.001, "role": "validation"}
             ],
             "calibration": "calib",
             "validation": "valid",
@@ -1432,20 +1548,23 @@ mod tests {
         write_creature(&root.join("collapsed.json"), &collapsed);
 
         let mut children = vec![
-            json!({"name": "same", "creature": "same.json", "fullDelta": 0.02, "sampleDelta": 0.01}),
-            json!({"name": "same-copy", "creature": "same-copy.json", "fullDelta": 0.01, "sampleDelta": 0.02}),
-            json!({"name": "scaled", "creature": "scaled.json", "fullDelta": -0.03, "sampleDelta": -0.01}),
-            json!({"name": "collapsed", "creature": "collapsed.json", "fullDelta": -0.05, "sampleDelta": 0.0}),
+            json!({"name": "same", "creature": "same.json", "fullDelta": 0.02, "sampleDelta": 0.01, "role": "calibration", "preparationMs": 12.5}),
+            json!({"name": "scaled", "creature": "scaled.json", "fullDelta": -0.03, "sampleDelta": -0.01, "role": "calibration", "preparationMs": 7.5}),
+            json!({"name": "same-copy", "creature": "same-copy.json", "fullDelta": 0.01, "sampleDelta": 0.02, "role": "validation", "preparationMs": 10.0}),
+            json!({"name": "collapsed", "creature": "collapsed.json", "fullDelta": -0.05, "sampleDelta": 0.0, "role": "validation", "preparationMs": 20.0}),
         ];
         if wide_child {
             write_creature(&root.join("wide.json"), &identity_creature(3, 1));
             children.push(
-                json!({"name": "wide", "creature": "wide.json", "fullDelta": 0.0, "sampleDelta": 0.0}),
+                json!({"name": "wide", "creature": "wide.json", "fullDelta": 0.0, "sampleDelta": 0.0, "role": "validation"}),
             );
         }
         write_corpus(&root.join("calibration"), 40, 0);
         write_corpus(&root.join("validation"), 30, 5);
+        write_manifest(root, children)
+    }
 
+    fn write_manifest(root: &Path, children: Vec<serde_json::Value>) -> PathBuf {
         let manifest = json!({
             "parent": "parent.json",
             "children": children,
@@ -1490,6 +1609,28 @@ mod tests {
         assert!(value["threshold"].is_number());
         assert_eq!(value["coverage"]["childrenSupplied"], json!(4));
         assert_eq!(value["coverage"]["childrenScored"], json!(4));
+        assert_eq!(value["coverage"]["calibrationChildrenScored"], json!(2));
+        assert_eq!(value["coverage"]["validationChildrenScored"], json!(2));
+        assert_eq!(value["costs"]["childPreparationMs"], json!(50.0));
+        assert_eq!(value["costs"]["childrenWithPreparationCost"], json!(4));
+        assert!(value["versions"]["gitCommit"].is_string());
+
+        // θ comes from the calibration children; the gates count only the
+        // disjoint validation children, so validation-only rejects appear.
+        let paired = value["paired"].as_array().unwrap();
+        assert_eq!(paired.len(), 4);
+        for row in paired {
+            let is_val = row["role"] == "validation";
+            assert_eq!(row["preservationRejects"].is_boolean(), is_val, "{row}");
+            assert!(row["sampleDelta"].is_number() && row["fullDelta"].is_number());
+        }
+        let collapsed_row = paired.iter().find(|r| r["name"] == "collapsed").unwrap();
+        assert_eq!(collapsed_row["preservationRejects"], json!(true));
+        assert_eq!(
+            collapsed_row["preservationVsMean"],
+            child_entry(val, "collapsed")["preservationVsMean"]
+        );
+        assert_eq!(value["gates"]["preservation"]["falseRejections"], json!(0));
         assert_eq!(value["coverage"]["validationRecords"], json!(30));
         assert_eq!(value["coverage"]["validationCorpusRecords"], json!(30));
         assert_eq!(value["criterion"]["status"], json!("notMet"));
@@ -1508,5 +1649,140 @@ mod tests {
         let err = run_audit(&manifest, &out).unwrap_err();
         assert!(err.contains("wide"), "{err}");
         assert!(!out.exists());
+    }
+
+    /// A parent that outputs a constant: every score is degenerate, θ cannot
+    /// be fitted and the criterion is `notEvaluable` — never a success.
+    #[test]
+    fn collapsed_parent_audit_is_degenerate_and_not_evaluable() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut flat = identity_creature(2, 1);
+        flat.synapses[0].weight = 0.0;
+        flat.neurons[0].bias = 0.5;
+        write_creature(&root.join("parent.json"), &flat);
+        write_creature(&root.join("copy.json"), &flat);
+        write_creature(&root.join("varied.json"), &identity_creature(2, 1));
+        write_corpus(&root.join("calibration"), 40, 0);
+        write_corpus(&root.join("validation"), 30, 5);
+        let manifest = write_manifest(
+            root,
+            vec![
+                json!({"name": "copy-a", "creature": "copy.json", "fullDelta": 0.01, "sampleDelta": 0.01, "role": "calibration"}),
+                json!({"name": "varied-a", "creature": "varied.json", "fullDelta": -0.01, "sampleDelta": -0.01, "role": "calibration"}),
+                json!({"name": "copy-b", "creature": "copy.json", "fullDelta": 0.01, "sampleDelta": 0.01, "role": "validation"}),
+                json!({"name": "varied-b", "creature": "varied.json", "fullDelta": -0.01, "sampleDelta": -0.01, "role": "validation"}),
+            ],
+        );
+        let out = root.join("report.json");
+
+        let value = run_audit(&manifest, &out).unwrap();
+
+        for split in ["calibration", "validation"] {
+            let split = &value["splits"][split];
+            assert_eq!(split["parent"]["meanControlError"], json!(0.0));
+            for child in split["children"].as_array().unwrap() {
+                assert!(child["preservationVsMean"].is_null(), "{child}");
+                assert!(child["ci95"].is_null(), "{child}");
+                assert_eq!(child["collapsedChild"], json!(false), "{child}");
+                let reasons = child["degenerate"].as_array().unwrap();
+                assert!(reasons.contains(&json!("zeroVarianceParent")), "{child}");
+            }
+        }
+        assert!(value["threshold"].is_null());
+        assert!(value["gates"]["preservation"]["auc"].is_null());
+        assert_eq!(value["criterion"]["status"], json!("notEvaluable"));
+        let failures = value["failures"].to_string();
+        assert!(failures.contains("threshold not fittable"), "{failures}");
+        assert!(!value.to_string().contains("NaN"));
+        assert!(out.exists());
+    }
+
+    /// A non-finite parent output on a split fails every child there with a
+    /// named reason, and the evaluation is `notEvaluable` instead of aborting.
+    /// (neat-core clamps non-finite activations, so this is driven directly.)
+    #[test]
+    fn non_finite_parent_split_fails_every_child_and_is_not_evaluable() {
+        let child = |name: &str, role, full: f64| Child {
+            name: name.into(),
+            sha256: String::new(),
+            creature: identity_creature(2, 1),
+            full_delta: full,
+            sample_delta: full,
+            role,
+            preparation_ms: None,
+        };
+        let children = vec![
+            child("a", Role::Calibration, 0.1),
+            child("b", Role::Calibration, -0.1),
+            child("c", Role::Validation, 0.1),
+        ];
+        let dir = PathBuf::from("v");
+        let split = Split {
+            name: "validation",
+            dir: &dir,
+            records: 10,
+            corpus_records: 10,
+        };
+        let stats = PassStats {
+            activated: 4,
+            elapsed_ms: 1.0,
+        };
+        let failed = parent_failed_split(
+            &split,
+            &children,
+            "parent nonFiniteOutput at record 3 (validation split)".into(),
+            stats,
+        );
+        assert_eq!(failed.failures.len(), 3);
+        assert!(
+            failed
+                .failures
+                .iter()
+                .all(|f| f.as_deref().unwrap().starts_with("parent nonFiniteOutput"))
+        );
+        assert!(failed.preserved.iter().all(Option::is_none));
+        let report = serde_json::to_value(&failed.report).unwrap();
+        assert!(report["parent"]["failure"].is_string());
+        assert!(report["parent"]["taskLoss"].is_null());
+
+        let cal = SplitRun {
+            report: failed.report,
+            preserved: vec![Some(0.9), Some(0.1), Some(0.9)],
+            failures: vec![None, None, None],
+            activated: 0,
+            elapsed_ms: 0.0,
+        };
+        let m = parse_manifest(&base_manifest().to_string()).unwrap();
+        let failed = parent_failed_split(&split, &children, "parent nonFiniteOutput".into(), stats);
+        let eval = evaluate(&children, &cal, &failed, &m);
+        assert!(eval.threshold.is_some());
+        assert_eq!(eval.validation_scored, 0);
+        assert_eq!(eval.criterion.status, "notEvaluable");
+    }
+
+    #[test]
+    fn role_and_preparation_cost_refusals_name_their_field() {
+        let mut v = base_manifest();
+        v["children"][1]["role"] = json!("calibration");
+        let err = check(&v).unwrap_err();
+        assert!(err.contains("role 'validation'"), "{err}");
+
+        let mut v = base_manifest();
+        v["children"][0]["role"] = json!("both");
+        assert!(check(&v).unwrap_err().contains("manifest"));
+
+        let mut v = base_manifest();
+        v["children"][0].as_object_mut().unwrap().remove("role");
+        assert!(check(&v).unwrap_err().contains("role"));
+
+        let mut v = base_manifest();
+        v["children"][1]["preparationMs"] = json!(-1.0);
+        let err = check(&v).unwrap_err();
+        assert!(err.contains("children[1].preparationMs"), "{err}");
+
+        let mut v = base_manifest();
+        v["children"][1]["preparationMs"] = json!(3.0);
+        assert!(check(&v).is_ok());
     }
 }

@@ -108,19 +108,20 @@ fn an_end_to_end_audit_writes_a_report_and_leaves_the_parent_untouched() {
     write_corpus(&root.join("validation"), 100, 16);
 
     let children = [
-        ("same-a", "same-a.json", 0.01, 0.002),
-        ("same-b", "same-b.json", 0.02, 0.001),
-        ("perturbed", "perturbed.json", -0.03, -0.01),
-        ("collapsed", "collapsed.json", -0.05, -0.02),
+        ("same-a", "same-a.json", 0.01, 0.002, "calibration"),
+        ("perturbed", "perturbed.json", -0.03, -0.01, "calibration"),
+        ("same-b", "same-b.json", 0.02, 0.001, "validation"),
+        ("collapsed", "collapsed.json", -0.05, -0.02, "validation"),
     ];
     let children_json: Vec<serde_json::Value> = children
         .iter()
-        .map(|(name, file, full, sample)| {
+        .map(|(name, file, full, sample, role)| {
             serde_json::json!({
                 "name": name,
                 "creature": file,
                 "fullDelta": full,
                 "sampleDelta": sample,
+                "role": role,
             })
         })
         .collect();
