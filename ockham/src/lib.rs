@@ -42,6 +42,7 @@
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
 //! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
 //! | injected run-budget clock | [`clock`] | #214 |
+//! | worst-stratum / Pareto pruning experiment (opt-in) | [`strata`] | #263 |
 
 #![warn(missing_docs)]
 
@@ -77,6 +78,7 @@ pub mod screening;
 pub mod sensitivity;
 pub mod signature;
 pub mod stats;
+pub mod strata;
 pub mod substitute;
 pub mod sweep;
 pub mod tags;

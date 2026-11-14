@@ -21,7 +21,7 @@ fn readme() -> String {
 /// `train-ordering --out` was invisible to both directions of this contract:
 /// undocumented flags went unnoticed, and documenting one was reported as a
 /// flag the binary does not accept.
-const SUBCOMMANDS: &[&str] = &["report", "train-ordering"];
+const SUBCOMMANDS: &[&str] = &["report", "train-ordering", "bench-strata"];
 
 fn help() -> String {
     let mut text = String::new();
