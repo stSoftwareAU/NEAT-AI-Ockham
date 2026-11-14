@@ -320,6 +320,13 @@ parent whose cuts leave single-edge `MINIMUM` targets and asserts each bundle
 names every hidden neuron it removed (red-checked: it fails with the list
 left empty).
 
+After `Develop` gained the shared `ockham/src/output_guard.rs` (#269), the
+bench's private copy of the `--out` overwrite guard was removed:
+`BenchManifest::refuse_report_over_input` now calls the shared guard, and the
+report is written through the shared atomic writer
+(`additivity::bench::write_report`), like `bench-strata` and
+`audit-preservation`.
+
 Results on the final code:
 
 - `cargo test -p neat_ai_ockham --test additivity_bench`: 12 passed.

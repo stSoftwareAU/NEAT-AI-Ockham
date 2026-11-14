@@ -2252,6 +2252,16 @@ chose, so a uuid it ranks last is never tried, never logged and never gets to
 change its own mind. Reserved exploration is what stops that loop closing — and
 every strategy still visits every eligible neuron eventually.
 
+### Controlled proxy/history comparison
+
+The existing benchmark also has an opt-in research mode for randomly
+selected, individually full-scored audit pools, isolated source/calibration/
+validation groups and paired ranking comparisons. It reads private manifests
+and never applies a candidate. See [the versioned research protocol](docs/experiments/ranking-v1.md)
+for the calibration pilot, freeze, reproducible commands, cost accounting and
+current availability finding. The simulated benchmark below remains separate
+from representative evidence.
+
 ### Benchmark
 
 ```bash
@@ -2473,6 +2483,20 @@ edge cut reports zeroes here, never a figure borrowed from another kind.
 it records a genuine pruning result against its own lineage. It is not presented
 as population-ready unless the fresh frontier comparison also succeeds.
 
+## Preservation audit (opt-in, report-only)
+
+```bash
+neat_ai_ockham audit-preservation <manifest.json> --out <report.json>
+```
+
+`audit-preservation` asks how much of its parent's behaviour a compressed child
+keeps, scored on the same records against two controls: the parent's mean output
+and the parent's outputs with the records shuffled under predeclared seeds. It
+writes one JSON report and changes nothing else. It never changes acceptance,
+never writes a creature, and its similarity scores never substitute for the
+authoritative full scorer. The hypothesis, formulas, limits and success rule are
+in [docs/preservation-audit.md](docs/preservation-audit.md).
+
 ## Stratum-guided pruning experiment (opt-in)
 
 `bench-strata` is an offline benchmark of one hypothesis: that ordering
@@ -2485,7 +2509,8 @@ Nothing it does reaches the ordinary pruning path. It never accepts, publishes
 or journals a creature, and it never writes the learnings or statistics cache.
 Its only output is a report JSON, plus a scratch `<REPORT>.work` directory that
 is removed when the run ends. The fixtures do not demonstrate a benefit, so
-treat the report as data, not a claim.
+treat the report as data, not a claim. A synthetic real-scorer pilot
+([report](docs/research/strata-pilot-v1/report.md)) was also inconclusive.
 
 ```sh
 neat_ai_ockham bench-strata manifest.json --out report.json --scorer rust_scorer
@@ -2754,6 +2779,8 @@ NEAT-AI-Ockham/
 │       ├── learnings.rs       # fleet prune-verdict cache + screen coverage
 │       ├── coverage.rs       # checked/total/percent + coverage.txt / coverage.json
 │       ├── ordering.rs        # named candidate ordering strategies
+│       ├── output_guard.rs    # shared --out overwrite guard and atomic report writer
+│       ├── preservation.rs    # report-only preservation audit (Issue #264)
 │       ├── cascade.rs         # topology-only cascade dry-run for ordering
 │       ├── sensitivity.rs     # backward output-sensitivity estimate for ordering
 │       ├── features.rs        # per-candidate feature vectors for ranking
@@ -2782,6 +2809,7 @@ NEAT-AI-Ockham/
 │   ├── population-entry.md  # how cuts actually enter the live population
 │   ├── incident-response.md # emergency dependency fast lane (SECURITY.md)
 │   ├── additivity-experiment.md # opt-in offline experiment (#260): manifest, arms, report
+│   ├── preservation-audit.md # report-only preservation audit: method and limits
 │   └── strata-experiment.md # opt-in worst-stratum vs aggregate vs Pareto bench
 ├── scripts/
 │   ├── runlib.sh          # canonical build → install → clean (owned by core)

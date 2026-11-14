@@ -3,13 +3,12 @@
 //! Issue #2: load the immutable incumbent, copy it, and score a full-corpus
 //! baseline. Pruning lands in later issues; this binary must not prune yet.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use neat_ai_ockham::additivity::bench::run_bench;
+use neat_ai_ockham::additivity::bench::{run_bench, write_report};
 use neat_ai_ockham::additivity::manifest::BenchManifest;
 use neat_ai_ockham::clock::SystemClock;
 use neat_ai_ockham::config::{
@@ -227,6 +226,19 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Report-only preservation audit of compressed children against mean-output
+    /// and record-shuffled controls; never changes acceptance (Issue #264).
+    ///
+    /// Reads creatures and corpora only, never writes a creature, and writes one
+    /// JSON report to `--out`. Its similarity scores never substitute for the
+    /// authoritative full scorer. See docs/preservation-audit.md.
+    AuditPreservation {
+        /// Audit manifest JSON: parent, children, corpora, seeds and limits.
+        manifest: PathBuf,
+        /// Where to write the JSON report (written atomically).
+        #[arg(long, value_name = "REPORT")]
+        out: PathBuf,
+    },
     /// Run the opt-in worst-stratum vs aggregate vs Pareto pruning experiment (#263).
     ///
     /// Writes one JSON report to `--out` and prints its path. Uses a scratch
@@ -290,6 +302,22 @@ fn main() -> ExitCode {
             Err(e) => {
                 eprintln!("{e}");
                 ExitCode::FAILURE
+            }
+        };
+    }
+    if let Some(Command::AuditPreservation { manifest, out }) = &cli.command {
+        return match neat_ai_ockham::preservation::run_audit(manifest, out) {
+            Ok(report) => {
+                let status = report["criterion"]["status"].as_str().unwrap_or("unknown");
+                eprintln!(
+                    "audit-preservation: criterion {status} (report-only); report written to {}",
+                    out.display()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
             }
         };
     }
@@ -439,12 +467,7 @@ fn bench_additivity(manifest_path: &Path, out: &Path) -> Result<String, String> 
     };
     let workspace = manifest.cache_dir.join("workspace");
     let report = run_bench(&manifest, &scorer, &SystemClock, &workspace)?;
-    let json = serde_json::to_string_pretty(&report)
-        .map_err(|e| format!("cannot serialise report: {e}"))?;
-    if let Some(dir) = out.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-        fs::create_dir_all(dir).map_err(|e| format!("'{}': {e}", dir.display()))?;
-    }
-    fs::write(out, format!("{json}\n")).map_err(|e| format!("'{}': {e}", out.display()))?;
+    write_report(out, &report)?;
     Ok(serde_json::json!({
         "report": out.display().to_string(),
         "rows": report.rows.len(),

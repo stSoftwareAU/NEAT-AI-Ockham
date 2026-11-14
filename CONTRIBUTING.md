@@ -24,6 +24,8 @@ moved tag, `Cargo.lock` and the version bump in one commit on your PR branch.
 - `shellcheck`, `codespell` (`pip install --user codespell`),
   `cargo install cargo-deny --locked`; optionally `markdownlint-cli2` and
   `actionlint` (CI runs them regardless).
+- GNU coreutils `timeout` (`gtimeout` on macOS) for the bounded-scorer
+  integration test and opt-in ordering research runner.
 - For `ockham/tests/real_scorer.rs`: a built `rust_scorer` at
   `../NEAT-AI-scorer/target/release/rust_scorer` or `NEAT_SCORER_BIN=…`.
   The tests print a skip notice and pass when it is absent.

@@ -65,6 +65,22 @@ const ATTEMPTS_PER_BUNDLE: usize = 50;
 /// `ram_bound_bytes`.
 const SCRATCH_BUFFERS: u64 = 4;
 
+/// Write `report` to `out` as pretty JSON, creating `out`'s parent directory.
+///
+/// The report goes to `<out>.tmp` first and is renamed into place through the
+/// shared `output_guard` writer, so a reader never sees a half-written
+/// report. Call [`BenchManifest::refuse_report_over_input`] first.
+///
+/// # Errors
+///
+/// A message naming the path that could not be created or written.
+pub fn write_report(out: &Path, report: &BenchReport) -> Result<(), String> {
+    if let Some(dir) = out.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(dir).map_err(|e| format!("'{}': {e}", dir.display()))?;
+    }
+    crate::output_guard::write_json_atomically(out, report)
+}
+
 /// Run the additivity benchmark described by `manifest`.
 ///
 /// Parents are processed in manifest order. `workspace` holds the scoring

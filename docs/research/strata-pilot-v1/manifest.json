@@ -1,0 +1,75 @@
+{
+  "archiveCap": 8,
+  "bundleSizes": [
+    2,
+    4
+  ],
+  "bundlesPerArm": 6,
+  "calibration": [
+    {
+      "dir": "cal/alpha",
+      "name": "alpha"
+    },
+    {
+      "dir": "cal/beta",
+      "name": "beta"
+    },
+    {
+      "dir": "cal/gamma",
+      "name": "gamma"
+    },
+    {
+      "dir": "cal/rare",
+      "name": "rare"
+    }
+  ],
+  "fitSeed": 9001,
+  "latencyRecords": 48,
+  "latencyTolerance": 0.05,
+  "minImprovement": 0.0,
+  "parent": "parent.json",
+  "paretoCandidates": 24,
+  "regressionTolerance": 1e-6,
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+  ],
+  "statsRecords": 0,
+  "success": {
+    "maxFitnessLoss": 0.0,
+    "minRegressionReduction": 1
+  },
+  "temperatures": [
+    0.25,
+    0.5,
+    1.0,
+    2.0,
+    4.0
+  ],
+  "validation": [
+    {
+      "dir": "val/alpha",
+      "name": "alpha"
+    },
+    {
+      "dir": "val/beta",
+      "name": "beta"
+    },
+    {
+      "dir": "val/gamma",
+      "name": "gamma"
+    },
+    {
+      "dir": "val/rare",
+      "name": "rare"
+    }
+  ]
+}

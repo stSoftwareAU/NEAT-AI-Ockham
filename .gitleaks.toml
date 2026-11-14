@@ -1,2 +1,4 @@
+title = "NEAT-AI-Ockham gitleaks config"
+
 [extend]
-  useDefault = true
+useDefault = true

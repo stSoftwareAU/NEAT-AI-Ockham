@@ -91,4 +91,32 @@ fn real_scorer_scores_the_incumbent_baseline() {
         again["baseline"].score,
         baseline.score
     );
+
+    let bounding = ["timeout", "gtimeout"]
+        .into_iter()
+        .find(|tool| {
+            Command::new(tool)
+                .arg("--version")
+                .output()
+                .is_ok_and(|out| out.status.success())
+        })
+        .expect("research scoring requires timeout or gtimeout");
+    for (mode, expected_records) in [
+        (ScorerMode::Full, 32),
+        (
+            ScorerMode::Sample {
+                rate: 0.05,
+                phase: 7,
+            },
+            1,
+        ),
+    ] {
+        let ordinary = scorer.score_directory(&dir, &train, mode).unwrap();
+        let bounded = scorer
+            .score_directory_bounded(&dir, &train, mode, Path::new(bounding), 10)
+            .unwrap();
+        assert_eq!(bounded["baseline"].record_count, expected_records);
+        assert_eq!(bounded["baseline"].score, ordinary["baseline"].score);
+        assert_eq!(bounded["baseline"].error, ordinary["baseline"].error);
+    }
 }
