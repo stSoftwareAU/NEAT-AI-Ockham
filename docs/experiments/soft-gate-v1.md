@@ -73,7 +73,9 @@ unreachable. The full candidate is the original parent, including its bytes.
 validation data. It pins full creature, corpus, scorer and executable SHA-256
 checksums, the build's core commit, reference sources, hardware and the recorded
 scorer environment. Corpus checksums cover every byte; the ordinary fast corpus
-identity remains a cache key. The scorer is explicitly CPU/MSE.
+identity remains a cache key. The scorer is explicitly CPU/MSE. On Unix,
+experiment directories are created with mode 0700 and manifest/result/candidate
+files with mode 0600. Calibration and latency data are each limited to 64 MiB.
 
 Review the generated choices before running. The initial manifest declares ten
 paired seeds, 300 fitting steps, 100 independent trials per reduced budget and
@@ -87,7 +89,7 @@ Final full-corpus judging deliberately includes the validation records.
 Shared preparation time, including the earlier `prepare` invocation, is charged
 in full to both arms. Active family time includes fitting, construction, search,
 candidate writes, scoring and diagnostics. Final input-integrity verification
-is also charged to both. Record counters include initial saliency, fitting,
+is also charged to both. Record charges include initial saliency, fitting,
 statistics, selection, full scoring, validation and latency warmups/repetitions.
 Compilation/IO counters describe explicitly instrumented work; wall time also
 covers core validation and filesystem overhead outside those counters.
@@ -117,8 +119,9 @@ arms, and matched total cost. The interval uses 2.263 standard errors, a
 conservative t critical value for at least ten pairs. It describes seed
 variation conditional on this one creature/corpus/host, not uncertainty across
 creatures. Latency is indicative on a shared host and never a CI assertion.
-A completed representative study missing these criteria records a removal
-decision for the optional implementation; an absent representative study is
+A completed, cost-matched representative study with at least ten pairs missing
+the performance criteria records a removal decision for the optional
+implementation; an absent or cost-unmatched representative study is
 inconclusive and does not earn a deployment or default change.
 
 ## Commands and artefacts

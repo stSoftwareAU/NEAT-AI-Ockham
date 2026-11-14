@@ -17,7 +17,7 @@ use crate::stats::{ActivationStats, SampleSpec, compute_activation_stats};
 
 use super::family::{Candidate, materialise};
 use super::fit::{self, Ranking, Row};
-use super::manifest::{Manifest, corpus_digest, file_digest, write_new};
+use super::manifest::{Manifest, corpus_digest, create_private_dir, file_digest, write_new};
 use super::{Budget, Cost};
 
 #[derive(Debug, Serialize)]
@@ -69,13 +69,15 @@ pub fn run_manifest(path: &Path, expected_digest: &str, out: &Path) -> Result<Va
     let manifest: Manifest =
         serde_json::from_slice(&bytes).map_err(|e| format!("invalid manifest: {e}"))?;
     let parent = load_incumbent(&manifest.creature.path).map_err(|e| e.to_string())?;
+    if parent.checksum != manifest.creature.sha256 {
+        return Err("loaded creature checksum mismatch".into());
+    }
     fit::supported(&parent.creature)?;
     let cfg = TrainingDataConfig::new(parent.creature.input, parent.creature.output);
     let corpus = corpus_info(&manifest.corpus.path, &cfg)?;
     manifest.validate(&corpus)?;
     let checked_bytes = verify_inputs(&manifest)?;
-    std::fs::create_dir(out)
-        .map_err(|e| format!("create new experiment directory {}: {e}", out.display()))?;
+    create_private_dir(out)?;
     write_new(&out.join("manifest.json"), &bytes)?;
     let mut report = json!({
         "formatVersion": 1, "status": "failed", "manifestSha256": expected_digest,
@@ -173,7 +175,7 @@ fn execute(
     let cfg = TrainingDataConfig::new(parent.creature.input, parent.creature.output);
     let rows = load_rows(&manifest.corpus.path, &cfg, &manifest.calibration)?;
     let calibration_dir = out.join("calibration");
-    std::fs::create_dir(&calibration_dir).map_err(|e| e.to_string())?;
+    create_private_dir(&calibration_dir)?;
     write_bin_file(
         &calibration_dir.join("0.bin"),
         &rows
@@ -210,7 +212,7 @@ fn execute(
         for name in names {
             let mut budget = Budget::new(&manifest.limits_per_family, &common)?;
             let dir = out.join(format!("seed-{seed}-{name}"));
-            std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+            create_private_dir(&dir)?;
             match run_arm(
                 manifest,
                 parent,
@@ -373,7 +375,7 @@ fn run_arm(
     };
     let construction_seconds = construction_started.elapsed().as_secs_f64();
     let creature_dir = dir.join("candidates");
-    std::fs::create_dir(&creature_dir).map_err(|e| e.to_string())?;
+    create_private_dir(&creature_dir)?;
     for (i, candidate) in candidates.iter().enumerate() {
         let text = if i == 0 {
             parent.text.clone()
@@ -622,11 +624,12 @@ fn paired_summary(arms: &[Arm], manifest: &Manifest, no_failures: bool) -> Value
             let c = &control.measurements[i];
             delta += (g.full.score - c.full.score) / 3.0;
             reachable &= g.candidate.reachable && c.candidate.reachable;
-            overshoot_ok &= g.candidate.capacity_overshoot <= manifest.criteria.max_capacity_overshoot
+            overshoot_ok &= g.candidate.capacity_overshoot
+                <= manifest.criteria.max_capacity_overshoot
                 && c.candidate.capacity_overshoot <= manifest.criteria.max_capacity_overshoot;
             validation_ok &= g.validation_mse
-                    <= c.validation_mse * (1.0 + manifest.criteria.max_validation_error_increase)
-                        + 1e-12;
+                <= c.validation_mse * (1.0 + manifest.criteria.max_validation_error_increase)
+                    + 1e-12;
             if i >= 2 {
                 latency_ok &= g.median_latency_ns
                     <= c.median_latency_ns * (1.0 - manifest.criteria.min_latency_reduction);
@@ -654,7 +657,8 @@ fn paired_summary(arms: &[Arm], manifest: &Manifest, no_failures: bool) -> Value
     };
     let comparable = manifest.representative && complete && matched_cost && n >= 10;
     let score_gain = interval.is_some_and(|ci| ci[0] > manifest.criteria.min_paired_score_gain);
-    let retained = comparable && reachable && overshoot_ok && validation_ok && latency_ok && score_gain;
+    let retained =
+        comparable && reachable && overshoot_ok && validation_ok && latency_ok && score_gain;
     json!({ "pairedScoreDeltas": deltas, "meanScoreDelta": (n > 0).then_some(mean), "standardError": (n > 1).then_some(se),
         "conservative95Interval": interval, "completePairs": n,
         "totalFamilyCostPairs": cost_pairs,

@@ -102,6 +102,29 @@ fn sampled_or_partial_results_cannot_authorise_a_prune() {
             .unwrap_err()
             .contains("sampled")
     );
+    scores.get_mut("c0").unwrap().sample_rate = None;
+    scores.get_mut("c0").unwrap().cost_name = Some("MAE".into());
+    assert!(
+        validate_full(&scores, ScorerMode::Full, 4, 1)
+            .unwrap_err()
+            .contains("must report MSE")
+    );
+    scores.get_mut("c0").unwrap().cost_name = Some("MSE".into());
+    scores.get_mut("c0").unwrap().error = -1.0;
+    assert!(
+        validate_full(&scores, ScorerMode::Full, 4, 1)
+            .unwrap_err()
+            .contains("negative full result")
+    );
+    scores.get_mut("c0").unwrap().error = 0.0;
+    scores.get_mut("c0").unwrap().score = f64::NAN;
+    assert!(
+        validate_full(&scores, ScorerMode::Full, 4, 1)
+            .unwrap_err()
+            .contains("non-finite")
+    );
+    scores.get_mut("c0").unwrap().score = 1.0;
+    validate_full(&scores, ScorerMode::Full, 4, 1).unwrap();
     scores.clear();
     assert!(
         validate_full(&scores, ScorerMode::Full, 4, 1)
@@ -263,40 +286,86 @@ fn real_core_rewrites_and_full_judgement_complete_both_search_paths() {
     for &seed in &manifest.seeds {
         for template in &arms {
             let gate = template.name == "gates";
-            let measurements = template.measurements.iter().map(|m| {
-                let mut full = m.full.clone(); full.score = if gate { 0.91 } else { 0.90 };
-                Measurement {
-                    candidate: m.candidate.clone(), calibration_mse: 0.1, validation_mse: 0.1,
-                    full, authoritative_improvement: false, latency_ns_per_record: Vec::new(),
-                    median_latency_ns: if gate { 9.0 } else { 10.0 },
-                    pareto_error_growth: true, pareto_error_latency: true,
-                }
-            }).collect();
-            paired.push(Arm { name: template.name.clone(), seed, ranking: None,
-                search_trials: Vec::new(), measurements, cost: Cost { elapsed_seconds: 100.0, ..Cost::default() },
-                construction_seconds: 1.0 });
+            let measurements = template
+                .measurements
+                .iter()
+                .map(|m| {
+                    let mut full = m.full.clone();
+                    full.score = if gate { 0.91 } else { 0.90 };
+                    Measurement {
+                        candidate: m.candidate.clone(),
+                        calibration_mse: 0.1,
+                        validation_mse: 0.1,
+                        full,
+                        authoritative_improvement: false,
+                        latency_ns_per_record: Vec::new(),
+                        median_latency_ns: if gate { 9.0 } else { 10.0 },
+                        pareto_error_growth: true,
+                        pareto_error_latency: true,
+                    }
+                })
+                .collect();
+            paired.push(Arm {
+                name: template.name.clone(),
+                seed,
+                ranking: None,
+                search_trials: Vec::new(),
+                measurements,
+                cost: Cost {
+                    elapsed_seconds: 100.0,
+                    ..Cost::default()
+                },
+                construction_seconds: 1.0,
+            });
         }
     }
-    assert_eq!(paired_summary(&paired, &manifest, true)["verdict"], "retain");
+    assert_eq!(
+        paired_summary(&paired, &manifest, true)["verdict"],
+        "retain"
+    );
     paired[0].cost.elapsed_seconds = 50.0;
-    assert_eq!(paired_summary(&paired, &manifest, true)["criteria"]["matchedCost"], false);
+    assert_eq!(
+        paired_summary(&paired, &manifest, true)["criteria"]["matchedCost"],
+        false
+    );
     paired[0].cost.elapsed_seconds = 100.0;
     paired[0].measurements[2].validation_mse = 0.2;
-    assert_eq!(paired_summary(&paired, &manifest, true)["criteria"]["heldOutError"], false);
-    assert_eq!(paired_summary(&paired, &manifest, true)["verdict"], "does-not-meet-retention-criteria");
+    assert_eq!(
+        paired_summary(&paired, &manifest, true)["criteria"]["heldOutError"],
+        false
+    );
+    assert_eq!(
+        paired_summary(&paired, &manifest, true)["verdict"],
+        "does-not-meet-retention-criteria"
+    );
     paired[0].measurements[2].validation_mse = 0.1;
     paired[1].measurements[1].candidate.capacity_overshoot = 0.1;
-    assert_eq!(paired_summary(&paired, &manifest, true)["criteria"]["capacityOvershoot"], false);
+    assert_eq!(
+        paired_summary(&paired, &manifest, true)["criteria"]["capacityOvershoot"],
+        false
+    );
     paired[1].measurements[1].candidate.capacity_overshoot = 0.0;
     paired[0].measurements[3].candidate.reachable = false;
-    assert_eq!(paired_summary(&paired, &manifest, true)["criteria"]["reachableBudgets"], false);
+    assert_eq!(
+        paired_summary(&paired, &manifest, true)["criteria"]["reachableBudgets"],
+        false
+    );
     paired[0].measurements[3].candidate.reachable = true;
     paired[0].measurements[2].median_latency_ns = 10.0;
-    assert_eq!(paired_summary(&paired, &manifest, true)["criteria"]["latencyReduction"], false);
+    assert_eq!(
+        paired_summary(&paired, &manifest, true)["criteria"]["latencyReduction"],
+        false
+    );
     paired[0].measurements[2].median_latency_ns = 9.0;
-    assert_eq!(paired_summary(&paired, &manifest, false)["criteria"]["completePairs"], false);
+    assert_eq!(
+        paired_summary(&paired, &manifest, false)["criteria"]["completePairs"],
+        false
+    );
     assert!(paired_summary(&paired[..18], &manifest, true)["conservative95Interval"].is_null());
-    assert_eq!(paired_summary(&paired, &manifest, true)["verdict"], "retain");
+    assert_eq!(
+        paired_summary(&paired, &manifest, true)["verdict"],
+        "retain"
+    );
 
     let points = &mut paired[0].measurements;
     for (i, m) in points.iter_mut().enumerate() {
@@ -305,6 +374,18 @@ fn real_core_rewrites_and_full_judgement_complete_both_search_paths() {
         m.median_latency_ns = [20.0, 18.0, 15.0, 10.0][i];
     }
     mark_frontiers(points);
-    assert_eq!(points.iter().map(|m| m.pareto_error_growth).collect::<Vec<_>>(), [false, false, false, true]);
-    assert_eq!(points.iter().map(|m| m.pareto_error_latency).collect::<Vec<_>>(), [false, false, false, true]);
+    assert_eq!(
+        points
+            .iter()
+            .map(|m| m.pareto_error_growth)
+            .collect::<Vec<_>>(),
+        [false, false, false, true]
+    );
+    assert_eq!(
+        points
+            .iter()
+            .map(|m| m.pareto_error_latency)
+            .collect::<Vec<_>>(),
+        [false, false, false, true]
+    );
 }

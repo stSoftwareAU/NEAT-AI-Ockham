@@ -143,13 +143,33 @@ pub(super) fn hardware() -> String {
     let cpu = std::fs::read_to_string("/proc/cpuinfo")
         .ok()
         .and_then(|s| {
-            s.lines()
-                .find(|line| line.starts_with("model name") || line.starts_with("CPU implementer"))
-                .map(str::to_owned)
+            let lines = s
+                .lines()
+                .filter(|line| {
+                    [
+                        "model name",
+                        "CPU implementer",
+                        "CPU architecture",
+                        "CPU part",
+                        "Hardware",
+                    ]
+                    .iter()
+                    .any(|name| line.starts_with(name))
+                })
+                .collect::<BTreeSet<_>>();
+            (!lines.is_empty()).then(|| lines.into_iter().collect::<Vec<_>>().join("; "))
         })
         .unwrap_or_else(|| "CPU model unrecorded".into());
+    let memory = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|line| line.starts_with("MemTotal:"))
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "Memory unrecorded".into());
     format!(
-        "{}-{}; logical CPUs={}; {cpu}",
+        "{}-{}; logical CPUs={}; {cpu}; {memory}",
         std::env::consts::ARCH,
         std::env::consts::OS,
         std::thread::available_parallelism().map_or(1, usize::from),
@@ -232,6 +252,17 @@ pub fn prepare_manifest(
         file_digest(&std::env::current_exe().map_err(|e| e.to_string())?)?;
     let (sha256, corpus_bytes) = corpus_digest(corpus)?;
     let training_info = CorpusInfo {
+        // Placement depends on dimensions/counts, never validation values.
+        identity: sha256_hex(
+            format!(
+                "{}:{}:{}:{}",
+                info.input_count,
+                info.output_count,
+                info.record_count - validation_records,
+                calibration_records
+            )
+            .as_bytes(),
+        ),
         record_count: info.record_count - validation_records,
         ..info.clone()
     };
@@ -295,12 +326,29 @@ pub fn prepare_manifest(
 }
 
 pub(super) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
         .open(path)
         .map_err(|e| format!("create {}: {e}", path.display()))?;
     file.write_all(bytes).map_err(|e| e.to_string())
+}
+
+pub(super) fn create_private_dir(path: &Path) -> Result<(), String> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(path)
+        .map_err(|e| format!("create new experiment directory {}: {e}", path.display()))
 }
 
 impl Manifest {
@@ -337,14 +385,33 @@ impl Manifest {
         }
         validate_ranges(&self.calibration, info.record_count, "calibration")?;
         validate_ranges(&self.validation, info.record_count, "validation")?;
-        for a in &self.calibration {
-            for b in &self.validation {
-                if a.start < b.end() && b.start < a.end() {
-                    return Err("calibration and validation overlap".into());
-                }
+        let (mut calibration_index, mut validation_index) = (0, 0);
+        while calibration_index < self.calibration.len() && validation_index < self.validation.len()
+        {
+            let a = self.calibration[calibration_index];
+            let b = self.validation[validation_index];
+            if a.start < b.end() && b.start < a.end() {
+                return Err("calibration and validation overlap".into());
+            }
+            if a.end() <= b.start {
+                calibration_index += 1;
+            } else {
+                validation_index += 1;
             }
         }
         let calibration: u64 = self.calibration.iter().map(|r| r.len).sum();
+        let record_bytes = ((info.input_count + info.output_count) as u64)
+            .checked_mul(4)
+            .ok_or("record width overflow")?;
+        if calibration
+            .checked_mul(record_bytes)
+            .is_none_or(|bytes| bytes > 64 * 1024 * 1024)
+            || (self.latency_records as u64)
+                .checked_mul(record_bytes)
+                .is_none_or(|bytes| bytes > 64 * 1024 * 1024)
+        {
+            return Err("calibration or latency rows exceed the 64 MiB data limit".into());
+        }
         let f = &self.fit;
         let l = &self.limits_per_family;
         if calibration > 1_000_000
@@ -439,6 +506,32 @@ mod tests {
         let manifest: Manifest = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let info = corpus_info(&data, &TrainingDataConfig::new(1, 1)).unwrap();
         manifest.validate(&info).unwrap();
+        let mut wide_info = info.clone();
+        wide_info.input_count = 100_000_000;
+        assert!(
+            manifest
+                .validate(&wide_info)
+                .unwrap_err()
+                .contains("64 MiB")
+        );
+        let original_rows = manifest.calibration.clone();
+        let mut rows = vec![(vec![0.2], vec![0.1]); 16];
+        rows[15].1[0] = 0.9;
+        write_bin_file(&data.join("0.bin"), &rows).unwrap();
+        let new_path = tmp.path().join("changed-validation-manifest.json");
+        prepare_manifest(
+            &parent,
+            &data,
+            &std::env::current_exe().unwrap(),
+            &new_path,
+            8,
+            4,
+        )
+        .unwrap();
+        let new_manifest: Manifest =
+            serde_json::from_slice(&std::fs::read(new_path).unwrap()).unwrap();
+        assert_eq!(new_manifest.calibration, original_rows);
+        assert_ne!(new_manifest.corpus.sha256, manifest.corpus.sha256);
         let mut changed = manifest.clone();
         changed.validation = changed.calibration.clone();
         assert!(changed.validate(&info).unwrap_err().contains("overlap"));

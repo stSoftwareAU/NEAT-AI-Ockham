@@ -168,4 +168,24 @@ fn exhausted_budget_records_failure_and_preserves_the_parent() {
         std::fs::read(root.path().join("parent.json")).unwrap(),
         parent
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(root.path().join("results"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(root.path().join("results/results.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+    }
 }
