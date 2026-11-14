@@ -152,7 +152,7 @@ impl DirectoryScorer for Metered<'_> {
         usage.scorer_ms += started.elapsed().as_secs_f64() * 1000.0;
         if let Err(error) = &result {
             usage.failed_calls += 1;
-            if matches!(error, ScorerError::Failed { status, .. } if status == "exit status: 124" || status == "search-timeout")
+            if matches!(error, ScorerError::Failed { status, .. } if status == "exit status: 124" || status == "exit status: 137" || status == "search-timeout")
             {
                 usage.timeout_exits += 1;
             }

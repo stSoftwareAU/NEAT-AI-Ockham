@@ -229,6 +229,61 @@ fn specifications_refuse_ambiguous_identifiers_unknown_fields_and_unbounded_work
     );
 }
 
+#[test]
+fn infeasible_targets_and_statistics_limits_are_reported_without_relaxing_constraints() {
+    let mut fixture = Fixture::new();
+    let direct = creature(
+        2,
+        1,
+        vec![neuron("output", "output-0", 0.0, Some("IDENTITY"))],
+        vec![
+            synapse("input-0", "output-0", 1.0),
+            synapse("input-1", "output-0", 1.0),
+        ],
+    );
+    let record = search_one(
+        &fixture.spec,
+        &fixture.spec.creatures[0],
+        &direct,
+        Arm::Global,
+        0,
+        7,
+        &Fixture::phases(),
+        &ManualClock::new(),
+        &fixture.tmp.path().join("infeasible"),
+    )
+    .unwrap();
+    assert_eq!(record.stop_reason, "infeasible-target");
+    assert!(!record.target_reached);
+    assert_eq!(
+        (record.achieved_connections, record.accepted_connections),
+        (2, 2)
+    );
+    assert_eq!(record.search.refusals.values().sum::<u64>(), 2);
+    assert_eq!(record.search.scorer_calls, 1);
+
+    fixture.spec.limits.statistics_records = 3;
+    let record = search_one(
+        &fixture.spec,
+        &fixture.spec.creatures[0],
+        &parent(),
+        Arm::Global,
+        6,
+        7,
+        &Fixture::phases(),
+        &ManualClock::new(),
+        &fixture.tmp.path().join("stats-limit"),
+    )
+    .unwrap();
+    assert_eq!(record.stop_reason, "compute-limit");
+    assert_eq!(record.search.statistics_records, 0);
+    assert_eq!(
+        record.search.scorer_calls, 1,
+        "opening baseline was established"
+    );
+    assert_eq!(record.accepted_connections, 7);
+}
+
 struct Fixture {
     tmp: tempfile::TempDir,
     spec: Spec,
@@ -411,7 +466,9 @@ fn a_calibration_win_cannot_accept_a_full_corpus_loss() {
 fn full_scorer_failure_preserves_the_parent_and_records_the_cause() {
     let fixture = Fixture::new();
     let full = ScriptedScorer {
-        fail_with: Some("invalid training record length".into()),
+        fail_with: Some(
+            "has size 3 bytes, which is not a whole multiple of the 12-byte record size".into(),
+        ),
         ..Fixture::scorer()
     };
     let scorer = Phases {
@@ -438,7 +495,7 @@ fn full_scorer_failure_preserves_the_parent_and_records_the_cause() {
         record
             .error
             .unwrap()
-            .contains("invalid training record length")
+            .contains("has size 3 bytes, which is not a whole multiple of the 12-byte record size")
     );
     assert_eq!(
         load_incumbent(&dir.join("best.json")).unwrap().creature,
@@ -579,6 +636,12 @@ fn freeze_checks_full_content_and_refuses_overlap_and_input_or_scorer_drift() {
     freeze(&spec, &manifest).unwrap();
     let frozen: Frozen = read_json(&manifest).unwrap();
     frozen.verify().unwrap();
+    let mut tampered: Frozen = read_json(&manifest).unwrap();
+    tampered.spec.seeds[0] = 12345;
+    assert_eq!(
+        tampered.verify().unwrap_err(),
+        "specification changed after freeze"
+    );
     assert!(freeze(&spec, &manifest).unwrap_err().contains("exists"));
     std::fs::write(&fixture.spec.scorer, b"changed scorer").unwrap();
     assert_eq!(

@@ -68,10 +68,13 @@ fn failed_malformed_and_non_finite_proposals_never_return_a_winner() {
         (
             0,
             ScriptedScorer {
-                fail_with: Some("invalid record width".into()),
+                fail_with: Some(
+                    "has size 3 bytes, which is not a whole multiple of the 12-byte record size"
+                        .into(),
+                ),
                 ..Default::default()
             },
-            "invalid record width",
+            "has size 3 bytes, which is not a whole multiple of the 12-byte record size",
         ),
         (
             1,

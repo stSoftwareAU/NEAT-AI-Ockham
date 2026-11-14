@@ -218,6 +218,7 @@ pub struct InputPin {
 pub struct Frozen {
     pub format_version: u32,
     pub spec: Spec,
+    pub spec_sha256: String,
     pub inputs: Vec<InputPin>,
     pub source_sha256: String,
     pub executable_sha256: String,
@@ -227,6 +228,32 @@ pub struct Frozen {
     pub paper_version: String,
     pub paper_text_sha256: String,
     pub freeze_ms: f64,
+    pub frozen_at_unix: u64,
+    pub scorer_environment_sha256: String,
+}
+
+fn scorer_environment_sha256() -> String {
+    let mut hasher = Sha256::new();
+    for name in [
+        "NEAT_SCORER_ACTIVATION_THREADS",
+        "NEAT_SCORER_COST",
+        "NEAT_SCORER_FILE_THREADS",
+        "NEAT_SCORER_GPU",
+        "NEAT_SCORER_GPU_SCRATCH_BYTES",
+        "NEAT_SCORER_READ_BYTES",
+        "NEAT_SCORER_WORKER_SPLIT",
+        "RAYON_NUM_THREADS",
+    ] {
+        hasher.update(name.as_bytes());
+        if let Some(value) = std::env::var_os(name) {
+            hasher.update([1]);
+            hasher.update(value.as_encoded_bytes());
+        } else {
+            hasher.update([0]);
+        }
+        hasher.update([0]);
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
@@ -398,6 +425,7 @@ pub fn freeze(spec_path: &Path, manifest_path: &Path) -> Result<(), String> {
     }
     let frozen = Frozen {
         format_version: 1,
+        spec_sha256: sha256_hex(&serde_json::to_vec(&spec).map_err(|e| e.to_string())?),
         inputs,
         source_sha256: source_sha256()?,
         executable_sha256: file_sha256(&std::env::current_exe().map_err(|e| e.to_string())?)?,
@@ -411,6 +439,11 @@ pub fn freeze(spec_path: &Path, manifest_path: &Path) -> Result<(), String> {
         paper_text_sha256: PAPER_TEXT_SHA256.into(),
         spec,
         freeze_ms: started.elapsed().as_secs_f64() * 1000.0,
+        frozen_at_unix: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_secs(),
+        scorer_environment_sha256: scorer_environment_sha256(),
     };
     write_new(manifest_path, &frozen)
 }
@@ -418,6 +451,14 @@ pub fn freeze(spec_path: &Path, manifest_path: &Path) -> Result<(), String> {
 impl Frozen {
     pub fn verify(&self) -> Result<(), String> {
         self.spec.validate()?;
+        if sha256_hex(&serde_json::to_vec(&self.spec).map_err(|e| e.to_string())?)
+            != self.spec_sha256
+        {
+            return Err("specification changed after freeze".into());
+        }
+        if scorer_environment_sha256() != self.scorer_environment_sha256 {
+            return Err("scorer environment changed after freeze".into());
+        }
         if self.format_version != 1
             || self.paper_version != "2611.09233v1"
             || self.paper_text_sha256 != PAPER_TEXT_SHA256

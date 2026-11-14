@@ -18,7 +18,7 @@ use neat_core::{CreatureExport, creature_to_json};
 use serde::{Deserialize, Serialize};
 
 use super::allocation::{Arm, Constraints, Plan, output_support, ranked_edges};
-use super::manifest::{Frozen, Spec, Subject, file_sha256, read_json, write_new};
+use super::manifest::{Frozen, Spec, Subject, write_new};
 use super::measurement::{Diagnostics, Metered, Usage, diagnostics, external};
 
 #[path = "summary.rs"]
@@ -153,11 +153,11 @@ pub fn search_one(
     clock: &dyn Clock,
     dir: &Path,
 ) -> Result<RunRecord, String> {
+    let started = clock.now();
     std::fs::create_dir(dir).map_err(|e| e.to_string())?;
     let plan = Plan::new(parent, arm, target)?;
     let constraints = Constraints::new(parent)?;
     let usage = RefCell::new(Usage::default());
-    let started = clock.now();
     let meter = Metered {
         inner: scorer,
         limits: &spec.limits,
@@ -311,7 +311,9 @@ pub fn search_one(
                     stats = calibrate(&proposal, subject, &meter)?;
                 }
             }
-            if proposal != *parent && !meter.expired() {
+            if meter.expired() {
+                stop = "search-timeout".into();
+            } else if proposal != *parent {
                 let (_, winner) = evaluate_full_proposal(
                     &meter,
                     &subject.training,
@@ -336,7 +338,11 @@ pub fn search_one(
             None
         }
         Err(reason) => {
-            stop = "failed".into();
+            stop = if reason == "search-timeout" {
+                "search-timeout".into()
+            } else {
+                "failed".into()
+            };
             Some(format!("connection-budget: {reason}"))
         }
     };
@@ -386,25 +392,27 @@ fn append(file: &mut File, record: &RunRecord) -> Result<(), String> {
 }
 
 pub fn run(manifest_path: &Path, out: &Path) -> Result<(), String> {
-    let frozen: Frozen = read_json(manifest_path)?;
     let started = Instant::now();
+    let bytes = std::fs::read(manifest_path).map_err(|e| e.to_string())?;
+    let frozen: Frozen = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     frozen.verify()?;
     let verification_ms = started.elapsed().as_secs_f64() * 1000.0;
     let scorer = external(&frozen.spec)?;
-    execute(&frozen, manifest_path, out, &scorer, verification_ms)
+    execute(&frozen, sha256_hex(&bytes), out, &scorer, verification_ms)
 }
 
 fn execute(
     frozen: &Frozen,
-    manifest_path: &Path,
+    manifest_sha256: String,
     out: &Path,
     scorer: &dyn DirectoryScorer,
     mut verification_ms: f64,
 ) -> Result<(), String> {
+    let execution_started = Instant::now();
+    let initial_verification_ms = verification_ms;
     let spec = &frozen.spec;
     std::fs::create_dir(out).map_err(|e| format!("new output directory {}: {e}", out.display()))?;
     write_new(&out.join("manifest.json"), frozen)?;
-    let manifest_sha256 = file_sha256(manifest_path)?;
     let mut search_log = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -522,6 +530,8 @@ fn execute(
         .map(|p| p.training.records + p.calibration.records + p.validation.records)
         .sum();
     summary.verification_records_hashed = summary.freeze_records_hashed * 2;
+    summary.total_run_ms =
+        execution_started.elapsed().as_secs_f64() * 1000.0 + initial_verification_ms;
     write_new(&out.join("summary.json"), &summary)?;
     if records
         .iter()

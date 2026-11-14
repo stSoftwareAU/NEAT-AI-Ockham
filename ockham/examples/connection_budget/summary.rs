@@ -59,6 +59,7 @@ pub struct Summary {
     pub comparisons: Vec<Comparison>,
     pub freeze_ms: f64,
     pub verification_ms: f64,
+    pub total_run_ms: f64,
     pub freeze_records_hashed: u64,
     pub verification_records_hashed: u64,
     pub search_statistics_records: u64,
@@ -272,7 +273,17 @@ pub fn summarise(spec: &Spec, records: &[RunRecord]) -> Summary {
         }
     }
     let representative = if spec.study_kind == StudyKind::Representative {
-        spec.expected_independent_units
+        records
+            .iter()
+            .filter(|r| {
+                r.error.is_none()
+                    && r.full.is_some()
+                    && r.held_out.is_some()
+                    && r.diagnostics.is_some()
+            })
+            .map(|r| &r.independent_unit)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
     } else {
         0
     };
@@ -305,7 +316,12 @@ pub fn summarise(spec: &Spec, records: &[RunRecord]) -> Summary {
         study_kind: spec.study_kind,
         planned_runs: expected * spec.connection_targets.len() * 4,
         completed_runs: records.len(),
-        failed_runs: records.iter().filter(|r| r.error.is_some()).count(),
+        failed_runs: records
+            .iter()
+            .filter(|r| {
+                r.error.is_some() || r.search.timeout_exits > 0 || r.evaluation.timeout_exits > 0
+            })
+            .count(),
         timeouts: records
             .iter()
             .map(|r| r.search.timeout_exits + r.evaluation.timeout_exits)
@@ -317,6 +333,7 @@ pub fn summarise(spec: &Spec, records: &[RunRecord]) -> Summary {
         comparisons,
         freeze_ms: 0.0,
         verification_ms: 0.0,
+        total_run_ms: 0.0,
         freeze_records_hashed: 0,
         verification_records_hashed: 0,
         search_statistics_records: records.iter().map(|r| r.search.statistics_records).sum(),
