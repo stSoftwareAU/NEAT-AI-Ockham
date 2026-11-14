@@ -2487,6 +2487,31 @@ never writes a creature, and its similarity scores never substitute for the
 authoritative full scorer. The hypothesis, formulas, limits and success rule are
 in [docs/preservation-audit.md](docs/preservation-audit.md).
 
+## Stratum-guided pruning experiment (opt-in)
+
+`bench-strata` is an offline benchmark of one hypothesis: that ordering
+hidden-neuron cuts by their worst-stratum importance protects the weakest
+calibration stratum better than ordering by aggregate importance, Pareto
+trade-offs or uniform random draws. It is a hypothesis under test, not an
+established improvement. It is opt-in and changes no default.
+
+Nothing it does reaches the ordinary pruning path. It never accepts, publishes
+or journals a creature, and it never writes the learnings or statistics cache.
+Its only output is a report JSON, plus a scratch `<REPORT>.work` directory that
+is removed when the run ends. The fixtures do not demonstrate a benefit, so
+treat the report as data, not a claim.
+
+```sh
+neat_ai_ockham bench-strata manifest.json --out report.json --scorer rust_scorer
+```
+
+The manifest names a parent creature, three to five calibration strata with
+matching validation strata, the seeds and the compute limits. `--scorer`
+selects the scorer binary (default `rust_scorer`), and `--scorer-arg` passes
+further arguments to it verbatim. The method, controls, success rule and
+report fields are described in
+[docs/strata-experiment.md](docs/strata-experiment.md).
+
 ## Reporting
 
 ```bash
@@ -2733,6 +2758,13 @@ NEAT-AI-Ockham/
 │       ├── neighbourhood.rs   # bounded chain/branch group-cut proposals
 │       ├── telemetry.rs       # candidate feature/outcome training rows
 │       ├── throughput.rs      # screening funnel, per-hour rates, rescan ETAs
+│       ├── strata/
+│       │   ├── mod.rs         # opt-in stratum-guided experiment: purpose and arms
+│       │   ├── manifest.rs    # bench-strata manifest parsing and validation
+│       │   ├── sampler.rs     # scales, statistics, seeded sampler, temperature fit
+│       │   ├── pareto.rs      # non-dominated archive for Pareto candidates
+│       │   ├── report.rs      # report types, distributions, bootstrap, criteria
+│       │   └── bench.rs       # run_bench and the latency probe
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── clock.rs           # injected run-budget time source (real or manual)
@@ -2744,6 +2776,7 @@ NEAT-AI-Ockham/
 │   ├── pruning-ownership.md # design reference: rewrites belong in NEAT-AI-core
 │   ├── population-entry.md  # how cuts actually enter the live population
 │   ├── preservation-audit.md # report-only preservation audit: method and limits
+│   ├── strata-experiment.md # opt-in worst-stratum vs aggregate vs Pareto bench
 │   └── incident-response.md # emergency dependency fast lane (SECURITY.md)
 ├── scripts/
 │   ├── runlib.sh          # canonical build → install → clean (owned by core)

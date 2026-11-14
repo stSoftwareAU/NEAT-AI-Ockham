@@ -72,9 +72,10 @@ flowchart LR
 
 - Added `ockham/tests/preservation_audit.rs`: help output, a missing manifest refused by name, and an end-to-end run that leaves the parent bytes unchanged.
 - Added unit tests in `ockham/src/preservation.rs`: ratio and degenerate scores, a collapsed child and a constant parent, AUC edges, threshold fit, bootstrap reproducibility, manifest refusals by field with a valid control, width mismatch refused, and an end-to-end report.
-- Modified `ockham/tests/readme_contract.rs`: `SUBCOMMANDS` gains `audit-preservation`; no assertion removed.
+- Modified `ockham/tests/readme_contract.rs`: `SUBCOMMANDS` gains `audit-preservation` alongside Develop's `bench-strata` (from #263); no assertion removed.
 - Follow-up commit 626fa63 adds `collapsed_parent_audit_is_degenerate_and_not_evaluable`: a constant parent runs through `run_audit` and reaches `notEvaluable`. It adds `non_finite_parent_split_fails_every_child_and_is_not_evaluable`, which drives the parent-failure split and `evaluate` directly because the core clamps non-finite activations. It also adds `role_and_preparation_cost_refusals_name_their_field`, and the end-to-end test gains role, paired-row, gitCommit and cost assertions.
 - `./quality.sh < /dev/null` on the working tree committed as 626fa63: passed ("All quality checks passed!", exit 0).
+- After merging Develop (which brought in the `bench-strata` subcommand), the conflicts in `README.md`, `ockham/src/lib.rs`, `ockham/src/main.rs` and `ockham/tests/readme_contract.rs` were resolved by keeping both subcommands. `cargo fmt`, `cargo clippy --all-targets --all-features -D warnings`, markdownlint and the `readme_contract` and `strata_bench` tests passed on the merged tree.
 - After the spec review, `build.rs` switched to `git describe --dirty`. The preservation unit and CLI tests and clippy were then re-run and passed; the worker re-runs the full gate.
 - Known gap noted by the spec reviewer: `run_split` still scores every child on both corpora. So `failures` and `recordsActivated` include out-of-role passes, which `evaluate` ignores and which never inform θ.
 - Not covered by a test: a child `nonFiniteOutput` through activation (unreachable with the clamping core), the 1 MiB manifest cap, and the `met` criterion outcome.
