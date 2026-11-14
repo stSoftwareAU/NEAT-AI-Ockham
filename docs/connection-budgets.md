@@ -6,6 +6,10 @@ connections per target neuron, equal retained connections per depth, and a
 bounded current-Ockham pipeline control. Public pilot inputs are synthetic;
 they cannot establish a benefit on evolved creatures.
 
+The recorded [v1 pilot](research/connection-budget-v1/report.md) is inconclusive:
+128 arm runs completed, with four compute-matched pairs and no representative
+creatures. Its frozen manifest and machine-readable results accompany the report.
+
 ## Source and transfer assumptions
 
 Reviewed the full 17-page [paper, arXiv 2611.09233v1](https://arxiv.org/pdf/2611.09233v1),
