@@ -211,6 +211,19 @@ enum Command {
         #[arg(long, default_value_t = DEFAULT_MIN_IMPROVEMENT)]
         min_improvement: f64,
     },
+    /// Report-only preservation audit of compressed children against mean-output
+    /// and record-shuffled controls; never changes acceptance (Issue #264).
+    ///
+    /// Reads creatures and corpora only, never writes a creature, and writes one
+    /// JSON report to `--out`. Its similarity scores never substitute for the
+    /// authoritative full scorer. See docs/preservation-audit.md.
+    AuditPreservation {
+        /// Audit manifest JSON: parent, children, corpora, seeds and limits.
+        manifest: PathBuf,
+        /// Where to write the JSON report (written atomically).
+        #[arg(long, value_name = "REPORT")]
+        out: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -244,6 +257,22 @@ fn main() -> ExitCode {
             Err(e) => {
                 eprintln!("{e}");
                 ExitCode::FAILURE
+            }
+        };
+    }
+    if let Some(Command::AuditPreservation { manifest, out }) = &cli.command {
+        return match neat_ai_ockham::preservation::run_audit(manifest, out) {
+            Ok(report) => {
+                let status = report["criterion"]["status"].as_str().unwrap_or("unknown");
+                eprintln!(
+                    "audit-preservation: criterion {status} (report-only); report written to {}",
+                    out.display()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
             }
         };
     }
