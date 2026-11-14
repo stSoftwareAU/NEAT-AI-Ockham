@@ -3,7 +3,7 @@ use super::*;
 use crate::ablation::StructureSnapshot;
 use crate::corpus::for_each_chunk;
 use crate::fixtures::wide_creature;
-use crate::scorer::{ScoreResult, ScorerError};
+use crate::scorer::{ScoreResult, ScorerError, parse_scorer_output};
 
 struct CoreScorer;
 impl DirectoryScorer for CoreScorer {
@@ -14,7 +14,7 @@ impl DirectoryScorer for CoreScorer {
         mode: ScorerMode,
     ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
         assert_eq!(mode, ScorerMode::Full);
-        let mut scores = BTreeMap::new();
+        let mut scores: BTreeMap<String, ScoreResult> = BTreeMap::new();
         for entry in std::fs::read_dir(creatures).unwrap() {
             let path = entry.unwrap().path();
             let parent = load_incumbent(&path).unwrap();
@@ -53,7 +53,7 @@ impl DirectoryScorer for CoreScorer {
                 },
             );
         }
-        Ok(scores)
+        parse_scorer_output(&serde_json::to_string(&scores).unwrap())
     }
     fn identity(&self) -> String {
         "test-core-MSE".into()
@@ -69,7 +69,7 @@ fn sampled_or_partial_results_cannot_authorise_a_prune() {
     std::fs::create_dir(&dir).unwrap();
     std::fs::create_dir(&data).unwrap();
     std::fs::write(
-        dir.join("c0.json"),
+        dir.join("baseline.json"),
         neat_core::creature_to_json(&wide_creature(1, 4, "TANH")).unwrap(),
     )
     .unwrap();
@@ -89,47 +89,47 @@ fn sampled_or_partial_results_cannot_authorise_a_prune() {
         .unwrap_err()
         .contains("sampled")
     );
-    scores.get_mut("c0").unwrap().record_count = 2;
+    scores.get_mut("baseline").unwrap().record_count = 2;
     assert!(
         validate_full(&scores, ScorerMode::Full, 4, 1)
             .unwrap_err()
             .contains("record count")
     );
-    scores.get_mut("c0").unwrap().record_count = 4;
-    scores.get_mut("c0").unwrap().sample_rate = Some(0.5);
+    scores.get_mut("baseline").unwrap().record_count = 4;
+    scores.get_mut("baseline").unwrap().sample_rate = Some(0.5);
     assert!(
         validate_full(&scores, ScorerMode::Full, 4, 1)
             .unwrap_err()
             .contains("sampled")
     );
-    scores.get_mut("c0").unwrap().sample_rate = None;
-    scores.get_mut("c0").unwrap().cost_name = Some("MAE".into());
+    scores.get_mut("baseline").unwrap().sample_rate = None;
+    scores.get_mut("baseline").unwrap().cost_name = Some("MAE".into());
     assert!(
         validate_full(&scores, ScorerMode::Full, 4, 1)
             .unwrap_err()
             .contains("must report MSE")
     );
-    scores.get_mut("c0").unwrap().cost_name = Some("MSE".into());
-    scores.get_mut("c0").unwrap().error = -1.0;
+    scores.get_mut("baseline").unwrap().cost_name = Some("MSE".into());
+    scores.get_mut("baseline").unwrap().error = -1.0;
     assert!(
         validate_full(&scores, ScorerMode::Full, 4, 1)
             .unwrap_err()
             .contains("negative full result")
     );
-    scores.get_mut("c0").unwrap().error = 0.0;
-    scores.get_mut("c0").unwrap().score = f64::NAN;
+    scores.get_mut("baseline").unwrap().error = 0.0;
+    scores.get_mut("baseline").unwrap().score = f64::NAN;
     assert!(
         validate_full(&scores, ScorerMode::Full, 4, 1)
             .unwrap_err()
             .contains("non-finite")
     );
-    scores.get_mut("c0").unwrap().score = 1.0;
+    scores.get_mut("baseline").unwrap().score = 1.0;
     validate_full(&scores, ScorerMode::Full, 4, 1).unwrap();
     scores.clear();
     assert!(
         validate_full(&scores, ScorerMode::Full, 4, 1)
             .unwrap_err()
-            .contains("missing c0")
+            .contains("missing baseline")
     );
 }
 
@@ -248,7 +248,7 @@ fn real_core_rewrites_and_full_judgement_complete_both_search_paths() {
             [20, 18, 15, 10]
         );
         assert_eq!(
-            std::fs::read_to_string(dir.join("candidates/c0.json")).unwrap(),
+            std::fs::read_to_string(dir.join("candidates/baseline.json")).unwrap(),
             text
         );
         assert_eq!(arm.measurements[0].full.record_count, 32);
@@ -323,6 +323,7 @@ fn real_core_rewrites_and_full_judgement_complete_both_search_paths() {
         paired_summary(&paired, &manifest, true)["verdict"],
         "retain"
     );
+    assert!(paired_summary(&[], &manifest, true)["criteria"]["matchedCost"].is_null());
     paired[0].cost.elapsed_seconds = 50.0;
     assert_eq!(
         paired_summary(&paired, &manifest, true)["criteria"]["matchedCost"],

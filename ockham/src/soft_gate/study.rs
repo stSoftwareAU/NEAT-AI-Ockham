@@ -383,7 +383,10 @@ fn run_arm(
             neat_core::creature_to_json(&candidate.creature).map_err(|e| e.to_string())?
         };
         budget.io(text.len() as u64)?;
-        write_new(&creature_dir.join(format!("c{i}.json")), text.as_bytes())?;
+        write_new(
+            &creature_dir.join(format!("{}.json", candidate_stem(i))),
+            text.as_bytes(),
+        )?;
     }
     budget.records(
         usize::try_from(
@@ -407,7 +410,7 @@ fn run_arm(
         candidates.len(),
     )?;
     budget.check()?;
-    let baseline = scores["c0"].score;
+    let baseline = scores["baseline"].score;
     let mut measurements = Vec::new();
     for (i, candidate) in candidates.into_iter().enumerate() {
         let calibration_mse = fit::loss(&candidate.creature, &[], &[], rows, budget)?;
@@ -415,7 +418,7 @@ fn run_arm(
         let latency = latency(manifest, &candidate, budget)?;
         let mut sorted = latency.clone();
         sorted.sort_by(f64::total_cmp);
-        let full = scores[&format!("c{i}")].clone();
+        let full = scores[&candidate_stem(i)].clone();
         measurements.push(Measurement {
             candidate,
             calibration_mse,
@@ -450,6 +453,14 @@ fn final_record_allowance(manifest: &Manifest, corpus_records: u64) -> Result<u6
         .ok_or_else(|| "evaluation budget overflow".into())
 }
 
+fn candidate_stem(index: usize) -> String {
+    if index == 0 {
+        "baseline".into()
+    } else {
+        format!("c{index}")
+    }
+}
+
 fn validate_full(
     scores: &BTreeMap<String, crate::scorer::ScoreResult>,
     mode: ScorerMode,
@@ -460,7 +471,7 @@ fn validate_full(
         return Err("sampled-only acceptance refused".into());
     }
     for i in 0..candidates {
-        let key = format!("c{i}");
+        let key = candidate_stem(i);
         let score = scores
             .get(&key)
             .ok_or_else(|| format!("full scorer missing {key}"))?;
@@ -665,9 +676,9 @@ fn paired_summary(arms: &[Arm], manifest: &Manifest, no_failures: bool) -> Value
         "uncertaintyUnit": "seed; conditional on this creature, corpus, scorer and host; not across-creature evidence",
         "verdict": if retained { "retain" } else if comparable { "does-not-meet-retention-criteria" } else { "inconclusive" },
         "criteria": { "representativeData": manifest.representative, "completePairs": complete,
-            "minimumPairs": n >= 10, "matchedCost": matched_cost, "reachableBudgets": reachable,
-            "capacityOvershoot": overshoot_ok, "heldOutError": validation_ok, "latencyReduction": latency_ok,
-            "pairedScoreGain": score_gain },
+            "minimumPairs": n >= 10, "matchedCost": (n > 0).then_some(matched_cost), "reachableBudgets": (n > 0).then_some(reachable),
+            "capacityOvershoot": (n > 0).then_some(overshoot_ok), "heldOutError": (n > 0).then_some(validation_ok), "latencyReduction": (n > 0).then_some(latency_ok),
+            "pairedScoreGain": interval.map(|_| score_gain) },
         "complete": complete })
 }
 
