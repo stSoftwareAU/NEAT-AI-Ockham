@@ -2485,7 +2485,8 @@ Nothing it does reaches the ordinary pruning path. It never accepts, publishes
 or journals a creature, and it never writes the learnings or statistics cache.
 Its only output is a report JSON, plus a scratch `<REPORT>.work` directory that
 is removed when the run ends. The fixtures do not demonstrate a benefit, so
-treat the report as data, not a claim.
+treat the report as data, not a claim. A synthetic real-scorer pilot
+([report](docs/research/strata-pilot-v1/report.md)) was also inconclusive.
 
 ```sh
 neat_ai_ockham bench-strata manifest.json --out report.json --scorer rust_scorer

@@ -33,6 +33,13 @@ read that day for queries naming `2610.27812`, SliMOO, TLIP and NSGA-II. They
 are unverified and may be wrong. Read the paper before relying on them, and
 before any reproduction of its method.
 
+A later retry on the same day was refused again, with "proxy refused the
+connection", for `arxiv.org/abs/2610.27812`, `arxiv.org/pdf/2610.27812v1`,
+`arxiv.org/html/2610.27812`, `export.arxiv.org/abs/2610.27812`, the Semantic
+Scholar API, `huggingface.co/papers/2610.27812` and
+`paperswithcode.co/paper/129664`. Web-search excerpts again agree with the notes
+above, and the method remains unpinned.
+
 The excerpts describe these steps:
 
 - **Probing.** Task-layer importance profiling removes one layer or sublayer
@@ -330,25 +337,44 @@ The report is camelCase JSON. Its top-level fields are:
   ignored.
 - The report is written atomically: a temporary file beside it, then a rename.
 
+## Synthetic pilot
+
+`ockham/examples/strata_pilot.rs` writes synthetic inputs for `bench-strata`: a
+four-input parent with specialist, shared and dead-wood hidden neurons, four
+strata in calibration and validation, and a manifest with seeds 1 to 10. It
+refuses an existing directory and never overwrites one. The commands and the
+pinned scorer are listed in the
+[pilot report](research/strata-pilot-v1/report.md#reproduce). The pilot is
+inconclusive, and that report gives the results and their limits.
+
 ## Status
 
 No representative run has been made. The fixtures do not demonstrate a
-benefit, and the report's `evidence` field says so. Any optimisation claim
-needs representative corpora, which this repository does not hold.
+benefit, and the report's `evidence` field says so. A synthetic real-scorer
+pilot has since been run; see [Synthetic pilot](#synthetic-pilot). Any
+optimisation claim needs representative corpora, which this repository does not
+hold.
 
-Negative findings so far, from the implementation run on 2026-11-14:
+Findings so far, from the implementation and pilot runs on 2026-11-14:
 
-- **No benefit is shown.** The only end-to-end runs use the fixture scorer in
-  `ockham/tests/strata_bench.rs`. Its trap fixture is built so that
-  worst-stratum wins, and with uniform costs the criterion is not met. Both
-  results test the mechanics only. They are not evidence of a benefit.
-- **No representative run was possible.** The host had no `rust_scorer`
-  binary and no private corpora.
+- **A real-scorer synthetic pilot was run.** The
+  [pilot report](research/strata-pilot-v1/report.md) finds tied arms: aggregate,
+  worst-stratum and pareto selected the same bundle on every seed. The success
+  criterion is not met for either treatment, so the result is inconclusive.
+- **Representative runs still need private corpora,** which are not in this
+  repository.
+- **No benefit is shown.** The fixture-scorer runs in
+  `ockham/tests/strata_bench.rs` and the synthetic pilot test the mechanics
+  only. The trap fixture is built so that worst-stratum wins, and with uniform
+  costs the criterion is not met. The pilot's criterion is also not met. None
+  of these is evidence of a benefit.
 - **The method is not pinned.** The source paper's full text could not be
   fetched (see "Source paper" above). The bench reproduces the issue's
   formula, and several parts differ from the paper's excerpts.
 
-Removal has not been decided, because there is no representative result to
-base it on. If a representative run shows that worst-stratum ordering does not
-earn its keep, remove the code rather than keep it as an option. Record that
-result in this section.
+Removal is still undecided. The synthetic pilot neither shows a benefit nor a
+representative negative result. It shows that on a fixture where dead wood is
+cheap on every stratum, the worst-stratum statistic makes no difference. The
+code stays opt-in. If a representative run shows that worst-stratum ordering
+does not earn its keep, remove the code rather than keep it as an option, and
+record that result in this section.

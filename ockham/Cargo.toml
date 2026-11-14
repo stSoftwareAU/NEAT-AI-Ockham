@@ -18,6 +18,10 @@ workspace = true
 name = "connection_budget"
 test = true
 
+[[example]]
+name = "strata_pilot"
+test = true
+
 # No explicit [lib]/[[bin]] tables: cargo's defaults already name both targets
 # `neat_ai_ockham` from src/lib.rs and src/main.rs. Spelling them out made the
 # manifest ambiguous to scripts/runlib.sh, whose no-cargo fast path declines
