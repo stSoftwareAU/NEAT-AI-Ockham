@@ -215,6 +215,16 @@ This repository has no `CODING-STANDARDS.md`. The reviewer used
 - **violation** — Unbounded `key.json` read — evidence:
   `ockham/src/additivity/cache.rs:247` — reason: fixed in this diff (64 KiB
   cap checked before reading)
+- **violation** — The held-out scoring call checked its record count against
+  the training corpus — evidence: `ockham/src/additivity/bench.rs:1000` —
+  reason: fixed in this diff (`validationData`'s record count is read once per
+  parent and passed to `score`; test
+  `a_held_out_corpus_of_another_size_is_scored_and_reported`, which fails with
+  the old check)
+- **violation** — No bench-level test exercised cascades, overlaps or
+  duplicate creatures — evidence: `ockham/tests/additivity_bench.rs:143` —
+  reason: fixed in this diff (test
+  `the_bench_records_cascades_overlaps_and_duplicate_creatures`)
 - **violation** — Test-only production members — evidence:
   `ockham/src/additivity/predict.rs:174` — reason: fixed in this diff
   (`predict_bundle_loss`, `OutputCache::dir` and `OutputCache::key` removed;
@@ -243,7 +253,7 @@ This repository has no `CODING-STANDARDS.md`. The reviewer used
 
 New tests (all run on the final code):
 
-- `ockham/tests/additivity_bench.rs` (8 tests):
+- `ockham/tests/additivity_bench.rs` (10 tests):
   - end-to-end, every arm reported, parent untouched, nothing an ordinary run
     reads is left behind
   - the selected bundle is the best full score among each arm's picks
@@ -253,6 +263,12 @@ New tests (all run on the final code):
   - a scorer reporting another cost fails the run
   - CLI refusal of a non-MSE cost, and `--help` lists the command
   - every many-member bundle gets an estimate
+  - a three-neuron chain parent: bundles record non-empty `overlaps`,
+    `cascadeNeurons` and `duplicates`, a duplicate creature is scored once,
+    and `hiddenRemoved` / `meetsBudget` follow the materialised creature
+  - a held-out corpus of a different record count (120 against 300) runs to
+    completion, and `validationParentScore` and each arm's
+    `validationScore` / `validationError` equal the scorer's held-out results
 - `ockham/src/additivity/predict.rs` (6): linear-exact, nonlinear failure,
   cascade double-count, non-finite, mismatched lengths, empty loss.
 - `ockham/src/additivity/cache.rs` (12): round trip, one-field invalidation
@@ -272,7 +288,7 @@ the visibility of `SplitMix64` in `ockham/src/ordering.rs`, and the existing
 
 Results on the final code:
 
-- `cargo test -p neat_ai_ockham --test additivity_bench`: 8 passed.
+- `cargo test -p neat_ai_ockham --test additivity_bench`: 10 passed.
 - `cargo test -p neat_ai_ockham --lib additivity`: 37 passed.
 - `--test cli`: 21 passed. `--test readme_contract`: 10 passed.
 - `./quality.sh < /dev/null`: exit 0, "All quality checks passed!". This
@@ -280,7 +296,6 @@ Results on the final code:
   test suites and rustdoc `-D warnings`.
 
 Not done or not checked: no run against the real `rust_scorer` binary; no
-representative 20-elite run; the `validationData` path is implemented but has
-no test; a per-arm wall-clock budget is not implemented. The one remaining
-risk is that the fixture results say nothing about whether cached-output
-ranking helps.
+representative 20-elite run; a per-arm wall-clock budget is not
+implemented. The one remaining risk is that the fixture results say nothing
+about whether cached-output ranking helps.

@@ -250,6 +250,8 @@ struct ParentRun<'a> {
     incumbent: Incumbent,
     parent_json: String,
     corpus: CorpusInfo,
+    /// Record count of `validationData`, read once; `None` without held-out data.
+    validation_records: Option<u64>,
     baseline: AuthoritativeBaseline,
     workdir: PathBuf,
     hidden: HashSet<String>,
@@ -283,6 +285,10 @@ impl<'a> ParentRun<'a> {
             .unwrap_or_default();
         let cfg = TrainingDataConfig::new(incumbent.creature.input, incumbent.creature.output);
         let corpus = corpus_info(&manifest.training_data, &cfg)?;
+        let validation_records = match &manifest.validation_data {
+            Some(dir) => Some(corpus_info(dir, &cfg)?.record_count),
+            None => None,
+        };
         let workdir = workspace.join(format!("parent-{index}"));
         fs::create_dir_all(&workdir).map_err(|e| format!("{}: {e}", workdir.display()))?;
         let baseline = establish_baseline(
@@ -377,6 +383,7 @@ impl<'a> ParentRun<'a> {
             incumbent,
             parent_json,
             corpus,
+            validation_records,
             baseline,
             workdir,
             hidden: hidden_members.iter().map(|m| m.uuid.clone()).collect(),
@@ -649,6 +656,7 @@ impl<'a> ParentRun<'a> {
         let audit_results = self.score(
             &format!("audit-b{budget_index}-s{seed}"),
             &manifest.training_data,
+            self.corpus.record_count,
             &refs,
         )?;
         row.audit = AuditCost {
@@ -755,6 +763,7 @@ impl<'a> ParentRun<'a> {
             let search = self.score(
                 &format!("search-{}-b{budget_index}-s{seed}", arm.label()),
                 &manifest.training_data,
+                self.corpus.record_count,
                 &picked,
             )?;
             let scorer_ms = clock.ms_since(started);
@@ -837,13 +846,16 @@ impl<'a> ParentRun<'a> {
             });
         }
 
-        if let Some(validation) = &manifest.validation_data {
+        if let (Some(validation), Some(validation_records)) =
+            (&manifest.validation_data, self.validation_records)
+        {
             let selected: BTreeSet<usize> = arms.iter().filter_map(|a| a.selected_bundle).collect();
             let refs: Vec<(usize, &CreatureExport)> =
                 selected.iter().map(|&i| (i, &scored[i].creature)).collect();
             let held_out = self.score(
                 &format!("validation-b{budget_index}-s{seed}"),
                 validation,
+                validation_records,
                 &refs,
             )?;
             row.validation_parent_score = Some(held_out["baseline"].score);
@@ -949,12 +961,13 @@ impl<'a> ParentRun<'a> {
     fn score(
         &self,
         dir_name: &str,
-        training: &Path,
+        data: &Path,
+        expected_records: u64,
         bundles: &[(usize, &CreatureExport)],
     ) -> Result<BTreeMap<String, ScoreResult>, String> {
         let dir = self.workdir.join(dir_name);
         let _ = fs::remove_dir_all(&dir);
-        let outcome = self.write_and_score(&dir, training, bundles);
+        let outcome = self.write_and_score(&dir, data, expected_records, bundles);
         let _ = fs::remove_dir_all(&dir);
         outcome
     }
@@ -962,7 +975,8 @@ impl<'a> ParentRun<'a> {
     fn write_and_score(
         &self,
         dir: &Path,
-        training: &Path,
+        data: &Path,
+        expected_records: u64,
         bundles: &[(usize, &CreatureExport)],
     ) -> Result<BTreeMap<String, ScoreResult>, String> {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -978,7 +992,7 @@ impl<'a> ParentRun<'a> {
         }
         let results = self
             .scorer
-            .score_directory(dir, training, ScorerMode::Full)
+            .score_directory(dir, data, ScorerMode::Full)
             .map_err(|e| format!("full scorer: {e}"))?;
         if results.len() != expected.len() {
             return Err(format!(
@@ -997,7 +1011,7 @@ impl<'a> ParentRun<'a> {
                 result.cost_name.as_deref(),
                 result.record_count,
                 &self.manifest.cost,
-                self.corpus.record_count,
+                expected_records,
             )?;
         }
         Ok(results)

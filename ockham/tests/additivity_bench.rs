@@ -691,3 +691,215 @@ fn every_many_member_bundle_gets_a_cached_output_estimate_with_ample_limits() {
         "the fixture must produce bundles of five or more members"
     );
 }
+
+/// Four flat hidden neurons plus a chain `input -> c_a -> c_b -> output`.
+/// `c_b` is fed only by `c_a`, so cutting `c_a` strands it, and cutting `c_b`
+/// leaves `c_a` with nowhere to go. Every activation stays in `HARD_TANH`'s
+/// linear band, because a single-input `IDENTITY` neuron is spliced into a
+/// direct edge by the core cleanup and would never leave the bundle.
+fn chain_parent() -> CreatureExport {
+    let mut neurons = Vec::new();
+    let mut synapses = Vec::new();
+    for h in 0..4 {
+        let uuid = format!("f{h}");
+        neurons.push(neuron("hidden", &uuid, 0.01 * h as f64, Some("HARD_TANH")));
+        synapses.push(synapse("input-0", &uuid, 0.2 + 0.05 * h as f64));
+        synapses.push(synapse("input-1", &uuid, -0.1 + 0.03 * h as f64));
+        synapses.push(synapse(&uuid, "output-0", 0.3 + 0.1 * h as f64));
+    }
+    neurons.push(neuron("hidden", "c_a", 0.02, Some("HARD_TANH")));
+    neurons.push(neuron("hidden", "c_b", 0.03, Some("HARD_TANH")));
+    neurons.push(neuron("hidden", "c_c", 0.04, Some("HARD_TANH")));
+    neurons.push(neuron("output", "output-0", 0.0, Some("IDENTITY")));
+    synapses.push(synapse("input-0", "c_a", 0.4));
+    synapses.push(synapse("input-1", "c_a", 0.2));
+    synapses.push(synapse("c_a", "c_b", 0.5));
+    synapses.push(synapse("c_b", "c_c", 0.7));
+    synapses.push(synapse("c_c", "output-0", 0.6));
+    creature(INPUTS, OUTPUTS, neurons, synapses)
+}
+
+#[test]
+fn the_bench_records_cascades_overlaps_and_duplicate_creatures() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.path("parents/elite.json"),
+        creature_to_json(&chain_parent()).unwrap(),
+    )
+    .unwrap();
+    let mut manifest = fixture.manifest(vec![0.3], vec![1, 2, 3], 1 << 30);
+    // 7 proposable cuts, 3 removals each: all 35 sets would fit, 21 are drawn.
+    manifest.audit_pool = 21;
+
+    let report = run(&manifest);
+
+    let mut with_overlap = 0;
+    let mut with_removal_beyond_members = 0;
+    let mut with_cascade = 0;
+    let mut duplicates_seen = 0;
+    for row in report.rows.iter().filter(|r| r.feasible) {
+        assert_eq!(row.requested_removals, 3);
+        assert_eq!(row.eligible, 7);
+        assert!(row.refused.is_empty(), "refused: {:?}", row.refused);
+        // Each unique creature is scored once; a duplicate adds no scorer work.
+        assert_eq!(row.bundles.len() + row.duplicates.len(), row.pool_size);
+        assert_eq!(
+            row.audit.record_evaluations,
+            row.bundles.len() as u64 * RECORDS as u64,
+            "duplicate creatures must not be scored again"
+        );
+        let digests: std::collections::BTreeSet<&str> = row
+            .bundles
+            .iter()
+            .map(|b| b.creature_digest.as_str())
+            .collect();
+        assert_eq!(
+            digests.len(),
+            row.bundles.len(),
+            "two scored bundles share a creature"
+        );
+        for duplicate in &row.duplicates {
+            duplicates_seen += 1;
+            let first = &row.bundles[duplicate.duplicate_of];
+            let mut got = duplicate.members.clone();
+            let mut want = first.members.clone();
+            got.sort();
+            want.sort();
+            assert_ne!(got, want, "a duplicate is a different member set");
+        }
+        for bundle in &row.bundles {
+            // Every named member is gone from the materialised creature, and
+            // `meetsBudget` reads the materialised structure.
+            assert!(
+                bundle.hidden_removed >= bundle.members.len(),
+                "bundle {} removed {} hidden neurons for {:?}",
+                bundle.index,
+                bundle.hidden_removed,
+                bundle.members
+            );
+            assert_eq!(
+                bundle.meets_budget,
+                bundle.hidden_removed >= row.requested_removals
+            );
+            assert!(bundle.missing.is_empty());
+            // An overlap is a named member the removal did not request itself:
+            // another member's cut took it, or its inputs were folded away.
+            for uuid in &bundle.overlaps {
+                assert!(bundle.members.contains(uuid), "{uuid} is not a member");
+            }
+            if !bundle.overlaps.is_empty() {
+                with_overlap += 1;
+            }
+            if bundle.hidden_removed > bundle.members.len() {
+                with_removal_beyond_members += 1;
+            }
+            if !bundle.cascade_neurons.is_empty() {
+                with_cascade += 1;
+            }
+        }
+        // The ranked-prefix bundle names the whole chain, so it must overlap.
+        let chain = &row.bundles[0];
+        for uuid in ["c_a", "c_b", "c_c"] {
+            assert!(
+                chain.members.iter().any(|m| m == uuid),
+                "{:?}",
+                chain.members
+            );
+        }
+        assert!(
+            !chain.overlaps.is_empty(),
+            "the bundle naming the whole chain must record an overlap"
+        );
+    }
+    assert!(with_overlap > 0, "no bundle recorded an overlap");
+    assert!(with_cascade > 0, "no bundle recorded a cascade neuron");
+    assert!(
+        with_removal_beyond_members > 0,
+        "no bundle removed more hidden neurons than it named"
+    );
+    assert!(duplicates_seen > 0, "no duplicate creature was recorded");
+}
+
+/// Delegates to the faithful scorer and keeps every call's results.
+struct RecordingScorer {
+    inner: FaithfulScorer,
+    calls: std::sync::Mutex<Vec<(PathBuf, BTreeMap<String, ScoreResult>)>>,
+}
+
+impl DirectoryScorer for RecordingScorer {
+    fn score_directory(
+        &self,
+        creature_dir: &Path,
+        training_dir: &Path,
+        mode: ScorerMode,
+    ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
+        let results = self
+            .inner
+            .score_directory(creature_dir, training_dir, mode)?;
+        self.calls
+            .lock()
+            .unwrap()
+            .push((training_dir.to_path_buf(), results.clone()));
+        Ok(results)
+    }
+
+    fn identity(&self) -> String {
+        self.inner.identity()
+    }
+}
+
+#[test]
+fn a_held_out_corpus_of_another_size_is_scored_and_reported() {
+    const HELD_OUT: usize = 120;
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.path("held")).unwrap();
+    // A different length and different targets, so training and held-out
+    // results cannot be confused.
+    let held: Vec<(Vec<f32>, Vec<f32>)> = corpus_records(None)
+        .into_iter()
+        .take(HELD_OUT)
+        .map(|(x, y)| (x, y.iter().map(|v| 0.5 * v).collect()))
+        .collect();
+    write_bin_file(&fixture.path("held/0.bin"), &held).unwrap();
+    let mut manifest = fixture.manifest(vec![0.4], vec![1], 1 << 30);
+    manifest.validation_data = Some(fixture.path("held"));
+    let scorer = RecordingScorer {
+        inner: FaithfulScorer::new(),
+        calls: std::sync::Mutex::new(Vec::new()),
+    };
+    let workspace = manifest.cache_dir.join("workspace");
+
+    let report = run_bench(&manifest, &scorer, &SystemClock, &workspace)
+        .expect("a held-out corpus of another size must not fail the run");
+
+    let calls = scorer.calls.lock().unwrap();
+    let held_calls: Vec<_> = calls
+        .iter()
+        .filter(|(dir, _)| dir == &fixture.path("held"))
+        .collect();
+    assert_eq!(held_calls.len(), 1, "one held-out scoring call per row");
+    let held_results = &held_calls[0].1;
+    assert!(
+        held_results
+            .values()
+            .all(|r| r.record_count == HELD_OUT as u64),
+        "the scorer must have seen the held-out records"
+    );
+    assert_ne!(HELD_OUT, RECORDS);
+
+    let row = &report.rows[0];
+    assert!(row.feasible, "{:?}", row.reason);
+    let parent = &held_results["baseline"];
+    assert_eq!(row.validation_parent_score, Some(parent.score));
+    assert_ne!(
+        row.validation_parent_score,
+        Some(report.parents[0].parent_score),
+        "the held-out parent score must not be the training score"
+    );
+    for arm in &row.arms {
+        let selected = arm.selected_bundle.expect("a selection exists");
+        let result = &held_results[&format!("b{selected}")];
+        assert_eq!(arm.validation_score, Some(result.score), "{:?}", arm.arm);
+        assert_eq!(arm.validation_error, Some(result.error), "{:?}", arm.arm);
+    }
+}
