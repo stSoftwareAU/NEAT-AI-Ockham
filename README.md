@@ -2701,6 +2701,25 @@ Ockham commit messages use the **🪒** prefix.
 - **45-minute default run budget.** The global champion is perishable while
   normal evolution and Forests continue elsewhere.
 
+## Additivity experiment (opt-in)
+
+`bench-additivity` is an opt-in offline experiment for issue #260. It asks
+whether cached single-cut output deltas can rank pruning bundles more
+economically than Ockham's current selection. It is disabled in ordinary runs,
+changes no default, and never accepts or publishes a creature: predictions only
+order candidates, and the full-corpus scorer stays the only acceptance
+authority.
+
+```sh
+neat_ai_ockham bench-additivity <manifest.json> --out <report.json>
+```
+
+The manifest predeclares the parents, corpora, scorer, budgets, seeds and
+decision rule. Runs over fewer than 20 parents are fixture-only and are not
+evidence. See [`docs/additivity-experiment.md`](docs/additivity-experiment.md)
+for the manifest, the four arms, the cache, the resource bounds and the report
+fields.
+
 ## Repository layout
 
 ```text
@@ -2754,14 +2773,16 @@ NEAT-AI-Ockham/
 │       ├── run.rs
 │       ├── clock.rs           # injected run-budget time source (real or manual)
 │       ├── log.rs
+│       ├── additivity/       # opt-in cached-output bundle-ranking experiment (#260)
 │       └── cancel.rs
 ├── docs/
 │   ├── grq-integration.md   # audit: how GRQ invokes Ockham and reads it back
 │   ├── blocked-reasons.md   # blocked codes, and the path built for the largest
 │   ├── pruning-ownership.md # design reference: rewrites belong in NEAT-AI-core
 │   ├── population-entry.md  # how cuts actually enter the live population
-│   ├── strata-experiment.md # opt-in worst-stratum vs aggregate vs Pareto bench
-│   └── incident-response.md # emergency dependency fast lane (SECURITY.md)
+│   ├── incident-response.md # emergency dependency fast lane (SECURITY.md)
+│   ├── additivity-experiment.md # opt-in offline experiment (#260): manifest, arms, report
+│   └── strata-experiment.md # opt-in worst-stratum vs aggregate vs Pareto bench
 ├── scripts/
 │   ├── runlib.sh          # canonical build → install → clean (owned by core)
 │   ├── family-pins.sh     # canonical neat-core pin mover (owned by core)
