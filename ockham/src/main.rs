@@ -227,6 +227,24 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Run the opt-in worst-stratum vs aggregate vs Pareto pruning experiment (#263).
+    ///
+    /// Writes one JSON report to `--out` and prints its path. Uses a scratch
+    /// directory `<out>.work` that is removed when the run ends. Nothing else is
+    /// written, and no creature is accepted or published.
+    BenchStrata {
+        /// Experiment manifest JSON. Relative paths resolve against its directory.
+        manifest: PathBuf,
+        /// Report JSON to write (atomically).
+        #[arg(long)]
+        out: PathBuf,
+        /// NEAT-AI-scorer binary.
+        #[arg(long, default_value = "rust_scorer")]
+        scorer: PathBuf,
+        /// Extra argument passed verbatim to the scorer (repeatable).
+        #[arg(long = "scorer-arg")]
+        scorer_args: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -274,6 +292,15 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+    if let Some(Command::BenchStrata {
+        manifest,
+        out,
+        scorer,
+        scorer_args,
+    }) = &cli.command
+    {
+        return bench_strata(manifest, out, scorer, scorer_args);
     }
     if let Some(Command::Report { journals }) = cli.command {
         if journals.is_empty() {
@@ -424,6 +451,35 @@ fn bench_additivity(manifest_path: &Path, out: &Path) -> Result<String, String> 
         "representative": report.representative,
     })
     .to_string())
+}
+
+/// Run `bench-strata` and print the report path, or the error on stderr.
+fn bench_strata(manifest: &Path, out: &Path, scorer: &Path, scorer_args: &[String]) -> ExitCode {
+    let loaded = match neat_ai_ockham::strata::manifest::load(manifest) {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let probe = neat_ai_ockham::strata::bench::wall_clock_probe(
+        loaded.manifest.calibration[0].dir.clone(),
+        loaded.manifest.latency_records,
+    );
+    let external = ExternalScorer {
+        binary: scorer.to_path_buf(),
+        extra_args: scorer_args.to_vec(),
+    };
+    match neat_ai_ockham::strata::bench::run_bench(manifest, out, &external, &probe) {
+        Ok(_) => {
+            println!("{}", out.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Fit and evaluate the learned ranker, returning the JSON report to print.
