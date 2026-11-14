@@ -46,3 +46,9 @@ signal-hook = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+
+# Run the opt-in protocol's deterministic contracts in the normal gate; real
+# scorer/corpus experiments remain explicit commands.
+[[example]]
+name = "priority_ordering_bench"
+test = true
