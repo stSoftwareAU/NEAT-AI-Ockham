@@ -18,6 +18,7 @@ use neat_core::{CreatureExport, compile_creature, creature_to_json};
 use crate::corpus::{CorpusInfo, RecordRange, corpus_info, for_each_selected_chunk};
 use crate::incumbent::{Incumbent, load_incumbent};
 use crate::ordering::SplitMix64;
+use crate::output_guard;
 use crate::prune::{GroupMember, PrunedCandidate, prune_hidden_group, prune_hidden_neuron};
 use crate::scorer::{DirectoryScorer, ScoreResult, ScorerMode};
 use crate::stats::{DEFAULT_CHUNK_RECORDS, SampleSpec, compute_activation_stats};
@@ -105,7 +106,7 @@ pub fn run_bench(
         .chain(m.validation.iter())
         .map(|s| s.dir.as_path())
         .collect();
-    refuse_input_overwrite(out_path, &files, &dirs)?;
+    output_guard::refuse_input_overwrite(out_path, &files, &dirs)?;
     let work = work_dir_for(out_path);
     if work.exists() {
         return Err(format!(
@@ -133,7 +134,7 @@ pub fn run_bench(
             ));
         }
     };
-    write_report_atomically(out_path, &report)?;
+    output_guard::write_json_atomically(out_path, &report)?;
     Ok(report)
 }
 
@@ -182,19 +183,6 @@ fn measure_ms_per_record(
     }
     samples.sort_by(f64::total_cmp);
     Ok(samples[LATENCY_REPETITIONS / 2])
-}
-
-fn write_report_atomically(out: &Path, report: &StrataReport) -> Result<(), String> {
-    let mut json = serde_json::to_string_pretty(report)
-        .map_err(|e| format!("cannot serialise report: {e}"))?;
-    json.push('\n');
-    let mut tmp_name = out.file_name().unwrap_or_default().to_os_string();
-    tmp_name.push(".tmp");
-    let tmp = out.with_file_name(tmp_name);
-    std::fs::write(&tmp, json)
-        .map_err(|e| format!("cannot write report '{}': {e}", tmp.display()))?;
-    std::fs::rename(&tmp, out)
-        .map_err(|e| format!("cannot move report into place at '{}': {e}", out.display()))
 }
 
 fn execute(
@@ -1183,112 +1171,8 @@ fn method() -> Method {
     }
 }
 
-/// Refuse a report path that would replace an input or land inside an input
-/// corpus. `out` and its `<out>.tmp` sibling are both checked against every
-/// input file (the same path, a symlink or a hard link) and every input
-/// directory, because the report is renamed into place: `--out parent.json`
-/// would otherwise overwrite the supplied creature, which is never written to.
-fn refuse_input_overwrite(out: &Path, files: &[&Path], dirs: &[&Path]) -> Result<(), String> {
-    let mut tmp = out.as_os_str().to_owned();
-    tmp.push(".tmp");
-    for target in [out.to_path_buf(), PathBuf::from(tmp)] {
-        let resolved = resolved_target(&target);
-        for file in files {
-            let same_path = resolved.is_some() && resolved == std::fs::canonicalize(file).ok();
-            if same_path || same_inode(&target, file) {
-                return Err(format!(
-                    "report path '{}' would overwrite the input '{}'; choose another --out",
-                    target.display(),
-                    file.display()
-                ));
-            }
-        }
-        for dir in dirs {
-            if let (Some(r), Ok(d)) = (&resolved, std::fs::canonicalize(dir))
-                && r.starts_with(&d)
-            {
-                return Err(format!(
-                    "report path '{}' is inside the input corpus '{}'; choose another --out",
-                    target.display(),
-                    dir.display()
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The canonical form of `path`, or of its parent joined with its file name
-/// when `path` does not exist yet.
-fn resolved_target(path: &Path) -> Option<PathBuf> {
-    if let Ok(found) = std::fs::canonicalize(path) {
-        return Some(found);
-    }
-    let name = path.file_name()?;
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    std::fs::canonicalize(parent).ok().map(|p| p.join(name))
-}
-
-/// Whether two existing paths are the same file (catches hard links).
-#[cfg(unix)]
-fn same_inode(a: &Path, b: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
-        _ => false,
-    }
-}
-
-/// Whether two existing paths are the same file (paths only off Unix).
-#[cfg(not(unix))]
-fn same_inode(_: &Path, _: &Path) -> bool {
-    false
-}
-
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_report_path_that_names_an_input_is_refused() {
-        let tmp = tempfile::tempdir().unwrap();
-        let parent = tmp.path().join("parent.json");
-        let corpus = tmp.path().join("corpus");
-        std::fs::write(&parent, "{}").unwrap();
-        std::fs::create_dir(&corpus).unwrap();
-        let files = [parent.as_path()];
-        let dirs = [corpus.as_path()];
-
-        let same = super::refuse_input_overwrite(&parent, &files, &dirs).unwrap_err();
-        assert!(same.contains("would overwrite the input"), "{same}");
-
-        let tmp_sibling = tmp.path().join("parent");
-        std::fs::rename(&parent, tmp.path().join("parent.tmp")).unwrap();
-        let moved = tmp.path().join("parent.tmp");
-        let sibling =
-            super::refuse_input_overwrite(&tmp_sibling, &[moved.as_path()], &dirs).unwrap_err();
-        assert!(sibling.contains("would overwrite the input"), "{sibling}");
-        std::fs::rename(&moved, &parent).unwrap();
-
-        #[cfg(unix)]
-        {
-            let link = tmp.path().join("link.json");
-            std::os::unix::fs::symlink(&parent, &link).unwrap();
-            assert!(super::refuse_input_overwrite(&link, &files, &dirs).is_err());
-            let hard = tmp.path().join("hard.json");
-            std::fs::hard_link(&parent, &hard).unwrap();
-            assert!(super::refuse_input_overwrite(&hard, &files, &dirs).is_err());
-        }
-
-        let inside =
-            super::refuse_input_overwrite(&corpus.join("r.json"), &files, &dirs).unwrap_err();
-        assert!(inside.contains("inside the input corpus"), "{inside}");
-
-        let fine = tmp.path().join("report.json");
-        super::refuse_input_overwrite(&fine, &files, &dirs).unwrap();
-    }
-
     use super::*;
 
     #[test]

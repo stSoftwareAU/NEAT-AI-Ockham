@@ -73,8 +73,9 @@ resamples, and is seeded by `bootstrapSeed`. Per-record sums of squares for the
 child and for the mean control are stored so that resampling needs no second
 pass over the corpus.
 
-`latencyMsPer1kRecords` is the wall-clock time of the activation loop. It is
-indicative only and is never used to decide anything.
+`latencyMsPer1kRecords` is the wall-clock time of the whole streamed pass,
+including corpus reading and per-record scoring, not only the activation loop.
+It is indicative only and is never used to decide anything.
 
 ## Controls
 
@@ -122,9 +123,14 @@ validation corpus, are the only ones the gates count. A child is never in both.
    set is empty, `theta` is `null` and `failures` records
    `"threshold not fittable: <why>"`.
 
-The validation split is not used until `theta` is fixed. On validation, the
-preservation gate rejects a child when its score is below `theta`. A `null`
-score counts as not covered.
+The validation split is scored in the same run, but it never informs `theta`:
+`theta` is fixed from the calibration children alone and is then applied to
+validation. On validation, the preservation gate rejects a child when its score
+is below `theta`. A `null` score counts as not covered: such a child is left out
+of `coverage.validationChildrenScored` and `coverage.childrenScored`, and when
+any validation child has a `null` score the preservation gate's `rejected`,
+`falseRejections` and `falseRejectionRate` are `null` rather than a rate over
+children the gate did not judge.
 
 ## Gates and the success rule
 
@@ -170,7 +176,7 @@ demonstration of benefit until representative runs exist.
   such records.
 - The arXiv full text could not be fetched here (no network access), so the
   method is still not pinned to the paper. `latencyMsPer1kRecords` times the whole streamed pass, so
-it includes corpus reading and per-record scoring, not only the activation loop.
+  it includes corpus reading and per-record scoring, not only the activation loop.
 
 ## Manifest example
 
@@ -256,9 +262,9 @@ flowchart TD
     B -- no --> X[Refuse, naming the field]
     B -- yes --> C[Check child and corpus widths]
     C --> D[Score calibration split]
-    D --> E[Fit theta on calibration only]
-    E --> F[Score validation split]
-    F --> G[Apply gates to validation]
+    D --> F[Score validation split, never used to fit theta]
+    F --> E[Fit theta on calibration scores only]
+    E --> G[Apply theta and gates to validation]
     G --> H[Write report atomically]
     H --> I{Criterion met?}
     I -- yes --> J[Report: met, still report-only]

@@ -2749,6 +2749,7 @@ NEAT-AI-Ockham/
 │       ├── learnings.rs       # fleet prune-verdict cache + screen coverage
 │       ├── coverage.rs       # checked/total/percent + coverage.txt / coverage.json
 │       ├── ordering.rs        # named candidate ordering strategies
+│       ├── output_guard.rs    # shared --out overwrite guard and atomic report writer
 │       ├── preservation.rs    # report-only preservation audit (Issue #264)
 │       ├── cascade.rs         # topology-only cascade dry-run for ordering
 │       ├── sensitivity.rs     # backward output-sensitivity estimate for ordering

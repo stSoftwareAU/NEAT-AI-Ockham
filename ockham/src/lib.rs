@@ -68,6 +68,7 @@ pub mod merge;
 pub mod model;
 pub mod neighbourhood;
 pub mod ordering;
+pub(crate) mod output_guard;
 pub mod preservation;
 pub mod priority;
 pub mod promote;

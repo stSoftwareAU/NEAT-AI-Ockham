@@ -27,8 +27,9 @@
 //! that child from the comparison and is listed in `failures`.
 //!
 //! The threshold is fitted on calibration only, maximising balanced accuracy
-//! with the smallest-θ tie-break. Validation is untouched until θ is fixed.
-//! Children are split too: each has a `role`, so θ is fitted on calibration
+//! with the smallest-θ tie-break. Validation is scored in the same run but
+//! never informs θ: θ is fixed from calibration alone, then applied to
+//! validation. Children are split too: each has a `role`, so θ is fitted on calibration
 //! children and the gates count only the disjoint validation children.
 
 use std::collections::HashSet;
@@ -43,11 +44,12 @@ use serde::{Deserialize, Serialize};
 use crate::corpus::{CorpusInfo, RecordRange, corpus_info, for_each_selected_chunk};
 use crate::incumbent::load_incumbent;
 use crate::ordering::SplitMix64;
+use crate::output_guard;
+use crate::strata::manifest::MAX_MANIFEST_BYTES;
 
 /// Identifier written into every report.
 pub const SCHEMA: &str = "ockham-preservation-audit/1";
 
-const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_CHILDREN: usize = 256;
 const CHUNK_RECORDS: usize = 1024;
 const DEGENERATE_EPS: f64 = 1e-24;
@@ -1049,8 +1051,9 @@ struct Report {
 
 /// Gate counts and AUC over the comparison children.
 ///
-/// `fitted` is false when θ is unavailable: counts are then `null` but the
-/// AUC, which does not depend on θ, is still reported.
+/// `fitted` is false when θ is unavailable or a comparison child has no score:
+/// counts are then `null` but the AUC, which does not depend on θ, is still
+/// reported (and is itself `null` when any score is missing).
 fn gate_report(
     rejects: &[Option<bool>],
     fitted: bool,
@@ -1100,6 +1103,16 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
     let comparison: Vec<usize> = (0..children.len())
         .filter(|&i| children[i].role == Role::Validation && val.failures[i].is_none())
         .collect();
+    // A child with a null score was run but could not be judged, so it is not
+    // "scored" for coverage.
+    let calibration_scored = cal_children
+        .iter()
+        .filter(|&&i| cal.preserved[i].is_some())
+        .count();
+    let validation_scored = comparison
+        .iter()
+        .filter(|&&i| val.preserved[i].is_some())
+        .count();
     let is_better = |i: usize| children[i].full_delta > 0.0;
     let cal_better: Vec<bool> = cal_children.iter().map(|&i| is_better(i)).collect();
     let cal_preserved: Vec<Option<f64>> = cal_children.iter().map(|&i| cal.preserved[i]).collect();
@@ -1125,9 +1138,12 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
         .collect();
 
     let sample_gate = gate_report(&sample_rejects, true, &better, &sample_scores);
+    // Counts are only meaningful when θ exists and every validation child has
+    // a score to compare against it; otherwise a gate that judged nobody would
+    // report a 0% false-rejection rate.
     let preserved_gate = gate_report(
         &preserved_rejects,
-        threshold.is_some(),
+        threshold.is_some() && validation_scored == comparison.len(),
         &better,
         &val_preserved,
     );
@@ -1205,8 +1221,8 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
         paired,
         auc_gain: AucGain { value, ci95 },
         criterion: Criterion { status, rule },
-        calibration_scored: cal_children.len(),
-        validation_scored: comparison.len(),
+        calibration_scored,
+        validation_scored,
     }
 }
 
@@ -1217,24 +1233,6 @@ fn split_records(name: &str, max: u64, info: &CorpusInfo) -> Result<u64, String>
         return Err(format!("{name} corpus has no records"));
     }
     Ok(records)
-}
-
-/// Write the report to `<out>.tmp`, then rename it over `out`.
-fn write_atomically(out: &Path, value: &serde_json::Value) -> Result<(), String> {
-    let text =
-        serde_json::to_string_pretty(value).map_err(|e| format!("cannot encode report: {e}"))?;
-    let mut tmp_name = out.as_os_str().to_owned();
-    tmp_name.push(".tmp");
-    let tmp = PathBuf::from(tmp_name);
-    std::fs::write(&tmp, format!("{text}\n"))
-        .map_err(|e| format!("cannot write '{}': {e}", tmp.display()))?;
-    std::fs::rename(&tmp, out).map_err(|e| {
-        format!(
-            "cannot rename '{}' to '{}': {e}",
-            tmp.display(),
-            out.display()
-        )
-    })
 }
 
 /// Run the preservation audit described by `manifest_path` and write the
@@ -1262,7 +1260,11 @@ pub fn run_audit(manifest_path: &Path, out_path: &Path) -> Result<serde_json::Va
         .collect();
     let mut files: Vec<&Path> = vec![manifest_path, parent_path.as_path()];
     files.extend(child_paths.iter().map(PathBuf::as_path));
-    refuse_input_overwrite(out_path, &files, &[cal_dir.as_path(), val_dir.as_path()])?;
+    output_guard::refuse_input_overwrite(
+        out_path,
+        &files,
+        &[cal_dir.as_path(), val_dir.as_path()],
+    )?;
     let parent = load_incumbent(&parent_path)
         .map_err(|e| format!("parent '{}': {e}", parent_path.display()))?;
     let children = load_children(&manifest.children, &base, &parent.creature)?;
@@ -1374,116 +1376,12 @@ pub fn run_audit(manifest_path: &Path, out_path: &Path) -> Result<serde_json::Va
         failures,
     };
     let value = serde_json::to_value(&report).map_err(|e| format!("cannot encode report: {e}"))?;
-    write_atomically(out_path, &value)?;
+    output_guard::write_json_atomically(out_path, &value)?;
     Ok(value)
-}
-
-/// Refuse a report path that would replace an input or land inside an input
-/// corpus. `out` and its `<out>.tmp` sibling are both checked against every
-/// input file (the same path, a symlink or a hard link) and every input
-/// directory, because the report is renamed into place: `--out parent.json`
-/// would otherwise overwrite the supplied creature, which is never written to.
-fn refuse_input_overwrite(out: &Path, files: &[&Path], dirs: &[&Path]) -> Result<(), String> {
-    let mut tmp = out.as_os_str().to_owned();
-    tmp.push(".tmp");
-    for target in [out.to_path_buf(), PathBuf::from(tmp)] {
-        let resolved = resolved_target(&target);
-        for file in files {
-            let same_path = resolved.is_some() && resolved == std::fs::canonicalize(file).ok();
-            if same_path || same_inode(&target, file) {
-                return Err(format!(
-                    "report path '{}' would overwrite the input '{}'; choose another --out",
-                    target.display(),
-                    file.display()
-                ));
-            }
-        }
-        for dir in dirs {
-            if let (Some(r), Ok(d)) = (&resolved, std::fs::canonicalize(dir))
-                && r.starts_with(&d)
-            {
-                return Err(format!(
-                    "report path '{}' is inside the input corpus '{}'; choose another --out",
-                    target.display(),
-                    dir.display()
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The canonical form of `path`, or of its parent joined with its file name
-/// when `path` does not exist yet.
-fn resolved_target(path: &Path) -> Option<PathBuf> {
-    if let Ok(found) = std::fs::canonicalize(path) {
-        return Some(found);
-    }
-    let name = path.file_name()?;
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    std::fs::canonicalize(parent).ok().map(|p| p.join(name))
-}
-
-/// Whether two existing paths are the same file (catches hard links).
-#[cfg(unix)]
-fn same_inode(a: &Path, b: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
-        _ => false,
-    }
-}
-
-/// Whether two existing paths are the same file (paths only off Unix).
-#[cfg(not(unix))]
-fn same_inode(_: &Path, _: &Path) -> bool {
-    false
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_report_path_that_names_an_input_is_refused() {
-        let tmp = tempfile::tempdir().unwrap();
-        let parent = tmp.path().join("parent.json");
-        let corpus = tmp.path().join("corpus");
-        std::fs::write(&parent, "{}").unwrap();
-        std::fs::create_dir(&corpus).unwrap();
-        let files = [parent.as_path()];
-        let dirs = [corpus.as_path()];
-
-        let same = super::refuse_input_overwrite(&parent, &files, &dirs).unwrap_err();
-        assert!(same.contains("would overwrite the input"), "{same}");
-
-        let tmp_sibling = tmp.path().join("parent");
-        std::fs::rename(&parent, tmp.path().join("parent.tmp")).unwrap();
-        let moved = tmp.path().join("parent.tmp");
-        let sibling =
-            super::refuse_input_overwrite(&tmp_sibling, &[moved.as_path()], &dirs).unwrap_err();
-        assert!(sibling.contains("would overwrite the input"), "{sibling}");
-        std::fs::rename(&moved, &parent).unwrap();
-
-        #[cfg(unix)]
-        {
-            let link = tmp.path().join("link.json");
-            std::os::unix::fs::symlink(&parent, &link).unwrap();
-            assert!(super::refuse_input_overwrite(&link, &files, &dirs).is_err());
-            let hard = tmp.path().join("hard.json");
-            std::fs::hard_link(&parent, &hard).unwrap();
-            assert!(super::refuse_input_overwrite(&hard, &files, &dirs).is_err());
-        }
-
-        let inside =
-            super::refuse_input_overwrite(&corpus.join("r.json"), &files, &dirs).unwrap_err();
-        assert!(inside.contains("inside the input corpus"), "{inside}");
-
-        let fine = tmp.path().join("report.json");
-        super::refuse_input_overwrite(&fine, &files, &dirs).unwrap();
-    }
-
     use super::*;
     use crate::corpus::write_bin_file;
     use crate::fixtures::identity_creature;
@@ -1569,8 +1467,15 @@ mod tests {
         let scores = [0.9, 0.7, 0.6, 0.2, 0.4];
         let better = [true, false, true, false, true];
         assert_eq!(fit_threshold(&scores, &better), Some(0.4));
-        // θ = 0.1 and θ = 0.2 both give BA 0.5; the smaller wins.
+        // θ = 0.1 accepts both (BA 0.5); θ = 0.2 rejects the better child and
+        // accepts the worse one (BA 0): a unique maximum at 0.1.
         assert_eq!(fit_threshold(&[0.1, 0.2], &[true, false]), Some(0.1));
+        // A real tie: θ = 0.1 and θ = 0.3 both give BA 0.5 (θ = 0.2 and 0.4
+        // give 0.25); the smallest wins, so `>=` instead of `>` would fail.
+        assert_eq!(
+            fit_threshold(&[0.1, 0.2, 0.3, 0.4], &[true, false, true, false]),
+            Some(0.1)
+        );
         assert_eq!(fit_threshold(&[0.1, 0.2], &[true, true]), None);
         assert_eq!(fit_threshold(&[0.1, 0.2], &[false, false]), None);
     }
@@ -1751,6 +1656,317 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         assert_eq!(on_disk, value);
         assert!(!value.to_string().contains("NaN"));
+    }
+
+    /// Mean of `f(x0)` over the records `write_corpus` writes.
+    fn corpus_mean(n: usize, phase: usize, f: impl Fn(f64) -> f64) -> f64 {
+        (0..n)
+            .map(|i| {
+                let j = i + phase;
+                f(f64::from(((j * 7 + 3) % 13) as f32 / 13.0))
+            })
+            .sum::<f64>()
+            / n as f64
+    }
+
+    fn weighted(weight: f64) -> CreatureExport {
+        let mut c = identity_creature(2, 1);
+        c.synapses[0].weight = weight;
+        c
+    }
+
+    fn collapsed_creature() -> CreatureExport {
+        let mut c = identity_creature(2, 1);
+        c.synapses[0].weight = 0.0;
+        c.neurons[0].bias = 0.5;
+        c
+    }
+
+    /// Calibration children that fix θ at the score of the 1.1x child: an exact
+    /// copy and a 1.1x child are better, the collapsed child is worse.
+    fn gate_fixture(root: &Path, validation: Vec<serde_json::Value>, tol: f64) -> PathBuf {
+        write_creature(&root.join("parent.json"), &identity_creature(2, 1));
+        write_creature(&root.join("copy.json"), &identity_creature(2, 1));
+        write_creature(&root.join("w105.json"), &weighted(1.05));
+        write_creature(&root.join("w110.json"), &weighted(1.1));
+        write_creature(&root.join("w130.json"), &weighted(1.3));
+        write_creature(&root.join("collapsed.json"), &collapsed_creature());
+        write_corpus(&root.join("calibration"), 40, 0);
+        write_corpus(&root.join("validation"), 30, 5);
+        let mut children = vec![
+            json!({"name": "cal-copy", "creature": "copy.json", "fullDelta": 0.02, "sampleDelta": 0.01, "role": "calibration"}),
+            json!({"name": "cal-w110", "creature": "w110.json", "fullDelta": 0.01, "sampleDelta": 0.01, "role": "calibration"}),
+            json!({"name": "cal-bad", "creature": "collapsed.json", "fullDelta": -0.05, "sampleDelta": -0.01, "role": "calibration"}),
+        ];
+        children.extend(validation);
+        let manifest = json!({
+            "parent": "parent.json",
+            "children": children,
+            "calibration": "calibration",
+            "validation": "validation",
+            "shuffleSeeds": [1, 2, 3],
+            "bootstrapSeed": 9,
+            "bootstrapResamples": 200,
+            "sampleTolerance": tol,
+            "minAucGain": 0.05
+        });
+        let path = root.join("manifest.json");
+        std::fs::write(&path, manifest.to_string()).unwrap();
+        path
+    }
+
+    fn validation_child(name: &str, creature: &str, full: f64, sample: f64) -> serde_json::Value {
+        json!({"name": name, "creature": creature, "fullDelta": full, "sampleDelta": sample, "role": "validation"})
+    }
+
+    fn paired_row<'a>(value: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+        value["paired"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == name)
+            .unwrap()
+    }
+
+    /// The sample gate falsely rejects a genuinely better child that the
+    /// preservation gate keeps, so the criterion is `met`.
+    #[test]
+    fn sample_gate_false_rejection_that_preservation_keeps_is_met() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let manifest = gate_fixture(
+            root,
+            vec![
+                validation_child("v-slip", "w105.json", 0.01, -0.02),
+                validation_child("v-copy", "copy.json", 0.02, 0.03),
+                validation_child("v-bad1", "collapsed.json", -0.04, -0.03),
+                validation_child("v-bad2", "collapsed.json", -0.04, 0.0),
+            ],
+            0.0,
+        );
+        let out = root.join("report.json");
+        let value = run_audit(&manifest, &out).unwrap();
+
+        // θ is the calibration score of the 1.1x child.
+        let theta = value["threshold"].as_f64().unwrap();
+        let cal_w110 = child_entry(&value["splits"]["calibration"], "cal-w110");
+        assert_eq!(cal_w110["preservationVsMean"].as_f64().unwrap(), theta);
+
+        // Sample gate: v-slip and v-bad1 are below zero; v-slip is better.
+        let sample = &value["gates"]["sample"];
+        assert_eq!(sample["rejected"], json!(2));
+        assert_eq!(sample["falseRejections"], json!(1));
+        assert_eq!(sample["falseRejectionRate"], json!(0.5));
+        assert_eq!(sample["auc"], json!(0.75));
+        // Preservation gate: only the two collapsed children fall below θ.
+        let preserved_gate = &value["gates"]["preservation"];
+        assert_eq!(preserved_gate["rejected"], json!(2));
+        assert_eq!(preserved_gate["falseRejections"], json!(0));
+        assert_eq!(preserved_gate["falseRejectionRate"], json!(0.0));
+        assert_eq!(preserved_gate["auc"], json!(1.0));
+        assert_eq!(paired_row(&value, "v-slip")["sampleRejects"], json!(true));
+        assert_eq!(
+            paired_row(&value, "v-slip")["preservationRejects"],
+            json!(false)
+        );
+
+        assert_eq!(value["aucGain"]["value"], json!(0.25));
+        let ci = value["aucGain"]["ci95"].as_array().unwrap();
+        let (lo, hi) = (ci[0].as_f64().unwrap(), ci[1].as_f64().unwrap());
+        assert!(lo <= 0.25 && 0.25 <= hi, "{lo} {hi}");
+        assert_eq!(value["criterion"]["status"], json!("met"));
+        assert_eq!(value["coverage"]["validationChildrenScored"], json!(4));
+
+        // The same seeds reproduce the same interval.
+        let again = run_audit(&manifest, &root.join("again.json")).unwrap();
+        assert_eq!(again["aucGain"]["ci95"], value["aucGain"]["ci95"]);
+    }
+
+    /// Negative twin: the preservation gate falsely rejects a better child
+    /// that the sample gate keeps, so `notMet` comes from the false-rejection
+    /// clause even though the AUC gain clears `minAucGain`.
+    #[test]
+    fn preservation_false_rejection_above_sample_rate_is_not_met() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let manifest = gate_fixture(
+            root,
+            vec![
+                validation_child("v-good", "copy.json", 0.02, 0.03),
+                validation_child("v-low", "w130.json", 0.01, 0.02),
+                validation_child("v-bad1", "collapsed.json", -0.04, 0.025),
+                validation_child("v-bad2", "collapsed.json", -0.04, -0.01),
+            ],
+            0.0,
+        );
+        let value = run_audit(&manifest, &root.join("report.json")).unwrap();
+
+        let sample = &value["gates"]["sample"];
+        assert_eq!(sample["rejected"], json!(1));
+        assert_eq!(sample["falseRejections"], json!(0));
+        assert_eq!(sample["falseRejectionRate"], json!(0.0));
+        let preserved_gate = &value["gates"]["preservation"];
+        assert_eq!(preserved_gate["rejected"], json!(3));
+        assert_eq!(preserved_gate["falseRejections"], json!(1));
+        assert_eq!(preserved_gate["falseRejectionRate"], json!(0.5));
+        assert_eq!(value["aucGain"]["value"], json!(0.25));
+        assert_eq!(value["criterion"]["status"], json!("notMet"));
+    }
+
+    /// `sampleTolerance` boundary: a `sampleDelta` exactly at `-tolerance` is
+    /// not rejected; with tolerance 0 the same child is.
+    #[test]
+    fn sample_tolerance_boundary_is_not_a_rejection() {
+        let children = || {
+            vec![
+                validation_child("v-slip", "w105.json", 0.01, -0.02),
+                validation_child("v-bad", "collapsed.json", -0.04, -0.03),
+            ]
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = gate_fixture(dir.path(), children(), 0.02);
+        let tolerant = run_audit(&manifest, &dir.path().join("report.json")).unwrap();
+        assert_eq!(tolerant["gates"]["sample"]["rejected"], json!(1));
+        assert_eq!(tolerant["gates"]["sample"]["falseRejections"], json!(0));
+        assert_eq!(
+            paired_row(&tolerant, "v-slip")["sampleRejects"],
+            json!(false)
+        );
+
+        let strict_dir = tempfile::tempdir().unwrap();
+        let manifest = gate_fixture(strict_dir.path(), children(), 0.0);
+        let strict = run_audit(&manifest, &strict_dir.path().join("report.json")).unwrap();
+        assert_eq!(strict["gates"]["sample"]["rejected"], json!(2));
+        assert_eq!(strict["gates"]["sample"]["falseRejections"], json!(1));
+    }
+
+    /// The shuffle control is a real record permutation and the task loss and
+    /// latency are reported per parent and child.
+    #[test]
+    fn shuffle_control_task_loss_and_latency_are_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let manifest = gate_fixture(
+            root,
+            vec![
+                validation_child("v-copy", "copy.json", 0.02, 0.03),
+                validation_child("v-bad", "collapsed.json", -0.04, -0.03),
+            ],
+            0.0,
+        );
+        let value = run_audit(&manifest, &root.join("report.json")).unwrap();
+        let cal = &value["splits"]["calibration"];
+
+        let shuffle: Vec<f64> = cal["parent"]["shuffleControlErrors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        assert_eq!(shuffle.len(), 3);
+        assert!(shuffle.iter().all(|&e| e > 0.0), "{shuffle:?}");
+        assert!(shuffle.windows(2).any(|w| w[0] != w[1]), "{shuffle:?}");
+        let shuffle_mean = shuffle.iter().sum::<f64>() / 3.0;
+
+        // The exact copy has zero error, so its shuffle score is 1 (not null).
+        let copy = child_entry(cal, "cal-copy");
+        assert_eq!(copy["preservationVsShuffle"], json!(1.0));
+        // A child with error has a shuffle score tied to the control errors.
+        let bad = child_entry(cal, "cal-bad");
+        let e_child = bad["outputError"].as_f64().unwrap();
+        let expected = 1.0 - e_child / shuffle_mean;
+        let got = bad["preservationVsShuffle"].as_f64().unwrap();
+        assert!((got - expected).abs() < 1e-12, "{got} vs {expected}");
+
+        // Task loss: target is 0.5 x0 + 0.1 and the identity parent outputs x0.
+        let parent_loss = corpus_mean(40, 0, |x| (x - (0.5 * x + 0.1)).powi(2));
+        let got = cal["parent"]["taskLoss"].as_f64().unwrap();
+        assert!((got - parent_loss).abs() < 1e-6, "{got} vs {parent_loss}");
+        let child_loss = corpus_mean(40, 0, |x| (1.1 * x - (0.5 * x + 0.1)).powi(2));
+        let got = child_entry(cal, "cal-w110")["taskLoss"].as_f64().unwrap();
+        assert!((got - child_loss).abs() < 1e-5, "{got} vs {child_loss}");
+
+        assert!(cal["parent"]["latencyMsPer1kRecords"].as_f64().unwrap() >= 0.0);
+        assert!(copy["latencyMsPer1kRecords"].as_f64().unwrap() >= 0.0);
+    }
+
+    /// θ fitted on a varying calibration corpus, but the validation corpus has
+    /// a constant parent output: no validation child has a score, so the
+    /// preservation gate judged nobody and must not report a 0% rate.
+    #[test]
+    fn constant_parent_validation_leaves_preservation_gate_and_coverage_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let manifest = gate_fixture(
+            root,
+            vec![
+                validation_child("v-slip", "w105.json", 0.01, 0.02),
+                validation_child("v-bad", "collapsed.json", -0.04, -0.03),
+            ],
+            0.0,
+        );
+        // Constant x0 on validation: the identity parent's output is constant.
+        let val = root.join("validation");
+        std::fs::remove_file(val.join("part-000.bin")).unwrap();
+        let records: Vec<(Vec<f32>, Vec<f32>)> = (0..30)
+            .map(|i| (vec![0.3, (i % 7) as f32 / 7.0], vec![0.25]))
+            .collect();
+        write_bin_file(&val.join("part-000.bin"), &records).unwrap();
+
+        let value = run_audit(&manifest, &root.join("report.json")).unwrap();
+
+        assert!(value["threshold"].is_number());
+        let preserved_gate = &value["gates"]["preservation"];
+        assert!(preserved_gate["rejected"].is_null(), "{preserved_gate}");
+        assert!(
+            preserved_gate["falseRejections"].is_null(),
+            "{preserved_gate}"
+        );
+        assert!(
+            preserved_gate["falseRejectionRate"].is_null(),
+            "{preserved_gate}"
+        );
+        assert!(preserved_gate["auc"].is_null(), "{preserved_gate}");
+        assert_eq!(value["coverage"]["calibrationChildrenScored"], json!(3));
+        assert_eq!(value["coverage"]["validationChildrenScored"], json!(0));
+        assert_eq!(value["coverage"]["childrenScored"], json!(3));
+        // The sample gate still judged both children.
+        assert_eq!(value["gates"]["sample"]["rejected"], json!(1));
+        assert_eq!(value["criterion"]["status"], json!("notEvaluable"));
+    }
+
+    /// `--out` naming an input is refused through `run_audit`, before any
+    /// creature is loaded, leaving the input untouched and no `.tmp` behind.
+    #[test]
+    fn run_audit_refuses_an_out_path_that_names_an_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let manifest = fixture(root, false);
+        let inputs = [
+            ("parent", root.join("parent.json")),
+            ("child", root.join("scaled.json")),
+            ("manifest", manifest.clone()),
+        ];
+        for (what, target) in &inputs {
+            let before = std::fs::read(target).unwrap();
+            let err = run_audit(&manifest, target).unwrap_err();
+            assert!(err.contains("would overwrite the input"), "{what}: {err}");
+            assert!(
+                err.contains(target.file_name().unwrap().to_str().unwrap()),
+                "{what}: {err}"
+            );
+            assert_eq!(std::fs::read(target).unwrap(), before, "{what}");
+            let mut tmp = target.as_os_str().to_owned();
+            tmp.push(".tmp");
+            assert!(!Path::new(&tmp).exists(), "{what}");
+        }
+        for corpus in ["calibration", "validation"] {
+            let target = root.join(corpus).join("report.json");
+            let err = run_audit(&manifest, &target).unwrap_err();
+            assert!(err.contains("inside the input corpus"), "{err}");
+            assert!(!target.exists());
+        }
+        assert!(!root.join("report.json").exists());
     }
 
     #[test]
