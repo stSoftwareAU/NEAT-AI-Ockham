@@ -132,8 +132,9 @@ Arms are fixed and reported in this order: `aggregate`, `worst-stratum`,
   `bundleSizes[j % len]`.
 - `archiveCap` (default 8) bounds the Pareto archive.
 - Scorer calls are counted per phase and per (seed, arm). Importance scores one
-  work directory per calibration stratum. The temperature fit scores one
-  directory per arm and temperature, per calibration stratum. Evaluation scores
+  work directory per calibration stratum. The temperature fit writes the fit
+  candidates of every arm and temperature into one work directory and scores it
+  once per calibration stratum. Evaluation scores
   each full-scored bundle on every calibration stratum. Validation scores one
   directory per validation stratum.
 
@@ -354,8 +355,11 @@ The report is camelCase JSON. Its top-level fields are:
 `ockham/examples/strata_pilot.rs` writes synthetic inputs for `bench-strata`: a
 four-input parent with specialist, shared and dead-wood hidden neurons, four
 strata in calibration and validation, and a manifest with seeds 1 to 10. It
-refuses an existing directory and never overwrites one. The commands and the
-pinned scorer are listed in the
+refuses an existing directory and never overwrites one. The inputs of the
+committed run, including the eight `records.bin` corpora, are committed in
+`docs/research/strata-pilot-v1/`. Regenerated targets match them within `3e-7`
+rather than byte for byte, because they pass through the host libm `tanhf`. The
+commands and the pinned scorer are listed in the
 [pilot report](research/strata-pilot-v1/report.md#reproduce). The pilot is
 inconclusive, and that report gives the results and their limits.
 

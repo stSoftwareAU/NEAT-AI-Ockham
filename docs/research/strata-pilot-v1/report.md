@@ -99,6 +99,12 @@ claimed, and no representative negative result is claimed.
 - 208 scorer invocations, from `report.json`: 8 preparation calls
   (`costs.prepScorerCalls`), 160 per-arm calls (4 per seed and arm, summed over
   `runs[].scorerCalls`) and 40 validation calls (`costs.validationScorerCalls`).
+- Preparation is one importance call and one temperature-fit call per
+  calibration stratum (4 + 4), since the fit scores every arm and temperature
+  from one work directory.
+- The fresh rerun described under "Reproduce" spent further scorer calls. Its
+  report was not kept, so its costs are not counted here. Only the committed
+  run's 208 calls are on record.
 - `prepMs` was 35.2. Wall-clock times were taken on a shared host and are
   indicative only. They do not establish a speed-up.
 
@@ -118,10 +124,20 @@ claimed, and no representative negative result is claimed.
 | `val/rare/records.bin` | `f37659fb95b57cbbdccd55fae68e2caaeeb625263b8d1591da485fbd75f1dfb6` |
 | `report.json` (raw output) | `72a49801b90ff8e0f63de912cfc72a65fb47700d63d52349c5fdf0c2b150f369` |
 
-The `.bin` files are not committed. The example regenerates them byte for byte.
-The test `generated_corpora_match_the_committed_record_and_teacher_targets` in
-`ockham/examples/strata_pilot.rs` checks the regenerated `.bin` files against
-the checksums above and the `report.json` identities.
+The eight `records.bin` files are committed beside this report, about 25 KB
+in total, so this directory is the complete set of pilot inputs. The test
+`committed_corpora_match_the_record_and_regenerated_targets` in
+`ockham/examples/strata_pilot.rs` checks them in two ways:
+
+- **Committed bytes:** each committed file's sha256 must equal the value
+  above, and its corpus identity and record count must equal `report.json`.
+- **Regeneration:** inputs must match the example's output exactly, because
+  they use only SHA-256 and f64 arithmetic. Targets may differ by up to `3e-7`,
+  because they pass through the host libm `tanhf`, whose last bits differ
+  between libm builds. On the host that made the record (aarch64, Debian 13,
+  glibc 2.41), the example writes all eight files byte for byte. With an older
+  glibc libm preloaded, targets moved by at most `1.2e-7` (about two ulps), and the
+  checksums of fresh output no longer match. The test still passes on both.
 
 ## Reproduce
 
@@ -135,9 +151,21 @@ cargo build --release --locked -p rust_scorer
 The committed run was made from a working directory holding the generated
 `pilot-v1/` directory (the report's `manifest` echo records
 `pilot-v1/parent.json` and `pilot-v1/cal/...`), with `--out report-v1.json`,
-later committed as `report.json`. From the root of an Ockham checkout, generate
-the inputs in `runs/`, which is gitignored. `pilot-v1` must not already exist,
-because the example refuses it:
+later committed as `report.json`. The committed copy of that directory is this
+one. Its manifest's relative paths resolve inside it, so the exact committed
+inputs can be benchmarked from the root of an Ockham checkout. Write the
+output into `runs/`, which is gitignored. Replace `/path/to/rust_scorer` with
+the built binary's path:
+
+```sh
+mkdir -p runs
+neat_ai_ockham bench-strata docs/research/strata-pilot-v1/manifest.json \
+  --out runs/report-v1.json --scorer /path/to/rust_scorer \
+  --scorer-arg=--gpu --scorer-arg=off --scorer-arg=--cost --scorer-arg=MSE
+```
+
+To regenerate the inputs instead, write them to a new directory. The example
+refuses a directory that already exists:
 
 ```sh
 mkdir -p runs && cd runs
@@ -145,20 +173,10 @@ cargo run --release --manifest-path ../Cargo.toml --example strata_pilot -- pilo
 ```
 
 The generated `manifest.json` and `parent.json` are byte-identical to the
-committed copies, as the checksums above show. The manifest's relative paths
-resolve inside the generated directory. The test
-`two_fresh_directories_are_byte_identical_and_load` in
-`ockham/examples/strata_pilot.rs` checks the committed `manifest.json` and
-`parent.json` against fresh generator output.
-
-Run the benchmark, replacing `/path/to/rust_scorer` with the built binary's
-path:
-
-```sh
-neat_ai_ockham bench-strata pilot-v1/manifest.json \
-  --out report-v1.json --scorer /path/to/rust_scorer \
-  --scorer-arg=--gpu --scorer-arg=off --scorer-arg=--cost --scorer-arg=MSE
-```
+committed copies on any host, because they involve no libm call. The test
+`two_fresh_directories_are_byte_identical_and_load` checks this. The generated
+`.bin` targets match the committed ones only to within the tolerance described
+under "Input checksums".
 
 The run exits 0. The committed `report.json` is the unedited `report-v1.json`
 of the original run, renamed. A fresh rerun, with the same scorer and

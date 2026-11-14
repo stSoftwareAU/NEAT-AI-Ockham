@@ -350,16 +350,42 @@ mod tests {
         assert!(!existing.join("manifest.json").exists());
     }
 
+    /// Read every record of the corpus in `dir` as `(inputs, targets)`.
+    fn read_records(dir: &Path) -> (Vec<Vec<f32>>, Vec<f32>) {
+        let config = TrainingDataConfig::new(4, 1);
+        let mut inputs: Vec<Vec<f32>> = Vec::new();
+        let mut targets: Vec<f32> = Vec::new();
+        for_each_chunk(dir, &config, 16, |chunk| {
+            inputs.extend(
+                chunk
+                    .inputs
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|row| row.to_vec()),
+            );
+            targets.extend_from_slice(chunk.targets);
+            Ok(())
+        })
+        .unwrap();
+        (inputs, targets)
+    }
+
+    /// Largest difference allowed between a committed target and one computed
+    /// on this host. Targets go through the host libm `tanhf`, whose last bits
+    /// differ between libm builds. Every target is below 1.0 in magnitude, and
+    /// an older glibc libm moved them by at most 1.2e-7 (about two ulps). In every
+    /// stratum the largest teacher-versus-parent gap is at least 1.79e-6, above
+    /// the 4 x TARGET_TOLERANCE (1.2e-6) the test requires.
+    const TARGET_TOLERANCE: f32 = 3e-7;
+
     #[test]
-    fn generated_corpora_match_the_committed_record_and_teacher_targets() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("pilot");
-        write(&dir).unwrap();
+    fn committed_corpora_match_the_record_and_regenerated_targets() {
         let committed =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/research/strata-pilot-v1");
         let config = TrainingDataConfig::new(4, 1);
 
-        // (a) Each regenerated records.bin matches its checksum in report.md.
+        // (a) Each committed records.bin has the sha256 that report.md gives it.
         let report_md = std::fs::read_to_string(committed.join("report.md")).unwrap();
         for (split_dir, _) in SPLITS {
             for name in STRATA {
@@ -372,16 +398,37 @@ mod tests {
                     .split('`')
                     .next()
                     .unwrap();
-                let bytes = std::fs::read(dir.join(&file)).unwrap();
+                let bytes = std::fs::read(committed.join(&file)).unwrap();
                 let actual: String = Sha256::digest(&bytes)
                     .iter()
                     .map(|byte| format!("{byte:02x}"))
                     .collect();
-                assert_eq!(actual, expected, "{file} sha256 differs from report.md");
+                assert_eq!(
+                    actual, expected,
+                    "committed {file} sha256 differs from report.md"
+                );
             }
         }
 
-        // (b) report.json names the same corpora by identity and record count.
+        // The committed manifest resolves to exactly these committed corpora.
+        let loaded = load(&committed.join("manifest.json")).unwrap();
+        for (split_dir, strata) in [
+            ("cal", &loaded.manifest.calibration),
+            ("val", &loaded.manifest.validation),
+        ] {
+            let names: Vec<&str> = strata.iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(names, STRATA, "committed manifest {split_dir} strata");
+            for stratum in strata.iter() {
+                assert_eq!(
+                    std::fs::canonicalize(&stratum.dir).unwrap(),
+                    std::fs::canonicalize(committed.join(split_dir).join(&stratum.name)).unwrap(),
+                    "committed manifest {split_dir}/{} resolves elsewhere",
+                    stratum.name
+                );
+            }
+        }
+
+        // (b) report.json names the committed corpora by identity and record count.
         let report_text = std::fs::read_to_string(committed.join("report.json")).unwrap();
         let report: serde_json::Value = serde_json::from_str(&report_text).unwrap();
         for (split_dir, key) in [("cal", "calibration"), ("val", "validation")] {
@@ -393,7 +440,7 @@ mod tests {
                     .iter()
                     .find(|e| e["name"].as_str() == Some(*name))
                     .unwrap_or_else(|| panic!("report.json versions.{key} has no '{name}'"));
-                let info = corpus_info(&dir.join(split_dir).join(name), &config).unwrap();
+                let info = corpus_info(&committed.join(split_dir).join(name), &config).unwrap();
                 assert_eq!(
                     info.identity,
                     entry["identity"].as_str().unwrap(),
@@ -411,31 +458,39 @@ mod tests {
             }
         }
 
-        // (c) Read every record back and check its input and target semantically.
+        // (c) The generator still writes the committed records: inputs exactly
+        // (they use no libm call), targets within TARGET_TOLERANCE.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pilot");
+        write(&dir).unwrap();
         let mut teacher = compile_creature(&teacher_of(&parent_creature())).unwrap();
         let mut parent_net = compile_creature(&parent_creature()).unwrap();
-        for (split_dir, _) in SPLITS {
+        for (split_dir, split) in SPLITS {
             for (stratum, name) in STRATA.iter().enumerate() {
                 let label = format!("{split_dir}/{name}");
-                let mut inputs: Vec<Vec<f32>> = Vec::new();
-                let mut targets: Vec<f32> = Vec::new();
-                let visited =
-                    for_each_chunk(&dir.join(split_dir).join(name), &config, 16, |chunk| {
-                        inputs.extend(
-                            chunk
-                                .inputs
-                                .as_chunks::<4>()
-                                .0
-                                .iter()
-                                .map(|row| row.to_vec()),
-                        );
-                        targets.extend_from_slice(chunk.targets);
-                        Ok(())
-                    })
-                    .unwrap();
-                assert_eq!(visited, RECORDS[stratum] as u64, "{label} record count");
+                let (inputs, targets) = read_records(&committed.join(split_dir).join(name));
+                let (fresh_inputs, fresh_targets) = read_records(&dir.join(split_dir).join(name));
                 assert_eq!(inputs.len(), RECORDS[stratum], "{label} input rows");
                 assert_eq!(targets.len(), RECORDS[stratum], "{label} target rows");
+                assert_eq!(fresh_inputs, inputs, "{label}: regenerated inputs differ");
+                for (row, input) in inputs.iter().enumerate() {
+                    assert_eq!(
+                        *input,
+                        record_input(stratum, split, row),
+                        "{label}: row {row} input"
+                    );
+                }
+                assert_eq!(
+                    fresh_targets.len(),
+                    targets.len(),
+                    "{label} regenerated rows"
+                );
+                for (row, (&fresh, &target)) in fresh_targets.iter().zip(&targets).enumerate() {
+                    assert!(
+                        (fresh - target).abs() <= TARGET_TOLERANCE,
+                        "{label}: row {row} regenerated target {fresh} differs from committed {target}"
+                    );
+                }
 
                 let mut max_abs = [0f32; 4];
                 for input in &inputs {
@@ -457,20 +512,21 @@ mod tests {
                     }
                 }
 
+                // Committed targets are the teacher's outputs, and clearly not the parent's.
+                let mut largest_parent_gap = 0f32;
                 for (input, &target) in inputs.iter().zip(&targets) {
-                    let expected = teacher.activate(input, 1);
-                    assert_eq!(
-                        target, expected[0],
-                        "{label}: target is not the teacher's output for input {input:?}"
+                    let expected = teacher.activate(input, 1)[0];
+                    assert!(
+                        (target - expected).abs() <= TARGET_TOLERANCE,
+                        "{label}: target {target} is not the teacher's output {expected} for input {input:?}"
                     );
+                    let gap = (parent_net.activate(input, 1)[0] - target).abs();
+                    largest_parent_gap = largest_parent_gap.max(gap);
                 }
-                let differs = inputs
-                    .iter()
-                    .zip(&targets)
-                    .any(|(input, &target)| parent_net.activate(input, 1)[0] != target);
                 assert!(
-                    differs,
-                    "{label}: no target differs from the unmodified parent's output"
+                    largest_parent_gap > 4.0 * TARGET_TOLERANCE,
+                    "{label}: no target differs from the unmodified parent's output by more than \
+                     4 x TARGET_TOLERANCE (largest gap {largest_parent_gap})"
                 );
             }
         }
