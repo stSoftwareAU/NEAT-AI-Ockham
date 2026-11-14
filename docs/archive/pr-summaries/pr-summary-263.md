@@ -13,8 +13,12 @@ a machine-readable report with paired distributions, bootstrap intervals,
 failures, coverage and costs. Ordinary runs, defaults and interfaces are
 unchanged.
 
-No representative run has been made, and the paper's full method could not be
-retrieved, so this is the harness only. Part of #263.
+No representative run has been made, and the paper's full text could not be
+retrieved, so this is the harness only. Search-index excerpts name the paper
+(SliMOO, arXiv:2610.27812v1). `docs/strata-experiment.md` records those
+excerpts as unverified, the ways this bench departs from them, and the
+negative findings so far. The report's `method.source` says the same.
+Part of #263.
 
 ## Spec
 
@@ -58,8 +62,13 @@ retrieved, so this is the harness only. Part of #263.
 ### Undiscoverable Facts
 
 - arXiv:2610.27812 could not be fetched in this run (`proxy refused the
-  connection`). The method reproduces the issue's own formula, and the report's
-  `method.source` and the docs say so.
+  connection`). On 2026-11-14 that was retried for the abs and HTML pages,
+  OpenReview and Papers with Code, and every fetch was refused. Web-search
+  excerpts name the paper *SliMOO* (v1, submitted 2026-10-20). They describe a
+  max-over-tasks prior, NSGA-II, a τ adapted from hypervolume progress, and a
+  final pick by hypervolume contribution. All of this is unverified. The bench
+  reproduces the issue's own formula; the docs list the deviations, and so
+  does the report's `method.source`.
 - No `rust_scorer` binary or private elite corpora were available, so every
   end-to-end run uses an in-test scorer. That scorer follows `rust_scorer`'s
   directory-mode contract (`ockham/src/scorer.rs` module doc).
@@ -85,9 +94,10 @@ flowchart LR
     V --> R[report JSON]
 ```
 
-- `./quality.sh < /dev/null` ran on head `92c4812`: `All quality checks
-  passed!` (exit 0).
-- `ockham/tests/strata_bench.rs`: 7 passed. On the trap fixture (one neuron is
+- `./quality.sh < /dev/null` ran on the working tree that this summary's
+  commit records: `All quality checks passed!` (exit 0).
+- `ockham/tests/strata_bench.rs`: 7 passed; the `strata::` module tests: 58
+  passed. On the trap fixture (one neuron is
   costly only on the small `rare` stratum), aggregate has 5 minority
   regressions and worst-stratum 0, so the worst-stratum criterion is met. With
   uniform costs it is not met.
@@ -114,12 +124,12 @@ flowchart LR
 - **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance. No automatic deployment or default change — evidence: separate `bench-strata` subcommand; e2e parent-bytes check — reviewer: met
 - **met** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria — evidence: manifest `seeds`, `fitSeed`, `bundlesPerArm`, `paretoCandidates`, `statsRecords`, `success`; `criteria` in the report — reviewer: met
 - **met** — Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs — evidence: `versions` (`ockhamVersion`, `neatCoreSource`, `scorerIdentity`, `parentChecksum`, `manifestSha256`, per-stratum corpus identities); `costs.prepMs` now includes the parent latency probe — reviewer: partial — reason: the missing core version and the uncounted parent probe were fixed in `92c4812`
-- **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks — evidence: `ockham/tests/strata_bench.rs` (7) plus 57 module tests; `./quality.sh` passed on `92c4812` — reviewer: met
+- **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks — evidence: `ockham/tests/strata_bench.rs` (7) plus 58 module tests; `./quality.sh` passed on the final working tree — reviewer: met
 - **met** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage — evidence: `report.rs` `paired` with seeded bootstrap `ci95`, `failures`, `coverage` — reviewer: partial — reason: the reproducibility gap (Pareto membership depended on wall-clock latency) was fixed in `92c4812`
-- **missing** — Fixtures alone do not demonstrate an optimisation benefit — reviewer: met — reason: the code labels the report correctly, but no representative run exists, so no benefit (or lack of one) is shown yet
-- **missing** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs — reviewer: partial — reason: no success is claimed, but there is no representative-run finding to record or act on yet; that needs private corpora and the real scorer
+- **met** — Fixtures alone do not demonstrate an optimisation benefit — evidence: `ockham/tests/strata_bench.rs::end_to_end_worst_stratum_avoids_the_minority_regression_that_aggregate_walks_into` asserts that the on-disk report's `evidence` starts `fixture-or-unreviewed` and says `not a claim`; the Status section of `docs/strata-experiment.md` says the fixture results test the mechanics only — reviewer: met
+- **partial** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs — evidence: the Status section of `docs/strata-experiment.md` records three negative findings: no benefit is shown, no representative run was possible, and the method is not pinned. It also says removal is undecided — reviewer: partial — reason: no success is claimed and the findings are recorded, but deciding whether to remove the code needs a representative run, which needs `rust_scorer` and private corpora that this host does not have
 - **met** — Keep public implementation and fixtures application-agnostic — evidence: generic stratum and neuron names, no private data — reviewer: met
-- **missing** — Read and pin the full method before reproducing it — reviewer: missing — reason: arXiv:2610.27812 could not be fetched here (proxy refused the connection); the issue's formula is reproduced and the gap is stated in the report
+- **missing** — Read and pin the full method before reproducing it — evidence: the "Source paper (full text unread)" section of `docs/strata-experiment.md`; `METHOD_SOURCE` in `ockham/src/strata/bench.rs`, tested by `method_source_names_the_paper_version_and_its_deviations` — reviewer: missing — reason: the full text is still unread, because every fetch was refused on 2026-11-14. The version and the method notes come from unverified search excerpts, with their provenance and the deviations recorded. The bench reproduces the issue's formula, not the paper
 - **unrequested** — `random` uniform negative-control arm and its paired rows — reviewer: unrequested — reason: a predeclared control the issue asks for
 - **unrequested** — Pareto candidates alternate the aggregate and worst-stratum samplers — reviewer: unrequested — reason: the issue does not say how Pareto candidates are drawn; alternating keeps the archive from inheriting one statistic
 - **unrequested** — `regressedStrata` per-run count — reviewer: unrequested — reason: shows regressions outside the minority stratum next to the requested minority metric
@@ -145,6 +155,11 @@ flowchart LR
   - `scorer_failure_names_its_stage_and_removes_the_scratch_directory`
   - `bench_strata_help_lists_its_flags`
   - `bench_strata_names_a_missing_manifest_and_exits_non_zero`
+- The e2e test also asserts the on-disk report's `evidence` caveat and that
+  `method.source` names `arXiv:2610.27812v1`.
+- Added the unit test
+  `bench.rs::method_source_names_the_paper_version_and_its_deviations`. It
+  fails against the old `method.source` string.
 - The e2e test has positive controls showing that the Pareto selection branch
   runs and that at least one seed archives two or more wins.
 - Added module tests: `ockham/src/strata/manifest.rs` covers every refusal,
@@ -152,7 +167,7 @@ flowchart LR
   `pareto.rs`, `report.rs` and `bench.rs`.
 - Edited `ockham/tests/readme_contract.rs`: `SUBCOMMANDS` gains
   `bench-strata`. No assertion was removed.
-- `./quality.sh < /dev/null` on `92c4812`: passed (`All quality checks
-  passed!`).
+- `./quality.sh < /dev/null` on the final working tree: passed (`All quality
+  checks passed!`).
 - Not run: any run with the real `rust_scorer` or on representative data (both
   unavailable here). Wall-clock latency and `winsPerHour` are never asserted.

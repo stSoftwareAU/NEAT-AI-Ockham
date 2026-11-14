@@ -1148,9 +1148,21 @@ fn criteria_rows(arms: &[ArmSummary], m: &Manifest) -> Vec<Criterion> {
         .collect()
 }
 
+/// The paper the issue cites. Its full text was never read; even its version
+/// comes from search-index excerpts. The method notes come from unverified search-index
+/// excerpts, so this bench reproduces the issue's formula, not the paper's
+/// method, and lists where it departs from those excerpts.
+const METHOD_SOURCE: &str = "arXiv:2610.27812v1 (version, title and method notes per unverified search-index excerpts; full text not retrieved). \
+The excerpts name it (SliMOO, submitted 2026-10-20). \
+This reproduces the issue's formula. \
+Excerpts, unverified, describe: single-unit removal probing per task and a max-over-tasks prior. \
+Deviations from the excerpts: neurons not transformer layers; fixed fitSeed temperature grid, not tau adapted from hypervolume progress; \
+bounded archive on worst-stratum loss, synapses and latency, not NSGA-II on per-task losses; \
+lowest-loss selection, not hypervolume contribution; no mixed random initial population";
+
 fn method() -> Method {
     Method {
-        source: "arXiv:2610.27812 (abstract only; full method not retrieved — this reproduces the issue's formula)".into(),
+        source: METHOD_SOURCE.into(),
         importance: "I[t][i] = baseline score minus the score with neuron i removed alone (core prune, step-2 mean), per calibration stratum".into(),
         scales: "s_t = median over measured neurons of |I[t][i]|; 1.0 when that median is not above 1e-12; N = I / s".into(),
         statistics: "aggregate a_i = sum_t w_t N[t][i] with calibration record weights; worst m_i = max_t N[t][i]".into(),
@@ -1196,6 +1208,16 @@ mod tests {
         let source = neat_core_source().expect("the workspace lock names neat-core");
         assert!(source.contains("NEAT-AI-core"), "{source}");
         assert!(source.contains("tag="), "{source}");
+    }
+
+    #[test]
+    fn method_source_names_the_paper_version_and_its_deviations() {
+        let source = method().source;
+        assert!(source.contains("arXiv:2610.27812v1"), "{source}");
+        assert!(source.contains("full text not retrieved"), "{source}");
+        for deviation in ["hypervolume", "NSGA-II", "issue's formula"] {
+            assert!(source.contains(deviation), "{deviation}: {source}");
+        }
     }
 
     #[test]

@@ -12,13 +12,61 @@ others while barely moving the average. Ordering cuts by their worst-stratum
 importance, rather than their aggregate importance, might protect the weakest
 stratum. The idea came from the 23 October research shortlist.
 
-The source is arXiv:2610.27812. Only its abstract was available during the
-audit, so the full method was not retrieved in this implementation. The
-sampler reproduces the formula from the issue instead:
+The sampler reproduces the formula from the issue:
 
 ```text
 p_i ∝ exp(−max_t I[t,i] / temperature)
 ```
+
+### Source paper (full text unread)
+
+The issue cites arXiv:2610.27812. According to search-index excerpts, version
+1 is *SliMOO: Interpretable Multi-Objective Evolutionary Search for LLM Depth
+Pruning* (Guanchen Li, Yixing Xu, Xuanwu Yin, Dong Li, Emad Barsoum; cs.LG;
+submitted 2026-10-20). The issue's own audit had only the abstract.
+
+**The full text has not been read, so the method is not pinned.** On
+2026-11-14 the implementation host's proxy refused every fetch of
+`arxiv.org/abs/2610.27812`, `arxiv.org/html/2610.27812v1`, OpenReview and
+Papers with Code. The notes below come only from web-search result excerpts,
+read that day for queries naming `2610.27812`, SliMOO, TLIP and NSGA-II. They
+are unverified and may be wrong. Read the paper before relying on them, and
+before any reproduction of its method.
+
+The excerpts describe these steps:
+
+- **Probing.** Task-layer importance profiling removes one layer or sublayer
+  at a time and records the loss on each task. The result is a task-by-layer
+  importance map `I[t,i]`.
+- **Prior.** A balanced prior `Î_i = max_t I[t,i]` guides the search. This is
+  the statistic this bench calls worst-stratum.
+- **Search.** NSGA-II runs over pruning masks at a fixed target sparsity. Its
+  initial population mixes prior-guided samples with random feasible masks.
+  Each candidate is scored by its deviation from the dense model on every task
+  (a vector objective), and kept or dropped by NSGA-II environmental
+  selection. The prior narrows exploration. It never stands in for a measured
+  score.
+- **Temperature.** `τ` adapts to population hypervolume progress. It decays
+  after an improvement and rises after stagnation.
+- **Final pick.** The final mask is chosen by its hypervolume contribution.
+
+Where those unverified excerpts differ from this bench, the bench is listed
+as departing. Each row describes this bench's choice. It does not confirm what
+the paper does:
+
+| Paper (unverified excerpts) | This bench |
+| --- | --- |
+| units are transformer layers or sublayers | units are hidden neurons, cut through core's canonical prune |
+| `τ` adapted from hypervolume progress | one `τ` per arm, fitted once from a grid on `fitSeed` calibration bundles |
+| NSGA-II over per-task losses | a bounded non-dominated archive on worst-stratum loss, synapses and latency |
+| final mask by hypervolume contribution | lowest-loss archived win |
+| initial population mixes guided and random masks | separate arms: guided samplers and a uniform `random` control |
+| fixed target sparsity | fixed bundle sizes (`bundleSizes`) |
+
+The excerpts give no population size, generation count or exact `τ`
+schedule, and none is reproduced here. The report's `method.source` field
+records the version, says the full text was not retrieved, and lists these
+deviations.
 
 The statistic is scale-normalised per stratum, so strata with different
 effect sizes are comparable: `N[t][i] = I[t][i] / s_t`, not raw `I`.
@@ -288,6 +336,19 @@ No representative run has been made. The fixtures do not demonstrate a
 benefit, and the report's `evidence` field says so. Any optimisation claim
 needs representative corpora, which this repository does not hold.
 
-Negative findings are recorded in this section. If a representative run shows
-that worst-stratum ordering does not earn its keep, the code is removed rather
-than kept as an option.
+Negative findings so far, from the implementation run on 2026-11-14:
+
+- **No benefit is shown.** The only end-to-end runs use the fixture scorer in
+  `ockham/tests/strata_bench.rs`. Its trap fixture is built so that
+  worst-stratum wins, and with uniform costs the criterion is not met. Both
+  results test the mechanics only. They are not evidence of a benefit.
+- **No representative run was possible.** The host had no `rust_scorer`
+  binary and no private corpora.
+- **The method is not pinned.** The source paper's full text could not be
+  fetched (see "Source paper" above). The bench reproduces the issue's
+  formula, and several parts differ from the paper's excerpts.
+
+Removal has not been decided, because there is no representative result to
+base it on. If a representative run shows that worst-stratum ordering does not
+earn its keep, remove the code rather than keep it as an option. Record that
+result in this section.

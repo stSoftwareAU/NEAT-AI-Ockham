@@ -364,6 +364,13 @@ fn end_to_end_worst_stratum_avoids_the_minority_regression_that_aggregate_walks_
     // The report is on disk, under the documented schema.
     let on_disk: Value = serde_json::from_slice(&std::fs::read(fx.report()).unwrap()).unwrap();
     assert_eq!(on_disk["schema"], "ockham-strata-bench/1");
+    // A fixture run carries the caveat that it is data, not a benefit claim,
+    // and names the paper version it does not reproduce.
+    let evidence = on_disk["evidence"].as_str().expect("evidence is a string");
+    assert!(evidence.starts_with("fixture-or-unreviewed"), "{evidence}");
+    assert!(evidence.contains("not a claim"), "{evidence}");
+    let source = on_disk["method"]["source"].as_str().expect("method.source");
+    assert!(source.contains("arXiv:2610.27812v1"), "{source}");
 
     // Every arm on every seed, in report order.
     let arms: Vec<&str> = report.runs.iter().map(|r| r.arm.as_str()).collect();
