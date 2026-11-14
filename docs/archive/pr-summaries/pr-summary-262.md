@@ -39,6 +39,12 @@ representative controlled comparison remains unperformed. Part of #262.
   identified locally. Actual coverage is zero representative creatures/pairs.
 - The historical paper/method pin and reference-source checksums remain in the
   protocol/manifests. No raw-paper checksum is claimed.
+- An earlier attempt raised no PR because the Vibe Coder pre-push gate
+  blocked it, not because of a branch defect. Because the branch adds a `.sh`
+  file, the gate runs `ci.yml`'s runlib refresh step outside Actions, without
+  its `env:` block. In this run, `runAffectedShellcheckChecks` failed on
+  `RUNNER_TEMP: unbound variable` with that script changed, and passed with
+  `README.md` changed.
 
 ## Evidence
 
@@ -131,6 +137,8 @@ representative controlled comparison remains unperformed. Part of #262.
 - `NEAT_SCORER_BIN=/var/tmp/vibe-cargo-target/NEAT-AI-scorer-560c793c/release/rust_scorer ./quality.sh < /dev/null`:
   passed, including shellcheck, codespell, markdownlint, actionlint,
   cargo-deny, formatting, clippy, workspace tests and rustdoc.
+- Retry run: `./quality.sh < /dev/null` re-run on the unchanged code at
+  `03cdc00` without `NEAT_SCORER_BIN` set: exit 0, "All quality checks passed!".
 - Historical replay against that real scorer: exit 0, all 20 families complete,
   no failures, matched declared costs and zero representative coverage.
   Full-output hashes, uncertainty arithmetic and evidence links were verified.
