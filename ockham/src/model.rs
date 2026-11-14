@@ -375,7 +375,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 ///
 /// `0.5` when either class is empty — no evidence of ranking skill either way,
 /// which is exactly what a one-class holdout carries.
-fn auc(wins: &[f64], losses: &[f64]) -> f64 {
+pub(crate) fn auc(wins: &[f64], losses: &[f64]) -> f64 {
     if wins.is_empty() || losses.is_empty() {
         return 0.5;
     }
