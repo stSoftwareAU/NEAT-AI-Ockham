@@ -1,0 +1,247 @@
+{
+  "formatVersion": 1,
+  "protocol": "ockham-ranking-v1",
+  "codeRevision": "0000000000000000000000000000000000000000",
+  "scorer": "/private/ordering/rust_scorer",
+  "scorerSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "scorerArgs": [
+    "--gpu",
+    "off"
+  ],
+  "historicalCutoffUnix": 1794500000,
+  "seeds": [
+    7,
+    19,
+    43,
+    71,
+    101
+  ],
+  "pilotVisits": 8,
+  "auditVisitsCeiling": 128,
+  "minimumCompletePool": 40,
+  "minimumIndependentGroups": 6,
+  "maxTaskMs": 600000,
+  "maxRunMs": 3600000,
+  "scorerTimeoutSecs": 30,
+  "statsRecords": 16384,
+  "maxCorpusBytes": 100000000000,
+  "evaluationBudgets": [
+    5,
+    10,
+    20
+  ],
+  "calibrationBudgets": [
+    0,
+    8,
+    32
+  ],
+  "historyFractions": [
+    0.0,
+    0.1,
+    0.5,
+    1.0
+  ],
+  "fit": {
+    "epochs": 200,
+    "learningRate": 0.1,
+    "l2": 0.001,
+    "maxPairs": 1024
+  },
+  "bootstrapReplicates": 2000,
+  "minimumRecallGain": 0.05,
+  "maximumFalseRejection": 0.1,
+  "maximumCostRatio": 1.0,
+  "minimumImprovement": 1e-06,
+  "tasks": [
+    {
+      "id": "source-1",
+      "family": "source-a",
+      "lineage": "lineage-1",
+      "corpusVersion": "corpus-task-version-1",
+      "split": "source",
+      "parent": "/private/ordering/source-1/parent.json",
+      "parentSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+      "corpus": "/private/ordering/source-1/corpus",
+      "corpusSha256": "0000000000000000000000000000000000000000000000000000000000000065",
+      "corpusIdentity": "corpus-1",
+      "history": {
+        "path": "/private/ordering/source-1/candidates.jsonl",
+        "sha256": "00000000000000000000000000000000000000000000000000000000000000c9",
+        "acquisitionMs": 0
+      }
+    },
+    {
+      "id": "source-2",
+      "family": "source-b",
+      "lineage": "lineage-2",
+      "corpusVersion": "corpus-task-version-2",
+      "split": "source",
+      "parent": "/private/ordering/source-2/parent.json",
+      "parentSha256": "0000000000000000000000000000000000000000000000000000000000000002",
+      "corpus": "/private/ordering/source-2/corpus",
+      "corpusSha256": "0000000000000000000000000000000000000000000000000000000000000066",
+      "corpusIdentity": "corpus-2",
+      "history": {
+        "path": "/private/ordering/source-2/candidates.jsonl",
+        "sha256": "00000000000000000000000000000000000000000000000000000000000000ca",
+        "acquisitionMs": 0
+      }
+    },
+    {
+      "id": "calibration-1",
+      "family": "target-1",
+      "lineage": "lineage-3",
+      "corpusVersion": "corpus-task-version-3",
+      "split": "calibration",
+      "parent": "/private/ordering/calibration-1/parent.json",
+      "parentSha256": "0000000000000000000000000000000000000000000000000000000000000003",
+      "corpus": "/private/ordering/calibration-1/corpus",
+      "corpusSha256": "0000000000000000000000000000000000000000000000000000000000000067",
+      "corpusIdentity": "corpus-3",
+      "history": null
+    },
+    {
+      "id": "calibration-2",
+      "family": "target-2",
+      "lineage": "lineage-4",
+      "corpusVersion": "corpus-task-version-4",
+      "split": "calibration",
+      "parent": "/private/ordering/calibration-2/parent.json",
+      "parentSha256": "0000000000000000000000000000000000000000000000000000000000000004",
+      "corpus": "/private/ordering/calibration-2/corpus",
+      "corpusSha256": "0000000000000000000000000000000000000000000000000000000000000068",
+      "corpusIdentity": "corpus-4",
+      "history": null
+    },
+    {
+      "id": "calibration-3",
+      "family": "target-3",
+      "lineage": "lineage-5",
+      "corpusVersion": "corpus-task-version-5",
+      "split": "calibration",
+      "parent": "/private/ordering/calibration-3/parent.json",
+      "parentSha256": "0000000000000000000000000000000000000000000000000000000000000005",
+      "corpus": "/private/ordering/calibration-3/corpus",
+      "corpusSha256": "0000000000000000000000000000000000000000000000000000000000000069",
+      "corpusIdentity": "corpus-5",
+      "history": null
+    },
+    {
+      "id": "calibration-4",
+      "family": "target-4",
+      "lineage": "lineage-6",
+      "corpusVersion": "corpus-task-version-6",
+      "split": "calibration",
+      "parent": "/private/ordering/calibration-4/parent.json",
+      "parentSha256": "0000000000000000000000000000000000000000000000000000000000000006",
+      "corpus": "/private/ordering/calibration-4/corpus",
+      "corpusSha256": "000000000000000000000000000000000000000000000000000000000000006a",
+      "corpusIdentity": "corpus-6",
+      "history": null
+    },
+    {
+      "id": "calibration-5",
+      "family": "target-5",
+      "lineage": "lineage-7",
+      "corpusVersion": "corpus-task-version-7",
+      "split": "calibration",
+      "parent": "/private/ordering/calibration-5/parent.json",
+      "parentSha256": "0000000000000000000000000000000000000000000000000000000000000007",
+      "corpus": "/private/ordering/calibration-5/corpus",
+      "corpusSha256": "000000000000000000000000000000000000000000000000000000000000006b",
+      "corpusIdentity": "corpus-7",
+      "history": null
+    },
+    {
+      "id": "calibration-6",
+      "family": "target-6",
+      "lineage": "lineage-8",
+      "corpusVersion": "corpus-task-version-8",
+      "split": "calibration",
+      "parent": "/private/ordering/calibration-6/parent.json",
+      "parentSha256": "0000000000000000000000000000000000000000000000000000000000000008",
+      "corpus": "/private/ordering/calibration-6/corpus",
+      "corpusSha256": "000000000000000000000000000000000000000000000000000000000000006c",
+      "corpusIdentity": "corpus-8",
+      "history": null
+    },
+    {
+      "id": "validation-1",
+      "family": "target-1",
+      "lineage": "lineage-9",
+      "corpusVersion": "corpus-task-version-9",
+      "split": "validation",
+      "parent": "/private/ordering/validation-1/parent.json",
+      "parentSha256": "0000000000000000000000000000000000000000000000000000000000000009",
+      "corpus": "/private/ordering/validation-1/corpus",
+      "corpusSha256": "000000000000000000000000000000000000000000000000000000000000006d",
+      "corpusIdentity": "corpus-9",
+      "history": null
+    },
+    {
+      "id": "validation-2",
+      "family": "target-2",
+      "lineage": "lineage-10",
+      "corpusVersion": "corpus-task-version-10",
+      "split": "validation",
+      "parent": "/private/ordering/validation-2/parent.json",
+      "parentSha256": "000000000000000000000000000000000000000000000000000000000000000a",
+      "corpus": "/private/ordering/validation-2/corpus",
+      "corpusSha256": "000000000000000000000000000000000000000000000000000000000000006e",
+      "corpusIdentity": "corpus-10",
+      "history": null
+    },
+    {
+      "id": "validation-3",
+      "family": "target-3",
+      "lineage": "lineage-11",
+      "corpusVersion": "corpus-task-version-11",
+      "split": "validation",
+      "parent": "/private/ordering/validation-3/parent.json",
+      "parentSha256": "000000000000000000000000000000000000000000000000000000000000000b",
+      "corpus": "/private/ordering/validation-3/corpus",
+      "corpusSha256": "000000000000000000000000000000000000000000000000000000000000006f",
+      "corpusIdentity": "corpus-11",
+      "history": null
+    },
+    {
+      "id": "validation-4",
+      "family": "target-4",
+      "lineage": "lineage-12",
+      "corpusVersion": "corpus-task-version-12",
+      "split": "validation",
+      "parent": "/private/ordering/validation-4/parent.json",
+      "parentSha256": "000000000000000000000000000000000000000000000000000000000000000c",
+      "corpus": "/private/ordering/validation-4/corpus",
+      "corpusSha256": "0000000000000000000000000000000000000000000000000000000000000070",
+      "corpusIdentity": "corpus-12",
+      "history": null
+    },
+    {
+      "id": "validation-5",
+      "family": "target-5",
+      "lineage": "lineage-13",
+      "corpusVersion": "corpus-task-version-13",
+      "split": "validation",
+      "parent": "/private/ordering/validation-5/parent.json",
+      "parentSha256": "000000000000000000000000000000000000000000000000000000000000000d",
+      "corpus": "/private/ordering/validation-5/corpus",
+      "corpusSha256": "0000000000000000000000000000000000000000000000000000000000000071",
+      "corpusIdentity": "corpus-13",
+      "history": null
+    },
+    {
+      "id": "validation-6",
+      "family": "target-6",
+      "lineage": "lineage-14",
+      "corpusVersion": "corpus-task-version-14",
+      "split": "validation",
+      "parent": "/private/ordering/validation-6/parent.json",
+      "parentSha256": "000000000000000000000000000000000000000000000000000000000000000e",
+      "corpus": "/private/ordering/validation-6/corpus",
+      "corpusSha256": "0000000000000000000000000000000000000000000000000000000000000072",
+      "corpusIdentity": "corpus-14",
+      "history": null
+    }
+  ]
+}

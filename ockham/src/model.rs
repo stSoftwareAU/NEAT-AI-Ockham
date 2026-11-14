@@ -11,6 +11,10 @@
 //! the same rows and the same hyper-parameters produce the same model on every
 //! host and every rerun.
 //!
+//! The opt-in research harness also uses [`pairwise`] for within-task score
+//! comparisons and historical adaptation. Its result format is separate from
+//! the pointwise model loaded by ordinary ordering.
+//!
 //! **The model only ranks.** It decides which neuron is tested sooner and
 //! nothing else: every candidate it promotes still passes `creature.validate()`,
 //! the sampled screen and full-corpus scoring, and only that scorer accepts a
@@ -20,6 +24,9 @@
 //! whose feature names differ from [`crate::features::FEATURE_NAMES`] is
 //! **refused at load**, rather than read column-by-column against a schema that
 //! has since moved.
+
+/// Pairwise logistic fits for the opt-in controlled ordering experiment.
+pub mod pairwise;
 
 use std::path::Path;
 

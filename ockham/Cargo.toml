@@ -1,6 +1,6 @@
 [package]
 name = "neat_ai_ockham"
-version = "0.1.93"
+version = "0.1.94"
 edition = "2024"
 # NEAT-AI family Rust floor (NEAT-AI-core#747): keep equal to the
 # rust-toolchain.toml pin, so CI builds at the declared minimum and a newer
@@ -42,3 +42,9 @@ signal-hook = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+
+# Run the opt-in protocol's deterministic contracts in the normal gate; real
+# scorer/corpus experiments remain explicit commands.
+[[example]]
+name = "priority_ordering_bench"
+test = true

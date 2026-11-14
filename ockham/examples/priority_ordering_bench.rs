@@ -26,6 +26,9 @@
 //! through the real [`prune_hidden_neuron`], recursive cleanup and all, and what that
 //! transform actually removes is what is summed.
 
+#[path = "priority_ordering_bench/experiment.rs"]
+mod experiment;
+
 use std::time::Instant;
 
 use neat_ai_ockham::features::{CandidateFeatures, PriorEvidence};
@@ -285,6 +288,13 @@ fn history(
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--experiment") {
+        if let Err(error) = experiment::main() {
+            eprintln!("ordering experiment failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     const INPUTS: usize = 6;
     const LONE: usize = 1_500;
     const CHAINS: usize = 150;

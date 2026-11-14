@@ -137,37 +137,36 @@ impl ExternalScorer {
             extra_args: Vec::new(),
         }
     }
-}
 
-/// Parse scorer stdout; every entry must be finite and `baseline` must exist.
-pub fn parse_scorer_output(stdout: &str) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
-    let parsed: BTreeMap<String, ScoreResult> =
-        serde_json::from_str(stdout.trim()).map_err(|e| ScorerError::Malformed(e.to_string()))?;
-    if !parsed.contains_key("baseline") {
-        return Err(ScorerError::MissingBaseline);
-    }
-    check_finite(&parsed)?;
-    Ok(parsed)
-}
-
-/// Reject any non-finite score or error.
-pub fn check_finite(results: &BTreeMap<String, ScoreResult>) -> Result<(), ScorerError> {
-    for (key, value) in results {
-        if !value.score.is_finite() || !value.error.is_finite() {
-            return Err(ScorerError::NonFinite(key.clone()));
-        }
-    }
-    Ok(())
-}
-
-impl DirectoryScorer for ExternalScorer {
-    fn score_directory(
+    /// Run through an explicitly selected `timeout`/`gtimeout` executable.
+    /// Argument order and output validation are shared with ordinary scoring.
+    pub fn score_directory_bounded(
         &self,
         creature_dir: &Path,
         training_dir: &Path,
         mode: ScorerMode,
+        bounding_command: &Path,
+        seconds: u64,
     ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
-        let mut cmd = Command::new(&self.binary);
+        if seconds == 0 {
+            return Err(ScorerError::Malformed(
+                "scorer timeout must be positive".into(),
+            ));
+        }
+        let mut command = Command::new(bounding_command);
+        command
+            .args(["--signal=KILL", &seconds.to_string()])
+            .arg(&self.binary);
+        self.score_command(command, creature_dir, training_dir, mode)
+    }
+
+    fn score_command(
+        &self,
+        mut cmd: Command,
+        creature_dir: &Path,
+        training_dir: &Path,
+        mode: ScorerMode,
+    ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
         if let ScorerMode::Sample { rate, phase } = mode {
             cmd.arg("--sample-rate")
                 .arg(format!("{rate}"))
@@ -212,6 +211,38 @@ impl DirectoryScorer for ExternalScorer {
             });
         }
         parse_scorer_output(&String::from_utf8_lossy(&out.stdout))
+    }
+}
+
+/// Parse scorer stdout; every entry must be finite and `baseline` must exist.
+pub fn parse_scorer_output(stdout: &str) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
+    let parsed: BTreeMap<String, ScoreResult> =
+        serde_json::from_str(stdout.trim()).map_err(|e| ScorerError::Malformed(e.to_string()))?;
+    if !parsed.contains_key("baseline") {
+        return Err(ScorerError::MissingBaseline);
+    }
+    check_finite(&parsed)?;
+    Ok(parsed)
+}
+
+/// Reject any non-finite score or error.
+pub fn check_finite(results: &BTreeMap<String, ScoreResult>) -> Result<(), ScorerError> {
+    for (key, value) in results {
+        if !value.score.is_finite() || !value.error.is_finite() {
+            return Err(ScorerError::NonFinite(key.clone()));
+        }
+    }
+    Ok(())
+}
+
+impl DirectoryScorer for ExternalScorer {
+    fn score_directory(
+        &self,
+        creature_dir: &Path,
+        training_dir: &Path,
+        mode: ScorerMode,
+    ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
+        self.score_command(Command::new(&self.binary), creature_dir, training_dir, mode)
     }
 
     fn identity(&self) -> String {

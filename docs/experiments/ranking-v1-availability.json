@@ -1,0 +1,139 @@
+{
+  "formatVersion": 1,
+  "protocol": "ockham-ranking-v1",
+  "phase": "availability",
+  "observedDateUtc": "2026-11-13",
+  "scope": "single mounted checkout area and standard local locations; explicit temporary real-scorer build for integration only",
+  "status": "inconclusive",
+  "representativeBenefitDemonstrated": false,
+  "representativeResearchExecuted": false,
+  "pilotExecuted": false,
+  "manifestFrozen": false,
+  "observations": {
+    "suppliedResearchManifest": false,
+    "scorerOnPath": false,
+    "scorerEnvironmentVariable": false,
+    "standardSiblingScorerCheckout": false,
+    "representativeCorpusFound": false,
+    "independentHistoryGroupsVerified": 0,
+    "representativeParentFound": false,
+    "representativeHistoryFound": false,
+    "scorerBuiltForIntegration": true
+  },
+  "validation": {
+    "fullyScoredPools": 0,
+    "independentGroups": 0,
+    "trials": 0,
+    "top5PercentRecall": null,
+    "falseRejection": null,
+    "confidenceIntervals": null,
+    "totalResearchCostMs": null
+  },
+  "methodSourcesVerified": [
+    "https://arxiv.org/html/2610.15307v1#S3",
+    "https://arxiv.org/html/2610.32179v1#S4"
+  ],
+  "remaining": [
+    "Representative calibration-only feasibility pilot",
+    "Frozen private manifest identifying independent historical and validation groups",
+    "Individual full scoring of representative random audit pools",
+    "Paired representative validation and cost/uncertainty results"
+  ],
+  "fixtureEvidenceIsRepresentative": false,
+  "integration": {
+    "realScorerExecuted": true,
+    "representative": false,
+    "test": "ockham/tests/real_scorer.rs::real_scorer_scores_the_incumbent_baseline",
+    "status": "passed",
+    "fullRecordCount": 32,
+    "sampleRate": 0.05,
+    "samplePhase": 7,
+    "sampleRecordCount": 1,
+    "boundedAndOrdinaryScoresAgree": true,
+    "benchmarkContractsPassed": 11,
+    "pairwiseContractsPassed": 3,
+    "boundedScorerContractsPassed": 1,
+    "qualityGate": {
+      "command": "./quality.sh < /dev/null",
+      "status": "passed",
+      "realScorerEnabled": true
+    }
+  },
+  "preflight": {
+    "status": "inconclusive",
+    "exitCode": 1,
+    "unavailableTasks": 14,
+    "firstFailure": "source-1: parent/corpus unavailable",
+    "usesIllustrativeTemplatePaths": true,
+    "manifestSha256": "f5a869c0f1497eb37294e54c2b3546dc4a2c332fe11edac320811a751edfcfab"
+  },
+  "reproducibility": {
+    "codeRevision": "b6718bc0c9d76f90e77563425018ac55528b8a9a",
+    "codeLockfileSha256": "35c856fee65fccd454854577a7b4b82adff0b8f1a251fb890737bad7b1951d00",
+    "experimentExecutableSha256": "bc0c0ed523f429ba12be25087726eccdf0b7cc557be4baae430331c7e0152c17",
+    "scorerRepository": "https://github.com/stSoftwareAU/NEAT-AI-scorer",
+    "scorerRevision": "742c5df30fc98ece3afe784be1aca18f925b47b3",
+    "scorerLockfileSha256": "a71ccf2f9efc3cb2b495077ad3f23d60d919146c075dbddd161c30e33bcc39a4",
+    "scorerSha256": "a80465e855f3b1b51e4fdcd19a42710a079d0b3023e4c72fb26d8cf48796e0da",
+    "toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "host": "aarch64-unknown-linux-gnu",
+    "profile": "dev",
+    "rustflags": "-D warnings",
+    "scorerBuildCommand": "cargo build --locked --bin rust_scorer",
+    "integrationCommand": "cargo test --locked --test real_scorer --test bounded_scorer -- --nocapture",
+    "integrationEnvironment": [
+      "NEAT_SCORER_BIN=<built scorer executable>",
+      "RUSTFLAGS=-D warnings"
+    ],
+    "stdin": "/dev/null",
+    "benchmarkCommand": "cargo test --locked --example priority_ordering_bench",
+    "pairwiseCommand": "cargo test --locked --lib model::pairwise",
+    "representativeManifest": null,
+    "privateInputsOrResultsPublished": false
+  },
+  "completionRetryVerification": {
+    "observedDateUtc": "2026-11-13",
+    "sourceRevisionBeforeRetry": "6d8ac98d2419e570a747b066299bae9c0e9f9f3a",
+    "representativeResearchExecuted": false,
+    "inputSearch": {
+      "root": "/home/vibe/auto-issue-work",
+      "excluded": [
+        "hidden directories",
+        "target",
+        "node_modules",
+        "vendor",
+        "lost+found"
+      ],
+      "corpusBinFiles": 0,
+      "candidateHistories": 0,
+      "experimentJournals": 0,
+      "errors": []
+    },
+    "costRegression": {
+      "test": "comparison_charges_incomplete_calibration_and_unitemised_preparation",
+      "representative": false,
+      "status": "passed",
+      "redFailure": {
+        "reportedCalibrationCostMs": 0,
+        "expectedCalibrationCostMs": 6000
+      },
+      "fixedCalibrationCostMs": 6000,
+      "incompleteCalibrationLabelsUsed": 0,
+      "validationPreparationMsIncludingResidualAndProtocolCosts": 4522
+    },
+    "benchmarkContractsPassed": 12,
+    "benchmarkCommand": "cargo test --locked --example priority_ordering_bench < /dev/null",
+    "clippyCommand": "cargo clippy --locked --example priority_ordering_bench -- -D warnings < /dev/null",
+    "qualityGate": {
+      "command": "./quality.sh < /dev/null",
+      "status": "passed",
+      "realScorerEnabled": false,
+      "realScorerIntegration": "skipped: binary unavailable; earlier integration evidence retained separately"
+    },
+    "acceptanceVerdicts": {
+      "predeclarationAndAllCosts": "partial",
+      "representativeAudit": "partial",
+      "representativePairedResults": "partial"
+    }
+  }
+}
