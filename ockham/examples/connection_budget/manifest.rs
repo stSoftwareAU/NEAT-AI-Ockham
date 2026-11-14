@@ -29,6 +29,22 @@ pub struct Spec {
     pub latency: Latency,
     pub screen_rate: f64,
     pub min_improvement: f64,
+    #[serde(default, skip_serializing_if = "Acceptance::is_whole_budget")]
+    pub acceptance: Acceptance,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Acceptance {
+    #[default]
+    WholeBudget,
+    PerRemoval,
+}
+
+impl Acceptance {
+    fn is_whole_budget(&self) -> bool {
+        *self == Self::WholeBudget
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

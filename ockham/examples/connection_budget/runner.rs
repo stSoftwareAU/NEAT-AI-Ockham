@@ -12,13 +12,13 @@ use neat_ai_ockham::promote::{FullConfig, evaluate_full, evaluate_full_proposal}
 use neat_ai_ockham::prune::prune_edge_by_key;
 use neat_ai_ockham::scorer::{DirectoryScorer, ScoreResult, ScorerMode};
 use neat_ai_ockham::stats::{ActivationStats, SampleSpec, compute_activation_stats, source_value};
-use neat_ai_ockham::sweep::{ScreenConfig, Sweep, SweepCandidate, screen_batch};
+use neat_ai_ockham::sweep::{CandidateKind, ScreenConfig, Sweep, SweepCandidate, screen_batch};
 use neat_core::training_data::TrainingDataConfig;
 use neat_core::{CreatureExport, creature_to_json};
 use serde::{Deserialize, Serialize};
 
 use super::allocation::{Arm, Constraints, Plan, output_support, ranked_edges};
-use super::manifest::{Frozen, Spec, Subject, write_new};
+use super::manifest::{Acceptance, Frozen, Spec, Subject, write_new};
 use super::measurement::{Diagnostics, Metered, Usage, diagnostics, external};
 
 #[path = "summary.rs"]
@@ -299,6 +299,48 @@ pub fn search_one(
                             "afterConnections": cut.creature.synapses.len(), "core": cut.detail,
                         }),
                     )?;
+                    if spec.acceptance == Acceptance::PerRemoval {
+                        let key = format!(
+                            "{}→{}:{:?}",
+                            edge.key.from_uuid, edge.key.to_uuid, edge.key.role
+                        );
+                        let candidate = SweepCandidate {
+                            uuid: key.clone(),
+                            members: vec![key],
+                            permutation_index: step as usize,
+                            kind: CandidateKind::Synapse,
+                            merged_with: None,
+                            from_uuid: Some(edge.key.from_uuid.clone()),
+                            to_uuid: Some(edge.key.to_uuid.clone()),
+                            weight: proposal
+                                .synapses
+                                .iter()
+                                .find(|s| {
+                                    s.from_uuid == edge.key.from_uuid
+                                        && s.to_uuid == edge.key.to_uuid
+                                        && neat_core::parse_synapse_type(s.synapse_type.as_deref())
+                                            == edge.key.role
+                                })
+                                .map(|s| s.weight),
+                            prune: Some(cut.detail),
+                            stem: "c000".into(),
+                            creature: cut.creature,
+                        };
+                        let step_dir = dir.join(format!("step-{step}"));
+                        step += 1;
+                        std::fs::create_dir(&step_dir).map_err(|e| e.to_string())?;
+                        if let Some(winner) = judge(
+                            &proposal, &stats, candidate, subject, spec, &meter, &step_dir,
+                        )? {
+                            accepted = winner.clone();
+                            chosen = Some(winner);
+                            break;
+                        }
+                        usage
+                            .borrow_mut()
+                            .refuse("screen or full score rejected removal");
+                        continue;
+                    }
                     chosen = Some(cut.creature);
                     step += 1;
                     break;
@@ -316,7 +358,7 @@ pub fn search_one(
             }
             if meter.expired() {
                 stop = "search-timeout".into();
-            } else if proposal != *parent {
+            } else if spec.acceptance == Acceptance::WholeBudget && proposal != *parent {
                 let (_, winner) = evaluate_full_proposal(
                     &meter,
                     &subject.training,

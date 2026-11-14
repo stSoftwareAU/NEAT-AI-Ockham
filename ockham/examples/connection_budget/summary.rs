@@ -190,6 +190,9 @@ pub fn summarise(spec: &Spec, records: &[RunRecord]) -> Summary {
                     Some(_) if global.accepted_connections != global.achieved_connections => {
                         Some("global proposal not accepted")
                     }
+                    Some(other) if other.accepted_connections != other.achieved_connections => {
+                        Some("comparator proposal not accepted")
+                    }
                     Some(other)
                         if !compute_matches(
                             global,
@@ -520,6 +523,7 @@ mod tests {
             (3, "missing evaluation"),
             (4, "no connection saving"),
             (5, "global proposal not accepted"),
+            (6, "comparator proposal not accepted"),
         ] {
             let mut rows = base.clone();
             for row in rows.iter_mut().filter(|r| r.arm == Arm::Global) {
@@ -529,7 +533,13 @@ mod tests {
                     2 => row.error = Some("connection-budget: scorer failed".into()),
                     3 => row.held_out = None,
                     4 => row.achieved_connections = 7,
-                    _ => row.accepted_connections = 7,
+                    5 => row.accepted_connections = 7,
+                    _ => {}
+                }
+            }
+            if case == 6 {
+                for row in rows.iter_mut().filter(|r| r.arm == Arm::PerNeuron) {
+                    row.accepted_connections = 7;
                 }
             }
             if case == 4 {
@@ -546,5 +556,52 @@ mod tests {
         let without_control: Vec<_> = base.into_iter().filter(|r| r.arm == Arm::Global).collect();
         let missing = summarise(&spec, &without_control);
         assert_eq!(missing.comparisons[0].exclusions["missing arm"], 4);
+    }
+}
+
+#[cfg(test)]
+mod matching_tests {
+    use super::*;
+    use crate::measurement::Usage;
+
+    #[test]
+    fn each_compute_dimension_has_an_independent_ten_percent_boundary() {
+        // Reuse real serialized records so this also checks the archived data contract.
+        let row: RunRecord = serde_json::from_str(
+            include_str!("../../../docs/research/connection-budget-v1/results.jsonl")
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        for dimension in 0..5 {
+            let mut a = row.clone();
+            a.search = Usage {
+                proposal_attempts: 100,
+                statistics_records: 100,
+                reserved_record_evaluations: 100,
+                reported_record_evaluations: 100,
+                scorer_calls: 100,
+                ..Default::default()
+            };
+            let mut b = a.clone();
+            let counter = match dimension {
+                0 => &mut b.search.proposal_attempts,
+                1 => &mut b.search.statistics_records,
+                2 => &mut b.search.reserved_record_evaluations,
+                3 => &mut b.search.reported_record_evaluations,
+                _ => &mut b.search.scorer_calls,
+            };
+            *counter = 90;
+            assert!(compute_matches(&a, &b, 0.1));
+            match dimension {
+                0 => b.search.proposal_attempts = 89,
+                1 => b.search.statistics_records = 89,
+                2 => b.search.reserved_record_evaluations = 89,
+                3 => b.search.reported_record_evaluations = 89,
+                _ => b.search.scorer_calls = 89,
+            }
+            assert!(!compute_matches(&a, &b, 0.1));
+        }
     }
 }

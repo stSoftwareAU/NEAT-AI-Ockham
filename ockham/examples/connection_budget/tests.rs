@@ -666,3 +666,143 @@ fn freeze_checks_full_content_and_refuses_overlap_and_input_or_scorer_drift() {
         frozen.inputs[0].training.sha256
     );
 }
+
+#[test]
+fn per_removal_protocol_shares_search_costs_and_requires_authoritative_wins() {
+    use super::manifest::Acceptance;
+    let mut fixture = Fixture::new();
+    fixture.spec.acceptance = Acceptance::PerRemoval;
+    let parent = creature(
+        2,
+        2,
+        vec![
+            neuron("output", "output-0", 0.0, Some("IDENTITY")),
+            neuron("output", "output-1", 0.0, Some("IDENTITY")),
+        ],
+        vec![
+            synapse("input-0", "output-0", 1.0),
+            synapse("input-1", "output-0", 1.0),
+            synapse("input-0", "output-1", 0.001),
+            synapse("input-1", "output-1", 1.0),
+        ],
+    );
+    for name in ["training", "calibration", "validation"] {
+        write_bin_file(
+            &fixture.tmp.path().join(name).join("0.bin"),
+            &(0..4)
+                .map(|i| (vec![i as f32, (i + 1) as f32], vec![0.0, 0.0]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    }
+    for arm in Arm::ALL {
+        let record = search_one(
+            &fixture.spec,
+            &fixture.spec.creatures[0],
+            &parent,
+            arm,
+            3,
+            7,
+            &Fixture::phases(),
+            &ManualClock::new(),
+            &fixture.tmp.path().join(format!("matched-{arm:?}")),
+        )
+        .unwrap();
+        assert_eq!(record.error, None, "{arm:?}");
+        assert_eq!(
+            (record.achieved_connections, record.accepted_connections),
+            (3, 3),
+            "{arm:?}"
+        );
+        assert_eq!(record.search.proposal_attempts, 1, "{arm:?}");
+        assert_eq!(record.search.statistics_records, 4, "{arm:?}");
+        assert_eq!(record.search.scorer_calls, 3, "{arm:?}");
+        assert_eq!(record.search.reserved_record_evaluations, 20, "{arm:?}");
+        assert_eq!(record.search.reported_record_evaluations, 16, "{arm:?}");
+    }
+    let scorer = Phases {
+        full: ScriptedScorer {
+            candidate_score: Some(0.4),
+            ..Fixture::scorer()
+        },
+        ..Fixture::phases()
+    };
+    let record = search_one(
+        &fixture.spec,
+        &fixture.spec.creatures[0],
+        &parent,
+        Arm::Global,
+        3,
+        7,
+        &scorer,
+        &ManualClock::new(),
+        &fixture.tmp.path().join("rejected"),
+    )
+    .unwrap();
+    assert_eq!(
+        (record.achieved_connections, record.accepted_connections),
+        (4, 4)
+    );
+    assert_eq!(
+        record.search.proposal_attempts, 4,
+        "each rejected edge visited once, without retrying it"
+    );
+    assert_eq!(record.search.scorer_calls, 9);
+    assert_eq!(record.stop_reason, "infeasible-target");
+}
+
+#[test]
+fn omitted_acceptance_preserves_v1_serialization_and_protocol_changes_break_freeze() {
+    use super::manifest::Acceptance;
+    let fixture = Fixture::new();
+    let original = serde_json::to_vec(&fixture.spec).unwrap();
+    assert!(!String::from_utf8_lossy(&original).contains("acceptance"));
+    let decoded: Spec = serde_json::from_slice(&original).unwrap();
+    assert_eq!(decoded.acceptance, Acceptance::WholeBudget);
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), original);
+    let spec = fixture.tmp.path().join("old-spec.json");
+    let manifest = fixture.tmp.path().join("old-manifest.json");
+    write_new(&spec, &fixture.spec).unwrap();
+    freeze(&spec, &manifest).unwrap();
+    let mut frozen: Frozen = read_json(&manifest).unwrap();
+    frozen.verify().unwrap();
+    frozen.spec.acceptance = Acceptance::PerRemoval;
+    assert_eq!(
+        frozen.verify().unwrap_err(),
+        "specification changed after freeze"
+    );
+}
+
+#[test]
+fn matched_pilot_predeclares_layered_multi_cut_protocol_and_distinct_regions() {
+    use super::manifest::Acceptance;
+    let tmp = tempfile::tempdir().unwrap();
+    let directory = tmp.path().join("matched");
+    super::pilot::write_matched(&directory, Path::new("scorer")).unwrap();
+    let spec: Spec = read_json(&directory.join("spec-v1.json")).unwrap();
+    spec.validate().unwrap();
+    assert_eq!(spec.acceptance, Acceptance::PerRemoval);
+    assert_eq!(spec.connection_targets, [18, 16]);
+    assert_eq!(spec.seeds, [7, 19]);
+    assert_eq!(spec.creatures.len(), 8);
+    assert_eq!(spec.success.compute_relative_tolerance, 0.1);
+    for subject in &spec.creatures {
+        let parent = load_incumbent(&subject.creature).unwrap();
+        assert_eq!(parent.creature.synapses.len(), 20);
+        let depth = Plan::new(&parent.creature, Arm::PerDepth, 16).unwrap();
+        assert_eq!(
+            depth
+                .counts(&parent.creature)
+                .unwrap()
+                .values()
+                .copied()
+                .collect::<Vec<_>>(),
+            [4, 16]
+        );
+        assert_eq!(depth.quotas.values().copied().collect::<Vec<_>>(), [4, 12]);
+        let neuron = Plan::new(&parent.creature, Arm::PerNeuron, 16).unwrap();
+        assert_eq!(neuron.quotas.len(), 6);
+        assert_eq!(neuron.quotas.values().sum::<usize>(), 16);
+    }
+    pin_inputs(&spec).unwrap();
+}

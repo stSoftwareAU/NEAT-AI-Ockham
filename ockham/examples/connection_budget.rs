@@ -28,6 +28,8 @@ struct Args {
 enum Command {
     /// Write application-agnostic synthetic pilot inputs and a study specification.
     Pilot { directory: PathBuf, scorer: PathBuf },
+    /// Write the layered multi-cut follow-up with shared per-removal screening/promotion.
+    MatchedPilot { directory: PathBuf, scorer: PathBuf },
     /// Validate and pin inputs and the executable before any validation scoring.
     Freeze { spec: PathBuf, manifest: PathBuf },
     /// Execute a frozen manifest into a new output directory.
@@ -37,6 +39,7 @@ enum Command {
 fn main() {
     let result = match Args::parse().command {
         Command::Pilot { directory, scorer } => pilot::write(&directory, &scorer),
+        Command::MatchedPilot { directory, scorer } => pilot::write_matched(&directory, &scorer),
         Command::Freeze { spec, manifest } => manifest::freeze(&spec, &manifest),
         Command::Run { manifest, out } => runner::run(&manifest, &out),
     };

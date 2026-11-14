@@ -9,6 +9,10 @@ they cannot establish a benefit on evolved creatures.
 The recorded [v1 pilot](research/connection-budget-v1/report.md) is inconclusive:
 128 arm runs completed, with four compute-matched pairs and no representative
 creatures. Its frozen manifest and machine-readable results accompany the report.
+The separately frozen [matched follow-up](research/connection-budget-matched-v1/report.md)
+adds a shared per-removal screening/promotion protocol and compares all three
+controls at matched achieved counts and counted compute: 87/96 pairs match,
+including 23 against Ockham. Both studies remain synthetic and inconclusive.
 
 ## Source and transfer assumptions
 
@@ -100,6 +104,25 @@ function shares the strict winner decision with `evaluate_full`. Budget
 proposals are not represented as sampled neuron groups. `best.json` contains an
 authoritative accepted creature or the parent; `proposal.json` may be rejected.
 No research output performs population re-entry or deployment.
+
+A separately frozen `acceptance: "per-removal"` protocol screens each legal ranked
+allocation removal and uses the same `evaluate_full` promotion as Ockham. Rejected
+removals are skipped at that topology; an accepted removal updates the incumbent
+and triggers recalibration before the next cut. All proposal visits, refusals,
+statistics scans and scorer work are counted without padding. The omitted field
+means the original whole-budget protocol, and remains omitted when serialising
+that default, preserving existing v1 specification hashes. Protocol changes after
+freeze fail verification. Comparisons require both arms' achieved proposals to
+have authoritative acceptance.
+
+The `matched-pilot` generator declares eight layered synthetic subjects, seeds
+`7`/`19` and targets 18/16 from 20 connections before validation. It retains
+the original compute caps, 10% per-dimension tolerance and success criteria.
+Two hidden neurons and four outputs create six neuron regions and two depths.
+Four small edges in distinct output regions align with quota rounding; the
+zero-output task is deliberately artificial and cannot establish a benefit.
+See the follow-up report for its reproducible command, actual coverage, paired
+uncertainty and negative score differences against Ockham.
 
 ```mermaid
 flowchart TD

@@ -2,8 +2,9 @@
 
 Added an opt-in, frozen-manifest connection-budget experiment with canonical
 typed pruning, shared full-corpus acceptance and machine-readable pilot results.
-The synthetic pilot is inconclusive; representative matched comparisons remain
-unfinished. Part of #265.
+Completed a separately frozen synthetic comparison against all three controls at
+matched achieved connection counts and counted compute. Both studies remain
+inconclusive; representative benefit remains unverified. Part of #265.
 
 ## Spec
 
@@ -26,12 +27,19 @@ unfinished. Part of #265.
   undercut. Existing pair-based callers retain their first-role behaviour.
 - Budget proposals and ordinary promotion share one strict full-score winner
   function. Parents remain immutable. Direct full evaluation bypasses sampled
-  screening for budget proposals, not authoritative acceptance; no population
-  re-entry or publication path was added.
+  screening in the original whole-budget protocol. The new opt-in per-removal
+  protocol gives allocation arms the existing Ockham screening and full promotion
+  schedule; rejected removals are skipped. No population re-entry or publication
+  path was added. The omitted protocol field preserves v1 specification hashes.
 - The control uses existing mixed sweeps, one-candidate batches and the common
   structural constraints, without bundles or fleet features. It does not measure
   the ordinary default CLI's economics. Synthetic evidence cannot support a
   representative conclusion, and criteria were not changed after validation.
+- The follow-up uses eight layered synthetic networks, two seeds and two/four
+  removals from 20 connections. It retains the original 10% compute tolerance,
+  limits and success thresholds. Quota-aligned weak edges make quota and global
+  choices coincide; this design cannot establish an unequal-allocation benefit.
+  Both proposals must be authoritatively accepted before a pair can match.
 
 ### Undiscoverable Facts
 
@@ -43,6 +51,10 @@ unfinished. Part of #265.
 - The real scorer was built from revision
   `742c5df30fc98ece3afe784be1aca18f925b47b3`; the archived study pins executable
   hashes and code revision `a48160f85c30d571c12f687ff23dddca44f2cd42`.
+- The matched follow-up froze the updated working tree based on `62d1a62`;
+  its exact source digest is
+  `ec315f3a95c1b9b9d062b1ce84ecb5016821fc580eb71f7d780bb06e7d7722d0`.
+  The final source matches that digest; `codeRevision` names the preceding head.
 
 ## Evidence
 
@@ -56,10 +68,24 @@ unfinished. Part of #265.
   those four cover two teacher units, with zero full/held-out score differences.
   The remaining 92 pairs are explicit compute exclusions. Representative
   coverage is zero; the conclusion is inconclusive.
+- `docs/research/connection-budget-matched-v1/{manifest.json,results.jsonl,summary.json,report.md}`
+  records the separately frozen follow-up: 128/128 runs, no failures, timeouts or
+  missed targets, and 87/96 matched pairs. At achieved targets 18 and 16,
+  per-neuron and per-depth each match 16/16 pairs across eight units. Ockham
+  matches 12/16 pairs across seven units and 11/16 across six units; nine compute
+  exclusions remain. All five compute dimensions meet the unchanged 10% rule
+  for matched pairs, without padding. Paired distributions and clustered
+  familywise 95% uncertainty are archived. Quota score differences are zero;
+  global scores are lower than Ockham on the artificial zero-output task.
+  Ockham coverage misses the 80% success threshold; the conclusion is inconclusive.
 - Deterministic costs: 1,594 proposal visits, 32,640 statistics records,
   256,512 scorer-reported record evaluations and 267,264 reserved evaluations.
   Diagnostic and latency inference are counted separately. Timing samples are
   indicative measurements on a shared, parallel host.
+- Follow-up costs: 395 proposal visits, 24,576 statistics records,
+  358,016 scorer-reported and 383,232 reserved record evaluations; diagnostics
+  and latency inference are separately counted. The report includes a reproducible
+  `matched-pilot` / `freeze` / `run` command using fresh paths.
 - Real scorer protocol checks returned four records in full mode and two at
   50% sampling. A real malformed corpus exited 1 with the cause
   `has size 3 bytes, which is not a whole multiple of the 12-byte record size`;
@@ -77,15 +103,32 @@ flowchart LR
 
 ## Acceptance Criteria
 
-- **missing** — Compare equal per-neuron/per-depth quotas and current Ockham at matched achieved budget/compute. — reason: the synthetic pilot has only four compute-matched pairs and none against Ockham; an adequately covered representative comparison remains unperformed because no representative model/corpus pair was available.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Compare equal per-neuron/per-depth quotas and current Ockham at matched achieved budget/compute. — evidence: `docs/research/connection-budget-matched-v1/summary.json` records 87/96 matched pairs across all three controls and both achieved targets; `ockham/examples/connection_budget/tests.rs::per_removal_protocol_shares_search_costs_and_requires_authoritative_wins` proves shared costs and full-score rejection; `ockham/examples/connection_budget/summary.rs::each_compute_dimension_has_an_independent_ten_percent_boundary` proves matching boundaries — reviewer: met
+
+The independent Spec reviewer recomputed all six comparisons and checked manifest
+linkage, accepted counts, paired scores and explicit exclusions. This verdict
+means the comparison was performed; synthetic evidence, nine excluded Ockham
+pairs and the representative-data gap preclude an optimisation-benefit claim.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — The independent Standards reviewer checked `CONTRIBUTING.md` principles: immutable parents, canonical typed pruning/validation, existing authoritative full-corpus promotion, opt-in isolated execution, bounded accounted work, backward-compatible frozen defaults, version bump and truthful synthetic evidence. No `CODING-STANDARDS.md` exists in this repository. The reviewer independently verified archived manifest linkage, matching counts and documented exclusions.
 
 ## Test Plan
 
 - `cargo test --example connection_budget --test typed_prune --test full_proposal < /dev/null`
-  passed: 21 new tests. `ockham/examples/connection_budget/tests.rs` covers
+  passed: 21 example tests and four API tests. `ockham/examples/connection_budget/tests.rs` covers
   allocation differences, quota boundaries, stable ties, depth/typed roles,
   cascades, connectivity, parent immutability, scorer failures, limits and freeze
   drift through the real search runner.
+- Follow-up regression tests cover equal measured search costs across all four
+  arms, full-score rejection, continued visits after rejection, old default
+  serialization, protocol freeze drift, layered multi-cut fixture declarations,
+  every compute-matching dimension and rejected comparator exclusions.
 - `ockham/examples/connection_budget/summary.rs` tests cover clustered bootstrap
   uncertainty, synthetic/representative verdicts and exclusion accounting.
   `ockham/tests/typed_prune.rs` covers exact and absent roles;
@@ -100,11 +143,11 @@ flowchart LR
   `run.rs` replay/fresh promotion paths retain the shared winner decision.
   No existing test assertions were removed. Winner selection has one shared
   implementation; no second acceptance rule was introduced.
-- The real frozen-manifest command completed the 128-run pilot successfully.
+- The real frozen-manifest commands completed both 128-run studies successfully.
   Research execution and latency trials are separate from unit tests.
 - `./quality.sh < /dev/null` passed: shell/script contracts, spelling, Markdown,
   Actions lint, dependency audit, format, all-target Clippy, tests and rustdoc.
-  This included 704 library tests and the example's 17 deterministic tests.
+  This included 704 library tests and the example's 21 deterministic tests.
 - Security checks: closed specification schemas and bounded work; typed process
   arguments without shell interpolation; fresh output directories; no new
   dependency, credential, endpoint or UI surface. Staging used explicit paths;
@@ -112,12 +155,14 @@ flowchart LR
 
 ## Merge verification
 
-- CI and independent code review are pending.
+- Independent Spec and Standards reviews passed over the updated diff and actual
+  follow-up evidence. CI is pending.
 
 ## Not checked
 
-Representative runs, adequate matched-compute coverage, default-CLI economics,
-quiet-host latency and a PDF byte checksum remain unverified. The gate's optional
+Representative runs, default-CLI economics, quiet-host latency and a PDF byte
+checksum remain unverified. The follow-up falls below the predeclared Ockham
+matched-coverage success threshold. The gate's optional
 real-scorer discovery tests had no discoverable binary; real-scorer evidence here
 comes from the explicitly pinned pilot and protocol checks. No deployment was
 performed.
