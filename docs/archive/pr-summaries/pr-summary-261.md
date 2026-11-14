@@ -135,10 +135,12 @@ this does not claim review against a nonexistent document.
   comparison, dropping the cost term, and loosening the false-rejection or cost
   threshold each fail the first test.
 - Review fix, clean-source guard: `clean_source_guard_is_independent_of_the_working_directory`
-  creates a temporary repository and checks `source_is_clean` from the root,
+  creates a temporary repository and checks `source_is_clean` and
+  `require_clean_source` (the helper `runtime()` calls) from the root,
   `ockham/` and `ockham/src`. Edits to a source file, `Cargo.toml`, `Cargo.lock`,
-  `rust-toolchain.toml` and a staged edit are all detected, and a clean tree
-  passes. With the earlier unanchored pathspecs the test fails from the
+  `rust-toolchain.toml` and a staged edit are all detected, each refused with
+  the exact `experiment requires committed source and lockfile` error, and a
+  clean tree returns `Ok`. With the earlier unanchored pathspecs the test fails from the
   subdirectories. No existing assertions were removed or weakened.
 - Retained branch regression evidence:
   `ockham/examples/priority_ordering_bench/tests.rs` extends

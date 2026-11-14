@@ -840,6 +840,7 @@ fn clean_source_guard_is_independent_of_the_working_directory() {
     let places = [root.to_path_buf(), package.clone(), package.join("src")];
     for place in &places {
         assert!(source_is_clean(place).unwrap(), "clean from {place:?}");
+        assert_eq!(require_clean_source(place), Ok(()), "clean from {place:?}");
     }
     for file in [
         package.join("src/lib.rs"),
@@ -854,6 +855,11 @@ fn clean_source_guard_is_independent_of_the_working_directory() {
                 !source_is_clean(place).unwrap(),
                 "edit to {file:?} must be detected from {place:?}"
             );
+            assert_eq!(
+                require_clean_source(place),
+                Err("experiment requires committed source and lockfile".to_string()),
+                "edit to {file:?} must be refused from {place:?}"
+            );
         }
         std::fs::write(&file, original).unwrap();
         assert!(source_is_clean(&package).unwrap());
@@ -862,6 +868,10 @@ fn clean_source_guard_is_independent_of_the_working_directory() {
     std::fs::write(package.join("src/lib.rs"), "staged\n").unwrap();
     git(root, &["add", "."]);
     assert!(!source_is_clean(&package).unwrap());
+    assert_eq!(
+        require_clean_source(&package),
+        Err("experiment requires committed source and lockfile".to_string())
+    );
 }
 
 /// Three independent validation groups, each with a same-family calibration

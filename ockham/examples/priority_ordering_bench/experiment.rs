@@ -142,6 +142,15 @@ fn source_is_clean(dir: &Path) -> Result<bool, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Refuses uncommitted sources or lockfile, checked from `dir`.
+fn require_clean_source(dir: &Path) -> Result<(), String> {
+    if source_is_clean(dir)? {
+        Ok(())
+    } else {
+        Err("experiment requires committed source and lockfile".into())
+    }
+}
+
 fn runtime(m: &Manifest) -> Result<BoundedScorer, String> {
     // Freeze against a clean source revision. Cargo's normal dependency tracking
     // rebuilds this example when its source or the library changes.
@@ -159,9 +168,7 @@ fn runtime(m: &Manifest) -> Result<BoundedScorer, String> {
     if String::from_utf8_lossy(&head.stdout).trim() != m.code_revision {
         return Err("code revision mismatch".into());
     }
-    if !source_is_clean(Path::new("."))? {
-        return Err("experiment requires committed source and lockfile".into());
-    }
+    require_clean_source(Path::new("."))?;
     if hash_file(&m.scorer)? != m.scorer_sha256 {
         return Err("scorer digest mismatch".into());
     }
