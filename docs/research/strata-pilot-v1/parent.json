@@ -1,0 +1,346 @@
+{
+  "input": 4,
+  "output": 1,
+  "neurons": [
+    {
+      "type": "hidden",
+      "uuid": "h0",
+      "bias": -0.049244247691064204,
+      "squash": "TANH"
+    },
+    {
+      "type": "hidden",
+      "uuid": "h1",
+      "bias": 0.06198193467268301,
+      "squash": "TANH"
+    },
+    {
+      "type": "hidden",
+      "uuid": "h2",
+      "bias": 0.054430685042038254,
+      "squash": "TANH"
+    },
+    {
+      "type": "hidden",
+      "uuid": "h3",
+      "bias": 0.012994930174433384,
+      "squash": "TANH"
+    },
+    {
+      "type": "hidden",
+      "uuid": "s0",
+      "bias": 0.0,
+      "squash": "TANH"
+    },
+    {
+      "type": "hidden",
+      "uuid": "s1",
+      "bias": 0.0,
+      "squash": "TANH"
+    },
+    {
+      "type": "hidden",
+      "uuid": "d0",
+      "bias": 0.0,
+      "squash": "TANH"
+    },
+    {
+      "type": "hidden",
+      "uuid": "d1",
+      "bias": 0.0,
+      "squash": "TANH"
+    },
+    {
+      "type": "hidden",
+      "uuid": "d2",
+      "bias": 0.0,
+      "squash": "TANH"
+    },
+    {
+      "type": "hidden",
+      "uuid": "d3",
+      "bias": 0.0,
+      "squash": "TANH"
+    },
+    {
+      "type": "output",
+      "uuid": "output-0",
+      "bias": 0.0,
+      "squash": "IDENTITY"
+    }
+  ],
+  "synapses": [
+    {
+      "fromUUID": "input-0",
+      "toUUID": "h0",
+      "weight": 1.5
+    },
+    {
+      "fromUUID": "input-0",
+      "toUUID": "h1",
+      "weight": -0.016001980231609658
+    },
+    {
+      "fromUUID": "input-0",
+      "toUUID": "h2",
+      "weight": 0.012795234020518898
+    },
+    {
+      "fromUUID": "input-0",
+      "toUUID": "h3",
+      "weight": -0.01976516625605644
+    },
+    {
+      "fromUUID": "input-0",
+      "toUUID": "s0",
+      "weight": 0.41803491241718516
+    },
+    {
+      "fromUUID": "input-0",
+      "toUUID": "s1",
+      "weight": 0.2679250694969495
+    },
+    {
+      "fromUUID": "input-0",
+      "toUUID": "d0",
+      "weight": 0.7012313468617459
+    },
+    {
+      "fromUUID": "input-0",
+      "toUUID": "d1",
+      "weight": 0.5023848902206833
+    },
+    {
+      "fromUUID": "input-0",
+      "toUUID": "d2",
+      "weight": -0.8107155188477402
+    },
+    {
+      "fromUUID": "input-0",
+      "toUUID": "d3",
+      "weight": 0.9628224964167045
+    },
+    {
+      "fromUUID": "input-0",
+      "toUUID": "output-0",
+      "weight": -0.06667380998066483
+    },
+    {
+      "fromUUID": "input-1",
+      "toUUID": "h0",
+      "weight": -0.019585012474466354
+    },
+    {
+      "fromUUID": "input-1",
+      "toUUID": "h1",
+      "weight": 1.5
+    },
+    {
+      "fromUUID": "input-1",
+      "toUUID": "h2",
+      "weight": -0.022881226328406768
+    },
+    {
+      "fromUUID": "input-1",
+      "toUUID": "h3",
+      "weight": 0.028409048188107335
+    },
+    {
+      "fromUUID": "input-1",
+      "toUUID": "s0",
+      "weight": -0.7061948072412505
+    },
+    {
+      "fromUUID": "input-1",
+      "toUUID": "s1",
+      "weight": -0.6443891757271227
+    },
+    {
+      "fromUUID": "input-1",
+      "toUUID": "d0",
+      "weight": -0.26233000011703234
+    },
+    {
+      "fromUUID": "input-1",
+      "toUUID": "d1",
+      "weight": 0.6196349388034164
+    },
+    {
+      "fromUUID": "input-1",
+      "toUUID": "d2",
+      "weight": 0.15653355260298896
+    },
+    {
+      "fromUUID": "input-1",
+      "toUUID": "d3",
+      "weight": 0.23521172889396813
+    },
+    {
+      "fromUUID": "input-1",
+      "toUUID": "output-0",
+      "weight": 0.009571637005911127
+    },
+    {
+      "fromUUID": "input-2",
+      "toUUID": "h0",
+      "weight": 0.041650170272134746
+    },
+    {
+      "fromUUID": "input-2",
+      "toUUID": "h1",
+      "weight": 0.03391225332950992
+    },
+    {
+      "fromUUID": "input-2",
+      "toUUID": "h2",
+      "weight": 1.5
+    },
+    {
+      "fromUUID": "input-2",
+      "toUUID": "h3",
+      "weight": -0.022482663945407294
+    },
+    {
+      "fromUUID": "input-2",
+      "toUUID": "s0",
+      "weight": 0.36254402840569244
+    },
+    {
+      "fromUUID": "input-2",
+      "toUUID": "s1",
+      "weight": 0.14154558655376204
+    },
+    {
+      "fromUUID": "input-2",
+      "toUUID": "d0",
+      "weight": -0.7475262469955548
+    },
+    {
+      "fromUUID": "input-2",
+      "toUUID": "d1",
+      "weight": 0.03779637837731187
+    },
+    {
+      "fromUUID": "input-2",
+      "toUUID": "d2",
+      "weight": -0.04886907363516957
+    },
+    {
+      "fromUUID": "input-2",
+      "toUUID": "d3",
+      "weight": 0.5774962086178121
+    },
+    {
+      "fromUUID": "input-2",
+      "toUUID": "output-0",
+      "weight": 0.05398168804915196
+    },
+    {
+      "fromUUID": "input-3",
+      "toUUID": "h0",
+      "weight": -0.019714746407632423
+    },
+    {
+      "fromUUID": "input-3",
+      "toUUID": "h1",
+      "weight": 0.016257864950750458
+    },
+    {
+      "fromUUID": "input-3",
+      "toUUID": "h2",
+      "weight": 0.025068446382663312
+    },
+    {
+      "fromUUID": "input-3",
+      "toUUID": "h3",
+      "weight": 1.5
+    },
+    {
+      "fromUUID": "input-3",
+      "toUUID": "s0",
+      "weight": -0.2929554552056257
+    },
+    {
+      "fromUUID": "input-3",
+      "toUUID": "s1",
+      "weight": -0.3945211971631556
+    },
+    {
+      "fromUUID": "input-3",
+      "toUUID": "d0",
+      "weight": -0.1610116192980231
+    },
+    {
+      "fromUUID": "input-3",
+      "toUUID": "d1",
+      "weight": -0.42191174286927835
+    },
+    {
+      "fromUUID": "input-3",
+      "toUUID": "d2",
+      "weight": 0.05524239667114861
+    },
+    {
+      "fromUUID": "input-3",
+      "toUUID": "d3",
+      "weight": -0.7983056604392607
+    },
+    {
+      "fromUUID": "input-3",
+      "toUUID": "output-0",
+      "weight": 0.09691463122072506
+    },
+    {
+      "fromUUID": "h0",
+      "toUUID": "output-0",
+      "weight": 0.5
+    },
+    {
+      "fromUUID": "h1",
+      "toUUID": "output-0",
+      "weight": 0.5
+    },
+    {
+      "fromUUID": "h2",
+      "toUUID": "output-0",
+      "weight": 0.5
+    },
+    {
+      "fromUUID": "h3",
+      "toUUID": "output-0",
+      "weight": 0.8
+    },
+    {
+      "fromUUID": "s0",
+      "toUUID": "output-0",
+      "weight": 0.3
+    },
+    {
+      "fromUUID": "s1",
+      "toUUID": "output-0",
+      "weight": 0.3
+    },
+    {
+      "fromUUID": "d0",
+      "toUUID": "output-0",
+      "weight": 1e-6
+    },
+    {
+      "fromUUID": "d1",
+      "toUUID": "output-0",
+      "weight": 2e-6
+    },
+    {
+      "fromUUID": "d2",
+      "toUUID": "output-0",
+      "weight": 3e-6
+    },
+    {
+      "fromUUID": "d3",
+      "toUUID": "output-0",
+      "weight": 4e-6
+    }
+  ],
+  "semanticVersion": "4.0.0",
+  "forwardOnly": true
+}
