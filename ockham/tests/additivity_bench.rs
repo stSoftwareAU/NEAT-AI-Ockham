@@ -728,8 +728,10 @@ fn the_bench_records_cascades_overlaps_and_duplicate_creatures() {
     )
     .unwrap();
     let mut manifest = fixture.manifest(vec![0.3], vec![1, 2, 3], 1 << 30);
-    // 7 proposable cuts, 3 removals each: all 35 sets would fit, 21 are drawn.
-    manifest.audit_pool = 21;
+    // 7 proposable cuts, 3 removals each: draw all 35 sets. The pool is then
+    // the same whatever order the ranker puts the cuts in, so the chain's
+    // alternative cut sets that collapse to one creature are always present.
+    manifest.audit_pool = 35;
 
     let report = run(&manifest);
 
