@@ -110,7 +110,7 @@ neat_ai_ockham bench-additivity manifest.json --out report.json
 ```
 
 The command prints one line, `{"report", "rows", "representative"}`, and writes
-the full report to `--out`. On error it prints the message to stderr and exits 1. A non-MSE cost is refused while the manifest is validated, before any parent or corpus file is read.
+the full report to `--out`. On error it prints the message to stderr and exits 1. A `--out` that names the manifest, a parent or the scorer, or lies inside a corpus, is refused before any scorer call. A non-MSE cost is refused while the manifest is validated, before any parent or corpus file is read.
 
 Use `cargo test -p neat_ai_ockham --test additivity_bench` to exercise the
 pipeline against an in-test faithful scorer.
@@ -237,11 +237,14 @@ The report is JSON in camelCase.
   `ramBoundBytes`, build and read milliseconds).
 - `rows[]`, one per (parent, budget, seed): `requestedRemovals`, `feasible`,
   `reason`, `eligible`, `poolRequested`, `poolSize` (materialised pool bundles,
-  duplicates included; refusals are counted only in `refused`), `duplicates`, `refused`,
+  duplicates included; refusals are counted only in `refused`), `duplicates`
+  (each with the `duplicateOf` index and the shared `creatureDigest`), `refused`,
   `bundles[]`, `audit` (full calls, record evaluations, milliseconds),
   `poolMaterialisationMs`, `estimateMs`, `validationParentScore` and `arms[]`.
 - Each `bundles[]` entry records members, `overlaps` (members an earlier
-  cascade already took), `missing`, `cascadeNeurons`, hidden, synapse and
+  cascade already took), `missing`, `cascadeNeurons` (every neuron the cut
+  stranded beyond the request: the cleanup cascade plus neurons folded into
+  constant support), hidden, synapse and
   growth-unit reductions, `meetsBudget`, `creatureDigest`, full `score`,
   `error`, `complexityPenalty` (kept separate from the score), `truthDelta`,
   `additiveLoss` and `cachedOutput`.

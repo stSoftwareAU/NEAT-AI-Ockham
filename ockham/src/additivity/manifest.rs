@@ -278,35 +278,31 @@ impl BenchManifest {
 }
 
 /// Refuse a report path that would replace an input or land inside an input
-/// corpus. `out` and its `<out>.tmp` sibling are both checked against every
-/// input file (the same path, a symlink or a hard link) and every input
-/// directory, because the report is renamed into place: `--out parent.json`
-/// would otherwise overwrite the supplied creature, which is never written to.
+/// corpus. `out` is checked against every input file (the same path, a symlink
+/// or a hard link) and every input directory, because the report is written
+/// straight to `out`: `--out parent.json` would otherwise overwrite the
+/// supplied creature, which is never written to.
 fn refuse_input_overwrite(out: &Path, files: &[&Path], dirs: &[&Path]) -> Result<(), String> {
-    let mut tmp = out.as_os_str().to_owned();
-    tmp.push(".tmp");
-    for target in [out.to_path_buf(), PathBuf::from(tmp)] {
-        let resolved = resolved_target(&target);
-        for file in files {
-            let same_path = resolved.is_some() && resolved == std::fs::canonicalize(file).ok();
-            if same_path || same_inode(&target, file) {
-                return Err(format!(
-                    "report path '{}' would overwrite the input '{}'; choose another --out",
-                    target.display(),
-                    file.display()
-                ));
-            }
+    let resolved = resolved_target(out);
+    for file in files {
+        let same_path = resolved.is_some() && resolved == std::fs::canonicalize(file).ok();
+        if same_path || same_inode(out, file) {
+            return Err(format!(
+                "report path '{}' would overwrite the input '{}'; choose another --out",
+                out.display(),
+                file.display()
+            ));
         }
-        for dir in dirs {
-            if let (Some(r), Ok(d)) = (&resolved, std::fs::canonicalize(dir))
-                && r.starts_with(&d)
-            {
-                return Err(format!(
-                    "report path '{}' is inside the input corpus '{}'; choose another --out",
-                    target.display(),
-                    dir.display()
-                ));
-            }
+    }
+    for dir in dirs {
+        if let (Some(r), Ok(d)) = (&resolved, std::fs::canonicalize(dir))
+            && r.starts_with(&d)
+        {
+            return Err(format!(
+                "report path '{}' is inside the input corpus '{}'; choose another --out",
+                out.display(),
+                dir.display()
+            ));
         }
     }
     Ok(())
@@ -356,14 +352,6 @@ mod tests {
 
         let same = super::refuse_input_overwrite(&parent, &files, &dirs).unwrap_err();
         assert!(same.contains("would overwrite the input"), "{same}");
-
-        let tmp_sibling = tmp.path().join("parent");
-        std::fs::rename(&parent, tmp.path().join("parent.tmp")).unwrap();
-        let moved = tmp.path().join("parent.tmp");
-        let sibling =
-            super::refuse_input_overwrite(&tmp_sibling, &[moved.as_path()], &dirs).unwrap_err();
-        assert!(sibling.contains("would overwrite the input"), "{sibling}");
-        std::fs::rename(&moved, &parent).unwrap();
 
         #[cfg(unix)]
         {

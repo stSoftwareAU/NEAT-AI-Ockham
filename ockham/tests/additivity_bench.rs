@@ -769,6 +769,10 @@ fn the_bench_records_cascades_overlaps_and_duplicate_creatures() {
         for duplicate in &row.duplicates {
             duplicates_seen += 1;
             let first = &row.bundles[duplicate.duplicate_of];
+            assert_eq!(
+                duplicate.creature_digest, first.creature_digest,
+                "duplicateOf must point at the bundle with the same creature"
+            );
             let mut got = duplicate.members.clone();
             let mut want = first.members.clone();
             got.sort();
@@ -776,6 +780,17 @@ fn the_bench_records_cascades_overlaps_and_duplicate_creatures() {
             assert_ne!(got, want, "a duplicate is a different member set");
         }
         for bundle in &row.bundles {
+            // Every hidden neuron a bundle removed is named: a member the cut
+            // took itself, or a neuron it stranded (cascade or constant fold).
+            assert_eq!(
+                bundle.hidden_removed,
+                bundle.members.len() - bundle.overlaps.len() + bundle.cascade_neurons.len(),
+                "bundle {} removed neurons it does not name: members {:?}, overlaps {:?}, cascade {:?}",
+                bundle.index,
+                bundle.members,
+                bundle.overlaps,
+                bundle.cascade_neurons
+            );
             // Every named member is gone from the materialised creature, and
             // `meetsBudget` reads the materialised structure.
             assert!(
@@ -910,4 +925,59 @@ fn a_held_out_corpus_of_another_size_is_scored_and_reported() {
         assert_eq!(arm.validation_score, Some(result.score), "{:?}", arm.arm);
         assert_eq!(arm.validation_error, Some(result.error), "{:?}", arm.arm);
     }
+}
+
+#[test]
+fn bench_additivity_refuses_a_report_path_that_would_overwrite_an_input() {
+    let fixture = Fixture::new();
+    let manifest_path = fixture.path("manifest.json");
+    let manifest = serde_json::json!({
+        "formatVersion": 1,
+        "parents": ["parents/elite.json"],
+        "trainingData": "train",
+        "scorer": { "binary": "unused" },
+        "cost": "MSE",
+        "seeds": [1],
+        "auditPool": 4,
+        "fullEvaluations": 2,
+        "minImprovement": 0.0,
+        "decisionRule": "rule",
+        "limits": { "maxCacheBytes": 100000, "chunkRecords": 8 },
+        "cacheDir": "cache"
+    });
+    fs::write(&manifest_path, manifest.to_string()).unwrap();
+    let parent = fixture.path("parents/elite.json");
+    let parent_before = fs::read(&parent).unwrap();
+    let corpus_before = listing(&fixture.path("train"));
+
+    for (out, expected) in [
+        (parent.clone(), "would overwrite the input"),
+        (manifest_path.clone(), "would overwrite the input"),
+        (
+            fixture.path("train/report.json"),
+            "is inside the input corpus",
+        ),
+    ] {
+        let failed = Command::new(env!("CARGO_BIN_EXE_neat_ai_ockham"))
+            .arg("bench-additivity")
+            .arg(&manifest_path)
+            .arg("--out")
+            .arg(&out)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("binary runs");
+        assert!(
+            !failed.status.success(),
+            "--out {} must exit non-zero",
+            out.display()
+        );
+        let stderr = String::from_utf8_lossy(&failed.stderr);
+        assert!(stderr.contains(expected), "{}: {stderr}", out.display());
+    }
+    assert_eq!(fs::read(&parent).unwrap(), parent_before, "parent changed");
+    assert_eq!(listing(&fixture.path("train")), corpus_before);
+    assert!(
+        !fixture.path("cache").exists(),
+        "no scorer work was started"
+    );
 }

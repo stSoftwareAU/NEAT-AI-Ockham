@@ -604,9 +604,14 @@ impl<'a> ParentRun<'a> {
                         row.duplicates.push(DuplicateBundle {
                             members: member_uuids,
                             duplicate_of: first,
+                            creature_digest: digest,
                         });
                     } else {
                         digests.insert(digest.clone(), scored.len());
+                        // Requested neurons first; the cascade and the neurons
+                        // folded into constant support are both what the cut
+                        // stranded, so both are named.
+                        let cascade = candidate.detail.cascade_uuids();
                         scored.push(Scored {
                             members,
                             member_uuids,
@@ -614,7 +619,7 @@ impl<'a> ParentRun<'a> {
                             before: candidate.before,
                             after: candidate.after,
                             requested: candidate.detail.requested_neurons,
-                            cascade: candidate.detail.cascade_neurons,
+                            cascade,
                             digest,
                         });
                     }

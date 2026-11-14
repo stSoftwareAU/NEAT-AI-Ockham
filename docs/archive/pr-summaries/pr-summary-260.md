@@ -225,6 +225,25 @@ This repository has no `CODING-STANDARDS.md`. The reviewer used
   duplicate creatures — evidence: `ockham/tests/additivity_bench.rs:143` —
   reason: fixed in this diff (test
   `the_bench_records_cascades_overlaps_and_duplicate_creatures`)
+- **violation** — `cascadeNeurons` omitted neurons the core folds into
+  constant support — evidence: `ockham/src/additivity/bench.rs:617` — reason:
+  fixed in this diff (filled from `PruneDetail::cascade_uuids()`; the chain
+  test asserts `hiddenRemoved == members - overlaps + cascadeNeurons` for
+  every bundle and fails with the old field)
+- **violation** — The `--out` overwrite guard was tested only through a
+  private helper, and its comment described a `<out>.tmp` rename the command
+  does not do — evidence: `ockham/src/additivity/manifest.rs:348` — reason:
+  fixed in this diff (the `.tmp` sibling check and its case are removed
+  because `--out` is written directly; test
+  `bench_additivity_refuses_a_report_path_that_would_overwrite_an_input` runs
+  the binary with `--out` set to a parent, to the manifest and to a path
+  inside `trainingData`, and asserts a non-zero exit, the refusal message,
+  an unchanged parent and corpus listing, and that no cache directory was
+  created, so no scorer work started)
+- **violation** — A duplicate's `duplicateOf` link was not asserted — evidence:
+  `ockham/tests/additivity_bench.rs:769` — reason: fixed in this diff (each
+  duplicate carries its `creatureDigest`; the chain test compares it with
+  `bundles[duplicateOf].creatureDigest`)
 - **violation** — Test-only production members — evidence:
   `ockham/src/additivity/predict.rs:174` — reason: fixed in this diff
   (`predict_bundle_loss`, `OutputCache::dir` and `OutputCache::key` removed;
@@ -253,7 +272,7 @@ This repository has no `CODING-STANDARDS.md`. The reviewer used
 
 New tests (all run on the final code):
 
-- `ockham/tests/additivity_bench.rs` (10 tests):
+- `ockham/tests/additivity_bench.rs` (11 tests):
   - end-to-end, every arm reported, parent untouched, nothing an ordinary run
     reads is left behind
   - the selected bundle is the best full score among each arm's picks
@@ -265,13 +284,18 @@ New tests (all run on the final code):
   - every many-member bundle gets an estimate
   - a three-neuron chain parent: bundles record non-empty `overlaps`,
     `cascadeNeurons` and `duplicates`, a duplicate creature is scored once,
-    and `hiddenRemoved` / `meetsBudget` follow the materialised creature.
+    and `hiddenRemoved` / `meetsBudget` follow the materialised creature;
+    every removed hidden neuron is named (member, overlap or
+    `cascadeNeurons`), and each duplicate's `creatureDigest` equals the digest
+    of the bundle it points at.
     The chain weights are large so the three chain cuts have clearly different
     losses and a fixed rank order; with near-equal losses the order fell to
     float noise and the duplicates the test asserts did not always appear
   - a held-out corpus of a different record count (120 against 300) runs to
     completion, and `validationParentScore` and each arm's
     `validationScore` / `validationError` equal the scorer's held-out results
+  - CLI refusal of `--out` naming a parent, the manifest, or a path inside the
+    training corpus (see the standards review)
 - `ockham/src/additivity/predict.rs` (6): linear-exact, nonlinear failure,
   cascade double-count, non-finite, mismatched lengths, empty loss.
 - `ockham/src/additivity/cache.rs` (12): round trip, one-field invalidation
@@ -291,8 +315,8 @@ the visibility of `SplitMix64` in `ockham/src/ordering.rs`, and the existing
 
 Results on the final code:
 
-- `cargo test -p neat_ai_ockham --test additivity_bench`: 10 passed.
-- `cargo test -p neat_ai_ockham --lib additivity`: 37 passed.
+- `cargo test -p neat_ai_ockham --test additivity_bench`: 11 passed.
+- `cargo test -p neat_ai_ockham --lib additivity`: 38 passed.
 - `--test cli`: 21 passed. `--test readme_contract`: 10 passed.
 - `./quality.sh < /dev/null`: exit 0, "All quality checks passed!". This
   covers shellcheck, codespell, markdownlint, clippy `-D warnings`, the full

@@ -145,7 +145,8 @@ pub struct BundleRow {
     pub overlaps: Vec<String>,
     /// Members that are not hidden neurons of the parent.
     pub missing: Vec<String>,
-    /// Neurons the cleanup cascade removed on top of the request.
+    /// Neurons removed on top of the request: the cleanup cascade plus neurons
+    /// the core folded into constant support (`PruneDetail::cascade_uuids`).
     pub cascade_neurons: Vec<String>,
     /// Hidden neurons removed, from the materialised structure.
     pub hidden_removed: usize,
@@ -179,6 +180,8 @@ pub struct DuplicateBundle {
     pub members: Vec<String>,
     /// Index of the scored bundle with the same creature.
     pub duplicate_of: usize,
+    /// SHA-256 of the shared creature; equals `bundles[duplicate_of].creature_digest`.
+    pub creature_digest: String,
 }
 
 /// A pool bundle the core engine refused to materialise.
