@@ -141,13 +141,18 @@ pub struct BundleRow {
     pub index: usize,
     /// Requested member UUIDs, in rank order.
     pub members: Vec<String>,
-    /// Members absent from the core's requested list (taken by an earlier cascade).
+    /// Members absent from the core's requested list (taken by an earlier
+    /// member's cascade, constant fold or splice).
     pub overlaps: Vec<String>,
     /// Members that are not hidden neurons of the parent.
     pub missing: Vec<String>,
     /// Neurons removed on top of the request: the cleanup cascade plus neurons
     /// the core folded into constant support (`PruneDetail::cascade_uuids`).
     pub cascade_neurons: Vec<String>,
+    /// Hidden pass-throughs the core cleanup spliced out
+    /// (`PruneDetail::spliced_neurons`): their sources now wire straight into
+    /// their targets. Kept apart from `cascade_neurons`, as core keeps them.
+    pub spliced_neurons: Vec<String>,
     /// Hidden neurons removed, from the materialised structure.
     pub hidden_removed: usize,
     /// Synapses removed, from the materialised structure.

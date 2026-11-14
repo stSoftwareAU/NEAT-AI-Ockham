@@ -782,14 +782,11 @@ fn the_bench_records_cascades_overlaps_and_duplicate_creatures() {
         for bundle in &row.bundles {
             // Every hidden neuron a bundle removed is named: a member the cut
             // took itself, or a neuron it stranded (cascade or constant fold).
-            assert_eq!(
-                bundle.hidden_removed,
-                bundle.members.len() - bundle.overlaps.len() + bundle.cascade_neurons.len(),
-                "bundle {} removed neurons it does not name: members {:?}, overlaps {:?}, cascade {:?}",
-                bundle.index,
-                bundle.members,
-                bundle.overlaps,
-                bundle.cascade_neurons
+            assert_names_every_removal(bundle);
+            assert!(
+                bundle.spliced_neurons.is_empty(),
+                "HARD_TANH keeps the chain splice-free: {:?}",
+                bundle.spliced_neurons
             );
             // Every named member is gone from the materialised creature, and
             // `meetsBudget` reads the materialised structure.
@@ -841,6 +838,97 @@ fn the_bench_records_cascades_overlaps_and_duplicate_creatures() {
         "no bundle removed more hidden neurons than it named"
     );
     assert!(duplicates_seen > 0, "no duplicate creature was recorded");
+}
+
+/// Every hidden neuron a bundle removed is named exactly once: a member the
+/// cut took itself, or a neuron it stranded (cascade or constant fold), or a
+/// pass-through the cleanup spliced out.
+fn assert_names_every_removal(bundle: &neat_ai_ockham::additivity::bench_report::BundleRow) {
+    assert_eq!(
+        bundle.hidden_removed,
+        bundle.members.len() - bundle.overlaps.len()
+            + bundle.cascade_neurons.len()
+            + bundle.spliced_neurons.len(),
+        "bundle {} removed neurons it does not name: members {:?}, overlaps {:?}, cascade {:?}, spliced {:?}",
+        bundle.index,
+        bundle.members,
+        bundle.overlaps,
+        bundle.cascade_neurons,
+        bundle.spliced_neurons
+    );
+}
+
+/// Four flat hidden neurons plus two splice shapes: `s_x -> m_x` where each
+/// `m_x` is a `MINIMUM` over `input-0` and `s_x`. Cutting `s_x` leaves `m_x`
+/// with one inward edge; core converts it to `IDENTITY` and splices it out,
+/// naming it only on `PruneDetail::spliced_neurons` (neat-core 0.22.0).
+fn splice_parent() -> CreatureExport {
+    let mut neurons = Vec::new();
+    let mut synapses = Vec::new();
+    for h in 0..4 {
+        let uuid = format!("f{h}");
+        neurons.push(neuron("hidden", &uuid, 0.01 * h as f64, Some("HARD_TANH")));
+        synapses.push(synapse("input-0", &uuid, 0.2 + 0.05 * h as f64));
+        synapses.push(synapse("input-1", &uuid, -0.1 + 0.03 * h as f64));
+        synapses.push(synapse(&uuid, "output-0", 0.3 + 0.1 * h as f64));
+    }
+    for (x, w) in [("a", 2.0), ("b", 3.0)] {
+        let s = format!("s_{x}");
+        let m = format!("m_{x}");
+        neurons.push(neuron("hidden", &s, 0.0, Some("HARD_TANH")));
+        neurons.push(neuron("hidden", &m, 0.0, Some("MINIMUM")));
+        synapses.push(synapse("input-1", &s, 0.5));
+        synapses.push(synapse("input-0", &m, 1.0));
+        synapses.push(synapse(&s, &m, w));
+        synapses.push(synapse(&m, "output-0", 0.4));
+    }
+    neurons.push(neuron("output", "output-0", 0.0, Some("IDENTITY")));
+    creature(INPUTS, OUTPUTS, neurons, synapses)
+}
+
+#[test]
+fn the_bench_names_neurons_the_core_splices_out() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.path("parents/elite.json"),
+        creature_to_json(&splice_parent()).unwrap(),
+    )
+    .unwrap();
+    // 8 hidden neurons, 2 removals each: draw all 28 pairs.
+    let mut manifest = fixture.manifest(vec![0.25], vec![1, 2], 1 << 30);
+    manifest.audit_pool = 28;
+
+    let report = run(&manifest);
+
+    let mut with_splice = 0;
+    let mut spliced_member = 0;
+    for row in report.rows.iter().filter(|r| r.feasible) {
+        assert_eq!(row.requested_removals, 2);
+        for bundle in &row.bundles {
+            assert_names_every_removal(bundle);
+            for uuid in &bundle.spliced_neurons {
+                assert!(
+                    uuid == "m_a" || uuid == "m_b",
+                    "only a MINIMUM left with one edge is spliced: {uuid}"
+                );
+                if bundle.members.contains(uuid) {
+                    spliced_member += 1;
+                    assert!(
+                        bundle.overlaps.contains(uuid),
+                        "a member an earlier splice took is an overlap: {bundle:?}"
+                    );
+                }
+            }
+            if !bundle.spliced_neurons.is_empty() {
+                with_splice += 1;
+            }
+        }
+    }
+    assert!(with_splice > 0, "no bundle recorded a spliced neuron");
+    assert!(
+        spliced_member > 0,
+        "no bundle had a member taken by an earlier splice"
+    );
 }
 
 /// Delegates to the faithful scorer and keeps every call's results.

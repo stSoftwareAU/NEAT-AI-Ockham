@@ -242,9 +242,11 @@ The report is JSON in camelCase.
   `bundles[]`, `audit` (full calls, record evaluations, milliseconds),
   `poolMaterialisationMs`, `estimateMs`, `validationParentScore` and `arms[]`.
 - Each `bundles[]` entry records members, `overlaps` (members an earlier
-  cascade already took), `missing`, `cascadeNeurons` (every neuron the cut
-  stranded beyond the request: the cleanup cascade plus neurons folded into
-  constant support), hidden, synapse and
+  member's cascade, constant fold or splice already took), `missing`,
+  `cascadeNeurons` (every neuron the cut stranded beyond the request: the
+  cleanup cascade plus neurons folded into constant support),
+  `splicedNeurons` (hidden pass-throughs the cleanup spliced out, their
+  sources wired straight into their targets), hidden, synapse and
   growth-unit reductions, `meetsBudget`, `creatureDigest`, full `score`,
   `error`, `complexityPenalty` (kept separate from the score), `truthDelta`,
   `additiveLoss` and `cachedOutput`.

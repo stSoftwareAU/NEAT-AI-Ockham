@@ -237,6 +237,7 @@ struct Scored {
     after: StructureSnapshot,
     requested: Vec<String>,
     cascade: Vec<String>,
+    spliced: Vec<String>,
     digest: String,
 }
 
@@ -612,6 +613,9 @@ impl<'a> ParentRun<'a> {
                         // folded into constant support are both what the cut
                         // stranded, so both are named.
                         let cascade = candidate.detail.cascade_uuids();
+                        // Pass-throughs the cleanup spliced out are removed
+                        // too, but core names them on a separate list.
+                        let spliced = candidate.detail.spliced_neurons.clone();
                         scored.push(Scored {
                             members,
                             member_uuids,
@@ -620,6 +624,7 @@ impl<'a> ParentRun<'a> {
                             after: candidate.after,
                             requested: candidate.detail.requested_neurons,
                             cascade,
+                            spliced,
                             digest,
                         });
                     }
@@ -703,6 +708,7 @@ impl<'a> ParentRun<'a> {
                         .cloned()
                         .collect(),
                     cascade_neurons: s.cascade.clone(),
+                    spliced_neurons: s.spliced.clone(),
                     hidden_removed,
                     synapses_removed: s.before.synapses.saturating_sub(s.after.synapses),
                     growth_units_removed: s.before.growth_units - s.after.growth_units,

@@ -175,10 +175,9 @@ flowchart LR
   reviewer: unrequested — reason: trust-boundary input validation that keeps
   the harness's disk, RAM and scorer cost bounded, as the issue's
   resource-limit section requires.
-- **unrequested** — `SplitMix64` widened to `pub(crate)` in
-  `ockham/src/ordering.rs` — reviewer: unrequested — reason: the random arm
-  and the pool draws reuse the existing seeded generator instead of copying
-  it.
+- **unrequested** — the random arm and the pool draws reuse the existing
+  seeded `SplitMix64` from `ockham/src/ordering.rs` (already `pub(crate)` on
+  `Develop`, so that file is unchanged) instead of copying it.
 
 Spec-reviewer partials that remain open in this diff: there is no wall-clock
 budget per arm (only an equal full-evaluation budget); audit and search share
@@ -309,13 +308,21 @@ New tests (all run on the final code):
 - `ockham/src/additivity/manifest.rs` (6): load and resolve, per-field
   refusals, oversize, representative threshold.
 
-No existing test was edited or removed. The only change to existing code is
-the visibility of `SplitMix64` in `ockham/src/ordering.rs`, and the existing
-`--lib ordering` tests pass.
+No existing test was edited or removed. Changes to existing code are limited
+to registering the module in `ockham/src/lib.rs`, the `bench-additivity`
+subcommand in `ockham/src/main.rs`, the README section, the version bump and
+the `.gitleaks.toml` repair; `ockham/src/ordering.rs` is unchanged.
+
+Every bundle also records `splicedNeurons`: hidden pass-throughs the core
+cleanup spliced out (`PruneDetail::spliced_neurons`), which `cascadeNeurons`
+does not cover. `the_bench_names_neurons_the_core_splices_out` drives a
+parent whose cuts leave single-edge `MINIMUM` targets and asserts each bundle
+names every hidden neuron it removed (red-checked: it fails with the list
+left empty).
 
 Results on the final code:
 
-- `cargo test -p neat_ai_ockham --test additivity_bench`: 11 passed.
+- `cargo test -p neat_ai_ockham --test additivity_bench`: 12 passed.
 - `cargo test -p neat_ai_ockham --lib additivity`: 38 passed.
 - `--test cli`: 21 passed. `--test readme_contract`: 10 passed.
 - `./quality.sh < /dev/null`: exit 0, "All quality checks passed!". This
