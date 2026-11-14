@@ -1,0 +1,157 @@
+{
+  "formatVersion": 1,
+  "conclusion": "inconclusive",
+  "studyKind": "synthetic-pilot",
+  "plannedRuns": 128,
+  "completedRuns": 128,
+  "failedRuns": 0,
+  "timeouts": 0,
+  "targetMisses": 0,
+  "representativeIndependentUnits": 0,
+  "uncertainty": "paired seed/model means clustered by independent unit; deterministic percentile bootstrap; Bonferroni familywise 95% across arms and targets; null for fewer than two units",
+  "timingEnvironment": "indicative measurements on a shared, parallel host; latency excludes scorer execution, IO and compilation",
+  "comparisons": [
+    {
+      "comparator": "per-neuron",
+      "requestedConnections": 30,
+      "expectedPairs": 16,
+      "matchedPairs": 0,
+      "independentUnits": 0,
+      "exclusions": {
+        "unmatched compute": 16
+      },
+      "pairs": [],
+      "fullScoreGain": null,
+      "heldOutScoreGain": null,
+      "globalWorstOutputMseIncrease": null,
+      "passesPredeclaredCriteria": false
+    },
+    {
+      "comparator": "per-depth",
+      "requestedConnections": 30,
+      "expectedPairs": 16,
+      "matchedPairs": 0,
+      "independentUnits": 0,
+      "exclusions": {
+        "unmatched compute": 16
+      },
+      "pairs": [],
+      "fullScoreGain": null,
+      "heldOutScoreGain": null,
+      "globalWorstOutputMseIncrease": null,
+      "passesPredeclaredCriteria": false
+    },
+    {
+      "comparator": "ockham",
+      "requestedConnections": 30,
+      "expectedPairs": 16,
+      "matchedPairs": 0,
+      "independentUnits": 0,
+      "exclusions": {
+        "unmatched compute": 16
+      },
+      "pairs": [],
+      "fullScoreGain": null,
+      "heldOutScoreGain": null,
+      "globalWorstOutputMseIncrease": null,
+      "passesPredeclaredCriteria": false
+    },
+    {
+      "comparator": "per-neuron",
+      "requestedConnections": 34,
+      "expectedPairs": 16,
+      "matchedPairs": 0,
+      "independentUnits": 0,
+      "exclusions": {
+        "unmatched compute": 16
+      },
+      "pairs": [],
+      "fullScoreGain": null,
+      "heldOutScoreGain": null,
+      "globalWorstOutputMseIncrease": null,
+      "passesPredeclaredCriteria": false
+    },
+    {
+      "comparator": "per-depth",
+      "requestedConnections": 34,
+      "expectedPairs": 16,
+      "matchedPairs": 4,
+      "independentUnits": 2,
+      "exclusions": {
+        "unmatched compute": 12
+      },
+      "pairs": [
+        {
+          "subject": "teacher-0",
+          "independentUnit": "teacher-0",
+          "seed": 7,
+          "achievedConnections": 34,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "teacher-0",
+          "independentUnit": "teacher-0",
+          "seed": 19,
+          "achievedConnections": 34,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "teacher-6",
+          "independentUnit": "teacher-6",
+          "seed": 7,
+          "achievedConnections": 34,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        },
+        {
+          "subject": "teacher-6",
+          "independentUnit": "teacher-6",
+          "seed": 19,
+          "achievedConnections": 34,
+          "fullScoreGain": 0.0,
+          "heldOutScoreGain": 0.0
+        }
+      ],
+      "fullScoreGain": {
+        "mean": 0.0,
+        "lower": 0.0,
+        "upper": 0.0
+      },
+      "heldOutScoreGain": {
+        "mean": 0.0,
+        "lower": 0.0,
+        "upper": 0.0
+      },
+      "globalWorstOutputMseIncrease": 3.0371619932564875e-15,
+      "passesPredeclaredCriteria": false
+    },
+    {
+      "comparator": "ockham",
+      "requestedConnections": 34,
+      "expectedPairs": 16,
+      "matchedPairs": 0,
+      "independentUnits": 0,
+      "exclusions": {
+        "unmatched compute": 16
+      },
+      "pairs": [],
+      "fullScoreGain": null,
+      "heldOutScoreGain": null,
+      "globalWorstOutputMseIncrease": null,
+      "passesPredeclaredCriteria": false
+    }
+  ],
+  "freezeMs": 38.028416,
+  "verificationMs": 45.746167,
+  "totalRunMs": 1109.3231260000002,
+  "freezeRecordsHashed": 3584,
+  "verificationRecordsHashed": 7168,
+  "searchStatisticsRecords": 32640,
+  "searchProposalAttempts": 1594,
+  "scorerReportedRecordEvaluations": 256512,
+  "scorerReservedRecordEvaluations": 267264,
+  "diagnosticRecordEvaluations": 32768,
+  "latencyRecordEvaluations": 393216
+}
