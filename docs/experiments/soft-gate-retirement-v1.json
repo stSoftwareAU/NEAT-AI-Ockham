@@ -1,0 +1,60 @@
+{
+  "formatVersion": 1,
+  "issue": 262,
+  "experimentSourceCommit": "91e0d56ee27627382989a09dbc31b54b64f90d20",
+  "scientificVerdict": "inconclusive-no-representative-comparison",
+  "maintenanceDecision": "remove-optional-runtime-implementation",
+  "maintenanceReason": "The optional gate fitter, family builder, manifest runtime and CLI have not earned ongoing maintenance through representative benefit evidence. Remove them conservatively; preserve historical source and evidence for reproducibility.",
+  "representativeCreatures": 0,
+  "representativePairs": 0,
+  "completedSyntheticPairs": 10,
+  "syntheticRecords": 512,
+  "calibrationRecords": 64,
+  "validationRecords": 128,
+  "negativeFindings": [
+    "Synthetic paired score interval is wholly negative.",
+    "Synthetic held-out error and latency criteria failed.",
+    "The preflight failed because scorer candidate filenames omitted the required baseline stem; corrected in archived implementation.",
+    "No mature creature/corpus pair was available. Synthetic fixtures cannot establish optimisation benefit."
+  ],
+  "removed": [
+    "ockham/src/soft_gate/",
+    "neat_ai_ockham soft-gate command",
+    "public neat_ai_ockham::soft_gate API",
+    "ockham/examples/soft_gate_smoke.rs",
+    "ockham/tests/soft_gate_cli.rs"
+  ],
+  "retained": "Immutable historical source and public evidence only; replay script builds the historical commit outside the maintained source tree.",
+  "replayCommand": "scripts/replay-soft-gate-smoke.sh /absolute/path/to/rust_scorer /tmp/new-soft-gate-replay < /dev/null",
+  "outstanding": "Representative controlled comparison remains unperformed. This removal is a maintenance decision, not evidence that the method fails on representative creatures.",
+  "evidence": [
+    {
+      "path": "soft-gate-smoke-manifest-v1.json",
+      "sha256": "5f9b4fcc8fc41bbd225267837b67e1a1919782993be0ae506e9e25506d7fc43b"
+    },
+    {
+      "path": "soft-gate-smoke-results-v1.json",
+      "sha256": "2820ea044514a6d6b66c3e39b3ddfb5b94120d671933e6a179f7233abbf24d4c"
+    },
+    {
+      "path": "soft-gate-smoke-preflight-results-v1.json",
+      "sha256": "2cd69145624fc90a67ed553af743f4c09a539dd47461ab29444bbfde895e2a4c"
+    },
+    {
+      "path": "soft-gate-smoke-full-results-v1.json.gz",
+      "sha256": "cea54346716bedb18a23d6866f97d5fe4a259884cda77a43082456b330a507d3"
+    },
+    {
+      "path": "soft-gate-replay-manifest-v1.json",
+      "sha256": "38fb598923ce0b2d9d04efbe342243695c5b9caf8df95d0e22e494903aeabf24"
+    },
+    {
+      "path": "soft-gate-replay-full-results-v1.json.gz",
+      "sha256": "99e2a29aa39a6eb199d137b78ca5e3915f19c1ccf8ffe2cad12894e307f8411a"
+    },
+    {
+      "path": "soft-gate-replay-verification-v1.json",
+      "sha256": "753738ef271b40a131f50744df1a6c656adce39edabdbe581711f19432ab2542"
+    }
+  ]
+}

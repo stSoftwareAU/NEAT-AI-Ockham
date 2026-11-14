@@ -1833,7 +1833,6 @@ noise floor is measured before it is trusted.
 neat_ai_ockham <creature.json> <training-data-dir> [OPTIONS]
 neat_ai_ockham report <experiments.jsonl> [...]
 neat_ai_ockham train-ordering <candidates.jsonl> [...] --out <model.json>
-neat_ai_ockham soft-gate --help
 neat_ai_ockham --help
 ```
 
@@ -1934,17 +1933,14 @@ The default ordering changes only if benchmark evidence shows better
 scorer-verified improvement economics. Until then `random` stays the default and
 remains available as the control for every comparison.
 
-## Soft-gate nested-budget experiment
+## Soft-gate experiment archive
 
-`soft-gate prepare` and `soft-gate run` provide an isolated, opt-in experiment
-that fits hidden-neuron gates on one frozen parent and compares a nested
-full/90%/75%/50% family with independent pruning searches. It requires a reviewed,
-checksummed manifest and uses core inference and pruning requests. The existing
-`train-ordering` command continues to fit the logistic candidate ranker.
-
-See the [v1 protocol, commands and limitations](docs/experiments/soft-gate-v1.md).
-Public smoke data verifies wiring; representative optimisation benefit remains
-unverified. Results are diagnostic and do not enter the population automatically.
+The #262 soft-gate investigation did not establish representative optimisation
+benefit. Its optional runtime implementation was removed because it had not
+justified its maintenance cost. The [archived protocol, negative smoke results
+and historical replay command](docs/experiments/soft-gate-v1.md) preserve the
+investigation without adding a production command. Representative comparison
+remains unperformed; the synthetic evidence supports no benefit claim.
 
 ## Cascade-aware structural saving
 
@@ -2722,7 +2718,6 @@ NEAT-AI-Ockham/
 │       ├── features.rs        # per-candidate feature vectors for ranking
 │       ├── priority.rs        # composite expected-pruning-value ranking
 │       ├── model.rs           # learned logistic ranker (ranking only)
-│       ├── soft_gate/         # opt-in manifest, gate fit, nested families and paired study
 │       ├── neighbourhood.rs   # bounded chain/branch group-cut proposals
 │       ├── telemetry.rs       # candidate feature/outcome training rows
 │       ├── throughput.rs      # screening funnel, per-hour rates, rescan ETAs

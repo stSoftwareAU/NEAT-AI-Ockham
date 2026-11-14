@@ -1,7 +1,7 @@
 //! `neat_ai_ockham` command-line interface.
 //!
-//! Ordinary optimisation, journal reporting, offline ordering training and
-//! explicitly opted-in research commands share this entry point.
+//! Issue #2: load the immutable incumbent, copy it, and score a full-corpus
+//! baseline. Pruning lands in later issues; this binary must not prune yet.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -177,11 +177,6 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Predeclare or run the isolated nested-budget soft-gate experiment.
-    SoftGate {
-        #[command(subcommand)]
-        command: SoftGateCommand,
-    },
     /// Summarise one or more `experiments.jsonl` journals.
     Report {
         /// Journal files.
@@ -218,69 +213,8 @@ enum Command {
     },
 }
 
-#[derive(Subcommand, Debug)]
-enum SoftGateCommand {
-    /// Write an editable manifest; performs no fitting or candidate evaluation.
-    Prepare {
-        creature: PathBuf,
-        training_data: PathBuf,
-        /// Exact scorer executable path, pinned by its full SHA-256.
-        #[arg(long)]
-        scorer: PathBuf,
-        #[arg(long)]
-        out: PathBuf,
-        #[arg(long, default_value_t = 256)]
-        calibration_records: u64,
-        #[arg(long, default_value_t = 256)]
-        validation_records: u64,
-    },
-    /// Run the locked manifest into a new directory. Results remain diagnostic.
-    Run {
-        manifest: PathBuf,
-        #[arg(long)]
-        manifest_sha256: String,
-        #[arg(long)]
-        out: PathBuf,
-    },
-}
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Some(Command::SoftGate { command }) = &cli.command {
-        let result = match command {
-            SoftGateCommand::Prepare {
-                creature,
-                training_data,
-                scorer,
-                out,
-                calibration_records,
-                validation_records,
-            } => neat_ai_ockham::soft_gate::prepare_manifest(
-                creature,
-                training_data,
-                scorer,
-                out,
-                *calibration_records,
-                *validation_records,
-            )
-            .map(|digest| serde_json::json!({ "manifestSha256": digest })),
-            SoftGateCommand::Run {
-                manifest,
-                manifest_sha256,
-                out,
-            } => neat_ai_ockham::soft_gate::run_manifest(manifest, manifest_sha256, out),
-        };
-        return match result {
-            Ok(value) => {
-                println!("{value}");
-                ExitCode::SUCCESS
-            }
-            Err(error) => {
-                eprintln!("{error}");
-                ExitCode::FAILURE
-            }
-        };
-    }
     if let Some(Command::TrainOrdering {
         logs,
         out,

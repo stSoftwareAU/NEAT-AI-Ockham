@@ -1,9 +1,18 @@
 # Soft-gate nested-budget experiment, v1
 
-This opt-in research command learns one ranking on one supplied creature. It
-does not change the ordinary optimiser or install a population candidate.
-Representative NEAT-AI benefit is **unverified**. The public smoke generator
-exercises wiring; its untrained synthetic data cannot establish such a benefit.
+The optional runtime implementation was **removed** after the investigation
+failed to establish representative benefit. The maintained binary has no
+`soft-gate` subcommand or library API. This document records the historical
+protocol; its descriptions below apply to the pinned archived implementation,
+not to features installed by the current tree.
+
+The [maintenance decision](soft-gate-retirement-v1.json) distinguishes two
+conclusions: the scientific result is inconclusive because actual coverage is
+**zero representative creatures and zero representative pairs**; the optional
+implementation has not earned its maintenance cost and is removed now. No
+optimisation benefit or representative negative result is claimed. The synthetic
+run's negative score interval, failed held-out-error and latency criteria, and
+failed first preflight remain recorded rather than being discarded.
 
 ## Method pin and adaptations
 
@@ -127,33 +136,49 @@ the performance criteria records a removal decision for the optional
 implementation; an absent or cost-unmatched representative study is
 inconclusive and does not earn a deployment or default change.
 
-## Commands and artefacts
+## Historical replay and artefacts
 
-Build the binary before preparation; rebuilding changes its pinned checksum.
-Keep real manifests, corpora, candidate files and results in private storage.
+The source at commit `91e0d56ee27627382989a09dbc31b54b64f90d20` contains the
+complete experimental implementation, correctness tests and public generator.
+It is retained in git history rather than compiled into the maintained library
+or binary. From a full checkout containing that commit, with a built real scorer,
+run:
 
 ```bash
-cargo build --release -p neat_ai_ockham < /dev/null
-neat_ai_ockham soft-gate prepare parent.json training/ \
-  --scorer /absolute/path/to/rust_scorer --out manifest.json \
-  --calibration-records 256 --validation-records 256
-# Review/edit manifest.json, then record its SHA-256 before running.
-timeout 21600 neat_ai_ockham soft-gate run manifest.json \
-  --manifest-sha256 <sha256-of-reviewed-manifest> --out new-study/ < /dev/null
+scripts/replay-soft-gate-smoke.sh /absolute/path/to/rust_scorer \
+  /tmp/new-soft-gate-replay < /dev/null
 ```
 
-On macOS use `gtimeout` in place of `timeout`. Resource limits are per family;
-the outer timeout must also cover every requested paired seed.
+This requires Git, Cargo/Rust from the pinned toolchain, Python 3, tar and GNU
+`timeout` (use a GNU timeout on the command path on macOS). It exports only the
+pinned historical source into a temporary directory, builds it with `--locked`,
+and regenerates the exact synthetic parent/corpus. Their checksums must match
+the archived manifest. The supplied scorer is copied and checksummed; the script
+makes no claim that an arbitrary scorer matches the original scorer binary.
+`prepare` then records fresh absolute paths, hardware, executable/scorer pins and
+preparation costs. The historical seeds, split sizes, fit/search limits and
+success thresholds are copied from the archived declaration before locking the
+new manifest SHA-256 and starting any fitting or evaluation. An existing output
+directory is refused. Artefacts are private on Unix (`umask 077`). The historical
+source export is removed on exit; the copied binaries, generated inputs, new
+`manifest.json`, `manifest.sha256`, `replay.json` and study outputs remain.
 
-`new-study/manifest.json` preserves the exact declaration. `results.json`
-contains paired distributions/uncertainty, failures, actual split coverage,
-costs, candidate counts/identities, rewrite compensation, full scorer results,
-held-out MSE, inference latency samples and error/growth and error/latency
-Pareto flags. Candidate JSON files remain under `seed-<seed>-<arm>/candidates/`:
-`baseline.json` is the full parent and `c1.json`–`c3.json` are the reduced targets.
-Only a full MSE scorer response with the complete corpus record count and no
-sub-sampling may mark an authoritative improvement over the full parent.
-This diagnostic flag does not publish `best.json` or adopt a prune.
+This reproduces the protocol, not identical build bytes, shared-host timings or
+cost-matching outcomes. The original declaration and results are unchanged.
+`replay.json` links the source commit and original/new manifest checksums. The
+six-hour timeout bounds the run phase; a failed scorer or family writes the
+historical harness's failure report, while an external timeout can interrupt
+before that report is written. Build/input-generation failures return nonzero.
+Representative comparison remains unperformed; this command does not turn
+synthetic data into representative evidence.
+
+`study/results.json` contains paired distributions/uncertainty, failures, actual
+split coverage, costs, candidate counts/identities, rewrite compensation, full
+scorer results, held-out MSE, inference latency samples and error/growth and
+error/latency Pareto flags. Candidate JSON files remain under
+`seed-<seed>-<arm>/candidates/`: `baseline.json` is the full parent and `c1.json`–
+`c3.json` are the reduced targets. These diagnostic files do not publish
+`best.json` or adopt a prune.
 
 ```mermaid
 flowchart TD
@@ -169,17 +194,12 @@ flowchart TD
     D --> E
 ```
 
-For a public wiring run, generate data with
-`cargo run --example soft_gate_smoke -- /tmp/new-smoke-directory` and prepare
-against its `parent.json` and `data/`. Keep `representative: false`. Reduced
-steps are appropriate for this smoke check; lock that change before running.
-Representative studies stay outside routine CI.
-
 The archived [preflight manifest](soft-gate-smoke-preflight-manifest-v1.json)
 and [failed preflight results](soft-gate-smoke-preflight-results-v1.json) record
 an adapter-contract failure found by the real scorer: the first harness omitted
-the reserved `baseline` stem. No family completed that preflight. The test scorer
-now uses the real output parser, and the harness writes `baseline.json`.
+the reserved `baseline` stem. No family completed that preflight. The archived
+corrected test scorer uses the real output parser, and the archived harness
+writes `baseline.json`.
 
 The corrected [smoke manifest](soft-gate-smoke-manifest-v1.json) was committed
 before running the release CLI. Its [paired results](soft-gate-smoke-results-v1.json)
@@ -202,5 +222,17 @@ conditional 95% interval of [−0.0002441, −0.0001222]. It also missed the
 held-out-error and latency criteria. Total charged family costs matched within
 the declared 10% tolerance. These are **synthetic wiring results on a shared,
 parallel host**, not evidence for mature NEAT-AI creatures. The predeclared
-representativeness prerequisite fails, so retention remains inconclusive.
-No production/default change or population acceptance follows from this run.
+representativeness prerequisite fails, so the scientific result remains
+inconclusive. The separate maintenance decision removes the optional runtime
+implementation because no representative benefit has justified keeping it.
+No population acceptance follows from this run.
+
+The historical replay command was also run in this retry with a freshly built
+archived executable and the available real scorer. Its [new manifest](soft-gate-replay-manifest-v1.json),
+[full results, compressed](soft-gate-replay-full-results-v1.json.gz) and
+[verification record](soft-gate-replay-verification-v1.json) preserve 20 completed
+families, ten paired seeds, zero failures and zero representative creatures.
+The paired score distribution and interval match the original synthetic run;
+the scorer hash and timing samples differ; the executable hash matches the
+original build. This verifies that the
+retired protocol can be replayed, without establishing representative benefit.

@@ -35,7 +35,6 @@
 //! | candidate feature vectors | [`features`] | #107 |
 //! | composite dead-wood priority | [`priority`] | #107 |
 //! | learned candidate ranker | [`model`] | #107 |
-//! | opt-in nested-budget soft-gate study | [`soft_gate`] | #262 |
 //! | candidate feature/outcome telemetry | [`telemetry`] | #107 |
 //! | structural neighbourhood group cuts | [`neighbourhood`] | #108 |
 //! | behavioural signatures + correlated-pair discovery | [`signature`] | #109 |
@@ -77,7 +76,6 @@ pub mod scorer;
 pub mod screening;
 pub mod sensitivity;
 pub mod signature;
-pub mod soft_gate;
 pub mod stats;
 pub mod substitute;
 pub mod sweep;
