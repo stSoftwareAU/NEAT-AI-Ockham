@@ -180,3 +180,25 @@ and [failed preflight results](soft-gate-smoke-preflight-results-v1.json) record
 an adapter-contract failure found by the real scorer: the first harness omitted
 the reserved `baseline` stem. No family completed that preflight. The test scorer
 now uses the real output parser, and the harness writes `baseline.json`.
+
+The corrected [smoke manifest](soft-gate-smoke-manifest-v1.json) was committed
+before running the release CLI. Its [paired results](soft-gate-smoke-results-v1.json)
+contain 10 complete pairs over 512 synthetic records: 64 calibration records,
+128 untouched validation records, and **zero representative creatures**. The
+archive omits repeated rewrite trails, retaining request/fold counts and summed
+bias deltas; normal command output includes the complete trails.
+
+| Target | Hidden neurons | Synapses | Growth units |
+|---|---:|---:|---:|
+| Full | 20 | 60 | 26.0 |
+| 90% | 18 | 54 | 23.4 |
+| 75% | 15 | 45 | 19.5 |
+| 50% | 10 | 30 | 13.0 |
+
+The gate arm's mean paired full-score difference was −0.0001831, with a
+conditional 95% interval of [−0.0002441, −0.0001222]. It also missed the
+held-out-error and latency criteria. Total charged family costs matched within
+the declared 10% tolerance. These are **synthetic wiring results on a shared,
+parallel host**, not evidence for mature NEAT-AI creatures. The predeclared
+representativeness prerequisite fails, so retention remains inconclusive.
+No production/default change or population acceptance follows from this run.
