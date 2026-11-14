@@ -1,0 +1,256 @@
+{
+  "formatVersion": 1,
+  "spec": {
+    "formatVersion": 1,
+    "studyKind": "synthetic-pilot",
+    "independenceStatement": "Eight independently generated layered networks on a zero-output synthetic task; repeated seeds within each network. Designed quota-aligned weak edges, not representative evolved creatures; selection protocol frozen before validation.",
+    "expectedIndependentUnits": 8,
+    "creatures": [
+      {
+        "id": "layered-0",
+        "independentUnit": "layered-0",
+        "provenance": "Generated matched-pilot v1: layered positive network on a zero-output task, four deliberately weak edges in quota-aligned regions; no fitting or evolution; synthetic controlled comparison only.",
+        "creature": "runs/connection-budget-matched-pilot-v1/layered-0/parent.json",
+        "training": "runs/connection-budget-matched-pilot-v1/layered-0/training",
+        "calibration": "runs/connection-budget-matched-pilot-v1/layered-0/calibration",
+        "validation": "runs/connection-budget-matched-pilot-v1/layered-0/validation"
+      },
+      {
+        "id": "layered-1",
+        "independentUnit": "layered-1",
+        "provenance": "Generated matched-pilot v1: layered positive network on a zero-output task, four deliberately weak edges in quota-aligned regions; no fitting or evolution; synthetic controlled comparison only.",
+        "creature": "runs/connection-budget-matched-pilot-v1/layered-1/parent.json",
+        "training": "runs/connection-budget-matched-pilot-v1/layered-1/training",
+        "calibration": "runs/connection-budget-matched-pilot-v1/layered-1/calibration",
+        "validation": "runs/connection-budget-matched-pilot-v1/layered-1/validation"
+      },
+      {
+        "id": "layered-2",
+        "independentUnit": "layered-2",
+        "provenance": "Generated matched-pilot v1: layered positive network on a zero-output task, four deliberately weak edges in quota-aligned regions; no fitting or evolution; synthetic controlled comparison only.",
+        "creature": "runs/connection-budget-matched-pilot-v1/layered-2/parent.json",
+        "training": "runs/connection-budget-matched-pilot-v1/layered-2/training",
+        "calibration": "runs/connection-budget-matched-pilot-v1/layered-2/calibration",
+        "validation": "runs/connection-budget-matched-pilot-v1/layered-2/validation"
+      },
+      {
+        "id": "layered-3",
+        "independentUnit": "layered-3",
+        "provenance": "Generated matched-pilot v1: layered positive network on a zero-output task, four deliberately weak edges in quota-aligned regions; no fitting or evolution; synthetic controlled comparison only.",
+        "creature": "runs/connection-budget-matched-pilot-v1/layered-3/parent.json",
+        "training": "runs/connection-budget-matched-pilot-v1/layered-3/training",
+        "calibration": "runs/connection-budget-matched-pilot-v1/layered-3/calibration",
+        "validation": "runs/connection-budget-matched-pilot-v1/layered-3/validation"
+      },
+      {
+        "id": "layered-4",
+        "independentUnit": "layered-4",
+        "provenance": "Generated matched-pilot v1: layered positive network on a zero-output task, four deliberately weak edges in quota-aligned regions; no fitting or evolution; synthetic controlled comparison only.",
+        "creature": "runs/connection-budget-matched-pilot-v1/layered-4/parent.json",
+        "training": "runs/connection-budget-matched-pilot-v1/layered-4/training",
+        "calibration": "runs/connection-budget-matched-pilot-v1/layered-4/calibration",
+        "validation": "runs/connection-budget-matched-pilot-v1/layered-4/validation"
+      },
+      {
+        "id": "layered-5",
+        "independentUnit": "layered-5",
+        "provenance": "Generated matched-pilot v1: layered positive network on a zero-output task, four deliberately weak edges in quota-aligned regions; no fitting or evolution; synthetic controlled comparison only.",
+        "creature": "runs/connection-budget-matched-pilot-v1/layered-5/parent.json",
+        "training": "runs/connection-budget-matched-pilot-v1/layered-5/training",
+        "calibration": "runs/connection-budget-matched-pilot-v1/layered-5/calibration",
+        "validation": "runs/connection-budget-matched-pilot-v1/layered-5/validation"
+      },
+      {
+        "id": "layered-6",
+        "independentUnit": "layered-6",
+        "provenance": "Generated matched-pilot v1: layered positive network on a zero-output task, four deliberately weak edges in quota-aligned regions; no fitting or evolution; synthetic controlled comparison only.",
+        "creature": "runs/connection-budget-matched-pilot-v1/layered-6/parent.json",
+        "training": "runs/connection-budget-matched-pilot-v1/layered-6/training",
+        "calibration": "runs/connection-budget-matched-pilot-v1/layered-6/calibration",
+        "validation": "runs/connection-budget-matched-pilot-v1/layered-6/validation"
+      },
+      {
+        "id": "layered-7",
+        "independentUnit": "layered-7",
+        "provenance": "Generated matched-pilot v1: layered positive network on a zero-output task, four deliberately weak edges in quota-aligned regions; no fitting or evolution; synthetic controlled comparison only.",
+        "creature": "runs/connection-budget-matched-pilot-v1/layered-7/parent.json",
+        "training": "runs/connection-budget-matched-pilot-v1/layered-7/training",
+        "calibration": "runs/connection-budget-matched-pilot-v1/layered-7/calibration",
+        "validation": "runs/connection-budget-matched-pilot-v1/layered-7/validation"
+      }
+    ],
+    "seeds": [
+      7,
+      19
+    ],
+    "connectionTargets": [
+      18,
+      16
+    ],
+    "scorer": "/var/tmp/vibe-cargo-target/NEAT-AI-Ockham-0403bd68/release/rust_scorer",
+    "scorerArgs": [
+      "--gpu",
+      "off",
+      "--cost",
+      "MSE"
+    ],
+    "limits": {
+      "proposalAttempts": 200,
+      "statisticsRecords": 10000,
+      "scorerCalls": 24,
+      "scorerRecordEvaluations": 100000,
+      "searchSeconds": 30,
+      "callTimeoutSeconds": 10,
+      "maxCorpusRecords": 10000
+    },
+    "success": {
+      "minimumIndependentUnits": 8,
+      "minimumMatchedFraction": 0.8,
+      "minimumScoreGain": 1e-6,
+      "maximumWorstOutputMseIncrease": 0.0001,
+      "computeRelativeTolerance": 0.1,
+      "bootstrapReplicates": 2000
+    },
+    "latency": {
+      "records": 128,
+      "warmupPasses": 2,
+      "measuredPasses": 10
+    },
+    "screenRate": 0.5,
+    "minImprovement": 1e-12,
+    "acceptance": "per-removal"
+  },
+  "specSha256": "97237fb2b45a108a9a9743ce7d8e484263bf3ed07c29ec44ad4769044a6927b3",
+  "inputs": [
+    {
+      "creatureSha256": "76661764c00882d47ae69b30868c992ebdd6b58c8c2c0786d3c40646dfc6a8b9",
+      "training": {
+        "sha256": "68ab63f20917f94bde4f62ec609aca26213a0d84a951a58bf54e9f0c716f9771",
+        "records": 256
+      },
+      "calibration": {
+        "sha256": "7f4e935acad1f18976331326ffae513d605a81f97b1872ba6c74a36181463c1c",
+        "records": 64
+      },
+      "validation": {
+        "sha256": "b978f0e4888ed87f944d834b7cc196f42dab56ad9159c279d4f6591206cb1ca1",
+        "records": 128
+      }
+    },
+    {
+      "creatureSha256": "1d3217a6a3a92a0ba4c79770a3601c8d451144783f91518d4a71ab68178f88bd",
+      "training": {
+        "sha256": "2dcdf9ee148a1bd64a878ed6a5d881eb9112c8e70c5b135fe65afcc669e7c875",
+        "records": 256
+      },
+      "calibration": {
+        "sha256": "b235e374556f6ba4c289abca5d0c91a69fadbb5a15664642a445e5fa5f224523",
+        "records": 64
+      },
+      "validation": {
+        "sha256": "7061e6083b5d8ac92fcfafe04daaebc5abfad434b7f462f20035a6ee935bb6e7",
+        "records": 128
+      }
+    },
+    {
+      "creatureSha256": "c93e27c0756ddcf82ba195cad28f2b267e9bf889a25fac1901e94dc855165314",
+      "training": {
+        "sha256": "03e0fb0fcaf22ecc37a316c5296219c43f20fc2a8bebbad290a22b74fc5dccc6",
+        "records": 256
+      },
+      "calibration": {
+        "sha256": "9c161da54d85900ddaacdf8fd665570e33e5ceecfa91f25821009403f821429b",
+        "records": 64
+      },
+      "validation": {
+        "sha256": "22df42189e006935374bb28f5817ab4d1f832ee8edec8fc60435df174d0ebc88",
+        "records": 128
+      }
+    },
+    {
+      "creatureSha256": "981716a3ffe8fa779fea6d51c15d6c7b73e65f20d9fcc5de05cc0132c1aaf7e6",
+      "training": {
+        "sha256": "98720bb183b71a1d8f464ac1dae2083f6d69df94ab6b64387f295f8b485dc7c5",
+        "records": 256
+      },
+      "calibration": {
+        "sha256": "16868a8a40edf4a632980c98ef7164fc3b1ee48aebf30477ff8046398ff29fb0",
+        "records": 64
+      },
+      "validation": {
+        "sha256": "906ab12b184e20d70ae2c01b8b89f151bc514691d2c80d0eb04c42200758c6f5",
+        "records": 128
+      }
+    },
+    {
+      "creatureSha256": "eb5c204fdd4ab140ee41335f8a8eac6b5b7ef9e9104953fedfd39933716dfe82",
+      "training": {
+        "sha256": "73bff03b00234c3728937a1412c7d68d90af7f41be6d558456c22f50fd40c172",
+        "records": 256
+      },
+      "calibration": {
+        "sha256": "99a1a8f70d81a0ad43f4b1d8d0c085a7ac0e15648254f5b1c51a9e8f82315b3e",
+        "records": 64
+      },
+      "validation": {
+        "sha256": "cbfdc4e57c73407ed8586223fa384b27b4e6672f7c68729e05cc591f13a0fba8",
+        "records": 128
+      }
+    },
+    {
+      "creatureSha256": "80de54b8f44b75e5f85d29d19adc8a525d229cce74ba13b6a23d8f56f26aee2c",
+      "training": {
+        "sha256": "6fd4b60c0577fce3a9726ffea68f3c3e25d318da7d6db415ea77266a0c5d8e38",
+        "records": 256
+      },
+      "calibration": {
+        "sha256": "edf71ab4f5d37985b158af0324df8f2ee0d6b0fe3155385473442ac91c3c1f07",
+        "records": 64
+      },
+      "validation": {
+        "sha256": "a3c54a7c1a89d264391f06f6cf5d13edd9562cc75c612cf709c29bb47be1a32a",
+        "records": 128
+      }
+    },
+    {
+      "creatureSha256": "a845e69914724b5e998f7e397a967d97d03dcd522e3c8fcd745781badae88224",
+      "training": {
+        "sha256": "b589453d28873ae29b44e9c69537cea46a14e26687edb6789631279f70886e90",
+        "records": 256
+      },
+      "calibration": {
+        "sha256": "e9108dec3535fa15fc4b5ad3c7b02fa2a0ff25a632f69123b4da349438d5679a",
+        "records": 64
+      },
+      "validation": {
+        "sha256": "512ed2acbb22e8448b43c2d042c9b2e4241788347e8ae8a65dc11b0a7be8cebd",
+        "records": 128
+      }
+    },
+    {
+      "creatureSha256": "e58e71206e26f71c241d7d13d3e00b385a4208a0e654f034411f29e3e8d7dd7c",
+      "training": {
+        "sha256": "b03baaf51ad322bfc7ba724f9434047ce259aeae76a7ca95cf3a02306831d372",
+        "records": 256
+      },
+      "calibration": {
+        "sha256": "923142c8c53d7bc587c4b6ad1496db772cc7ff6c7d8a362552a330630e3dfa19",
+        "records": 64
+      },
+      "validation": {
+        "sha256": "61cf43c2d29edaa6587332079a54432fbeb747874dab9b379aa302b820af04b1",
+        "records": 128
+      }
+    }
+  ],
+  "sourceSha256": "ec315f3a95c1b9b9d062b1ce84ecb5016821fc580eb71f7d780bb06e7d7722d0",
+  "executableSha256": "3dc64a7763296a6b82851cfe6209c2a9746eee35a4e58dffbe01e79749e3392c",
+  "scorerSha256": "d057a3349da1c28e1319d7e235491597517581b17fda21ea1cf8f0dd55ffbbf7",
+  "codeRevision": "62d1a62b17b7bc58222d8dd14de929a97ea54151",
+  "crateVersion": "0.1.92",
+  "paperVersion": "2611.09233v1",
+  "paperTextSha256": "786335336bdeaf76ce456aabf353177039ce76310a5f9963b580cdb540c71da3",
+  "freezeMs": 38.318208999999996,
+  "frozenAtUnix": 1794628577,
+  "scorerEnvironmentSha256": "5aebb32b6467d5f405b91c186d4bac5be97ece5b1d98ef48459652444e04a5ad"
+}

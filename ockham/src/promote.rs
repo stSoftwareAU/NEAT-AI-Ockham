@@ -46,14 +46,15 @@ const KIND_GROUP_MIN: usize = 2;
 pub struct FullCandidate {
     /// Cohort file stem.
     pub stem: String,
-    /// `individual`, `synapse`, `group` or `bundle`.
+    /// `individual`, `synapse`, `group`, `bundle` or a prebuilt `proposal`.
     ///
     /// A single edge cut is its own kind (Issue #138): it is scored and
     /// accepted exactly as an individual is, but it removes no hidden neuron,
     /// so the accept series can only tell the two apart if the cohort says
     /// which one it was.
     pub kind: &'static str,
-    /// Hidden UUIDs applied, in order.
+    /// Visit keys applied, in order; empty for a prebuilt proposal whose
+    /// provenance is recorded by its caller.
     pub uuids: Vec<String>,
     /// Full-corpus score.
     pub score: f64,
@@ -611,13 +612,7 @@ pub fn evaluate_full(
         if is_solo(kind) && cand.delta <= cfg.min_improvement {
             sample_false_positives.push(cand.uuids[0].clone());
         }
-        if cand.delta > cfg.min_improvement {
-            let json = creature_to_json(&creature).map_err(|e| e.to_string())?;
-            let winner = LocalWinner {
-                checksum: sha256_hex(json.as_bytes()),
-                candidate: cand.clone(),
-                creature: creature.clone(),
-            };
+        if let Some(winner) = local_winner(&cand, &creature, cfg.min_improvement)? {
             let take = match &best {
                 None => true,
                 Some((score, _, _)) => cand.score > *score,
@@ -661,6 +656,73 @@ pub fn evaluate_full(
         dropped_bundles,
         capped_plans: plans.dropped,
     })
+}
+
+/// Score one canonical prebuilt proposal beside its immutable parent on the
+/// full corpus, using the same strict local-win rule as [`evaluate_full`].
+///
+/// This entry point supports opt-in research plans spanning several edge
+/// removals without representing them as a sampled neuron or edge visit.
+/// It returns the measured proposal and the authoritative winner, if any;
+/// it does not publish a creature or perform population re-entry.
+/// `dir` must be a new directory, keeping stale cohort entries out of scoring.
+///
+/// # Errors
+///
+/// Invalid creatures or threshold, an existing directory, IO faults, scorer
+/// failures, missing results and non-finite results are errors.
+pub fn evaluate_full_proposal(
+    scorer: &dyn DirectoryScorer,
+    training_dir: &Path,
+    incumbent: &CreatureExport,
+    proposal: &CreatureExport,
+    min_improvement: f64,
+    dir: &Path,
+) -> Result<(FullCandidate, Option<LocalWinner>), String> {
+    validate_creature(incumbent).map_err(|e| e.to_string())?;
+    validate_creature(proposal).map_err(|e| e.to_string())?;
+    if !min_improvement.is_finite() || min_improvement <= 0.0 {
+        return Err("proposal: min_improvement must be finite and positive".into());
+    }
+    std::fs::create_dir(dir).map_err(|e| format!("new proposal cohort: {e}"))?;
+    write_creature(dir, "baseline", incumbent)?;
+    write_creature(dir, "proposal", proposal)?;
+    let results = scorer
+        .score_directory(dir, training_dir, ScorerMode::Full)
+        .map_err(|e| e.to_string())?;
+    crate::scorer::check_finite(&results).map_err(|e| e.to_string())?;
+    let baseline = results
+        .get("baseline")
+        .ok_or("proposal: scorer returned no baseline")?;
+    let result = results
+        .get("proposal")
+        .ok_or("proposal: scorer returned no proposal")?;
+    let candidate = full_candidate(
+        "proposal".into(),
+        "proposal",
+        Vec::new(),
+        proposal,
+        result,
+        baseline.score,
+    );
+    let winner = local_winner(&candidate, proposal, min_improvement)?;
+    Ok((candidate, winner))
+}
+
+fn local_winner(
+    candidate: &FullCandidate,
+    creature: &CreatureExport,
+    min_improvement: f64,
+) -> Result<Option<LocalWinner>, String> {
+    if candidate.delta.partial_cmp(&min_improvement) != Some(std::cmp::Ordering::Greater) {
+        return Ok(None);
+    }
+    let json = creature_to_json(creature).map_err(|e| e.to_string())?;
+    Ok(Some(LocalWinner {
+        checksum: sha256_hex(json.as_bytes()),
+        candidate: candidate.clone(),
+        creature: creature.clone(),
+    }))
 }
 
 /// One cohort entry before it is written and scored.

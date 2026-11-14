@@ -80,7 +80,7 @@ implementation of each in the same migration:
 |---|---|
 | Hidden-neuron prune | `prune::prune_hidden_neuron` → core `prune_neuron`. `ablation::ablate_mean` is gone. |
 | Neighbourhood group cut (#108) | `prune::prune_hidden_group` → core `prune_neuron`, one member at a time against the creature the last request returned. `ablation::ablate_group` is gone. |
-| Synapse prune (#133, #135) | `prune::prune_edge` → core `prune_synapse`, naming the `(from, to, role)` triple. `ablation::ablate_synapse` is gone. |
+| Synapse prune (#133, #135) | `prune::prune_edge` → core `prune_synapse`, choosing the first listed role of a pair. `prune::prune_edge_by_key` requires the exact `(from, to, role)` for research allocation. Both use the same compensation, reporting and validation path. `ablation::ablate_synapse` is gone. |
 
 Ockham keeps what core does not own: which candidate to try, the statistics it
 measures, the sampled screen, the full-corpus scoring, bundling and replay, the
