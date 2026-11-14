@@ -1,3 +1,4 @@
-[allowlist]
-  description = "Allowlist for known false positives"
-  commits = []
+title = "NEAT-AI-Ockham gitleaks config"
+
+[extend]
+useDefault = true
