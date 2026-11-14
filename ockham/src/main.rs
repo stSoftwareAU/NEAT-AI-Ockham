@@ -1,7 +1,7 @@
 //! `neat_ai_ockham` command-line interface.
 //!
-//! Issue #2: load the immutable incumbent, copy it, and score a full-corpus
-//! baseline. Pruning lands in later issues; this binary must not prune yet.
+//! Ordinary optimisation, journal reporting, offline ordering training and
+//! explicitly opted-in research commands share this entry point.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -248,15 +248,37 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Some(Command::SoftGate { command }) = &cli.command {
         let result = match command {
-            SoftGateCommand::Prepare { creature, training_data, scorer, out, calibration_records, validation_records } =>
-                neat_ai_ockham::soft_gate::prepare_manifest(creature, training_data, scorer, out, *calibration_records, *validation_records)
-                    .map(|digest| serde_json::json!({ "manifestSha256": digest })),
-            SoftGateCommand::Run { manifest, manifest_sha256, out } =>
-                neat_ai_ockham::soft_gate::run_manifest(manifest, manifest_sha256, out),
+            SoftGateCommand::Prepare {
+                creature,
+                training_data,
+                scorer,
+                out,
+                calibration_records,
+                validation_records,
+            } => neat_ai_ockham::soft_gate::prepare_manifest(
+                creature,
+                training_data,
+                scorer,
+                out,
+                *calibration_records,
+                *validation_records,
+            )
+            .map(|digest| serde_json::json!({ "manifestSha256": digest })),
+            SoftGateCommand::Run {
+                manifest,
+                manifest_sha256,
+                out,
+            } => neat_ai_ockham::soft_gate::run_manifest(manifest, manifest_sha256, out),
         };
         return match result {
-            Ok(value) => { println!("{value}"); ExitCode::SUCCESS }
-            Err(error) => { eprintln!("{error}"); ExitCode::FAILURE }
+            Ok(value) => {
+                println!("{value}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
         };
     }
     if let Some(Command::TrainOrdering {

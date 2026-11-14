@@ -1833,6 +1833,7 @@ noise floor is measured before it is trusted.
 neat_ai_ockham <creature.json> <training-data-dir> [OPTIONS]
 neat_ai_ockham report <experiments.jsonl> [...]
 neat_ai_ockham train-ordering <candidates.jsonl> [...] --out <model.json>
+neat_ai_ockham soft-gate --help
 neat_ai_ockham --help
 ```
 
@@ -1932,6 +1933,18 @@ flowchart LR
 The default ordering changes only if benchmark evidence shows better
 scorer-verified improvement economics. Until then `random` stays the default and
 remains available as the control for every comparison.
+
+## Soft-gate nested-budget experiment
+
+`soft-gate prepare` and `soft-gate run` provide an isolated, opt-in experiment
+that fits hidden-neuron gates on one frozen parent and compares a nested
+full/90%/75%/50% family with independent pruning searches. It requires a reviewed,
+checksummed manifest and uses core inference and pruning requests. The existing
+`train-ordering` command continues to fit the logistic candidate ranker.
+
+See the [v1 protocol, commands and limitations](docs/experiments/soft-gate-v1.md).
+Public smoke data verifies wiring; representative optimisation benefit remains
+unverified. Results are diagnostic and do not enter the population automatically.
 
 ## Cascade-aware structural saving
 

@@ -34,11 +34,24 @@ fn prepare(root: &Path) -> (std::path::PathBuf, String) {
     .unwrap();
     let manifest = root.join("manifest.json");
     let out = cli(&[
-        "soft-gate", "prepare", creature.to_str().unwrap(), data.to_str().unwrap(),
-        "--scorer", "/usr/bin/false", "--out", manifest.to_str().unwrap(),
-        "--calibration-records", "8", "--validation-records", "4",
+        "soft-gate",
+        "prepare",
+        creature.to_str().unwrap(),
+        data.to_str().unwrap(),
+        "--scorer",
+        "/usr/bin/false",
+        "--out",
+        manifest.to_str().unwrap(),
+        "--calibration-records",
+        "8",
+        "--validation-records",
+        "4",
     ]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     let bytes = std::fs::read(&manifest).unwrap();
     assert_eq!(report["manifestSha256"], sha256_hex(&bytes));
@@ -56,8 +69,13 @@ fn preparation_locks_inputs_and_run_refuses_manifest_drift() {
     bytes.push(b' ');
     std::fs::write(&manifest, bytes).unwrap();
     let out = cli(&[
-        "soft-gate", "run", manifest.to_str().unwrap(), "--manifest-sha256", &digest,
-        "--out", root.path().join("results").to_str().unwrap(),
+        "soft-gate",
+        "run",
+        manifest.to_str().unwrap(),
+        "--manifest-sha256",
+        &digest,
+        "--out",
+        root.path().join("results").to_str().unwrap(),
     ]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("manifest checksum mismatch"));
@@ -74,14 +92,80 @@ fn scorer_failure_is_a_failed_experiment_with_a_durable_record() {
     let bytes = serde_json::to_vec_pretty(&value).unwrap();
     std::fs::write(&manifest, &bytes).unwrap();
     let out = cli(&[
-        "soft-gate", "run", manifest.to_str().unwrap(), "--manifest-sha256", &sha256_hex(&bytes),
-        "--out", root.path().join("results").to_str().unwrap(),
+        "soft-gate",
+        "run",
+        manifest.to_str().unwrap(),
+        "--manifest-sha256",
+        &sha256_hex(&bytes),
+        "--out",
+        root.path().join("results").to_str().unwrap(),
     ]);
     assert!(!out.status.success());
-    let report: Value = serde_json::from_slice(
-        &std::fs::read(root.path().join("results/results.json")).unwrap(),
-    ).unwrap();
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(root.path().join("results/results.json")).unwrap())
+            .unwrap();
     assert_eq!(report["status"], "failed");
-    assert!(report["failures"][0].as_str().unwrap().contains("scorer failed"));
+    assert!(
+        report["failures"][0]
+            .as_str()
+            .unwrap()
+            .contains("scorer failed")
+    );
     assert!(!root.path().join("results/best.json").exists());
+}
+
+#[test]
+fn changed_data_is_refused_before_any_experiment_output() {
+    let root = tempfile::tempdir().unwrap();
+    let (manifest, digest) = prepare(root.path());
+    let data = root.path().join("data/0.bin");
+    let mut bytes = std::fs::read(&data).unwrap();
+    bytes[32] ^= 1;
+    std::fs::write(data, bytes).unwrap();
+    let out = cli(&[
+        "soft-gate",
+        "run",
+        manifest.to_str().unwrap(),
+        "--manifest-sha256",
+        &digest,
+        "--out",
+        root.path().join("results").to_str().unwrap(),
+    ]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("corpus checksum mismatch"));
+    assert!(!root.path().join("results").exists());
+}
+
+#[test]
+fn exhausted_budget_records_failure_and_preserves_the_parent() {
+    let root = tempfile::tempdir().unwrap();
+    let (manifest, _) = prepare(root.path());
+    let parent = std::fs::read(root.path().join("parent.json")).unwrap();
+    let mut value: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    value["limitsPerFamily"]["recordEvaluations"] = 1.into();
+    let bytes = serde_json::to_vec_pretty(&value).unwrap();
+    std::fs::write(&manifest, &bytes).unwrap();
+    let out = cli(&[
+        "soft-gate",
+        "run",
+        manifest.to_str().unwrap(),
+        "--manifest-sha256",
+        &sha256_hex(&bytes),
+        "--out",
+        root.path().join("results").to_str().unwrap(),
+    ]);
+    assert!(!out.status.success());
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(root.path().join("results/results.json")).unwrap())
+            .unwrap();
+    assert!(
+        report["failures"][0]
+            .as_str()
+            .unwrap()
+            .contains("budget exhausted")
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("parent.json")).unwrap(),
+        parent
+    );
 }

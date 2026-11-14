@@ -35,6 +35,7 @@
 //! | candidate feature vectors | [`features`] | #107 |
 //! | composite dead-wood priority | [`priority`] | #107 |
 //! | learned candidate ranker | [`model`] | #107 |
+//! | opt-in nested-budget soft-gate study | [`soft_gate`] | #262 |
 //! | candidate feature/outcome telemetry | [`telemetry`] | #107 |
 //! | structural neighbourhood group cuts | [`neighbourhood`] | #108 |
 //! | behavioural signatures + correlated-pair discovery | [`signature`] | #109 |

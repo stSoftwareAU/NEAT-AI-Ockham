@@ -48,7 +48,9 @@ impl Budget {
             || self.started.elapsed().as_secs_f64() + self.cost.preparation_seconds
                 > self.limits.seconds
         {
-            return Err("family budget exhausted (includes preparation and final evaluation)".into());
+            return Err(
+                "family budget exhausted (includes preparation and final evaluation)".into(),
+            );
         }
         Ok(())
     }
@@ -75,8 +77,8 @@ impl Budget {
 
     fn finish(mut self) -> Result<Cost, String> {
         self.check()?;
-        self.cost.elapsed_seconds = self.started.elapsed().as_secs_f64()
-            + self.cost.preparation_seconds;
+        self.cost.elapsed_seconds =
+            self.started.elapsed().as_secs_f64() + self.cost.preparation_seconds;
         Ok(self.cost)
     }
 }
