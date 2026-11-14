@@ -14,7 +14,10 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
-    let commit = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    // `-dirty` marks a build from uncommitted edits, so a report never names a
+    // commit that did not produce it.
+    let commit = git(&["describe", "--always", "--dirty", "--abbrev=40"])
+        .unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=OCKHAM_GIT_COMMIT={commit}");
     // `logs/HEAD` changes on every commit and checkout in this worktree.
     for path in ["HEAD", "logs/HEAD"] {
@@ -23,4 +26,5 @@ fn main() {
         }
     }
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src");
 }

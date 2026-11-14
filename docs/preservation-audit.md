@@ -217,8 +217,9 @@ top-level fields are:
   sentence is a separate top-level field, not part of `evidence`.
 - `method`: the formula text and the source note, which says the abstract only
   was used.
-- `versions`: the crate version, `gitCommit` (from `git rev-parse HEAD` at
-  build time, or `"unknown"` without git; uncommitted edits are not detected),
+- `versions`: the crate version, `gitCommit` (from `git describe --always
+  --dirty` at build time, with `-dirty` for uncommitted edits, or `"unknown"`
+  without git),
   SHA-256 of the parent and of each child, and the
   identity of each corpus.
 - `manifest`: an echo of the input manifest.
