@@ -265,7 +265,10 @@ New tests (all run on the final code):
   - every many-member bundle gets an estimate
   - a three-neuron chain parent: bundles record non-empty `overlaps`,
     `cascadeNeurons` and `duplicates`, a duplicate creature is scored once,
-    and `hiddenRemoved` / `meetsBudget` follow the materialised creature
+    and `hiddenRemoved` / `meetsBudget` follow the materialised creature.
+    The chain weights are large so the three chain cuts have clearly different
+    losses and a fixed rank order; with near-equal losses the order fell to
+    float noise and the duplicates the test asserts did not always appear
   - a held-out corpus of a different record count (120 against 300) runs to
     completion, and `validationParentScore` and each arm's
     `validationScore` / `validationError` equal the scorer's held-out results

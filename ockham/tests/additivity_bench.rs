@@ -697,6 +697,12 @@ fn every_many_member_bundle_gets_a_cached_output_estimate_with_ample_limits() {
 /// leaves `c_a` with nowhere to go. Every activation stays in `HARD_TANH`'s
 /// linear band, because a single-input `IDENTITY` neuron is spliced into a
 /// direct edge by the core cleanup and would never leave the bundle.
+///
+/// The chain weights are large enough that each cut costs a clearly different
+/// loss, so the ranker orders the three chain neurons by that gap rather than
+/// by float noise or the uuid tie-break. Whether two cut sets collapse to one
+/// creature depends on that order (`a`, `b`, `c` in rank order yields none), so
+/// the fixture must pin it.
 fn chain_parent() -> CreatureExport {
     let mut neurons = Vec::new();
     let mut synapses = Vec::new();
@@ -713,8 +719,8 @@ fn chain_parent() -> CreatureExport {
     neurons.push(neuron("output", "output-0", 0.0, Some("IDENTITY")));
     synapses.push(synapse("input-0", "c_a", 0.4));
     synapses.push(synapse("input-1", "c_a", 0.2));
-    synapses.push(synapse("c_a", "c_b", 0.5));
-    synapses.push(synapse("c_b", "c_c", 0.7));
+    synapses.push(synapse("c_a", "c_b", 3.0));
+    synapses.push(synapse("c_b", "c_c", 3.0));
     synapses.push(synapse("c_c", "output-0", 0.6));
     creature(INPUTS, OUTPUTS, neurons, synapses)
 }
@@ -729,8 +735,8 @@ fn the_bench_records_cascades_overlaps_and_duplicate_creatures() {
     .unwrap();
     let mut manifest = fixture.manifest(vec![0.3], vec![1, 2, 3], 1 << 30);
     // 7 proposable cuts, 3 removals each: draw all 35 sets. The pool is then
-    // the same whatever order the ranker puts the cuts in, so the chain's
-    // alternative cut sets that collapse to one creature are always present.
+    // the same whatever order the ranker puts the cuts in; the chain weights
+    // pin the rank order so the sets that collapse to one creature are present.
     manifest.audit_pool = 35;
 
     let report = run(&manifest);
