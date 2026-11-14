@@ -76,6 +76,7 @@ pub mod scorer;
 pub mod screening;
 pub mod sensitivity;
 pub mod signature;
+pub mod soft_gate;
 pub mod stats;
 pub mod substitute;
 pub mod sweep;
