@@ -43,11 +43,13 @@ unchanged. Part of #263.
 
 ### Undiscoverable Facts
 
-- **Paper:** on 2026-11-14 the host proxy refused every fetch with "proxy
-  refused the connection". The URLs tried were
-  `arxiv.org/{abs,pdf,html}/2610.27812`, `export.arxiv.org`, the Semantic
-  Scholar API, Hugging Face Papers and `paperswithcode.co`. Web search gives
-  only excerpts: SliMOO, TLIP single-layer probing, a task-layer prior and
+- **Paper:** on 2026-11-14 the host proxy refused every fetch, in three
+  rounds. The URLs tried were `arxiv.org/{abs,pdf,html}/2610.27812`,
+  `export.arxiv.org`, the Semantic Scholar API, Hugging Face Papers,
+  `paperswithcode.co`, `alphaxiv.org`, `scholar.archive.org` and the
+  `r.jina.ai` reader. The authors' promised code, `github.com/AMD-AGI/SliMOO`,
+  returns 404. Web search gives only excerpts: SliMOO v1 (2026-10-20), TLIP
+  single-layer probing with 8,192 tokens per task, a task-layer prior and
   NSGA-II.
 - **Scorer:** built from NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`
   (sha256 `d057a334…bbf7`), which has the same neat-core pin, v0.23.4, as
@@ -85,13 +87,13 @@ Pilot results (`docs/research/strata-pilot-v1/report.json`):
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **missing** — Read and pin the full method before reproducing it — evidence: `docs/strata-experiment.md` "Source paper (full text unread)" — reviewer: missing — reason: the full text is still unread, because every fetch was refused again on 2026-11-14. The bench reproduces the issue's formula, and the deviations are recorded.
+- **missing** — Read and pin the full method before reproducing it — evidence: `docs/strata-experiment.md` "Source paper (full text unread)" — reviewer: missing — reason: the full text is still unread. A third round of fetches on 2026-11-14 (arXiv, five mirrors and readers) was refused by the host proxy with a 403, and the authors' code repository `AMD-AGI/SliMOO` returns 404. The doc pins only `arXiv:2610.27812v1` and the search-excerpt notes. The bench reproduces the issue's formula, and the deviations are recorded.
 - **met** — First inspect current code, merged work and repository instructions. Reuse existing mechanisms — evidence: `ockham/examples/strata_pilot.rs` calls `strata::manifest::load`, `corpus::write_bin_file`, `fixtures` and `compile_creature`. The pilot runs through the merged `bench-strata` — reviewer: met
 - **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance — evidence: no `ockham/src/` change. The only new code is an example target — reviewer: met
 - **met** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria — evidence: `docs/research/strata-pilot-v1/manifest.json`, plus the pins and checksums in `report.md` — reviewer: met
 - **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks — evidence: `ockham/examples/strata_pilot.rs::tests::two_fresh_directories_are_byte_identical_and_load`, `rare_calibration_is_full_scale_in_input_three_only` and `existing_directory_is_refused_and_left_untouched`. `./quality.sh` passed at `3bc6f09` — reviewer: met
-- **partial** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage — evidence: `docs/research/strata-pilot-v1/report.md` "Reproduce" and `report.json` — reviewer: partial — reason: only a synthetic, non-discriminating run exists. Representative coverage is zero, and a representative run needs private corpora that this host does not have.
-- **partial** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs — evidence: the "Status" section of `docs/strata-experiment.md` and the pilot report — reviewer: partial — reason: the findings are recorded and no success is claimed. The removal decision still waits on a representative run.
+- **partial** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage — evidence: `docs/research/strata-pilot-v1/report.md` "Reproduce" and `report.json` — reviewer: partial — reason: only a synthetic, non-discriminating run exists. Representative coverage is zero. A representative run needs private corpora, and a re-check on 2026-11-14 found none on this host.
+- **partial** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs — evidence: the "Status" section of `docs/strata-experiment.md` and the pilot report — reviewer: partial — reason: the findings are recorded and no success is claimed. The removal decision still waits on a representative run, which this host cannot make. The pilot cannot discriminate between the arms, so it is not grounds for removal.
 - **met** — Keep public implementation and fixtures application-agnostic — evidence: generic stratum and neuron names, and hash-derived data only — reviewer: met
 - **met** — Leave unassigned until an implementer actively starts — evidence: this is a process criterion, and nothing in the diff contradicts it — reviewer: met
 

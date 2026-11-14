@@ -40,6 +40,18 @@ Scholar API, `huggingface.co/papers/2610.27812` and
 `paperswithcode.co/paper/129664`. Web-search excerpts again agree with the notes
 above, and the method remains unpinned.
 
+A third retry, also on 2026-11-14, got the same result. `curl` got a proxy
+`CONNECT` 403 for `arxiv.org/{abs,pdf}/2610.27812`, `export.arxiv.org`, the
+Semantic Scholar API, `alphaxiv.org`, `huggingface.co/papers`,
+`paperswithcode.co`, `scholar.archive.org` and the `r.jina.ai` reader. The
+fetch tool got "proxy refused the connection" for `arxiv.org/abs/2610.27812`,
+`arxiv.org/abs/2610.27812v1` and `arxiv.org/html/2610.27812`. The code the
+abstract promises, `github.com/AMD-AGI/SliMOO`, returned 404 from the GitHub
+API, so the method cannot be pinned from its code either. The only new fact,
+again from a search excerpt, is that TLIP profiles with 8,192 tokens per task.
+Until someone reads the full text, the reference is
+`arXiv:2610.27812v1`, the only version search shows.
+
 The excerpts describe these steps:
 
 - **Probing.** Task-layer importance profiling removes one layer or sublayer
