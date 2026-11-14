@@ -185,8 +185,9 @@ The corrected [smoke manifest](soft-gate-smoke-manifest-v1.json) was committed
 before running the release CLI. Its [paired results](soft-gate-smoke-results-v1.json)
 contain 10 complete pairs over 512 synthetic records: 64 calibration records,
 128 untouched validation records, and **zero representative creatures**. The
-archive omits repeated rewrite trails, retaining request/fold counts and summed
-bias deltas; normal command output includes the complete trails.
+compact archive omits repeated rewrite trails, retaining request/fold counts and
+summed bias deltas. The [full results JSON, compressed](soft-gate-smoke-full-results-v1.json.gz)
+preserves those trails; its decompressed SHA-256 is recorded in the compact archive.
 
 | Target | Hidden neurons | Synapses | Growth units |
 |---|---:|---:|---:|

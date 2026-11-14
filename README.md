@@ -2722,6 +2722,7 @@ NEAT-AI-Ockham/
 │       ├── features.rs        # per-candidate feature vectors for ranking
 │       ├── priority.rs        # composite expected-pruning-value ranking
 │       ├── model.rs           # learned logistic ranker (ranking only)
+│       ├── soft_gate/         # opt-in manifest, gate fit, nested families and paired study
 │       ├── neighbourhood.rs   # bounded chain/branch group-cut proposals
 │       ├── telemetry.rs       # candidate feature/outcome training rows
 │       ├── throughput.rs      # screening funnel, per-hour rates, rescan ETAs
@@ -2735,6 +2736,7 @@ NEAT-AI-Ockham/
 │   ├── blocked-reasons.md   # blocked codes, and the path built for the largest
 │   ├── pruning-ownership.md # design reference: rewrites belong in NEAT-AI-core
 │   ├── population-entry.md  # how cuts actually enter the live population
+│   ├── experiments/         # protocols, manifests and public smoke evidence
 │   └── incident-response.md # emergency dependency fast lane (SECURITY.md)
 ├── scripts/
 │   ├── runlib.sh          # canonical build → install → clean (owned by core)
