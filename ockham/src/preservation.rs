@@ -1253,13 +1253,21 @@ pub fn run_audit(manifest_path: &Path, out_path: &Path) -> Result<serde_json::Va
     validate_manifest(&manifest, &base)?;
 
     let parent_path = resolve(&base, &manifest.parent);
+    let cal_dir = resolve(&base, &manifest.calibration);
+    let val_dir = resolve(&base, &manifest.validation);
+    let child_paths: Vec<PathBuf> = manifest
+        .children
+        .iter()
+        .map(|spec| resolve(&base, &spec.creature))
+        .collect();
+    let mut files: Vec<&Path> = vec![manifest_path, parent_path.as_path()];
+    files.extend(child_paths.iter().map(PathBuf::as_path));
+    refuse_input_overwrite(out_path, &files, &[cal_dir.as_path(), val_dir.as_path()])?;
     let parent = load_incumbent(&parent_path)
         .map_err(|e| format!("parent '{}': {e}", parent_path.display()))?;
     let children = load_children(&manifest.children, &base, &parent.creature)?;
 
     let cfg = TrainingDataConfig::new(parent.creature.input, parent.creature.output);
-    let cal_dir = resolve(&base, &manifest.calibration);
-    let val_dir = resolve(&base, &manifest.validation);
     let cal_info = corpus_info(&cal_dir, &cfg).map_err(|e| format!("calibration corpus: {e}"))?;
     let val_info = corpus_info(&val_dir, &cfg).map_err(|e| format!("validation corpus: {e}"))?;
     let cal_records = split_records("calibration", manifest.max_records, &cal_info)?;
@@ -1370,8 +1378,112 @@ pub fn run_audit(manifest_path: &Path, out_path: &Path) -> Result<serde_json::Va
     Ok(value)
 }
 
+/// Refuse a report path that would replace an input or land inside an input
+/// corpus. `out` and its `<out>.tmp` sibling are both checked against every
+/// input file (the same path, a symlink or a hard link) and every input
+/// directory, because the report is renamed into place: `--out parent.json`
+/// would otherwise overwrite the supplied creature, which is never written to.
+fn refuse_input_overwrite(out: &Path, files: &[&Path], dirs: &[&Path]) -> Result<(), String> {
+    let mut tmp = out.as_os_str().to_owned();
+    tmp.push(".tmp");
+    for target in [out.to_path_buf(), PathBuf::from(tmp)] {
+        let resolved = resolved_target(&target);
+        for file in files {
+            let same_path = resolved.is_some() && resolved == std::fs::canonicalize(file).ok();
+            if same_path || same_inode(&target, file) {
+                return Err(format!(
+                    "report path '{}' would overwrite the input '{}'; choose another --out",
+                    target.display(),
+                    file.display()
+                ));
+            }
+        }
+        for dir in dirs {
+            if let (Some(r), Ok(d)) = (&resolved, std::fs::canonicalize(dir))
+                && r.starts_with(&d)
+            {
+                return Err(format!(
+                    "report path '{}' is inside the input corpus '{}'; choose another --out",
+                    target.display(),
+                    dir.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The canonical form of `path`, or of its parent joined with its file name
+/// when `path` does not exist yet.
+fn resolved_target(path: &Path) -> Option<PathBuf> {
+    if let Ok(found) = std::fs::canonicalize(path) {
+        return Some(found);
+    }
+    let name = path.file_name()?;
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    std::fs::canonicalize(parent).ok().map(|p| p.join(name))
+}
+
+/// Whether two existing paths are the same file (catches hard links).
+#[cfg(unix)]
+fn same_inode(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+        _ => false,
+    }
+}
+
+/// Whether two existing paths are the same file (paths only off Unix).
+#[cfg(not(unix))]
+fn same_inode(_: &Path, _: &Path) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_report_path_that_names_an_input_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("parent.json");
+        let corpus = tmp.path().join("corpus");
+        std::fs::write(&parent, "{}").unwrap();
+        std::fs::create_dir(&corpus).unwrap();
+        let files = [parent.as_path()];
+        let dirs = [corpus.as_path()];
+
+        let same = super::refuse_input_overwrite(&parent, &files, &dirs).unwrap_err();
+        assert!(same.contains("would overwrite the input"), "{same}");
+
+        let tmp_sibling = tmp.path().join("parent");
+        std::fs::rename(&parent, tmp.path().join("parent.tmp")).unwrap();
+        let moved = tmp.path().join("parent.tmp");
+        let sibling =
+            super::refuse_input_overwrite(&tmp_sibling, &[moved.as_path()], &dirs).unwrap_err();
+        assert!(sibling.contains("would overwrite the input"), "{sibling}");
+        std::fs::rename(&moved, &parent).unwrap();
+
+        #[cfg(unix)]
+        {
+            let link = tmp.path().join("link.json");
+            std::os::unix::fs::symlink(&parent, &link).unwrap();
+            assert!(super::refuse_input_overwrite(&link, &files, &dirs).is_err());
+            let hard = tmp.path().join("hard.json");
+            std::fs::hard_link(&parent, &hard).unwrap();
+            assert!(super::refuse_input_overwrite(&hard, &files, &dirs).is_err());
+        }
+
+        let inside =
+            super::refuse_input_overwrite(&corpus.join("r.json"), &files, &dirs).unwrap_err();
+        assert!(inside.contains("inside the input corpus"), "{inside}");
+
+        let fine = tmp.path().join("report.json");
+        super::refuse_input_overwrite(&fine, &files, &dirs).unwrap();
+    }
+
     use super::*;
     use crate::corpus::write_bin_file;
     use crate::fixtures::identity_creature;
