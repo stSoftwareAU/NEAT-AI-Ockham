@@ -349,4 +349,130 @@ mod tests {
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"do not touch");
         assert!(!existing.join("manifest.json").exists());
     }
+
+    #[test]
+    fn generated_corpora_match_the_committed_record_and_teacher_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pilot");
+        write(&dir).unwrap();
+        let committed =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/research/strata-pilot-v1");
+        let config = TrainingDataConfig::new(4, 1);
+
+        // (a) Each regenerated records.bin matches its checksum in report.md.
+        let report_md = std::fs::read_to_string(committed.join("report.md")).unwrap();
+        for (split_dir, _) in SPLITS {
+            for name in STRATA {
+                let file = format!("{split_dir}/{name}/records.bin");
+                let row_prefix = format!("| `{file}` | `");
+                let expected = report_md
+                    .lines()
+                    .find_map(|line| line.strip_prefix(row_prefix.as_str()))
+                    .unwrap_or_else(|| panic!("no checksum row for {file} in report.md"))
+                    .split('`')
+                    .next()
+                    .unwrap();
+                let bytes = std::fs::read(dir.join(&file)).unwrap();
+                let actual: String = Sha256::digest(&bytes)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                assert_eq!(actual, expected, "{file} sha256 differs from report.md");
+            }
+        }
+
+        // (b) report.json names the same corpora by identity and record count.
+        let report_text = std::fs::read_to_string(committed.join("report.json")).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&report_text).unwrap();
+        for (split_dir, key) in [("cal", "calibration"), ("val", "validation")] {
+            let entries = report["versions"][key]
+                .as_array()
+                .unwrap_or_else(|| panic!("report.json versions.{key} is not an array"));
+            for (index, name) in STRATA.iter().enumerate() {
+                let entry = entries
+                    .iter()
+                    .find(|e| e["name"].as_str() == Some(*name))
+                    .unwrap_or_else(|| panic!("report.json versions.{key} has no '{name}'"));
+                let info = corpus_info(&dir.join(split_dir).join(name), &config).unwrap();
+                assert_eq!(
+                    info.identity,
+                    entry["identity"].as_str().unwrap(),
+                    "{key} '{name}' identity"
+                );
+                assert_eq!(
+                    info.record_count,
+                    entry["records"].as_u64().unwrap(),
+                    "{key} '{name}' record count"
+                );
+                assert_eq!(
+                    info.record_count, RECORDS[index] as u64,
+                    "{key} '{name}' record count"
+                );
+            }
+        }
+
+        // (c) Read every record back and check its input and target semantically.
+        let mut teacher = compile_creature(&teacher_of(&parent_creature())).unwrap();
+        let mut parent_net = compile_creature(&parent_creature()).unwrap();
+        for (split_dir, _) in SPLITS {
+            for (stratum, name) in STRATA.iter().enumerate() {
+                let label = format!("{split_dir}/{name}");
+                let mut inputs: Vec<Vec<f32>> = Vec::new();
+                let mut targets: Vec<f32> = Vec::new();
+                let visited =
+                    for_each_chunk(&dir.join(split_dir).join(name), &config, 16, |chunk| {
+                        inputs.extend(
+                            chunk
+                                .inputs
+                                .as_chunks::<4>()
+                                .0
+                                .iter()
+                                .map(|row| row.to_vec()),
+                        );
+                        targets.extend_from_slice(chunk.targets);
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(visited, RECORDS[stratum] as u64, "{label} record count");
+                assert_eq!(inputs.len(), RECORDS[stratum], "{label} input rows");
+                assert_eq!(targets.len(), RECORDS[stratum], "{label} target rows");
+
+                let mut max_abs = [0f32; 4];
+                for input in &inputs {
+                    for (max, value) in max_abs.iter_mut().zip(input) {
+                        *max = max.max(value.abs());
+                    }
+                }
+                assert!(
+                    max_abs[stratum] > 0.5,
+                    "{label}: input {stratum} should be full scale, max |value| is {}",
+                    max_abs[stratum]
+                );
+                for (input, max) in max_abs.iter().enumerate() {
+                    if input != stratum {
+                        assert!(
+                            *max <= 0.1,
+                            "{label}: input {input} should be scaled down, max |value| is {max}"
+                        );
+                    }
+                }
+
+                for (input, &target) in inputs.iter().zip(&targets) {
+                    let expected = teacher.activate(input, 1);
+                    assert_eq!(
+                        target, expected[0],
+                        "{label}: target is not the teacher's output for input {input:?}"
+                    );
+                }
+                let differs = inputs
+                    .iter()
+                    .zip(&targets)
+                    .any(|(input, &target)| parent_net.activate(input, 1)[0] != target);
+                assert!(
+                    differs,
+                    "{label}: no target differs from the unmodified parent's output"
+                );
+            }
+        }
+    }
 }

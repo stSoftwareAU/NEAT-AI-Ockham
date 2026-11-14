@@ -119,6 +119,9 @@ claimed, and no representative negative result is claimed.
 | `report.json` (raw output) | `72a49801b90ff8e0f63de912cfc72a65fb47700d63d52349c5fdf0c2b150f369` |
 
 The `.bin` files are not committed. The example regenerates them byte for byte.
+The test `generated_corpora_match_the_committed_record_and_teacher_targets` in
+`ockham/examples/strata_pilot.rs` checks the regenerated `.bin` files against
+the checksums above and the `report.json` identities.
 
 ## Reproduce
 
@@ -145,8 +148,8 @@ The generated `manifest.json` and `parent.json` are byte-identical to the
 committed copies, as the checksums above show. The manifest's relative paths
 resolve inside the generated directory. The test
 `two_fresh_directories_are_byte_identical_and_load` in
-`ockham/examples/strata_pilot.rs` checks the committed copies against fresh
-generator output.
+`ockham/examples/strata_pilot.rs` checks the committed `manifest.json` and
+`parent.json` against fresh generator output.
 
 Run the benchmark, replacing `/path/to/rust_scorer` with the built binary's
 path:
