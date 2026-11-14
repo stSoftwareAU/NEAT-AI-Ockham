@@ -148,6 +148,17 @@ The rule is fixed before the run:
 Even `met` is only a statement about the fixtures or runs supplied. It is not a
 demonstration of benefit until representative runs exist.
 
+## Known limitation
+
+Calibration and validation use two corpora, which separates their records. The
+children do not get the same separation. The same children, and their manifest
+`fullDelta` labels, are used both to fit `theta` and to score the validation
+gates. Validation false-rejection rates and AUC are therefore not measured on
+unseen children, and should not be read as out-of-sample. Also, `fullDelta` and
+`sampleDelta` are supplied in the manifest from earlier scorer runs. The audit
+does not compute them. `latencyMsPer1kRecords` times the whole streamed pass, so
+it includes corpus reading and per-record scoring, not only the activation loop.
+
 ## Manifest example
 
 ```json
@@ -181,8 +192,10 @@ The report is written atomically: first to `<out>.tmp`, then renamed. Its
 top-level fields are:
 
 - `schema`: `"ockham-preservation-audit/1"`.
-- `evidence`: `"fixture-or-unverified"`, with the fixed text
-  `"report-only; not a demonstration of benefit"`.
+- `evidence`: `"fixture-or-unverified"`. It records the status of the
+  evidence behind the report.
+- `reportOnly`: `"report-only; not a demonstration of benefit"`. This fixed
+  sentence is a separate top-level field, not part of `evidence`.
 - `method`: the formula text and the source note, which says the abstract only
   was used.
 - `versions`: the crate version, SHA-256 of the parent and of each child, and the
@@ -197,7 +210,12 @@ top-level fields are:
 - `criterion`: `status` and `rule`.
 - `coverage`: children supplied and scored, and validation records.
 - `costs`: calibration and validation milliseconds, and records activated.
-- `failures`: every refusal or degenerate condition, by name.
+- `failures`: the refusals that stop a child or the threshold being used. It
+  has two kinds of entry: `"<split> child '<name>': nonFiniteOutput at record
+  N"` for a child with a non-finite output, and `"threshold not fittable:
+  <why>"` when `theta` cannot be fitted. Degenerate reasons and
+  `collapsedChild` are not listed here. They appear on each child's entry under
+  `splits`.
 
 ## Flow
 

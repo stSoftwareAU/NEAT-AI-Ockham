@@ -561,15 +561,15 @@ fn auc(scores: &[f64], positives: &[bool]) -> Option<f64> {
     Some((rank_sum - p * (p + 1.0) / 2.0) / (p * n))
 }
 
-/// Bootstrap 95% CI of `AUC_pres − AUC_sample`, resampling children.
+/// Bootstrap 95% CI of `AUC_preserved − AUC_sample`, resampling children.
 fn bootstrap_auc_gain(
-    pres: &[f64],
+    preserved: &[f64],
     sample: &[f64],
     better: &[bool],
     resamples: usize,
     seed: u64,
 ) -> Option<[f64; 2]> {
-    let n = pres.len();
+    let n = preserved.len();
     if n == 0 {
         return None;
     }
@@ -586,7 +586,7 @@ fn bootstrap_auc_gain(
         b.clear();
         for _ in 0..n {
             let i = (rng.next() % n as u64) as usize;
-            p.push(pres[i]);
+            p.push(preserved[i]);
             s.push(sample[i]);
             b.push(better[i]);
         }
@@ -738,7 +738,7 @@ struct SplitReport {
 /// Everything one split produced.
 struct SplitRun {
     report: SplitReport,
-    pres: Vec<Option<f64>>,
+    preserved: Vec<Option<f64>>,
     failures: Vec<Option<String>>,
     activated: u64,
     elapsed_ms: f64,
@@ -815,7 +815,7 @@ fn run_split(
     let mut activated = pp.stats.activated;
     let mut elapsed_ms = pp.stats.elapsed_ms;
     let mut child_reports = Vec::with_capacity(children.len());
-    let mut pres = Vec::with_capacity(children.len());
+    let mut preserved = Vec::with_capacity(children.len());
     let mut failures = Vec::with_capacity(children.len());
     for child in children {
         let cp = child_pass(&child.creature, split.dir, split.records, k, &pp.rows)?;
@@ -831,7 +831,7 @@ fn run_split(
             settings,
         );
         child_reports.push(report);
-        pres.push(score);
+        preserved.push(score);
     }
     let cells = (records * k) as f64;
     let report = SplitReport {
@@ -847,7 +847,7 @@ fn run_split(
     };
     Ok(SplitRun {
         report,
-        pres,
+        preserved,
         failures,
         activated,
         elapsed_ms,
@@ -1014,8 +1014,8 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
         .iter()
         .map(|&i| children[i].full_delta > 0.0)
         .collect();
-    let cal_pres: Vec<Option<f64>> = comparison.iter().map(|&i| cal.pres[i]).collect();
-    let (threshold, threshold_failure) = match fit_threshold_checked(&cal_pres, &better) {
+    let cal_preserved: Vec<Option<f64>> = comparison.iter().map(|&i| cal.preserved[i]).collect();
+    let (threshold, threshold_failure) = match fit_threshold_checked(&cal_preserved, &better) {
         Ok(t) => (Some(t), None),
         Err(why) => (None, Some(why)),
     };
@@ -1029,14 +1029,19 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
         .iter()
         .map(|&i| Some(children[i].sample_delta))
         .collect();
-    let val_pres: Vec<Option<f64>> = comparison.iter().map(|&i| val.pres[i]).collect();
-    let pres_rejects: Vec<Option<bool>> = val_pres
+    let val_preserved: Vec<Option<f64>> = comparison.iter().map(|&i| val.preserved[i]).collect();
+    let preserved_rejects: Vec<Option<bool>> = val_preserved
         .iter()
         .map(|s| threshold.and_then(|t| s.map(|v| v < t)))
         .collect();
 
     let sample_gate = gate_report(&sample_rejects, true, &better, &sample_scores);
-    let pres_gate = gate_report(&pres_rejects, threshold.is_some(), &better, &val_pres);
+    let preserved_gate = gate_report(
+        &preserved_rejects,
+        threshold.is_some(),
+        &better,
+        &val_preserved,
+    );
 
     let paired: Vec<PairedRow> = comparison
         .iter()
@@ -1045,20 +1050,20 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
             name: children[i].name.clone(),
             better: better[j],
             sample_rejects: sample_rej[j],
-            preservation_rejects: pres_rejects[j],
+            preservation_rejects: preserved_rejects[j],
         })
         .collect();
 
-    let pres_all: Option<Vec<f64>> = val_pres.iter().copied().collect();
+    let preserved_all: Option<Vec<f64>> = val_preserved.iter().copied().collect();
     let sample_all: Vec<f64> = comparison
         .iter()
         .map(|&i| children[i].sample_delta)
         .collect();
-    let value = match (pres_gate.auc, sample_gate.auc) {
+    let value = match (preserved_gate.auc, sample_gate.auc) {
         (Some(a), Some(b)) => Some(a - b),
         _ => None,
     };
-    let ci95 = match (&pres_all, value) {
+    let ci95 = match (&preserved_all, value) {
         (Some(p), Some(_)) => bootstrap_auc_gain(
             p,
             &sample_all,
@@ -1071,11 +1076,11 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
 
     let status = match (
         value,
-        pres_gate.false_rejection_rate,
+        preserved_gate.false_rejection_rate,
         sample_gate.false_rejection_rate,
     ) {
-        (Some(gain), Some(pres_rate), Some(sample_rate)) => {
-            if gain >= m.min_auc_gain && pres_rate <= sample_rate {
+        (Some(gain), Some(preserved_rate), Some(sample_rate)) => {
+            if gain >= m.min_auc_gain && preserved_rate <= sample_rate {
                 "met"
             } else {
                 "notMet"
@@ -1096,7 +1101,7 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
         threshold_failure,
         gates: Gates {
             sample: sample_gate,
-            preservation: pres_gate,
+            preservation: preserved_gate,
         },
         paired,
         auc_gain: AucGain { value, ci95 },
