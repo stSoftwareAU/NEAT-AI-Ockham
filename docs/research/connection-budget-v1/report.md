@@ -16,8 +16,8 @@ the permanent-pruning assumptions and the one-candidate Ockham control.
 ## Observed coverage
 
 Eight separately generated teachers, two seeds and two targets produced 128
-arm runs. Every arm reached its requested count, and all 128 proposals were
-authoritatively accepted against their opening parent. There were no failed
+arm runs. Every arm reached its requested count through authoritative
+full-corpus acceptance. There were no failed
 runs or timeout exits. These deliberately weak-edge fixtures establish neither
 maturity nor generalisation to representative tasks.
 
