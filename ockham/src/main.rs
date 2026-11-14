@@ -405,6 +405,7 @@ fn main() -> ExitCode {
 /// Returns the one-line JSON summary printed to stdout.
 fn bench_additivity(manifest_path: &Path, out: &Path) -> Result<String, String> {
     let manifest = BenchManifest::load(manifest_path)?;
+    manifest.refuse_report_over_input(manifest_path, out)?;
     let scorer = ExternalScorer {
         binary: manifest.scorer.binary.clone(),
         extra_args: manifest.scorer.args.clone(),
