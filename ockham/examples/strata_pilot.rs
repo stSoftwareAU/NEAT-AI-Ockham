@@ -310,7 +310,7 @@ mod tests {
             &TrainingDataConfig::new(4, 1),
             16,
             |chunk| {
-                for row in chunk.inputs.chunks_exact(4) {
+                for row in chunk.inputs.as_chunks::<4>().0 {
                     for (max, value) in max_abs.iter_mut().zip(row) {
                         *max = max.max(value.abs());
                     }
