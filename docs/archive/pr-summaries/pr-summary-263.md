@@ -32,11 +32,16 @@ representative run has been made, and no benefit is claimed. Part of #263.
 - `run_bench` takes a required `frozen_manifest_sha256: Option<&str>`. `None`
   keeps the previous behaviour, and no caller can omit the argument without
   the compiler saying so.
-- `refuse_unless_frozen` (public in `ockham/src/strata/bench.rs`) runs straight
-  after the manifest is loaded and validated. It runs in `run_bench` and also on
-  the CLI's first read, which builds the latency probe, so every manifest read
-  that a frozen run uses is checked. A digest is 64 hex digits in either case.
-  A malformed value is echoed in the error, cut to 80 characters.
+- `refuse_unless_frozen` (public in `ockham/src/incumbent.rs`, beside
+  `sha256_hex`) is the one implementation of the freeze check. It is shared
+  with `audit-preservation` (#276), whose private copy in
+  `ockham/src/preservation.rs` was moved here; `bench-strata` adds no second
+  copy. It runs in `run_bench` straight after the manifest is loaded and
+  validated, and also on the CLI's first read, which builds the latency probe,
+  so every manifest read that a frozen run uses is checked. A digest is 64 hex
+  digits in either case. A malformed value is echoed in the error, cut to 80
+  characters. A later change to the digest rule or message now applies to both
+  commands.
 - `versions.manifestFrozen` is an added field in output-only JSON (`Versions`
   derives only `Serialize`), so the schema stays `ockham-strata-bench/1`. The
   committed pilot `report.json` predates the field and was not regenerated. The
@@ -94,7 +99,7 @@ flowchart LR
 
 - **partial** — Estimate per-neuron removal cost on 3–5 representative calibration strata. Compare aggregate-only pruning with probabilities proportional to exp(-max_t I[t,i]/temperature) and a bounded Pareto archive over stratum error, connections and measured latency. Fit scales/temperature without final-holdout access. Measure minority-stratum regressions, full fitness, removals and wins per hour. Canonically build and score combined cuts — evidence: `ockham/src/strata/bench.rs` (merged in #268), `docs/research/strata-pilot-v1/report.json` — reviewer: partial — reason: no representative strata are available on this host; only fixtures and the synthetic pilot have run
 - **partial** — Read and pin the full method before reproducing it — evidence: `docs/strata-experiment.md` "Source paper (full text unread)" — reviewer: partial — reason: the full text is still unfetchable (curl `000`, proxy refusal, and the code repository returns 404 on 2026-11-15), so the method is not pinned
-- **met** — First inspect current code, merged work and repository instructions. Reuse existing mechanisms; if functionality already exists, this issue still owns the missing controlled comparison rather than a second implementation — evidence: `ockham/src/strata/bench.rs::refuse_unless_frozen` compares against `loaded.sha256` from `strata::manifest::load` — reviewer: met
+- **met** — First inspect current code, merged work and repository instructions. Reuse existing mechanisms; if functionality already exists, this issue still owns the missing controlled comparison rather than a second implementation — evidence: `ockham/src/incumbent.rs::refuse_unless_frozen`, the single helper moved out of `preservation.rs` and shared by `audit-preservation` and `bench-strata`, compares against `loaded.sha256` from `strata::manifest::load` — reviewer: met
 - **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance. No automatic deployment or default change — evidence: optional flag; `None` keeps prior behaviour in every existing `ockham/tests/strata_bench.rs` call — reviewer: met
 - **partial** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria. Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs — evidence: `ockham/tests/strata_bench.rs::mismatched_digest_is_refused_before_any_work_and_the_correct_digest_is_accepted`, `versions.manifestFrozen` — reviewer: partial — reason: the freeze mechanism now exists, but no representative manifest has been frozen with it
 - **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks. Research runs are separate from routine feature CI — evidence: `ockham/tests/strata_bench.rs::frozen_run_with_the_predeclared_digest_records_that_it_was_checked` (positive), `malformed_digest_is_refused_before_any_work` and `bench_strata_refuses_a_wrong_manifest_sha256_before_the_scorer_runs` (negative); `./quality.sh < /dev/null` passed — reviewer: met — reason: the reviewer could not run the gate; it was run here on the head and passed
@@ -151,8 +156,13 @@ flowchart LR
   `cargo test -p neat_ai_ockham --test readme_contract`: 10 passed. Clippy
   with `-D warnings`, `cargo fmt --check` and rustdoc with `-D warnings` were
   clean.
-- `./quality.sh < /dev/null` on head `48604d5`: `All quality checks passed!`
-  (exit 0).
+- Review round on head `789977e`: the duplicate `refuse_unless_frozen` was
+  removed from `strata/bench.rs` and `preservation.rs` and kept once in
+  `ockham/src/incumbent.rs`. `main.rs`, `run_bench` and `run_audit` call it.
+  No test changed: the `strata_bench.rs` tests and the inline `preservation.rs`
+  tests cover it through both commands.
+- `./quality.sh < /dev/null` on the working tree after that change:
+  `All quality checks passed!` (exit 0).
 - Docs sweep: I read `docs/strata-experiment.md` ("Manifest", "Report",
   "Status") and the README section. The pilot `report.md` is a historical
   record and is unchanged.

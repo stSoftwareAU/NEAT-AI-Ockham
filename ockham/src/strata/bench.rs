@@ -16,7 +16,7 @@ use neat_core::training_data::TrainingDataConfig;
 use neat_core::{CreatureExport, compile_creature, creature_to_json};
 
 use crate::corpus::{CorpusInfo, RecordRange, corpus_info, for_each_selected_chunk};
-use crate::incumbent::{Incumbent, load_incumbent};
+use crate::incumbent::{Incumbent, load_incumbent, refuse_unless_frozen};
 use crate::ordering::SplitMix64;
 use crate::output_guard;
 use crate::prune::{GroupMember, PrunedCandidate, prune_hidden_group, prune_hidden_neuron};
@@ -78,38 +78,6 @@ pub fn work_dir_for(out: &Path) -> PathBuf {
     let mut name = out.file_name().unwrap_or_default().to_os_string();
     name.push(".work");
     out.with_file_name(name)
-}
-
-/// Refuse a frozen run whose manifest bytes differ from the predeclared digest.
-///
-/// `expected` must be 64 ASCII hex digits in either case; it is compared
-/// case-insensitively against `actual`, the manifest's SHA-256. Both the CLI's
-/// latency-probe read and `run_bench` call this, so every manifest read a frozen
-/// run uses is checked.
-///
-/// # Errors
-///
-/// A message naming `--manifest-sha256` when `expected` is malformed, or naming
-/// both digests when they differ.
-pub fn refuse_unless_frozen(
-    manifest_path: &Path,
-    actual: &str,
-    expected: &str,
-) -> Result<(), String> {
-    let wanted = expected.to_ascii_lowercase();
-    if wanted.len() != 64 || !wanted.bytes().all(|b| b.is_ascii_hexdigit()) {
-        let shown: String = expected.chars().take(80).collect();
-        return Err(format!(
-            "--manifest-sha256 must be 64 hex digits, got '{shown}'"
-        ));
-    }
-    if wanted != actual {
-        return Err(format!(
-            "manifest '{}' has sha256 {actual}, not the predeclared --manifest-sha256 {wanted}; the manifest changed after it was frozen",
-            manifest_path.display()
-        ));
-    }
-    Ok(())
 }
 
 /// Run the experiment and write its report to `out_path`.

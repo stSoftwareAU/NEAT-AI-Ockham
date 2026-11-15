@@ -516,7 +516,7 @@ fn bench_strata(
         }
     };
     let frozen = manifest_sha256.map_or(Ok(()), |expected| {
-        neat_ai_ockham::strata::bench::refuse_unless_frozen(manifest, &loaded.sha256, expected)
+        neat_ai_ockham::incumbent::refuse_unless_frozen(manifest, &loaded.sha256, expected)
     });
     if let Err(e) = frozen {
         eprintln!("{e}");

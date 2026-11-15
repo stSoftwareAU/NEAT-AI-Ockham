@@ -33,6 +33,40 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Refuse unless `expected` is 64 hex digits (any ASCII case) equal to the
+/// manifest's `actual` SHA-256.
+///
+/// Shared by `audit-preservation` and `bench-strata`, so both commands accept
+/// the same digests and report the same errors. Callers run it before parsing
+/// or acting on the manifest, so a mismatch reads no creature or corpus and
+/// writes nothing.
+///
+/// # Errors
+///
+/// A message naming `--manifest-sha256` when `expected` is malformed, or naming
+/// both digests when they differ.
+pub fn refuse_unless_frozen(
+    manifest_path: &Path,
+    actual: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let expected_lower = expected.to_ascii_lowercase();
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let shown: String = expected.chars().take(80).collect();
+        return Err(format!(
+            "--manifest-sha256 must be 64 hex digits, got '{shown}'"
+        ));
+    }
+    if expected_lower != actual {
+        return Err(format!(
+            "manifest '{}' has sha256 {actual}, not the predeclared --manifest-sha256 \
+             {expected_lower}; the manifest changed after it was frozen",
+            manifest_path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Errors establishing the incumbent.
 #[derive(Debug)]
 pub enum IncumbentError {
