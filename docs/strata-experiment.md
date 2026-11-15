@@ -213,6 +213,28 @@ Each of these is refused with an error naming the field:
 - `minImprovement`, `regressionTolerance` or `maxFitnessLoss` not finite, or
   negative.
 
+## Freezing the manifest
+
+A representative run should show that its manifest was predeclared. To freeze
+it, record the manifest's digest before the run, then pass that digest to the
+bench:
+
+```sh
+sha256sum manifest.json
+neat_ai_ockham bench-strata manifest.json --out report.json \
+  --manifest-sha256 <digest>
+```
+
+Record the digest with its own timestamp, such as a commit made before the run.
+The bench hashes the manifest's bytes. If they differ from the digest, the run
+is refused before any scoring, scratch directory or report. The digest may be
+given in either case. The report's `versions.manifestFrozen` is `true` only for
+a run given a digest that matches, and `false` for every other run.
+
+A freeze proves only that the manifest bytes did not change after the digest
+was recorded. It does not prove when the digest was recorded. That time must
+come from the operator's own record, such as the commit that holds it.
+
 ## Method
 
 1. **Load.** The parent is read with `incumbent::load_incumbent`, never
@@ -310,7 +332,9 @@ The report is camelCase JSON. Its top-level fields are:
   fit criterion. `versions.neatCoreSource` is the `source` line of the
   `neat-core` package in the workspace `Cargo.lock`, read at compile time so
   that it is compiled into the binary. If that line cannot be found, the run
-  fails.
+  fails. `versions.manifestSha256` is the SHA-256 of the manifest's bytes, and
+  `versions.manifestFrozen` says whether they were checked against a predeclared
+  digest (see [Freezing the manifest](#freezing-the-manifest)).
 - `coverage` and `costs` record the neurons measured and refused, and the
   preparation time and scorer calls.
 - `runs` holds one entry per seed and arm: bundles scored, refusals, wins,
@@ -379,6 +403,11 @@ Findings so far, from the implementation and pilot runs on 2026-11-14:
   criterion is not met for either treatment, so the result is inconclusive.
 - **Representative runs still need private corpora,** which are not in this
   repository.
+- **Representative runs should be frozen.** Record the manifest's SHA-256
+  before the run and pass it with `--manifest-sha256`, so that predeclaration
+  can be shown (see [Freezing the manifest](#freezing-the-manifest)). The
+  committed synthetic pilot was not frozen: its manifest was committed with its
+  results.
 - **No benefit is shown.** The fixture-scorer runs in
   `ockham/tests/strata_bench.rs` and the synthetic pilot test the mechanics
   only. The trap fixture is built so that worst-stratum wins, and with uniform

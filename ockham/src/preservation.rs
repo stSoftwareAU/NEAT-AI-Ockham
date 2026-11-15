@@ -42,7 +42,7 @@ use neat_core::{CreatureExport, compile_creature};
 use serde::{Deserialize, Serialize};
 
 use crate::corpus::{CorpusInfo, RecordRange, corpus_info, for_each_selected_chunk};
-use crate::incumbent::load_incumbent;
+use crate::incumbent::{load_incumbent, refuse_unless_frozen};
 use crate::ordering::SplitMix64;
 use crate::output_guard;
 use crate::strata::manifest::MAX_MANIFEST_BYTES;
@@ -1237,29 +1237,6 @@ fn split_records(name: &str, max: u64, info: &CorpusInfo) -> Result<u64, String>
         return Err(format!("{name} corpus has no records"));
     }
     Ok(records)
-}
-
-/// Refuse unless `expected` is 64 hex digits (any ASCII case) equal to the
-/// manifest's `actual` SHA-256.
-///
-/// Called before the manifest is parsed, so a mismatch reads no creature or
-/// corpus and writes nothing.
-fn refuse_unless_frozen(manifest_path: &Path, actual: &str, expected: &str) -> Result<(), String> {
-    let expected_lower = expected.to_ascii_lowercase();
-    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
-        let shown: String = expected.chars().take(80).collect();
-        return Err(format!(
-            "--manifest-sha256 must be 64 hex digits, got '{shown}'"
-        ));
-    }
-    if expected_lower != actual {
-        return Err(format!(
-            "manifest '{}' has sha256 {actual}, not the predeclared --manifest-sha256 \
-             {expected_lower}; the manifest changed after it was frozen",
-            manifest_path.display()
-        ));
-    }
-    Ok(())
 }
 
 /// Run the preservation audit described by `manifest_path` and write the
