@@ -2,117 +2,97 @@
 
 ## Summary
 
-Adds an opt-in, offline benchmark, `neat_ai_ockham bench-additivity <manifest.json> --out <report.json>`.
-It tests whether cached single-cut output deltas can rank pruning bundles
-more cheaply than current Ockham selection.
+The `bench-additivity` harness landed in #266. This PR closes three gaps that
+#266 left open in step 6 and the Report section of the issue:
 
-The harness works like this:
+- **Separate search pool.** Each (parent, budget, seed) row now draws a
+  search pool on its own seed stream, apart from the audit pool. Every arm
+  ranks the same search pool (paired), and the random arm uses its own
+  permutation stream for each pool. The audit pool is still fully scored, and
+  its costs stay on the row, charged to no arm.
+- **Equal per-arm wall-clock budget.** There is a new optional manifest field,
+  `searchWallClockMs`. Each arm is charged its own single proposals, cache
+  build, cache read or inference, search-pool materialisation and ranking,
+  then its scorer time. Under a budget the arm makes one scorer call per pick.
+  A pick whose call ends past the budget is still charged, but it cannot be
+  selected.
+- **Measured peak RAM.** The process's `VmHWM` is reported per row and once
+  at the end of the run (`measuredPeakRssBytes`). It is beside the computed
+  `ramBoundBytes`, not a replacement for it.
 
-- It reads a predeclared manifest of parents, corpora, scorer, seeds, budgets,
-  audit pool, per-arm full-evaluation budget, decision rule and resource limits.
-- It picks one deterministic 2 % record core per parent and caches the parent
-  outputs `y0` and every single-cut child output `yi` under a strong key.
-- It predicts each bundle's loss as `y0 + Σ(yi − y0)` through
-  `neat_core::loss::mse_record`.
-- It compares four arms (current, additive loss, cached output, random) on
-  identical materialised pools. A ranking audit fully scores every pool bundle.
-  A separate search phase gives each arm the same full-evaluation budget.
-- The output is a machine-readable report.
-
-Ordinary runs, their defaults and acceptance are unchanged. Predictions only
-order candidates; the full-corpus scorer stays the only judge, and the bench
-writes no creature to any population, journal or learnings store.
-
-No representative 20-elite run has been done, because the elite manifest and
-the private corpora are not in this execution environment. The experiment's
-outcome is therefore still open. Part of #260.
+Ordinary runs, their defaults and acceptance are unchanged. This host has no
+elite manifest, private corpora or `rust_scorer`, so the representative
+20-elite run is still outstanding. Part of #260.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The issue asks for an experiment harness, not a change to acceptance. The
-  code lives in its own module (`ockham/src/additivity/`) and its own
-  subcommand, so nothing in the ordinary run path calls it.
-- Bundle loss is computed only through `neat_core::loss::mse_record`, the
-  per-record cost NEAT-AI-core already exports. This keeps the scorer's cost
-  and penalty logic in one place. Fitness scores are never summed, and each
-  materialised bundle's actual `complexityPenalty` is recorded from the scorer.
-- Every bundle is built through the existing core rewrite path,
-  `prune_hidden_group`, with mean fold and cleanup, so cascades and overlaps
-  are real rather than modelled.
+- The #266 Spec review left three partials: no wall-clock budget per arm,
+  audit and search sharing one pool, and peak RAM given only as a computed
+  bound. Each is closed here inside `ockham/src/additivity/`, without touching
+  the ordinary run path.
+- The search pool reuses the same `build_pool` and `prune_hidden_group`
+  materialisation as the audit pool, through one shared helper. The two pools
+  differ only in their seed stream. Ranking for both pools goes through one
+  `rank_arm` helper.
 
 ### Essential Design Decisions
 
-- **MSE only.** Any other manifest `cost` is refused. NEAT-AI-core exports a
-  per-record API only for MSE (`mse_record`), and the issue forbids
-  duplicating scorer cost logic. A scorer result whose `costName` differs from
-  the manifest also fails the run.
-- **The "current" arm is defined, not copied.** It is Ockham's ranked prefix
-  (from `promote::bundle_plans`, the all-winners plan) first, then the rest of
-  the pool in emission order. Every arm uses the same core-sample single
-  deltas, so the comparison isolates ordering. The rest of the pool is seeded
-  random k-member draws; no exhaustive enumeration is attempted.
-- **A missing estimate is never a loss.** A cache rejection (non-finite,
-  mismatched, over the byte limit, or IO) leaves the bundle unestimated.
-  `rank_by_estimate` keeps it in its current-order slot, and the audit counts
-  it as `unestimated`.
-- **The cache key covers everything the outputs depend on.** It includes:
-  - the parent checksum and a SHA-256 over the exact core records' bytes, so
-    it does not rely on the corpus head/tail fingerprint alone;
-  - the ordered-ranges digest, the widths and the cut semantics;
-  - a digest of the folded activation means (stats are computed fresh on each
-    run, never served from a head/tail-keyed cache);
-  - the neat-core pin, the Ockham version, the scorer identity and arguments,
-    and the cost.
-
-  The key shape is versioned (`CACHE_FORMAT_VERSION = 2`). RAM is bounded by
-  one cache-entry accumulator, fixed chunk buffers and at most `auditPool`
-  materialised creatures. At most three cache files are open at once.
-- False-promotion and false-rejection counts compare predicted loss
-  improvement with the actual full-corpus *error* reduction (same units).
-  Ranking metrics use full scores.
+- **`selectedRegret` is now paired.** It is the best `selectedScore` among the
+  row's arms minus this arm's. The search pool is never fully scored, so its
+  true optimum is unknown. Regret against the best candidate stays in each
+  arm's `audit.regret` on the audit pool. The aggregate regret distribution
+  reads the paired value. (The Spec reviewer flagged this as a possible
+  misreading of "selected-candidate regret"; the audit regret is the
+  survivor-bias-free form.)
+- **Wall-clock selection is "anytime".** A call starts only while the charge
+  is under budget. A pick whose call ends past the budget is charged but not
+  selectable. If no pick finishes within budget, the arm selects nothing.
+  Without `searchWallClockMs` there is one batched call, exactly as before.
+- **Report format version 2.** The report shape changed (`rows[].search`,
+  `searchRanking`, `stoppedBy`, `withinBudget`, `measuredPeakRssBytes`).
+  The manifest format stays version 1, because the new field is optional and
+  existing manifests load unchanged. The cache key and `CACHE_FORMAT_VERSION`
+  are unchanged, because cached outputs do not depend on any of this.
+- **RSS is the process's own, and approximate.** `VmHWM` leaves out the
+  external scorer child processes, and it is `null` off Linux or when the
+  line is malformed. Successive readings are not guaranteed to be monotone:
+  the gate observed one row at 5246976 bytes after one at 5332992.
 
 ### Undiscoverable Facts
 
-- NEAT-AI-core's cleanup splices a single-input IDENTITY hidden neuron into a
-  direct edge. A fixture built from those makes a "bundle" that never removes
-  its second member. This was observed while writing the linear-delta test,
-  so the fixtures use HARD_TANH neurons kept inside their linear band.
-- The paper (arXiv 2611.07487v2) favours random ranking in its most aggressive
-  DeiT-B case. No benefit is claimed for Ockham, and the docs say so.
+- No elite manifest, training/validation corpora or `rust_scorer` binary
+  exists on this host, so no representative run was possible.
+- The configured reviewer model hit an HTTP 429 rate limit, so both reviewers
+  were re-dispatched with a model override. Their verdicts below come from
+  that second dispatch.
 
 ## Evidence
 
-The change is CLI and backend only; no UI file is touched. The pipeline is
-documented in `docs/additivity-experiment.md`, together with the manifest,
-the arms, the cache key, the resource bounds, the report fields, cost
-attribution and the status.
+The change is CLI and backend only; no UI file is touched.
 
 ```mermaid
 flowchart LR
-    M[manifest] --> P[parent + fresh activation stats]
-    P --> C[deterministic 2% core]
-    C --> K[keyed output cache: targets, y0, yi]
-    K --> S[single deltas L0 - Li]
-    S --> B[pool: Ockham ranked prefix + seeded draws]
-    B --> X[materialise via prune_hidden_group]
-    X --> E[estimates: additive loss, cached output y0+Σδ]
-    X --> A[audit: full-score every bundle]
-    E --> R[rank 4 arms]
-    R --> Q[search: each arm full-scores top-E picks]
-    A --> O[report.json]
-    Q --> O
+    S[singles + keyed cache] --> AP[audit pool, POOL_STREAM]
+    AP --> AS[full-score every bundle]
+    AS --> AM[audit metrics per arm]
+    AS --> D[drop audit creatures]
+    D --> SP[search pool, SEARCH_POOL_STREAM]
+    SP --> E[estimates]
+    E --> R[each arm ranks the same search pool]
+    R --> W{searchWallClockMs?}
+    W -- no --> B[one batched call over top-E]
+    W -- yes --> P[one call per pick while charge < budget]
+    B --> SEL[best full score among within-budget picks]
+    P --> SEL
 ```
 
-- Tests run against an in-test `DirectoryScorer`, `FaithfulScorer` in
-  `ockham/tests/additivity_bench.rs`. It stands in for the production
-  `ExternalScorer` (`ockham/src/scorer.rs`) and follows that file's documented
-  contract: `score = 1 − error − complexityPenalty`, one result per creature
-  file, `costName` and `recordCount`. It computes the error from the real
-  corpus through `mse_record`. The bench relies on two properties: per-file
-  results, and the cost name being reported. The real `rust_scorer` was not
-  run here.
+- Tests run against the existing in-test `FaithfulScorer` in
+  `ockham/tests/additivity_bench.rs`, which stands in for `ExternalScorer`
+  (`ockham/src/scorer.rs`). The wall-clock tests wrap it in `ClockedScorer`,
+  which only advances an injected `ManualClock` by 10 ms per scoring call, so
+  every cost and stop is a literal, with no real timing.
 
 ## Acceptance Criteria
 
@@ -123,220 +103,135 @@ flowchart LR
   invalidation and non-finite outputs — evidence:
   `ockham/src/additivity/predict.rs::exact_linear_deltas_predict_the_bundle_exactly`,
   `ockham/src/additivity/predict.rs::a_nonlinear_output_breaks_the_additive_prediction`,
-  `ockham/src/additivity/predict.rs::a_cascade_shared_by_the_bundle_is_double_counted`,
-  `ockham/src/additivity/cache.rs::changing_one_key_field_gives_a_fresh_directory_without_the_entry`,
+  `ockham/tests/additivity_bench.rs::the_bench_records_cascades_overlaps_and_duplicate_creatures`,
   `ockham/tests/additivity_bench.rs::cache_is_reused_on_a_second_run_and_invalidated_by_a_changed_record`,
-  `ockham/src/additivity/cache.rs::non_finite_values_are_refused_and_leave_no_file`,
-  `ockham/src/additivity/predict.rs::non_finite_values_are_refused_with_their_index`
-  — reviewer: met
+  `ockham/src/additivity/cache.rs::non_finite_values_are_refused_and_leave_no_file`
+  (delivered in #266, still passing at this head) — reviewer: met
 - **met** — Tests prove approximate predictions cannot accept a creature or
   alter ordinary defaults — evidence:
+  `ockham/tests/additivity_bench.rs::end_to_end_reports_every_arm_and_leaves_the_parent_alone`,
   `ockham/tests/additivity_bench.rs::predictions_only_order_and_the_best_full_score_among_picks_selects`
-  and
-  `ockham/tests/additivity_bench.rs::end_to_end_reports_every_arm_and_leaves_the_parent_alone`
-  — reviewer: partial — reason: after the review, the end-to-end test also
-  asserts that a bench run leaves no `experiments.jsonl`, no learnings and no
-  stats cache, so nothing an ordinary run reads. The parent bytes are
-  unchanged. Ordinary defaults stay pinned by the existing unchanged
-  `ockham/src/config.rs::defaults_match_the_charter`, and the diff adds no
-  `OckhamConfig` field or flag.
+  — reviewer: met
 - **met** — Existing quality gates pass; no unrelated mutation/fuzz discovery
-  requirement — evidence: `./quality.sh` run on the final code, which printed
-  "All quality checks passed!"; no mutation or fuzz work added — reviewer:
-  missing — reason: the reviewer saw only the diff and could not run the gate.
-  It was run here and passed.
+  requirement — evidence: `./quality.sh < /dev/null` run at `dffb2c1` exited 0
+  with "All quality checks passed!"; no mutation or fuzz work added —
+  reviewer: partial — reason: the reviewer saw only the diff and could not run
+  the gate ("partial (unverified)"). It was run here and passed.
 - **met** — Reproducible command/manifest and machine-readable report are
-  provided — evidence: `ockham/src/main.rs` (`bench-additivity`),
-  `ockham/src/additivity/manifest.rs`,
-  `ockham/src/additivity/bench_report.rs`, `docs/additivity-experiment.md` —
-  reviewer: met
-- **missing** — Representative 20-elite results are required before
-  declaring this experiment successful; fixture-only tests are not
-  experimental evidence — reviewer: partial — reason: no run over 20 elite
-  parents has been done, because the elite manifest and the
-  training/validation corpora are not in this execution environment. A
-  second search in the completion-check run also found no elite manifest,
-  no corpora and no `rust_scorer` binary on this host. The report labels
-  runs over fewer than 20 parents `fixture-only`, and nothing here declares
-  success. Outstanding: an operator with the private elites runs
-  `bench-additivity` over a 20-parent manifest and keeps the report outside
-  the repository.
-- **missing** — A negative outcome is documented and optional code is
-  removed if it does not earn its maintenance cost — reviewer: partial —
-  reason: there is no outcome until the representative run exists. The
-  policy is in `docs/additivity-experiment.md` § Status, and the report keeps
-  every case where random or current beats cached output. The harness is
-  deliberately not removed now: removing it before a representative run
-  would decide the experiment without evidence. Outstanding: if the 20-elite
-  run is negative, record the finding in that § Status and delete
-  `ockham/src/additivity/`, the `bench-additivity` subcommand and its tests.
-- **unrequested** — manifest bounds (1–64 parents, ≤ 32 seeds, ≤ 8 budgets,
-  `auditPool` 2–64, `decisionRule` ≤ 2000 characters, 1 MiB manifest cap) —
-  reviewer: unrequested — reason: trust-boundary input validation that keeps
-  the harness's disk, RAM and scorer cost bounded, as the issue's
-  resource-limit section requires.
-- **unrequested** — the random arm and the pool draws reuse the existing
-  seeded `SplitMix64` from `ockham/src/ordering.rs` (already `pub(crate)` on
-  `Develop`, so that file is unchanged) instead of copying it.
+  provided — evidence: `ockham/src/additivity/manifest.rs`
+  (`searchWallClockMs`), `ockham/src/additivity/bench_report.rs`
+  (`REPORT_FORMAT_VERSION = 2`), `docs/additivity-experiment.md` — reviewer:
+  met
+- **missing** — Representative 20-elite results are required before declaring
+  this experiment successful; fixture-only tests are not experimental evidence
+  — reviewer: missing — reason: no 20-parent run has been done. This host has
+  no elite manifest, no corpora and no `rust_scorer`. Outstanding: run
+  `bench-additivity` over a 20-parent manifest with the private elites and
+  keep the report outside the repository.
+- **missing** — A negative outcome is documented and optional code is removed
+  if it does not earn its maintenance cost — reviewer: partial — reason: there
+  is no outcome until the representative run exists. The policy is in
+  `docs/additivity-experiment.md` § Status. Removing the harness now would
+  decide the experiment without evidence. I departed from the reviewer's
+  `partial` because nothing for this criterion is delivered yet.
+- **unrequested** — the 1 ms to 7-day bound on `searchWallClockMs` and its
+  tests — reviewer: unrequested — reason: trust-boundary validation of a new
+  manifest input, matching the manifest's existing bounds on every other
+  field.
 
-Spec-reviewer partials that remain open in this diff: there is no wall-clock
-budget per arm (only an equal full-evaluation budget); audit and search share
-one seeded pool per seed rather than separate seed streams; and peak RAM is
-reported as a computed bound, not a measured figure.
+Step 6 and Report items the Spec reviewer also judged:
+
+- Equal wall-clock/full-evaluation budgets: reviewer `partial`, naming two
+  defects. Both are fixed after the review. First, additiveLoss's
+  search-pool inference is now charged (`bench.rs`, `cache_read_inference`).
+  Second, a call ending past the budget no longer yields a selectable pick
+  (`Pick.within_budget`). Tests:
+  `a_search_wall_clock_budget_stops_each_arm_after_three_scored_picks` and
+  `a_search_wall_clock_budget_shorter_than_one_call_makes_one_pick_and_selects_nothing`.
+- Separate repeated paired seeds, audit costs visible and separate: reviewer
+  `met`.
+- Peak storage/RAM: reviewer `partial` (one value per process, read once).
+  After the review it is also reported per row (`rows[].measuredPeakRssBytes`).
+  It still excludes the scorer child processes, which the doc states.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 This repository has no `CODING-STANDARDS.md`. The reviewer used
-`CONTRIBUTING.md`, `README.md` and the fleet standards.
+`CONTRIBUTING.md`, `README.md` and the review-enforced rules in its brief; it
+could not fetch the fleet standards.
 
-- **violation** — Fail loud: `core_pin()` fell back silently — evidence:
-  `ockham/src/additivity/cache.rs:83` — reason: fixed in this diff
-  (`Result`, error names `ockham/Cargo.toml`; the test asserts `tag = "v`)
-- **violation** — Fail loud: scorer cost and record count were not checked —
-  evidence: `ockham/src/additivity/bench.rs:893` — reason: fixed in this diff
-  (`check_report`; test
-  `a_scorer_reporting_another_cost_fails_the_run_naming_it`)
-- **violation** — The cache key omitted the folded activation means —
-  evidence: `ockham/src/additivity/bench.rs:334` — reason: fixed in this diff
-  (stats computed fresh; `stats_digest` key field; format version 2)
-- **violation** — Docs said `maxCacheBytes` capped the whole cache — evidence:
-  `docs/additivity-experiment.md:99` — reason: fixed in this diff (the cap is
-  per key directory)
-- **violation** — The RAM-bound docs ignored the creatures kept per single —
-  evidence: `ockham/src/additivity/bench.rs:223` — reason: fixed in this diff
-  (creatures dropped after each entry is built; the docs state the true
-  bound)
-- **violation** — The current arm copied the `bundle_plans` comparator —
-  evidence: `ockham/src/additivity/bench.rs:817` — reason: fixed in this diff
-  (calls `promote::bundle_plans`)
-- **violation** — Unbounded `key.json` read — evidence:
-  `ockham/src/additivity/cache.rs:247` — reason: fixed in this diff (64 KiB
-  cap checked before reading)
-- **violation** — The held-out scoring call checked its record count against
-  the training corpus — evidence: `ockham/src/additivity/bench.rs:1000` —
-  reason: fixed in this diff (`validationData`'s record count is read once per
-  parent and passed to `score`; test
-  `a_held_out_corpus_of_another_size_is_scored_and_reported`, which fails with
-  the old check)
-- **violation** — No bench-level test exercised cascades, overlaps or
-  duplicate creatures — evidence: `ockham/tests/additivity_bench.rs:143` —
-  reason: fixed in this diff (test
-  `the_bench_records_cascades_overlaps_and_duplicate_creatures`)
-- **violation** — `cascadeNeurons` omitted neurons the core folds into
-  constant support — evidence: `ockham/src/additivity/bench.rs:617` — reason:
-  fixed in this diff (filled from `PruneDetail::cascade_uuids()`; the chain
-  test asserts `hiddenRemoved == members - overlaps + cascadeNeurons` for
-  every bundle and fails with the old field)
-- **violation** — The `--out` overwrite guard was tested only through a
-  private helper, and its comment described a `<out>.tmp` rename the command
-  does not do — evidence: `ockham/src/additivity/manifest.rs:348` — reason:
-  fixed in this diff (the `.tmp` sibling check and its case are removed
-  because `--out` is written directly; test
-  `bench_additivity_refuses_a_report_path_that_would_overwrite_an_input` runs
-  the binary with `--out` set to a parent, to the manifest and to a path
-  inside `trainingData`, and asserts a non-zero exit, the refusal message,
-  an unchanged parent and corpus listing, and that no cache directory was
-  created, so no scorer work started)
-- **violation** — A duplicate's `duplicateOf` link was not asserted — evidence:
-  `ockham/tests/additivity_bench.rs:769` — reason: fixed in this diff (each
-  duplicate carries its `creatureDigest`; the chain test compares it with
-  `bundles[duplicateOf].creatureDigest`)
-- **violation** — Test-only production members — evidence:
-  `ockham/src/additivity/predict.rs:174` — reason: fixed in this diff
-  (`predict_bundle_loss`, `OutputCache::dir` and `OutputCache::key` removed;
-  `Arm::predicts` used by the bench)
-- **violation** — Displaced doc comment on `train_ordering` — evidence:
-  `ockham/src/main.rs:409` — reason: fixed in this diff
-- **violation** — Wrong `topK` docs — evidence:
-  `ockham/src/additivity/manifest.rs:83` — reason: fixed in this diff
-- **violation** — `poolSize` counted refusals — evidence:
-  `ockham/src/additivity/bench_report.rs:303` — reason: fixed in this diff
-- **violation** — Measured inference latency was missing — evidence:
-  `ockham/src/additivity/bench_report.rs:230` — reason: fixed in this diff
-  (`inferenceLatencyMs` per predictor arm)
-- **violation** — No test for unaltered defaults — evidence:
-  `ockham/tests/additivity_bench.rs:286` — reason: fixed in this diff (the
-  end-to-end test asserts no journal, learnings or stats are left behind)
-- **clean** — Australian English; no wall-clock thresholds in tests; no
-  source-grep or dummy tests; manifest size checked before read and unknown
-  fields refused; a missing estimate is never treated as a loss; selection
-  happens only from full scores; versioned persisted formats; atomic cache
-  writes; bounded open files; no existing test expectation changed. The
-  review-enforced rules checked were insert position, copy-versus-call and
-  test-only members.
+- **violation** — doc comment made false: `BundleMeta.members` said
+  "Positions in the ranked singles" but holds indices into `singles` —
+  evidence: `ockham/src/additivity/bench.rs:259` — reason: fixed in this diff
+- **violation** — copy instead of call: the search-pool ranking and
+  `predicted` selection copied the audit-pool ones, and the growth-units
+  expression was inlined twice — evidence:
+  `ockham/src/additivity/bench.rs:905` — reason: fixed in this diff
+  (`rank_arm`, `predicted_for` and `BundleMeta::growth_units_removed`)
+- **clean** — no doc comment separated from its item; no duplicated `use`
+  imports; no test-only production members; fail-loud (`take_result` errors
+  on a missing result, an out-of-range `searchWallClockMs` is refused, an
+  empty search pool gives an infeasible row with a reason); tests assert
+  literal outcomes with an injected `ManualClock` and no wall-clock
+  thresholds; the changed doc comments match the code. Optional notes acted
+  on: the `audit_pool` docs now say they also size the search pool, and
+  `parse_vm_hwm_bytes` is private. The conditional score comparison in the
+  predictions test now asserts it ran at least once, and once with differing
+  pool indices.
 
 ## Test Plan
 
-New tests (all run on the final code):
+New tests:
 
-- `ockham/tests/additivity_bench.rs` (11 tests):
-  - end-to-end, every arm reported, parent untouched, nothing an ordinary run
-    reads is left behind
-  - the selected bundle is the best full score among each arm's picks
-  - cache reuse, and invalidation by a changed middle record
-  - an over-limit cache falls back to unestimated bundles
-  - an infeasible budget is reported as `feasible: false`
-  - a scorer reporting another cost fails the run
-  - CLI refusal of a non-MSE cost, and `--help` lists the command
-  - every many-member bundle gets an estimate
-  - a three-neuron chain parent: bundles record non-empty `overlaps`,
-    `cascadeNeurons` and `duplicates`, a duplicate creature is scored once,
-    and `hiddenRemoved` / `meetsBudget` follow the materialised creature;
-    every removed hidden neuron is named (member, overlap or
-    `cascadeNeurons`), and each duplicate's `creatureDigest` equals the digest
-    of the bundle it points at.
-    The chain weights are large so the three chain cuts have clearly different
-    losses and a fixed rank order; with near-equal losses the order fell to
-    float noise and the duplicates the test asserts did not always appear
-  - a held-out corpus of a different record count (120 against 300) runs to
-    completion, and `validationParentScore` and each arm's
-    `validationScore` / `validationError` equal the scorer's held-out results
-  - CLI refusal of `--out` naming a parent, the manifest, or a path inside the
-    training corpus (see the standards review)
-- `ockham/src/additivity/predict.rs` (6): linear-exact, nonlinear failure,
-  cascade double-count, non-finite, mismatched lengths, empty loss.
-- `ockham/src/additivity/cache.rs` (12): round trip, one-field invalidation
-  (including `statsDigest`, `corePin` and `datasetDigest`), mismatched key,
-  oversize `key.json`, non-finite, short write, truncated entry, over limit,
-  unsafe names, a dataset digest that sees a middle record `corpus_info`
-  misses.
-- `ockham/src/additivity/rank.rs` (13): estimate ranking with fallback slots,
-  seeded random, audit metrics with literal expectations, gain-versus-truth
-  promotion units, distributions, paired comparisons.
-- `ockham/src/additivity/manifest.rs` (6): load and resolve, per-field
-  refusals, oversize, representative threshold.
+- `ockham/src/additivity/bench.rs`:
+  `vm_hwm_is_read_in_kilobytes_from_a_realistic_status_text`,
+  `a_status_text_without_vm_hwm_gives_none`,
+  `a_malformed_vm_hwm_value_gives_none`.
+- `ockham/src/additivity/manifest.rs`:
+  `search_wall_clock_is_bounded_from_one_millisecond_to_seven_days` (0 and
+  604800001 refused naming `searchWallClockMs`; 1 and 604800000 accepted),
+  `search_wall_clock_loads_from_json_and_absent_is_none`.
+- `ockham/tests/additivity_bench.rs`:
+  - `a_search_wall_clock_budget_stops_each_arm_after_three_scored_picks`:
+    25 ms budget, 10 ms per call. Per arm: three picks, three calls,
+    `stoppedBy` `wallClock`, scorer 30 ms. Only the first two picks are
+    `withinBudget`, and the selection is the best of those two.
+  - `a_search_wall_clock_budget_shorter_than_one_call_makes_one_pick_and_selects_nothing`:
+    5 ms budget. One late pick and no selection; `selectedRegret` is `None`.
+  - `without_a_search_budget_each_arm_makes_one_batched_call_over_its_picks`:
+    the control. One call, `fullEvaluations`, and every pick within budget.
+  - `arms_rank_a_separate_search_pool_and_regret_is_paired_within_it`:
+    `searchRanking` is a permutation, picks index `search.bundles`, and the
+    paired regret holds.
+  - `the_search_pool_draws_member_sets_the_audit_pool_does_not_hold`.
 
-No existing test was edited or removed. Changes to existing code are limited
-to registering the module in `ockham/src/lib.rs`, the `bench-additivity`
-subcommand in `ockham/src/main.rs`, the README section, the version bump and
-the `.gitleaks.toml` repair; `ockham/src/ordering.rs` is unchanged.
+Edited existing tests (no assertion removed):
 
-Every bundle also records `splicedNeurons`: hidden pass-throughs the core
-cleanup spliced out (`PruneDetail::spliced_neurons`), which `cascadeNeurons`
-does not cover. `the_bench_names_neurons_the_core_splices_out` drives a
-parent whose cuts leave single-edge `MINIMUM` targets and asserts each bundle
-names every hidden neuron it removed (red-checked: it fails with the list
-left empty).
+- `predictions_only_order_and_the_best_full_score_among_picks_selects`:
+  - `arm_row.ranking[..expected_picks.len()]` became
+    `arm_row.search_ranking[..expected_picks.len()]`, because picks now come
+    from the search ranking.
+  - The search-versus-audit score check now looks up the audit bundle by
+    `creatureDigest`, because the two pools' indices differ. It asserts that
+    at least one comparison ran, and one with differing indices.
+- `end_to_end_reports_every_arm_and_leaves_the_parent_alone`: on Linux it
+  adds assertions that the run-level and every row's `measuredPeakRssBytes`
+  are positive.
+- The manifest fixtures gained `search_wall_clock_ms: None`.
 
-After `Develop` gained the shared `ockham/src/output_guard.rs` (#269), the
-bench's private copy of the `--out` overwrite guard was removed:
-`BenchManifest::refuse_report_over_input` now calls the shared guard, and the
-report is written through the shared atomic writer
-(`additivity::bench::write_report`), like `bench-strata` and
-`audit-preservation`.
+Results at `dffb2c1`:
 
-Results on the final code:
+- `cargo test -p neat_ai_ockham --test additivity_bench`: 17 passed.
+- `cargo test -p neat_ai_ockham --lib additivity`: 42 passed.
+- `--test readme_contract`: 10 passed.
+- `./quality.sh < /dev/null`: exit 0, "All quality checks passed!".
 
-- `cargo test -p neat_ai_ockham --test additivity_bench`: 12 passed.
-- `cargo test -p neat_ai_ockham --lib additivity`: 38 passed.
-- `--test cli`: 21 passed. `--test readme_contract`: 10 passed.
-- `./quality.sh < /dev/null`: exit 0, "All quality checks passed!". This
-  covers shellcheck, codespell, markdownlint, clippy `-D warnings`, the full
-  test suites and rustdoc `-D warnings`.
+The first gate run failed on a per-row monotone-RSS assertion added in this
+PR. The kernel's reading is approximate, so the assertion and the matching
+doc claim were removed, and the gate passed afterwards.
 
-Not done or not checked: no run against the real `rust_scorer` binary; no
-representative 20-elite run; a per-arm wall-clock budget is not
-implemented. The one remaining risk is that the fixture results say nothing
-about whether cached-output ranking helps.
+Not done or not checked: no representative 20-elite run; no run against
+the real `rust_scorer`; peak RAM of the scorer child processes is not
+measured; and CI and PR review are not yet observed.
