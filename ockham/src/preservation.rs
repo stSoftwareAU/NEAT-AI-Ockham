@@ -2004,6 +2004,16 @@ mod tests {
         );
         assert_ne!(slip_val, slip_cal);
         assert_eq!(paired_row(&value, "v-slip")["fps"], slip_val);
+        // A calibration row's `fps` comes from the calibration split, not
+        // from the same child's validation-split score.
+        let w110_cal = child_entry(&value["splits"]["calibration"], "cal-w110")["fps"].clone();
+        let w110_val = child_entry(&value["splits"]["validation"], "cal-w110")["fps"].clone();
+        assert!(
+            w110_cal.is_number() && w110_val.is_number(),
+            "{w110_cal} {w110_val}"
+        );
+        assert_ne!(w110_cal, w110_val);
+        assert_eq!(paired_row(&value, "cal-w110")["fps"], w110_cal);
 
         assert_eq!(value["aucGain"]["value"], json!(0.25));
         let ci = value["aucGain"]["ci95"].as_array().unwrap();

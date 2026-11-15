@@ -132,8 +132,10 @@ spec reviewer judged them over `git diff origin/Develop` and the issue body:
   - `sample_gate_false_rejection_that_preservation_keeps_is_met`:
     `gates.fps.auc == 1.0`, `v-copy` `fps` is 1.0, and `v-bad1` `fps` is 0.0.
     `v-slip`'s validation-split `fps` differs from its calibration-split
-    `fps`, and its paired row carries the validation value. The criterion is
-    still `met`.
+    `fps`, and its paired row carries the validation value. Likewise
+    `cal-w110`'s calibration-split and validation-split `fps` are both numbers
+    that differ, and its paired row carries the calibration value. The
+    criterion is still `met`.
   - `constant_parent_validation_leaves_preservation_gate_and_coverage_null`:
     `gates.fps.auc` and `v-slip`'s paired-row `fps` are `null`, while
     `v-slip`'s calibration-split `fps` is a number.
@@ -147,8 +149,10 @@ spec reviewer judged them over `git diff origin/Develop` and the issue body:
   instead of `val.fps[i]` fails the tests. With both reads changed, the two
   tests above fail. With only the `gates.fps.auc` read changed,
   `constant_parent_validation_leaves_preservation_gate_and_coverage_null`
-  fails. With only the paired-row read changed, both fail. The code was then
-  restored.
+  fails. With only the paired-row read changed, both fail. For the calibration
+  paired row, reading `val.fps[i]` or `None` instead of `cal.fps[i]` fails
+  `sample_gate_false_rejection_that_preservation_keeps_is_met`. The code was
+  then restored.
 - Results:
   - `cargo test -p neat_ai_ockham --lib preservation`: 22 passed;
   - `--test preservation_audit`: 4 passed;
