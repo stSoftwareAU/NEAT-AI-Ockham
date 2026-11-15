@@ -3,7 +3,7 @@
 ## Summary
 
 The `bench-additivity` harness landed in #266. This PR closes three gaps that
-#266 left open in step 6 and the Report section of the issue:
+the earlier PR left open in step 6 and the Report section of the issue:
 
 - **Separate search pool.** Each (parent, budget, seed) row now draws a
   search pool on its own seed stream, apart from the audit pool. Every arm
