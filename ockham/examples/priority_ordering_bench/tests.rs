@@ -808,17 +808,22 @@ fn comparison_charges_incomplete_calibration_and_unitemised_preparation() {
 fn comparison_reports_audit_time_outside_every_pool_ledger() {
     let m = manifest();
     let mut a = artificial_audit(&m);
+    // Stage sums are 483 ms (1 + 1 + 1 + 40 * 2 + 40 * 10), so five pools are
+    // charged their full 100_000 ms.
     for pool in a.pools.iter_mut() {
-        // Stage sums are 483 ms, so each pool is charged its full 100_000 ms.
         pool.elapsed_ms = 100_000;
     }
+    // The first pool's raw elapsed time is below its stage sum, so it is charged
+    // the 483 ms stage sum. Raw-elapsed subtraction would therefore give 2_983.
+    a.pools[0].elapsed_ms = 0;
     // An early collection failure produces no pool, so it has no ledger.
     a.failures.push("val seed 9: maxRunMs exhausted".into());
-    a.elapsed_ms = 100_000 * a.pools.len() as u64 + 2_500;
+    // Five pools at 100_000 ms, one charged 483 ms, plus 2_500 ms unpooled.
+    a.elapsed_ms = 502_983;
     let output =
         serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
     assert_eq!(output["unpooledAuditMs"], 2_500);
-    assert_eq!(output["auditCostMs"], 602_500);
+    assert_eq!(output["auditCostMs"], 502_983);
     assert_eq!(
         output["totalResearchMs"].as_u64().unwrap() - output["evaluationCostMs"].as_u64().unwrap(),
         output["auditCostMs"].as_u64().unwrap()
