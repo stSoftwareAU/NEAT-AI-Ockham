@@ -2504,7 +2504,9 @@ keeps, scored on the same records against two controls: the parent's mean output
 and the parent's outputs with the records shuffled under predeclared seeds. It
 writes one JSON report and changes nothing else. It never changes acceptance,
 never writes a creature, and its similarity scores never substitute for the
-authoritative full scorer. `--manifest-sha256` freezes the manifest, and the
+authoritative full scorer. The report also gives the paper's Functional
+Preservation Score (`fps`), pinned to the authors' toolkit, as a diagnostic that
+never enters the success rule. `--manifest-sha256` freezes the manifest, and the
 report records `versions.manifestSha256` and `versions.manifestFrozen`. The
 hypothesis, formulas, limits and success rule are in
 [docs/preservation-audit.md](docs/preservation-audit.md).

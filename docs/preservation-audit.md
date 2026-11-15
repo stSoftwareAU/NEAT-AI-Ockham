@@ -5,9 +5,13 @@
 `audit-preservation` tests a hypothesis: a compressed child that keeps its
 parent's behaviour on the same records is a better candidate for acceptance
 than the sampled error screen alone suggests. The idea comes from
-arXiv:2611.13681. Only the abstract was available when this was written; the
-full method was not retrieved, so the formulas below are this crate's own
-operationalisation, not a transcription of that paper.
+arXiv:2611.13681. The method is pinned to the authors' public toolkit,
+`github.com/Praveg432/functional-preservation-score`, commit
+`2b716ddb632b6c8674e74615e0b65af3f28c9f17`, file `shared/fps.py` (MIT). The
+same definition is eq. 1 of `paper-arxiv/paper.tex` in that repository.
+`preservationVsMean` is the paper's `raw` R² score, and `fps` is the paper's
+Functional Preservation Score (FPS). The departures from the pinned method are
+listed under [Departures from the pinned method](#departures-from-the-pinned-method).
 
 No representative run exists yet. The audit therefore claims no benefit. Its
 output is a diagnostic report, nothing more.
@@ -44,6 +48,7 @@ E_shuf(s) = (1 / RK) * sum_r sum_k (p_{pi_s(r),k} - p_rk)^2
 
 preservationVsMean    = 1 - E_child / E_mean
 preservationVsShuffle = 1 - E_child / mean_s(E_shuf(s))
+fps = clip(1 - E_child / min(E_mean, mean_s(E_shuf(s))), 0, 1)
 
 taskLoss = (1 / RK) * sum_r sum_k (c_rk - t_rk)^2   (parent and child)
 ```
@@ -52,11 +57,28 @@ taskLoss = (1 / RK) * sum_r sum_k (c_rk - t_rk)^2   (parent and child)
 `SplitMix64`. Larger preservation scores mean the child stays closer to the
 parent.
 
+`fps` is the paper's score. With `E_shuf = mean_s(E_shuf(s))`, the paper's form
+is:
+
+```text
+raw(Y)   = 1 - ||Y - Y_ref||^2 / ||Y_ref - mean(Y_ref)||^2     (= preservationVsMean)
+raw_null = max(raw(Y_shuffled_ref), raw(mean_pred))             (raw(mean_pred) = 0)
+FPS      = clip((raw(Y) - raw_null) / (1 - raw_null), 0, 1)
+```
+
+This is algebraically the min form above, and so equals
+`clip(min(preservationVsMean, preservationVsShuffle), 0, 1)`. If
+`E_shuf < E_mean`, then `raw_null = 1 - E_shuf / E_mean` and
+`FPS = 1 - E_child / E_shuf`. Otherwise `raw_null = 0` and `FPS = raw`.
+`fpsControl` names the control used: `"shuffle"` only when `E_shuf < E_mean`
+strictly, else `"mean"`.
+
 ### Degenerate handling
 
 - A denominator that is exactly `0.0`, or below `1e-24`, makes that score
   `null`. The reason is recorded in `degenerate`: `"zeroVarianceParent"` for the
   mean control, `"zeroShuffleError"` for the shuffle control.
+- `fps` and `fpsControl` are `null` whenever a `degenerate` reason is present.
 - The audit never divides by zero and never emits `NaN` or infinity.
 - `collapsedChild` is `true` when every child output column has zero variance on
   the split while the parent does not. Such a child has
@@ -64,6 +86,26 @@ parent.
 - A non-finite output on any record marks that child with
   `failure: "nonFiniteOutput at record N"`. The child is excluded from the
   comparison and listed in `failures`.
+
+### Departures from the pinned method
+
+- **Degenerate cases.** The paper returns `raw = 1.0` if `ss_res <= 1e-12` and
+  `0.0` otherwise when `ss_tot <= 1e-12`, and `fps = 0.0` when
+  `1 - raw_null <= 1e-9`. The crate gives `null` plus a `degenerate` reason, and
+  never emits a made-up value. Its threshold is `1e-24` on mean errors, not
+  `1e-12` on sums.
+- **Shuffle null.** The crate uses the mean of `E_shuf` over `shuffleSeeds`
+  Fisher–Yates permutations from `SplitMix64`. The paper uses one numpy
+  permutation (`default_rng(7)`), redrawn only if it is the identity. The crate
+  does not redraw an identity permutation, so a tiny split can give
+  `zeroShuffleError`.
+- **Records.** A record here is a single input vector. The paper's stimuli are
+  time series flattened to rows before scoring, which is the same column-mean
+  computation.
+- **Intervals.** `ci95` is a bootstrap over records of `preservationVsMean`
+  only, using `bootstrapResamples` (the paper uses 10^4 resamples). `fps` has no
+  interval.
+- **Diagnostic only.** `fps` never enters `theta`, `aucGain` or the criterion.
 
 ### Uncertainty
 
@@ -137,7 +179,7 @@ the operator's own record, so commit the digest (or the manifest) before the run
 The threshold `theta` is fitted on the calibration split only. Both the records
 and the children are split: every child carries a `role`. Calibration children,
 scored on the calibration corpus, fit `theta`. Validation children, scored on the
-validation corpus, are the only ones the gates count. A child is never in both.
+validation corpus, are the only ones the gates count. A child has one role, never both.
 
 1. Each calibration `preservationVsMean` score is a candidate `theta`.
 2. The chosen `theta` maximises balanced accuracy, `(TPR + TNR) / 2`. A child is
@@ -171,10 +213,15 @@ For each gate, the report gives:
 - `AUC`: the Mann–Whitney area under the curve (reusing `model::auc`) of the gate's score for
   predicting "better". Ties count as 0.5. It is `null` when undefined.
 
+The report also has `gates.fps.auc`: the AUC of the validation comparison
+children's `fps` for predicting "better", computed the same way. It is `null`
+when any comparison child's `fps` is `null`. It is diagnostic only: no `theta`
+is fitted on `fps`, and it enters neither `aucGain` nor the criterion.
+
 Each child also appears as a paired row, `{name, role, better, fullDelta,
-sampleDelta, preservationVsMean, sampleRejects, preservationRejects}`. The rows
-hold the paired score distributions. `preservationVsMean` is the child's score
-on its own role's corpus. `preservationRejects` is `null` for calibration
+sampleDelta, preservationVsMean, fps, sampleRejects, preservationRejects}`. The
+rows hold the paired score distributions. `preservationVsMean` and `fps` are the
+child's scores on its own role's corpus. `preservationRejects` is `null` for calibration
 children. A bootstrap 95% interval over children (seeded by
 `bootstrapSeed`) gives `aucGain = AUC_preservation - AUC_sample`.
 
@@ -199,10 +246,13 @@ demonstration of benefit until representative runs exist.
   with a doubled weight still scored `preservationVsMean = 1.0`, the same as
   an exact copy. The score cannot tell children apart when the corpus holds
   such records.
-- The arXiv full text could not be fetched here (no network access), so the
-  method is still not pinned to the paper. A retry on 2026-11-15 also failed:
-  `curl` to `arxiv.org/abs/2611.13681` and `export.arxiv.org` got
-  `CONNECT tunnel failed, response 403`.
+- arxiv.org is still unreachable from this host (`CONNECT tunnel failed,
+  response 403` on 2026-11-15), so the method was pinned from the authors'
+  toolkit at the commit above rather than from the arXiv PDF.
+- Negative finding: the shuffle control is usually about twice the mean control
+  on independent records, so `fps` equals `max(preservationVsMean, 0)` unless
+  the shuffle error is smaller. On such corpora it adds only the clip at 0 over
+  `preservationVsMean`.
 - `latencyMsPer1kRecords` times the whole streamed pass, so it includes corpus
   reading and per-record scoring, not only the activation loop.
 
@@ -249,8 +299,8 @@ top-level fields are:
   evidence behind the report.
 - `reportOnly`: `"report-only; not a demonstration of benefit"`. This fixed
   sentence is a separate top-level field, not part of `evidence`.
-- `method`: the formula text and the source note, which says the abstract only
-  was used.
+- `method`: the formula text and the source note, which names the pinned
+  toolkit commit.
 - `versions`: the crate version, `gitCommit` (from `git describe --always
   --dirty` at build time, with `-dirty` for uncommitted edits, or `"unknown"`
   without git),
@@ -260,12 +310,14 @@ top-level fields are:
   matching `--manifest-sha256`, otherwise `false`).
 - `manifest`: an echo of the input manifest.
 - `threshold`: the fitted `theta`, or `null`.
-- `splits`: `calibration` and `validation`, each with per-child scores,
-  `ci95`, `collapsedChild`, `degenerate`, `taskLoss` and
+- `splits`: `calibration` and `validation`, each with per-child scores for
+  every child whatever its role (including `fps` and `fpsControl`). Only a
+  child's scores on its own role's split feed `theta`, the gates and its paired
+  row. Each split also has `ci95`, `collapsedChild`, `degenerate`, `taskLoss` and
   `latencyMsPer1kRecords`. The split's `parent` entry carries `failure` (a
   non-finite parent output) and `null` task loss and control error when it
   fails.
-- `gates`: `sample` and `preservation`.
+- `gates`: `sample`, `preservation` and `fps` (diagnostic only).
 - `paired`, `aucGain` (value and `ci95`).
 - `criterion`: `status` and `rule`.
 - `coverage`: children supplied and scored (in total and per role), and
