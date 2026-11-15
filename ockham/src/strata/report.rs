@@ -243,6 +243,9 @@ pub struct Versions {
     pub parent_checksum: String,
     /// SHA-256 of the manifest's bytes.
     pub manifest_sha256: String,
+    /// True iff the run checked the manifest bytes against a predeclared
+    /// `--manifest-sha256` before any work; false when no digest was given.
+    pub manifest_frozen: bool,
     /// Calibration strata, in manifest order.
     pub calibration: Vec<StratumVersion>,
     /// Validation strata, in manifest order.
