@@ -9,15 +9,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use neat_ai_ockham::ablation::growth_units;
 use neat_ai_ockham::additivity::bench::run_bench;
 use neat_ai_ockham::additivity::bench_report::{BenchReport, SearchStop};
 use neat_ai_ockham::additivity::manifest::{BenchManifest, ResourceLimits, ScorerSpec};
 use neat_ai_ockham::additivity::rank::{ARMS, Arm};
-use neat_ai_ockham::clock::{ManualClock, SystemClock};
+use neat_ai_ockham::clock::{Clock, ManualClock, SystemClock};
 use neat_ai_ockham::corpus::{corpus_info, for_each_chunk, write_bin_file};
 use neat_ai_ockham::fixtures::{creature, identity_creature, neuron, synapse};
 use neat_ai_ockham::scorer::{DirectoryScorer, ScoreResult, ScorerError, ScorerMode};
@@ -1361,4 +1361,172 @@ fn the_search_pool_draws_member_sets_the_audit_pool_does_not_hold() {
         differing_rows > 0,
         "at least one row's search pool must hold member sets the audit pool does not"
     );
+}
+
+/// A clock that moves by `tick_ms` on every reading, so each timed phase costs
+/// a deterministic, non-zero amount that grows with the work it does: the
+/// charged (non-scorer) phases, the scorer calls and everything between.
+struct TickingClock {
+    base: Instant,
+    reads: AtomicU64,
+    tick_ms: u64,
+}
+
+impl TickingClock {
+    fn new(tick_ms: u64) -> Self {
+        Self {
+            base: Instant::now(),
+            reads: AtomicU64::new(0),
+            tick_ms,
+        }
+    }
+}
+
+impl Clock for TickingClock {
+    fn now(&self) -> Instant {
+        let n = self.reads.fetch_add(1, Ordering::SeqCst);
+        self.base + Duration::from_millis(n * self.tick_ms)
+    }
+}
+
+const TICK_MS: u64 = 10;
+
+fn run_ticking(manifest: &BenchManifest) -> BenchReport {
+    let scorer = FaithfulScorer::new();
+    let workspace = manifest.cache_dir.join("workspace");
+    run_bench(manifest, &scorer, &TickingClock::new(TICK_MS), &workspace).expect("bench runs")
+}
+
+fn arm_row(report: &BenchReport, arm: Arm) -> &neat_ai_ockham::additivity::bench_report::ArmRow {
+    report.rows[0]
+        .arms
+        .iter()
+        .find(|a| a.arm == arm)
+        .expect("arm present")
+}
+
+/// What an arm is charged before its own scorer calls.
+fn charged_ms(report: &BenchReport, arm: Arm) -> u64 {
+    let cost = &arm_row(report, arm).cost_ms;
+    cost.total - cost.scorer
+}
+
+#[test]
+fn charged_costs_shorten_the_search_of_the_arms_that_pay_them() {
+    let fixture = Fixture::new();
+    // Reference run without a budget: reads each arm's charged cost.
+    let reference = run_ticking(&search_manifest(&fixture, None));
+    assert!(reference.rows[0].feasible, "{:?}", reference.rows[0].reason);
+    let random_charged = charged_ms(&reference, Arm::Random);
+    assert!(random_charged > 0, "random still pays materialisation");
+    for arm in [Arm::Current, Arm::AdditiveLoss, Arm::CachedOutput] {
+        let cost = &arm_row(&reference, arm).cost_ms;
+        assert!(
+            cost.total > cost.scorer,
+            "{arm:?}: charged phases must cost time"
+        );
+        assert!(cost.single_proposals > 0 && cost.cache_build > 0, "{arm:?}");
+        assert!(
+            charged_ms(&reference, arm) >= random_charged + 2 * TICK_MS,
+            "{arm:?} pays singles and cache costs that random does not"
+        );
+    }
+    let random_cost = &arm_row(&reference, Arm::Random).cost_ms;
+    assert_eq!(random_cost.single_proposals, 0);
+    assert_eq!(random_cost.cache_build, 0);
+
+    // A budget that leaves random room for exactly three calls.
+    let budget = random_charged + 2 * TICK_MS + 1;
+    // A fresh fixture: a reused cache directory would make the build cost differ.
+    let report = run_ticking(&search_manifest(&Fixture::new(), Some(budget)));
+    let row = &report.rows[0];
+    assert!(row.feasible, "{:?}", row.reason);
+    for arm in ARMS {
+        let charged = charged_ms(&report, arm);
+        assert_eq!(
+            charged,
+            charged_ms(&reference, arm),
+            "{arm:?}: charged phases do not depend on the budget"
+        );
+        // A call starts only while charged + scorer time is below the budget.
+        let expected = if budget > charged {
+            (budget - charged).div_ceil(TICK_MS)
+        } else {
+            0
+        };
+        let a = arm_row(&report, arm);
+        assert_eq!(a.picks.len() as u64, expected, "{arm:?}");
+        assert_eq!(a.full_scorer_calls, expected, "{arm:?}");
+        assert_eq!(a.cost_ms.scorer, expected * TICK_MS, "{arm:?}");
+        assert_eq!(a.cost_ms.total, charged + expected * TICK_MS, "{arm:?}");
+        assert_eq!(a.stopped_by, Some(SearchStop::WallClock), "{arm:?}");
+    }
+    let random_picks = arm_row(&report, Arm::Random).picks.len();
+    assert_eq!(random_picks, 3);
+    for arm in [Arm::Current, Arm::AdditiveLoss, Arm::CachedOutput] {
+        assert!(
+            arm_row(&report, arm).picks.len() < random_picks,
+            "{arm:?} is charged singles and cache costs, so it scores fewer picks"
+        );
+    }
+}
+
+#[test]
+fn an_arm_with_no_selection_stays_visible_in_the_aggregate() {
+    let fixture = Fixture::new();
+    let reference = run_ticking(&search_manifest(&fixture, None));
+    assert!(reference.rows[0].feasible, "{:?}", reference.rows[0].reason);
+    let random_charged = charged_ms(&reference, Arm::Random);
+    let cached_charged = charged_ms(&reference, Arm::CachedOutput);
+    assert!(
+        cached_charged > random_charged + TICK_MS,
+        "cachedOutput pays costs random does not"
+    );
+
+    // A budget at cachedOutput's charged cost: it cannot start a first call,
+    // while random (charged less) still scores and selects.
+    // A fresh fixture: a reused cache directory would make the build cost differ.
+    let report = run_ticking(&search_manifest(&Fixture::new(), Some(cached_charged)));
+    let row = &report.rows[0];
+    assert!(row.feasible, "{:?}", row.reason);
+    let cached = arm_row(&report, Arm::CachedOutput);
+    assert!(cached.picks.is_empty());
+    assert_eq!(cached.full_scorer_calls, 0);
+    assert_eq!(cached.stopped_by, Some(SearchStop::WallClock));
+    assert_eq!(cached.selected_bundle, None);
+    assert_eq!(cached.selected_score, None);
+    assert_eq!(cached.cost_ms.scorer, 0);
+    assert_eq!(cached.cost_ms.total, cached_charged);
+    let random = arm_row(&report, Arm::Random);
+    let random_score = random.selected_score.expect("random still selects");
+
+    let aggregate = &report.aggregate[0];
+    assert_eq!(aggregate.feasible_rows, 1);
+    let cached_aggregate = aggregate
+        .arms
+        .iter()
+        .find(|a| a.arm == Arm::CachedOutput)
+        .unwrap();
+    assert_eq!(cached_aggregate.rows_without_selection, 1);
+    assert!(cached_aggregate.selected_delta.is_none());
+    let random_aggregate = aggregate
+        .arms
+        .iter()
+        .find(|a| a.arm == Arm::Random)
+        .unwrap();
+    assert_eq!(random_aggregate.rows_without_selection, 0);
+    // The row is excluded from the paired comparison, and said to be.
+    assert_eq!(aggregate.paired_rows_excluded, 1);
+    assert!(aggregate.cached_output_vs_random.is_none());
+    // And it is listed as a case random won, with no cachedOutput score.
+    let case = report
+        .cases_beating_cached_output
+        .iter()
+        .find(|c| c.arm == Arm::Random)
+        .expect("random selected where cachedOutput selected nothing");
+    assert_eq!(case.cached_output_score, None);
+    assert_eq!(case.arm_score, random_score);
+    assert_eq!(case.seed, row.seed);
+    let json = serde_json::to_value(case).unwrap();
+    assert!(json["cachedOutputScore"].is_null(), "{json}");
 }

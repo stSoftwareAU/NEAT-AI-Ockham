@@ -452,6 +452,11 @@ pub struct ArmAggregate {
     pub selected_delta: Option<Distribution>,
     /// Arm total cost in milliseconds.
     pub total_ms: Option<Distribution>,
+    /// Feasible rows in which this arm selected nothing (no within-budget pick,
+    /// or no pick at all). Such rows carry no `selectedDelta` or `regret`, so
+    /// those distributions cover only the remaining rows; this count keeps the
+    /// difference visible.
+    pub rows_without_selection: usize,
 }
 
 /// Aggregate over every feasible row of one budget.
@@ -470,6 +475,11 @@ pub struct BudgetAggregate {
     pub cached_output_vs_current: Option<PairedComparison>,
     /// Selected full score: cachedOutput against random, over (parent, seed).
     pub cached_output_vs_random: Option<PairedComparison>,
+    /// Feasible rows left out of both paired comparisons because cachedOutput,
+    /// current or random selected nothing in them. A row where cachedOutput
+    /// selected nothing while current or random did is also listed in
+    /// `casesBeatingCachedOutput`, with a null `cachedOutputScore`.
+    pub paired_rows_excluded: usize,
 }
 
 /// A case where an arm selected a strictly better full score than cachedOutput.
@@ -486,8 +496,9 @@ pub struct BeatenCase {
     pub arm: Arm,
     /// That arm's selected full score.
     pub arm_score: f64,
-    /// cachedOutput's selected full score.
-    pub cached_output_score: f64,
+    /// cachedOutput's selected full score; `None` where cachedOutput selected
+    /// nothing in the row (counted as a loss to an arm that did select).
+    pub cached_output_score: Option<f64>,
 }
 
 /// The complete benchmark report written by the CLI.
@@ -570,6 +581,10 @@ pub fn aggregate(
                     regret: picked(&|a| a.selected_regret),
                     selected_delta: picked(&|a| a.selected_delta),
                     total_ms: picked(&|a| Some(a.cost_ms.total as f64)),
+                    rows_without_selection: feasible
+                        .iter()
+                        .filter(|row| arm_of(row, arm).is_none_or(|a| a.selected_score.is_none()))
+                        .count(),
                 }
             })
             .collect();
@@ -577,13 +592,31 @@ pub fn aggregate(
         let mut cached = Vec::new();
         let mut current = Vec::new();
         let mut random = Vec::new();
+        let mut excluded = 0;
         for row in &feasible {
             let score = |arm: Arm| arm_of(row, arm).and_then(|a| a.selected_score);
+            // cachedOutput selecting nothing is a loss to any arm that did
+            // select: list it, with no cachedOutput score, never drop it.
+            if score(Arm::CachedOutput).is_none() {
+                for arm in [Arm::Current, Arm::Random] {
+                    if let Some(value) = score(arm) {
+                        beaten.push(BeatenCase {
+                            parent: row.parent.clone(),
+                            budget,
+                            seed: row.seed,
+                            arm,
+                            arm_score: value,
+                            cached_output_score: None,
+                        });
+                    }
+                }
+            }
             let (Some(c), Some(cur), Some(rnd)) = (
                 score(Arm::CachedOutput),
                 score(Arm::Current),
                 score(Arm::Random),
             ) else {
+                excluded += 1;
                 continue;
             };
             cached.push(c);
@@ -597,7 +630,7 @@ pub fn aggregate(
                         seed: row.seed,
                         arm,
                         arm_score: value,
-                        cached_output_score: c,
+                        cached_output_score: Some(c),
                     });
                 }
             }
@@ -616,6 +649,7 @@ pub fn aggregate(
             arms,
             cached_output_vs_current: pair(&current)?,
             cached_output_vs_random: pair(&random)?,
+            paired_rows_excluded: excluded,
         });
     }
     Ok((out, beaten))

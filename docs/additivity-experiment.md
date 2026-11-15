@@ -305,11 +305,17 @@ The report is JSON in camelCase.
   `null` for the other arms, and when no search-pool bundle had an estimate.
 - `aggregate[]`, one per budget: distributions over feasible rows of spearman,
   top-k recall, paired regret (`selectedRegret`), selected delta and total
-  milliseconds per arm, plus
-  paired comparisons of cachedOutput against current and against random over
-  (parent, seed).
+  milliseconds per arm, plus paired comparisons of cachedOutput against current
+  and against random over (parent, seed). Under `searchWallClockMs` an arm can
+  finish a feasible row with no selection. Each arm therefore carries
+  `rowsWithoutSelection`, the feasible rows in which it selected nothing; its
+  `regret` and `selectedDelta` distributions cover only its other rows. The
+  paired comparisons need a selection from cachedOutput, current and random,
+  so `pairedRowsExcluded` counts the feasible rows they leave out.
 - `casesBeatingCachedOutput[]`: every case where current or random selected a
-  strictly better full score than cachedOutput. These are listed in full, not
+  strictly better full score than cachedOutput, and every case where current or
+  random selected while cachedOutput selected nothing (a loss for cachedOutput,
+  listed with a null `cachedOutputScore`). These are listed in full, not
   summarised, so negative findings are visible.
 
 Scores are never summed across bundles. The audit's full-scorer call is

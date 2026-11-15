@@ -49,6 +49,11 @@ elite manifest, private corpora or `rust_scorer`, so the representative
 - **Wall-clock selection is "anytime".** A call starts only while the charge
   is under budget. A pick whose call ends past the budget is charged but not
   selectable. If no pick finishes within budget, the arm selects nothing.
+  That outcome stays visible: the aggregate counts it per arm
+  (`rowsWithoutSelection`) and per budget (`pairedRowsExcluded`), and a row
+  where cachedOutput selected nothing while current or random did is listed in
+  `casesBeatingCachedOutput` with a null `cachedOutputScore`, so a
+  slow arm is not flattered by survivor bias.
   Without `searchWallClockMs` there is one batched call, exactly as before.
 - **Report format version 2.** The report shape changed (`rows[].search`,
   `searchRanking`, `stoppedBy`, `withinBudget`, `measuredPeakRssBytes`).
@@ -92,7 +97,9 @@ flowchart LR
   `ockham/tests/additivity_bench.rs`, which stands in for `ExternalScorer`
   (`ockham/src/scorer.rs`). The wall-clock tests wrap it in `ClockedScorer`,
   which only advances an injected `ManualClock` by 10 ms per scoring call, so
-  every cost and stop is a literal, with no real timing.
+  every cost and stop is a literal, with no real timing. The charged-cost
+  tests use a `TickingClock` that moves 10 ms on every reading, so the
+  non-scorer phases cost a non-zero, deterministic amount too.
 
 ## Acceptance Criteria
 
@@ -200,6 +207,20 @@ New tests:
     `withinBudget`, and the selection is the best of those two.
   - `a_search_wall_clock_budget_shorter_than_one_call_makes_one_pick_and_selects_nothing`:
     5 ms budget. One late pick and no selection; `selectedRegret` is `None`.
+  - `charged_costs_shorten_the_search_of_the_arms_that_pay_them`: a
+    no-budget reference run under `TickingClock` reads each arm's charged
+    cost; current, additiveLoss and cachedOutput are charged singles and
+    cache costs, random is not. A budget of random's charged cost plus 21 ms
+    then gives each arm exactly `ceil((budget - charged) / 10)` picks, calls
+    and scorer milliseconds, with `costMs.total` above `costMs.scorer`. Random
+    scores three picks and each of the other three fewer.
+  - `an_arm_with_no_selection_stays_visible_in_the_aggregate`: a budget equal
+    to cachedOutput's charged cost leaves it zero picks, zero scorer calls,
+    `stoppedBy` `wallClock` and no selection, while random selects. The
+    aggregate shows `rowsWithoutSelection` 1 for cachedOutput,
+    `pairedRowsExcluded` 1, no cachedOutput-versus-random comparison, and a
+    `casesBeatingCachedOutput` entry for random with a null
+    `cachedOutputScore` (also null in the JSON).
   - `without_a_search_budget_each_arm_makes_one_batched_call_over_its_picks`:
     the control. One call, `fullEvaluations`, and every pick within budget.
   - `arms_rank_a_separate_search_pool_and_regret_is_paired_within_it`:
@@ -221,11 +242,9 @@ Edited existing tests (no assertion removed):
   are positive.
 - The manifest fixtures gained `search_wall_clock_ms: None`.
 
-Results at `dffb2c1`:
+Results (working tree after the review fixes):
 
-- `cargo test -p neat_ai_ockham --test additivity_bench`: 17 passed.
-- `cargo test -p neat_ai_ockham --lib additivity`: 42 passed.
-- `--test readme_contract`: 10 passed.
+- `cargo test --test additivity_bench`: 19 passed.
 - `./quality.sh < /dev/null`: exit 0, "All quality checks passed!".
 
 The first gate run failed on a per-row monotone-RSS assertion added in this
