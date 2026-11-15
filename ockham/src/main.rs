@@ -238,6 +238,9 @@ enum Command {
         /// Where to write the JSON report (written atomically).
         #[arg(long, value_name = "REPORT")]
         out: PathBuf,
+        /// Predeclared SHA-256 of the manifest; the audit is refused unless the manifest's bytes match it.
+        #[arg(long, value_name = "SHA256")]
+        manifest_sha256: Option<String>,
     },
     /// Run the opt-in worst-stratum vs aggregate vs Pareto pruning experiment (#263).
     ///
@@ -305,8 +308,17 @@ fn main() -> ExitCode {
             }
         };
     }
-    if let Some(Command::AuditPreservation { manifest, out }) = &cli.command {
-        return match neat_ai_ockham::preservation::run_audit(manifest, out) {
+    if let Some(Command::AuditPreservation {
+        manifest,
+        out,
+        manifest_sha256,
+    }) = &cli.command
+    {
+        return match neat_ai_ockham::preservation::run_audit(
+            manifest,
+            out,
+            manifest_sha256.as_deref(),
+        ) {
             Ok(report) => {
                 let status = report["criterion"]["status"].as_str().unwrap_or("unknown");
                 eprintln!(
