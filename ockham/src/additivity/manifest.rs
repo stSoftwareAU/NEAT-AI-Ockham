@@ -30,6 +30,9 @@ pub const REPRESENTATIVE_PARENTS: usize = 20;
 /// Largest manifest file accepted, checked before the file is read.
 pub const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 
+/// Largest `searchWallClockMs` accepted: seven days.
+pub const MAX_SEARCH_WALL_CLOCK_MS: u64 = 604_800_000;
+
 /// The external scorer the benchmark shells out to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -83,6 +86,12 @@ pub struct BenchManifest {
     pub audit_pool: usize,
     /// Predeclared per-arm budget of full-scorer evaluations.
     pub full_evaluations: usize,
+    /// Predeclared per-arm search budget in milliseconds, charged with the arm's
+    /// own single proposals, cache build, cache read and inference, search-pool
+    /// materialisation and ranking costs. Absent means the search is not
+    /// wall-clock limited.
+    #[serde(default)]
+    pub search_wall_clock_ms: Option<u64>,
     /// Audit recall depth: each arm's top-ranked bundles checked against the
     /// best true bundle in `rank::audit`. It does not bound full scoring.
     #[serde(default = "default_top_k")]
@@ -229,6 +238,13 @@ impl BenchManifest {
                 self.audit_pool, self.top_k
             ));
         }
+        if let Some(budget_ms) = self.search_wall_clock_ms
+            && !(1..=MAX_SEARCH_WALL_CLOCK_MS).contains(&budget_ms)
+        {
+            return Err(format!(
+                "searchWallClockMs must be between 1 and {MAX_SEARCH_WALL_CLOCK_MS} (7 days), got {budget_ms}"
+            ));
+        }
         if !(self.min_improvement.is_finite() && self.min_improvement >= 0.0) {
             return Err(format!(
                 "minImprovement must be finite and non-negative, got {}",
@@ -313,6 +329,7 @@ mod tests {
             budgets: DEFAULT_BUDGETS.to_vec(),
             audit_pool: 8,
             full_evaluations: 4,
+            search_wall_clock_ms: None,
             top_k: DEFAULT_TOP_K,
             min_improvement: 0.0,
             decision_rule: "adopt when the full-score delta reaches minImprovement".to_string(),
@@ -411,6 +428,54 @@ mod tests {
                 "expected '{field}' in error, got: {err}"
             );
         }
+    }
+
+    #[test]
+    fn search_wall_clock_is_bounded_from_one_millisecond_to_seven_days() {
+        for (value, accepted) in [
+            (0, false),
+            (1, true),
+            (MAX_SEARCH_WALL_CLOCK_MS, true),
+            (MAX_SEARCH_WALL_CLOCK_MS + 1, false),
+        ] {
+            let mut m = valid();
+            m.search_wall_clock_ms = Some(value);
+            match m.validate() {
+                Ok(()) => assert!(accepted, "{value} ms must be refused"),
+                Err(err) => {
+                    assert!(!accepted, "{value} ms must be accepted, got: {err}");
+                    assert!(err.contains("searchWallClockMs"), "error was: {err}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_wall_clock_loads_from_json_and_absent_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let absent = write_manifest(tmp.path(), VALID_JSON);
+        assert_eq!(
+            BenchManifest::load(&absent).unwrap().search_wall_clock_ms,
+            None
+        );
+
+        let set = VALID_JSON.replace(
+            r#""cacheDir": "cache""#,
+            r#""cacheDir": "cache", "searchWallClockMs": 25000"#,
+        );
+        let path = write_manifest(tmp.path(), &set);
+        assert_eq!(
+            BenchManifest::load(&path).unwrap().search_wall_clock_ms,
+            Some(25_000)
+        );
+
+        let zero = VALID_JSON.replace(
+            r#""cacheDir": "cache""#,
+            r#""cacheDir": "cache", "searchWallClockMs": 0"#,
+        );
+        let path = write_manifest(tmp.path(), &zero);
+        let err = BenchManifest::load(&path).unwrap_err();
+        assert!(err.contains("searchWallClockMs"), "error was: {err}");
     }
 
     #[test]

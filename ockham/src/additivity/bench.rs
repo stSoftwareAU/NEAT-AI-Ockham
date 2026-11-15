@@ -2,9 +2,11 @@
 //!
 //! For each parent the driver proposes every single hidden-neuron cut, caches
 //! its outputs on one deterministic audit core, then for every (budget, seed)
-//! builds a pool of bundles, scores every unique bundle with the full-corpus
-//! scorer (the audit), and lets each arm send its own top picks to a separate
-//! full-scorer call. Predictions only order the picks; the best full score among
+//! builds an audit pool of bundles and scores every unique one with the
+//! full-corpus scorer. Each arm's audit ranking is measured against that truth.
+//! A second, separately seeded search pool is only estimated: each arm orders it
+//! and sends its own picks to full-scorer calls, under an optional per-arm
+//! wall-clock budget. Predictions only order the picks; the best full score among
 //! an arm's picks is its selection. Nothing here accepts a creature.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -18,7 +20,7 @@ use neat_core::{CreatureExport, compile_creature, creature_to_json};
 use super::bench_report::{
     self, AUTHORITY, ArmCost, ArmRow, AuditCost, BenchReport, BenchRow, BundleRow, CacheStats,
     DuplicateBundle, FailedProposal, ManifestEcho, ParentReport, Pick, REPORT_FORMAT_VERSION,
-    Refusal, evidence_for,
+    Refusal, SearchBundle, SearchPool, SearchStop, evidence_for,
 };
 use super::cache::{
     CACHE_FORMAT_VERSION, CacheKey, CacheRejection, OutputCache, core_pin, cut_entry_name,
@@ -54,8 +56,14 @@ const Y0_ENTRY: &str = "y0";
 /// Stream tag for pool draws, keeping them apart from the random arm.
 const POOL_STREAM: u64 = 1;
 
-/// Stream tag for the random arm's permutation.
+/// Stream tag for the random arm's audit permutation.
 const RANDOM_STREAM: u64 = 2;
+
+/// Stream tag for the search pool draw, apart from the audit pool.
+const SEARCH_POOL_STREAM: u64 = 3;
+
+/// Stream tag for the random arm's search-pool permutation.
+const RANDOM_SEARCH_STREAM: u64 = 4;
 
 /// Random draws allowed per wanted pool bundle before the pool is left short.
 const ATTEMPTS_PER_BUNDLE: usize = 50;
@@ -128,6 +136,7 @@ pub fn run_bench(
         rows,
         aggregate,
         cases_beating_cached_output: cases,
+        measured_peak_rss_bytes: measured_peak_rss_bytes(),
     })
 }
 
@@ -244,17 +253,64 @@ struct Single {
     loss: Option<f64>,
 }
 
-/// A materialised, unique pool bundle.
-struct Scored {
+/// What the bench keeps of a materialised, unique pool bundle once its creature
+/// is no longer needed.
+struct BundleMeta {
+    /// Positions in the ranked singles.
     members: Vec<usize>,
     member_uuids: Vec<String>,
-    creature: CreatureExport,
     before: StructureSnapshot,
     after: StructureSnapshot,
     requested: Vec<String>,
     cascade: Vec<String>,
     spliced: Vec<String>,
     digest: String,
+}
+
+impl BundleMeta {
+    /// Hidden neurons the materialised cut removed.
+    fn hidden_removed(&self) -> usize {
+        self.before
+            .hidden_neurons
+            .saturating_sub(self.after.hidden_neurons)
+    }
+
+    /// Synapses the materialised cut removed.
+    fn synapses_removed(&self) -> usize {
+        self.before.synapses.saturating_sub(self.after.synapses)
+    }
+}
+
+/// A materialised, unique pool bundle: its metadata and its creature.
+struct Scored {
+    meta: BundleMeta,
+    creature: CreatureExport,
+}
+
+/// One pool materialised by [`ParentRun::materialise`].
+struct Materialised {
+    /// Distinct member sets drawn.
+    requested: usize,
+    /// Materialised bundles, including duplicates.
+    size: usize,
+    duplicates: Vec<DuplicateBundle>,
+    refused: Vec<Refusal>,
+    /// Unique bundles, in first-seen order.
+    unique: Vec<Scored>,
+    /// Wall time materialising the pool, in milliseconds.
+    ms: u64,
+}
+
+/// Additive and cached estimates for each unique bundle of one pool.
+struct Estimates {
+    additive: Vec<Option<f64>>,
+    cached: Vec<Option<f64>>,
+    /// Time spent on the additive estimates, in milliseconds.
+    additive_ms: u64,
+    /// Time spent reading cached entries for the cached estimates, in milliseconds.
+    cached_read_ms: u64,
+    /// Total time for the pool's estimates, in milliseconds.
+    ms: u64,
 }
 
 /// Everything the bench holds for one parent while its rows are computed.
@@ -540,7 +596,114 @@ impl<'a> ParentRun<'a> {
         Ok(())
     }
 
-    /// One (budget, seed) row: pool, materialisation, audit, arms and validation.
+    /// Materialise one pool of distinct member sets drawn with `seed`. Each unique
+    /// creature is kept with its metadata; duplicates and refusals are recorded.
+    fn materialise(
+        &self,
+        ranked: &[usize],
+        eligible: usize,
+        k: usize,
+        seed: u64,
+    ) -> Result<Materialised, String> {
+        let clock = self.clock;
+        let started = clock.now();
+        // Ockham's ranked prefix first, then seeded distinct draws.
+        let pool = build_pool(eligible, k, self.manifest.audit_pool, seed);
+        let mut out = Materialised {
+            requested: pool.len(),
+            size: 0,
+            duplicates: Vec::new(),
+            refused: Vec::new(),
+            unique: Vec::new(),
+            ms: 0,
+        };
+        let mut digests: HashMap<String, usize> = HashMap::new();
+        for positions in &pool {
+            let members: Vec<usize> = positions.iter().map(|&p| ranked[p]).collect();
+            let member_uuids: Vec<String> = members
+                .iter()
+                .map(|&i| self.singles[i].uuid.clone())
+                .collect();
+            let group: Vec<GroupMember> = members
+                .iter()
+                .map(|&i| GroupMember {
+                    uuid: self.singles[i].uuid.clone(),
+                    mean: self.singles[i].mean,
+                })
+                .collect();
+            match prune_hidden_group(&self.incumbent.creature, &group) {
+                Err(refusal) => out.refused.push(Refusal {
+                    members: member_uuids,
+                    reason: refusal.to_string(),
+                }),
+                Ok(candidate) => {
+                    out.size += 1;
+                    let json = creature_to_json(&candidate.creature).map_err(|e| e.to_string())?;
+                    let digest = sha256_hex(json.as_bytes());
+                    if let Some(&first) = digests.get(&digest) {
+                        out.duplicates.push(DuplicateBundle {
+                            members: member_uuids,
+                            duplicate_of: first,
+                            creature_digest: digest,
+                        });
+                    } else {
+                        digests.insert(digest.clone(), out.unique.len());
+                        // Requested neurons first; the cascade and the neurons
+                        // folded into constant support are both what the cut
+                        // stranded, so both are named.
+                        let cascade = candidate.detail.cascade_uuids();
+                        // Pass-throughs the cleanup spliced out are removed
+                        // too, but core names them on a separate list.
+                        let spliced = candidate.detail.spliced_neurons.clone();
+                        out.unique.push(Scored {
+                            meta: BundleMeta {
+                                members,
+                                member_uuids,
+                                before: candidate.before,
+                                after: candidate.after,
+                                requested: candidate.detail.requested_neurons,
+                                cascade,
+                                spliced,
+                                digest,
+                            },
+                            creature: candidate.creature,
+                        });
+                    }
+                }
+            }
+        }
+        out.ms = clock.ms_since(started);
+        Ok(out)
+    }
+
+    /// Additive and cached estimates for each bundle's members, in the given order.
+    fn estimate<'m>(
+        &mut self,
+        members: impl Iterator<Item = &'m [usize]>,
+    ) -> Result<Estimates, String> {
+        let clock = self.clock;
+        let started = clock.now();
+        let mut out = Estimates {
+            additive: Vec::new(),
+            cached: Vec::new(),
+            additive_ms: 0,
+            cached_read_ms: 0,
+            ms: 0,
+        };
+        for bundle in members {
+            let additive_started = clock.now();
+            out.additive.push(self.additive_estimate(bundle)?);
+            out.additive_ms += clock.ms_since(additive_started);
+            let read_started = clock.now();
+            out.cached.push(self.cached_estimate(bundle)?);
+            out.cached_read_ms += clock.ms_since(read_started);
+        }
+        out.ms = clock.ms_since(started);
+        Ok(out)
+    }
+
+    /// One (budget, seed) row: audit pool and truth, the arms' audit rankings,
+    /// then the separate search pool that each arm ranks and searches.
     fn run_row(
         &mut self,
         budget_index: usize,
@@ -573,6 +736,7 @@ impl<'a> ParentRun<'a> {
             pool_materialisation_ms: 0,
             estimate_ms: 0,
             validation_parent_score: None,
+            search: None,
             arms: Vec::new(),
         };
         if k == 0 {
@@ -587,127 +751,63 @@ impl<'a> ParentRun<'a> {
             return Ok(row);
         }
 
-        // Pool: Ockham's ranked prefix first, then seeded distinct draws.
+        // Audit pool, materialised and estimated before its one scorer call.
         let ranked = self.rank_singles()?;
-        let started = clock.now();
-        let pool_seed = derive_seed(&[seed, self.index as u64, budget_index as u64, POOL_STREAM]);
-        let pool = build_pool(row.eligible, k, manifest.audit_pool, pool_seed);
-        row.pool_requested = pool.len();
-        let mut scored: Vec<Scored> = Vec::new();
-        let mut digests: HashMap<String, usize> = HashMap::new();
-        for positions in &pool {
-            let members: Vec<usize> = positions.iter().map(|&p| ranked[p]).collect();
-            let member_uuids: Vec<String> = members
-                .iter()
-                .map(|&i| self.singles[i].uuid.clone())
-                .collect();
-            let group: Vec<GroupMember> = members
-                .iter()
-                .map(|&i| GroupMember {
-                    uuid: self.singles[i].uuid.clone(),
-                    mean: self.singles[i].mean,
-                })
-                .collect();
-            match prune_hidden_group(&self.incumbent.creature, &group) {
-                Err(refusal) => row.refused.push(Refusal {
-                    members: member_uuids,
-                    reason: refusal.to_string(),
-                }),
-                Ok(candidate) => {
-                    row.pool_size += 1;
-                    let json = creature_to_json(&candidate.creature).map_err(|e| e.to_string())?;
-                    let digest = sha256_hex(json.as_bytes());
-                    if let Some(&first) = digests.get(&digest) {
-                        row.duplicates.push(DuplicateBundle {
-                            members: member_uuids,
-                            duplicate_of: first,
-                            creature_digest: digest,
-                        });
-                    } else {
-                        digests.insert(digest.clone(), scored.len());
-                        // Requested neurons first; the cascade and the neurons
-                        // folded into constant support are both what the cut
-                        // stranded, so both are named.
-                        let cascade = candidate.detail.cascade_uuids();
-                        // Pass-throughs the cleanup spliced out are removed
-                        // too, but core names them on a separate list.
-                        let spliced = candidate.detail.spliced_neurons.clone();
-                        scored.push(Scored {
-                            members,
-                            member_uuids,
-                            creature: candidate.creature,
-                            before: candidate.before,
-                            after: candidate.after,
-                            requested: candidate.detail.requested_neurons,
-                            cascade,
-                            spliced,
-                            digest,
-                        });
-                    }
-                }
-            }
-        }
-        row.pool_materialisation_ms = clock.ms_since(started);
-        if scored.is_empty() {
+        let index = self.index as u64;
+        let arm_seed = |stream: u64| derive_seed(&[seed, index, budget_index as u64, stream]);
+        let pool_seed = arm_seed(POOL_STREAM);
+        let audit = self.materialise(&ranked, row.eligible, k, pool_seed)?;
+        row.pool_requested = audit.requested;
+        row.pool_size = audit.size;
+        row.pool_materialisation_ms = audit.ms;
+        row.duplicates = audit.duplicates;
+        row.refused = audit.refused;
+        if audit.unique.is_empty() {
             row.reason = Some("no pool bundle could be materialised".to_string());
             return Ok(row);
         }
+        let audit_est = self.estimate(audit.unique.iter().map(|s| s.meta.members.as_slice()))?;
+        row.estimate_ms = audit_est.ms;
 
-        // Estimates, one per unique bundle.
-        let started = clock.now();
-        let mut additive = Vec::with_capacity(scored.len());
-        let mut cached = Vec::with_capacity(scored.len());
-        let mut additive_ms = 0;
-        let mut cached_read_ms = 0;
-        for bundle in &scored {
-            let additive_started = clock.now();
-            additive.push(self.additive_estimate(&bundle.members)?);
-            additive_ms += clock.ms_since(additive_started);
-            let read_started = clock.now();
-            cached.push(self.cached_estimate(&bundle.members)?);
-            cached_read_ms += clock.ms_since(read_started);
-        }
-        row.estimate_ms = clock.ms_since(started);
-
-        // Audit: one full-scorer call over every unique bundle.
-        let n = scored.len();
+        // Audit: one full-scorer call over every unique audit bundle.
+        let n = audit.unique.len();
         let parent_score = self.baseline.score;
         let parent_error = self.baseline.error;
         let started = clock.now();
-        let refs: Vec<(usize, &CreatureExport)> = scored
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (i, &s.creature))
-            .collect();
-        let audit_results = self.score(
-            &format!("audit-b{budget_index}-s{seed}"),
-            &manifest.training_data,
-            self.corpus.record_count,
-            &refs,
-        )?;
+        let audit_results = {
+            let refs: Vec<(usize, &CreatureExport)> = audit
+                .unique
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (i, &s.creature))
+                .collect();
+            self.score(
+                &format!("audit-b{budget_index}-s{seed}"),
+                &manifest.training_data,
+                self.corpus.record_count,
+                &refs,
+            )?
+        };
         row.audit = AuditCost {
             full_calls: 1,
             record_evaluations: n as u64 * self.corpus.record_count,
             ms: clock.ms_since(started),
         };
+        // The audit creatures are not needed past this call: keep their metadata only.
+        let audit_meta: Vec<BundleMeta> = audit.unique.into_iter().map(|s| s.meta).collect();
         let truth: Vec<f64> = (0..n)
             .map(|i| audit_results[&bundle_name(i)].score)
             .collect();
-        let best_truth = truth.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         // Full-corpus error reduction, in the prediction's units: the actual side
         // of the promotion audits. Ranking metrics stay on `truth`.
         let actual_gain: Vec<f64> = (0..n)
             .map(|i| parent_error - audit_results[&bundle_name(i)].error)
             .collect();
-        row.bundles = scored
+        row.bundles = audit_meta
             .iter()
             .enumerate()
             .map(|(i, s)| {
                 let result = &audit_results[&bundle_name(i)];
-                let hidden_removed = s
-                    .before
-                    .hidden_neurons
-                    .saturating_sub(s.after.hidden_neurons);
                 BundleRow {
                     index: i,
                     members: s.member_uuids.clone(),
@@ -725,42 +825,37 @@ impl<'a> ParentRun<'a> {
                         .collect(),
                     cascade_neurons: s.cascade.clone(),
                     spliced_neurons: s.spliced.clone(),
-                    hidden_removed,
-                    synapses_removed: s.before.synapses.saturating_sub(s.after.synapses),
+                    hidden_removed: s.hidden_removed(),
+                    synapses_removed: s.synapses_removed(),
                     growth_units_removed: s.before.growth_units - s.after.growth_units,
-                    meets_budget: hidden_removed >= k,
+                    meets_budget: s.hidden_removed() >= k,
                     creature_digest: s.digest.clone(),
                     score: result.score,
                     error: result.error,
                     complexity_penalty: result.complexity_penalty,
                     truth_delta: result.score - parent_score,
-                    additive_loss: additive[i],
-                    cached_output: cached[i],
+                    additive_loss: audit_est.additive[i],
+                    cached_output: audit_est.cached[i],
                 }
             })
             .collect();
 
-        // Arms: rank, audit the ranking, then search with the arm's own picks.
-        let index = self.index as u64;
-        let arm_seed = |stream: u64| derive_seed(&[seed, index, budget_index as u64, stream]);
-        let needs_singles_setup = |arm: Arm| arm != Arm::Random;
-        let mut arms = Vec::with_capacity(ARMS.len());
+        // Audit ranking of every arm, scored against the audit truth.
+        let mut audit_arms: Vec<(Arm, Vec<usize>, AuditMetrics)> = Vec::with_capacity(ARMS.len());
         for arm in ARMS {
-            let started = clock.now();
             let ranking = match arm {
                 Arm::Current => rank::rank_current(n),
                 Arm::Random => rank::rank_random(n, arm_seed(RANDOM_STREAM)),
-                Arm::AdditiveLoss => rank::rank_by_estimate(&additive),
-                Arm::CachedOutput => rank::rank_by_estimate(&cached),
+                Arm::AdditiveLoss => rank::rank_by_estimate(&audit_est.additive),
+                Arm::CachedOutput => rank::rank_by_estimate(&audit_est.cached),
             };
-            let ranking_ms = clock.ms_since(started);
             // `predicts()` is true only for the two predictor arms, so the `_`
             // branch is the additive one.
             let predicted: Option<&[Option<f64>]> =
                 arm.predicts().then_some(if arm == Arm::CachedOutput {
-                    cached.as_slice()
+                    audit_est.cached.as_slice()
                 } else {
-                    additive.as_slice()
+                    audit_est.additive.as_slice()
                 });
             let metrics: AuditMetrics = rank::audit(
                 &ranking,
@@ -770,9 +865,60 @@ impl<'a> ParentRun<'a> {
                 manifest.min_improvement,
                 manifest.top_k,
             )?;
+            audit_arms.push((arm, ranking, metrics));
+        }
+
+        // Search pool: a second, separately seeded draw. It is estimated, never
+        // scored as a whole; only each arm's own picks reach the scorer.
+        let search_seed = arm_seed(SEARCH_POOL_STREAM);
+        let search = self.materialise(&ranked, row.eligible, k, search_seed)?;
+        if search.unique.is_empty() {
+            row.reason = Some("no search pool bundle could be materialised".to_string());
+            return Ok(row);
+        }
+        let search_est = self.estimate(search.unique.iter().map(|s| s.meta.members.as_slice()))?;
+        let m = search.unique.len();
+        let search_bundles: Vec<SearchBundle> = search
+            .unique
+            .iter()
+            .enumerate()
+            .map(|(i, s)| SearchBundle {
+                index: i,
+                members: s.meta.member_uuids.clone(),
+                hidden_removed: s.meta.hidden_removed(),
+                synapses_removed: s.meta.synapses_removed(),
+                growth_units_removed: s.meta.before.growth_units - s.meta.after.growth_units,
+                meets_budget: s.meta.hidden_removed() >= k,
+                creature_digest: s.meta.digest.clone(),
+                additive_loss: search_est.additive[i],
+                cached_output: search_est.cached[i],
+            })
+            .collect();
+
+        // Arms: each ranks the search pool, then sends its own top picks to the
+        // scorer, one call per pick when a wall-clock budget is set.
+        let needs_singles_setup = |arm: Arm| arm != Arm::Random;
+        let mut arms = Vec::with_capacity(ARMS.len());
+        for (arm, ranking, metrics) in audit_arms {
+            let started = clock.now();
+            let search_ranking = match arm {
+                Arm::Current => rank::rank_current(m),
+                Arm::Random => rank::rank_random(m, arm_seed(RANDOM_SEARCH_STREAM)),
+                Arm::AdditiveLoss => rank::rank_by_estimate(&search_est.additive),
+                Arm::CachedOutput => rank::rank_by_estimate(&search_est.cached),
+            };
+            let ranking_ms = clock.ms_since(started);
+            // `predicts()` is true only for the two predictor arms, so the `_`
+            // branch is the additive one.
+            let predicted: Option<&[Option<f64>]> =
+                arm.predicts().then_some(if arm == Arm::CachedOutput {
+                    search_est.cached.as_slice()
+                } else {
+                    search_est.additive.as_slice()
+                });
             let inference_ms = match arm {
-                Arm::AdditiveLoss => additive_ms,
-                Arm::CachedOutput => cached_read_ms,
+                Arm::AdditiveLoss => search_est.additive_ms,
+                Arm::CachedOutput => search_est.cached_read_ms,
                 Arm::Current | Arm::Random => 0,
             };
             let inference_latency_ms = predicted.and_then(|values| {
@@ -780,25 +926,94 @@ impl<'a> ParentRun<'a> {
                 (estimated > 0).then(|| inference_ms as f64 / estimated as f64)
             });
 
-            let picks_n = ranking.len().min(manifest.full_evaluations);
-            let picks_idx: Vec<usize> = ranking[..picks_n].to_vec();
-            let started = clock.now();
-            let picked: Vec<(usize, &CreatureExport)> = picks_idx
+            let needs_setup = needs_singles_setup(arm);
+            let mut cost = ArmCost {
+                single_proposals: if needs_setup { self.singles_ms } else { 0 },
+                cache_build: if needs_setup { self.setup_build_ms } else { 0 },
+                cache_read_inference: if needs_setup {
+                    self.setup_read_ms
+                        + if arm == Arm::CachedOutput {
+                            search_est.cached_read_ms
+                        } else {
+                            0
+                        }
+                } else {
+                    0
+                },
+                pool_materialisation: search.ms,
+                ranking: ranking_ms,
+                scorer: 0,
+                total: 0,
+            };
+            // Everything the arm is charged before its own scorer calls.
+            let charged = cost.single_proposals
+                + cost.cache_build
+                + cost.cache_read_inference
+                + cost.pool_materialisation
+                + cost.ranking;
+
+            let limit = search_ranking.len().min(manifest.full_evaluations);
+            let mut scored_picks: Vec<(usize, ScoreResult)> = Vec::with_capacity(limit);
+            let mut scorer_calls: u64 = 0;
+            match manifest.search_wall_clock_ms {
+                None => {
+                    if limit > 0 {
+                        let picked = &search_ranking[..limit];
+                        let started = clock.now();
+                        let mut results = {
+                            let refs: Vec<(usize, &CreatureExport)> = picked
+                                .iter()
+                                .map(|&i| (i, &search.unique[i].creature))
+                                .collect();
+                            self.score(
+                                &format!("search-{}-b{budget_index}-s{seed}-p0", arm.label()),
+                                &manifest.training_data,
+                                self.corpus.record_count,
+                                &refs,
+                            )?
+                        };
+                        cost.scorer = clock.ms_since(started);
+                        scorer_calls = 1;
+                        for &i in picked {
+                            scored_picks.push((i, take_result(&mut results, i)?));
+                        }
+                    }
+                }
+                Some(budget_ms) => {
+                    while scored_picks.len() < limit
+                        && charged.saturating_add(cost.scorer) < budget_ms
+                    {
+                        let i = search_ranking[scored_picks.len()];
+                        let started = clock.now();
+                        let mut results = self.score(
+                            &format!(
+                                "search-{}-b{budget_index}-s{seed}-p{scorer_calls}",
+                                arm.label()
+                            ),
+                            &manifest.training_data,
+                            self.corpus.record_count,
+                            &[(i, &search.unique[i].creature)],
+                        )?;
+                        cost.scorer += clock.ms_since(started);
+                        scorer_calls += 1;
+                        scored_picks.push((i, take_result(&mut results, i)?));
+                    }
+                }
+            }
+            cost.total = charged + cost.scorer;
+            let stopped_by = if scored_picks.len() < limit {
+                SearchStop::WallClock
+            } else if limit == manifest.full_evaluations {
+                SearchStop::FullEvaluations
+            } else {
+                SearchStop::PoolExhausted
+            };
+
+            let picks: Vec<Pick> = scored_picks
                 .iter()
-                .map(|&i| (i, &scored[i].creature))
-                .collect();
-            let search = self.score(
-                &format!("search-{}-b{budget_index}-s{seed}", arm.label()),
-                &manifest.training_data,
-                self.corpus.record_count,
-                &picked,
-            )?;
-            let scorer_ms = clock.ms_since(started);
-            let picks: Vec<Pick> = picks_idx
-                .iter()
-                .map(|&i| Pick {
-                    bundle: i,
-                    score: search[&bundle_name(i)].score,
+                .map(|(i, result)| Pick {
+                    bundle: *i,
+                    score: result.score,
                 })
                 .collect();
             let best = picks.iter().fold(None::<&Pick>, |best, pick| match best {
@@ -812,73 +1027,56 @@ impl<'a> ParentRun<'a> {
                 }
             });
             let selected = best.map(|p| p.bundle);
-            let chosen = selected.map(|i| &search[&bundle_name(i)]);
-            let cost_read = if needs_singles_setup(arm) {
-                self.setup_read_ms
-                    + if arm == Arm::CachedOutput {
-                        cached_read_ms
-                    } else {
-                        0
-                    }
-            } else {
-                0
-            };
-            let mut cost = ArmCost {
-                single_proposals: if needs_singles_setup(arm) {
-                    self.singles_ms
-                } else {
-                    0
-                },
-                cache_build: if needs_singles_setup(arm) {
-                    self.setup_build_ms
-                } else {
-                    0
-                },
-                cache_read_inference: cost_read,
-                pool_materialisation: row.pool_materialisation_ms,
-                ranking: ranking_ms,
-                scorer: scorer_ms,
-                total: 0,
-            };
-            cost.total = cost.single_proposals
-                + cost.cache_build
-                + cost.cache_read_inference
-                + cost.pool_materialisation
-                + cost.ranking
-                + cost.scorer;
+            let chosen = selected
+                .and_then(|i| scored_picks.iter().find(|(j, _)| *j == i))
+                .map(|(_, result)| result);
             arms.push(ArmRow {
                 arm,
                 ranking,
                 audit: metrics,
+                search_ranking,
                 picks,
                 selected_bundle: selected,
                 selected_score: chosen.map(|r| r.score),
                 selected_error: chosen.map(|r| r.error),
                 selected_complexity_penalty: chosen.map(|r| r.complexity_penalty),
                 selected_delta: chosen.map(|r| r.score - parent_score),
-                selected_regret: selected.map(|i| best_truth - truth[i]),
-                selected_hidden_removed: selected.map(|i| row.bundles[i].hidden_removed),
-                selected_synapses_removed: selected.map(|i| row.bundles[i].synapses_removed),
+                selected_regret: None,
+                selected_hidden_removed: selected.map(|i| search.unique[i].meta.hidden_removed()),
+                selected_synapses_removed: selected
+                    .map(|i| search.unique[i].meta.synapses_removed()),
                 validation_score: None,
                 validation_error: None,
-                full_scorer_calls: 1,
-                record_evaluations: picks_n as u64 * self.corpus.record_count
-                    + if needs_singles_setup(arm) {
+                full_scorer_calls: scorer_calls,
+                record_evaluations: scored_picks.len() as u64 * self.corpus.record_count
+                    + if needs_setup {
                         self.data.core_records * self.setup_builds
                     } else {
                         0
                     },
                 cost_ms: cost,
                 inference_latency_ms,
+                stopped_by: Some(stopped_by),
             });
+        }
+
+        // Paired regret: each arm's selection against the best one in this row.
+        let best_selected = arms
+            .iter()
+            .filter_map(|a: &ArmRow| a.selected_score)
+            .fold(f64::NEG_INFINITY, f64::max);
+        for arm_row in &mut arms {
+            arm_row.selected_regret = arm_row.selected_score.map(|score| best_selected - score);
         }
 
         if let (Some(validation), Some(validation_records)) =
             (&manifest.validation_data, self.validation_records)
         {
             let selected: BTreeSet<usize> = arms.iter().filter_map(|a| a.selected_bundle).collect();
-            let refs: Vec<(usize, &CreatureExport)> =
-                selected.iter().map(|&i| (i, &scored[i].creature)).collect();
+            let refs: Vec<(usize, &CreatureExport)> = selected
+                .iter()
+                .map(|&i| (i, &search.unique[i].creature))
+                .collect();
             let held_out = self.score(
                 &format!("validation-b{budget_index}-s{seed}"),
                 validation,
@@ -895,6 +1093,15 @@ impl<'a> ParentRun<'a> {
             }
         }
 
+        row.search = Some(SearchPool {
+            requested: search.requested,
+            size: search.size,
+            duplicates: search.duplicates,
+            refused: search.refused,
+            bundles: search_bundles,
+            materialisation_ms: search.ms,
+            estimate_ms: search_est.ms,
+        });
         row.arms = arms;
         row.feasible = true;
         Ok(row)
@@ -1147,6 +1354,41 @@ fn bundle_name(index: usize) -> String {
     format!("b{index}")
 }
 
+/// Take bundle `index`'s result out of a scorer reply, refusing when it is absent.
+fn take_result(
+    results: &mut BTreeMap<String, ScoreResult>,
+    index: usize,
+) -> Result<ScoreResult, String> {
+    results.remove(&bundle_name(index)).ok_or_else(|| {
+        format!(
+            "full scorer returned no result for '{}'",
+            bundle_name(index)
+        )
+    })
+}
+
+/// The bench process's own peak resident set in bytes, from `/proc/self/status`.
+/// `None` where that file is unreadable or has no `VmHWM` line (non-Linux).
+fn measured_peak_rss_bytes() -> Option<u64> {
+    fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| parse_vm_hwm_bytes(&status))
+}
+
+/// Peak resident set in bytes from a `/proc/self/status` text, whose `VmHWM:`
+/// line is in kB. `None` when the line is absent or its value is malformed.
+pub(crate) fn parse_vm_hwm_bytes(status: &str) -> Option<u64> {
+    let value = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))?;
+    let mut fields = value.split_whitespace();
+    let kilobytes: u64 = fields.next()?.parse().ok()?;
+    if fields.next()? != "kB" {
+        return None;
+    }
+    kilobytes.checked_mul(1024)
+}
+
 /// `ceil(budget × hidden)` with a tiny tolerance so `0.2 × 5` stays 1.
 fn requested_removals(budget: f64, hidden: usize) -> usize {
     if hidden == 0 {
@@ -1383,4 +1625,28 @@ fn core_chunks(data: &Dataset) -> impl Iterator<Item = (usize, usize)> {
     (0..total)
         .step_by(chunk)
         .map(move |start| (start, chunk.min(total - start)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_vm_hwm_bytes;
+
+    #[test]
+    fn vm_hwm_is_read_in_kilobytes_from_a_realistic_status_text() {
+        let status = "Name:\tneat-ai-ockham\nVmPeak:\t   20480 kB\nVmHWM:\t   12345 kB\nVmRSS:\t   11000 kB\n";
+        assert_eq!(parse_vm_hwm_bytes(status), Some(12345 * 1024));
+    }
+
+    #[test]
+    fn a_status_text_without_vm_hwm_gives_none() {
+        let status = "Name:\tneat-ai-ockham\nVmPeak:\t   20480 kB\nVmRSS:\t   11000 kB\n";
+        assert_eq!(parse_vm_hwm_bytes(status), None);
+    }
+
+    #[test]
+    fn a_malformed_vm_hwm_value_gives_none() {
+        assert_eq!(parse_vm_hwm_bytes("VmHWM:\t   lots kB\n"), None);
+        assert_eq!(parse_vm_hwm_bytes("VmHWM:\t   12345 MB\n"), None);
+        assert_eq!(parse_vm_hwm_bytes("VmHWM:\n"), None);
+    }
 }
