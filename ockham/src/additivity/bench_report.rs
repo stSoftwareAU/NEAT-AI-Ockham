@@ -475,11 +475,13 @@ pub struct BudgetAggregate {
     pub cached_output_vs_current: Option<PairedComparison>,
     /// Selected full score: cachedOutput against random, over (parent, seed).
     pub cached_output_vs_random: Option<PairedComparison>,
-    /// Feasible rows left out of both paired comparisons because cachedOutput,
-    /// current or random selected nothing in them. A row where cachedOutput
-    /// selected nothing while current or random did is also listed in
+    /// Feasible rows left out of the cachedOutput-versus-current comparison
+    /// because cachedOutput or current selected nothing in them. A row where
+    /// cachedOutput selected nothing while current did is also listed in
     /// `casesBeatingCachedOutput`, with a null `cachedOutputScore`.
-    pub paired_rows_excluded: usize,
+    pub paired_rows_excluded_vs_current: usize,
+    /// The same for the cachedOutput-versus-random comparison.
+    pub paired_rows_excluded_vs_random: usize,
 }
 
 /// A case where an arm selected a strictly better full score than cachedOutput.
@@ -589,40 +591,39 @@ pub fn aggregate(
             })
             .collect();
 
-        let mut cached = Vec::new();
-        let mut current = Vec::new();
-        let mut random = Vec::new();
-        let mut excluded = 0;
+        // Each arm is compared with cachedOutput on its own, over the rows in
+        // which both selected, so one arm selecting nothing never hides the
+        // other arm's win.
+        let mut vs_current = (Vec::new(), Vec::new());
+        let mut vs_random = (Vec::new(), Vec::new());
+        let mut excluded_current = 0;
+        let mut excluded_random = 0;
         for row in &feasible {
             let score = |arm: Arm| arm_of(row, arm).and_then(|a| a.selected_score);
-            // cachedOutput selecting nothing is a loss to any arm that did
-            // select: list it, with no cachedOutput score, never drop it.
-            if score(Arm::CachedOutput).is_none() {
-                for arm in [Arm::Current, Arm::Random] {
-                    if let Some(value) = score(arm) {
-                        beaten.push(BeatenCase {
-                            parent: row.parent.clone(),
-                            budget,
-                            seed: row.seed,
-                            arm,
-                            arm_score: value,
-                            cached_output_score: None,
-                        });
-                    }
+            let cached_score = score(Arm::CachedOutput);
+            for (arm, pairs, excluded) in [
+                (Arm::Current, &mut vs_current, &mut excluded_current),
+                (Arm::Random, &mut vs_random, &mut excluded_random),
+            ] {
+                let value = score(arm);
+                // cachedOutput selecting nothing is a loss to any arm that did
+                // select: list it, with no cachedOutput score, never drop it.
+                if let (None, Some(value)) = (cached_score, value) {
+                    beaten.push(BeatenCase {
+                        parent: row.parent.clone(),
+                        budget,
+                        seed: row.seed,
+                        arm,
+                        arm_score: value,
+                        cached_output_score: None,
+                    });
                 }
-            }
-            let (Some(c), Some(cur), Some(rnd)) = (
-                score(Arm::CachedOutput),
-                score(Arm::Current),
-                score(Arm::Random),
-            ) else {
-                excluded += 1;
-                continue;
-            };
-            cached.push(c);
-            current.push(cur);
-            random.push(rnd);
-            for (arm, value) in [(Arm::Current, cur), (Arm::Random, rnd)] {
+                let (Some(c), Some(value)) = (cached_score, value) else {
+                    *excluded += 1;
+                    continue;
+                };
+                pairs.0.push(c);
+                pairs.1.push(value);
                 if value - c > TIE_TOLERANCE {
                     beaten.push(BeatenCase {
                         parent: row.parent.clone(),
@@ -635,21 +636,23 @@ pub fn aggregate(
                 }
             }
         }
-        let pair = |other: &[f64]| -> Result<Option<PairedComparison>, String> {
-            if cached.is_empty() {
-                Ok(None)
-            } else {
-                rank::paired(&cached, other).map(Some)
-            }
-        };
+        let pair =
+            |(cached, other): &(Vec<f64>, Vec<f64>)| -> Result<Option<PairedComparison>, String> {
+                if cached.is_empty() {
+                    Ok(None)
+                } else {
+                    rank::paired(cached, other).map(Some)
+                }
+            };
         out.push(BudgetAggregate {
             budget,
             feasible_rows: feasible.len(),
             infeasible_rows: mine.len() - feasible.len(),
             arms,
-            cached_output_vs_current: pair(&current)?,
-            cached_output_vs_random: pair(&random)?,
-            paired_rows_excluded: excluded,
+            cached_output_vs_current: pair(&vs_current)?,
+            cached_output_vs_random: pair(&vs_random)?,
+            paired_rows_excluded_vs_current: excluded_current,
+            paired_rows_excluded_vs_random: excluded_random,
         });
     }
     Ok((out, beaten))

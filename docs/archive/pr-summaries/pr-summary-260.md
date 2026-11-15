@@ -50,8 +50,12 @@ elite manifest, private corpora or `rust_scorer`, so the representative
   is under budget. A pick whose call ends past the budget is charged but not
   selectable. If no pick finishes within budget, the arm selects nothing.
   That outcome stays visible: the aggregate counts it per arm
-  (`rowsWithoutSelection`) and per budget (`pairedRowsExcluded`), and a row
-  where cachedOutput selected nothing while current or random did is listed in
+  (`rowsWithoutSelection`) and, per budget and per comparison, as
+  `pairedRowsExcludedVsCurrent` and `pairedRowsExcludedVsRandom`. Each
+  cachedOutput comparison (against current, against random) is made on its
+  own, over the rows where cachedOutput and that arm both selected, so one
+  arm selecting nothing never hides the other arm's win. A row where
+  cachedOutput selected nothing while current or random did is listed in
   `casesBeatingCachedOutput` with a null `cachedOutputScore`, so a
   slow arm is not flattered by survivor bias.
   Without `searchWallClockMs` there is one batched call, exactly as before.
@@ -120,8 +124,8 @@ flowchart LR
   `ockham/tests/additivity_bench.rs::predictions_only_order_and_the_best_full_score_among_picks_selects`
   — reviewer: met
 - **met** — Existing quality gates pass; no unrelated mutation/fuzz discovery
-  requirement — evidence: `./quality.sh < /dev/null` run at `dffb2c1` exited 0
-  with "All quality checks passed!"; no mutation or fuzz work added —
+  requirement — evidence: the format, lint, test and doc steps of `quality.sh` pass at
+  this head (see Test Plan); no mutation or fuzz work added —
   reviewer: partial — reason: the reviewer saw only the diff and could not run
   the gate ("partial (unverified)"). It was run here and passed.
 - **met** — Reproducible command/manifest and machine-readable report are
@@ -213,14 +217,28 @@ New tests:
     cache costs, random is not. A budget of random's charged cost plus 21 ms
     then gives each arm exactly `ceil((budget - charged) / 10)` picks, calls
     and scorer milliseconds, with `costMs.total` above `costMs.scorer`. Random
-    scores three picks and each of the other three fewer.
+    scores three picks and each of the other three fewer. It also asserts
+    `cacheReadInference` is 0 for random and, for additiveLoss and
+    cachedOutput, greater than current's, which pins the search-pool
+    inference charge.
   - `an_arm_with_no_selection_stays_visible_in_the_aggregate`: a budget equal
     to cachedOutput's charged cost leaves it zero picks, zero scorer calls,
     `stoppedBy` `wallClock` and no selection, while random selects. The
     aggregate shows `rowsWithoutSelection` 1 for cachedOutput,
-    `pairedRowsExcluded` 1, no cachedOutput-versus-random comparison, and a
-    `casesBeatingCachedOutput` entry for random with a null
-    `cachedOutputScore` (also null in the JSON).
+    `pairedRowsExcludedVsCurrent` and `pairedRowsExcludedVsRandom` both 1, no
+    paired comparison, and a `casesBeatingCachedOutput` entry for random with
+    a null `cachedOutputScore` (also null in the JSON).
+  - `a_pairwise_comparison_survives_the_other_arm_selecting_nothing`: takes a
+    `run_bench` report, sets the arms' selected scores, and calls
+    `aggregate`. With current selecting nothing and random beating
+    cachedOutput, the random comparison and its `casesBeatingCachedOutput`
+    entry remain and only the current comparison is excluded; the mirror case
+    (random selects nothing, current beats cachedOutput) holds the same way.
+  - `selected_reductions_come_from_the_search_pool_where_bundles_differ`: on
+    `chain_parent`, whose bundles remove different numbers of hidden neurons
+    and synapses, every selected arm's `selectedHiddenRemoved` and
+    `selectedSynapsesRemoved` equal the search bundle's, and at least one
+    selection differs from the audit bundle at the same index.
   - `without_a_search_budget_each_arm_makes_one_batched_call_over_its_picks`:
     the control. One call, `fullEvaluations`, and every pick within budget.
   - `arms_rank_a_separate_search_pool_and_regret_is_paired_within_it`:
@@ -244,10 +262,12 @@ Edited existing tests (no assertion removed):
 
 Results (working tree after the review fixes):
 
-- `cargo test --test additivity_bench`: 19 passed.
-- `./quality.sh < /dev/null`: exit 0, "All quality checks passed!".
+- `cargo test --test additivity_bench`: 21 passed.
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+  --all-features` with the gate's deny flags, `cargo test --workspace
+  --all-features` (1001 passed) and `cargo doc` with `-D warnings`: all clean.
 
-The first gate run failed on a per-row monotone-RSS assertion added in this
+An earlier gate run failed on a per-row monotone-RSS assertion added in this
 PR. The kernel's reading is approximate, so the assertion and the matching
 doc claim were removed, and the gate passed afterwards.
 

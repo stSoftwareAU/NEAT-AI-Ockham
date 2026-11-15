@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use neat_ai_ockham::ablation::growth_units;
 use neat_ai_ockham::additivity::bench::run_bench;
-use neat_ai_ockham::additivity::bench_report::{BenchReport, SearchStop};
+use neat_ai_ockham::additivity::bench_report::{BenchReport, SearchStop, aggregate};
 use neat_ai_ockham::additivity::manifest::{BenchManifest, ResourceLimits, ScorerSpec};
 use neat_ai_ockham::additivity::rank::{ARMS, Arm};
 use neat_ai_ockham::clock::{Clock, ManualClock, SystemClock};
@@ -1329,6 +1329,63 @@ fn arms_rank_a_separate_search_pool_and_regret_is_paired_within_it() {
 }
 
 #[test]
+fn selected_reductions_come_from_the_search_pool_where_bundles_differ() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.path("parents/elite.json"),
+        creature_to_json(&chain_parent()).unwrap(),
+    )
+    .unwrap();
+    let mut manifest = fixture.manifest(vec![0.3], vec![1, 2, 3], 1 << 30);
+    // The chain's bundles remove different numbers of hidden neurons and
+    // synapses, so an index into the wrong pool reports other reductions.
+    manifest.audit_pool = 35;
+
+    let report = run(&manifest);
+
+    let mut checked = 0;
+    let mut differing_from_audit = 0;
+    for row in report.rows.iter().filter(|r| r.feasible) {
+        let search = row
+            .search
+            .as_ref()
+            .expect("feasible rows carry a search pool");
+        for arm in &row.arms {
+            let Some(i) = arm.selected_bundle else {
+                continue;
+            };
+            checked += 1;
+            assert_eq!(
+                arm.selected_hidden_removed,
+                Some(search.bundles[i].hidden_removed),
+                "{:?}",
+                arm.arm
+            );
+            assert_eq!(
+                arm.selected_synapses_removed,
+                Some(search.bundles[i].synapses_removed),
+                "{:?}",
+                arm.arm
+            );
+            if let Some(audit) = row.bundles.get(i)
+                && (audit.hidden_removed, audit.synapses_removed)
+                    != (
+                        search.bundles[i].hidden_removed,
+                        search.bundles[i].synapses_removed,
+                    )
+            {
+                differing_from_audit += 1;
+            }
+        }
+    }
+    assert!(checked > 0, "at least one selection must be checked");
+    assert!(
+        differing_from_audit > 0,
+        "at least one selection must differ from the audit bundle at its index"
+    );
+}
+
+#[test]
 fn the_search_pool_draws_member_sets_the_audit_pool_does_not_hold() {
     let fixture = Fixture::new();
     let manifest = fixture.manifest(vec![0.2, 0.4], vec![1, 2], 1 << 30);
@@ -1434,6 +1491,18 @@ fn charged_costs_shorten_the_search_of_the_arms_that_pay_them() {
     let random_cost = &arm_row(&reference, Arm::Random).cost_ms;
     assert_eq!(random_cost.single_proposals, 0);
     assert_eq!(random_cost.cache_build, 0);
+    // The search pool's estimate time is charged to the predictor arms that
+    // form it, and to no other: current only reads single losses.
+    assert_eq!(random_cost.cache_read_inference, 0);
+    let current_read = arm_row(&reference, Arm::Current)
+        .cost_ms
+        .cache_read_inference;
+    for arm in [Arm::AdditiveLoss, Arm::CachedOutput] {
+        assert!(
+            arm_row(&reference, arm).cost_ms.cache_read_inference > current_read,
+            "{arm:?} is charged its search-pool inference on top of the single reads"
+        );
+    }
 
     // A budget that leaves random room for exactly three calls.
     let budget = random_charged + 2 * TICK_MS + 1;
@@ -1516,7 +1585,9 @@ fn an_arm_with_no_selection_stays_visible_in_the_aggregate() {
         .unwrap();
     assert_eq!(random_aggregate.rows_without_selection, 0);
     // The row is excluded from the paired comparison, and said to be.
-    assert_eq!(aggregate.paired_rows_excluded, 1);
+    assert_eq!(aggregate.paired_rows_excluded_vs_current, 1);
+    assert_eq!(aggregate.paired_rows_excluded_vs_random, 1);
+    assert!(aggregate.cached_output_vs_current.is_none());
     assert!(aggregate.cached_output_vs_random.is_none());
     // And it is listed as a case random won, with no cachedOutput score.
     let case = report
@@ -1529,4 +1600,59 @@ fn an_arm_with_no_selection_stays_visible_in_the_aggregate() {
     assert_eq!(case.seed, row.seed);
     let json = serde_json::to_value(case).unwrap();
     assert!(json["cachedOutputScore"].is_null(), "{json}");
+}
+
+#[test]
+fn a_pairwise_comparison_survives_the_other_arm_selecting_nothing() {
+    let fixture = Fixture::new();
+    let mut report = run_ticking(&search_manifest(&fixture, None));
+    assert!(report.rows[0].feasible, "{:?}", report.rows[0].reason);
+    let set = |report: &mut BenchReport, arm: Arm, score: Option<f64>| {
+        let a = report.rows[0]
+            .arms
+            .iter_mut()
+            .find(|a| a.arm == arm)
+            .expect("arm present");
+        a.selected_score = score;
+    };
+    // Current selects nothing; cachedOutput and random both select, random better.
+    set(&mut report, Arm::CachedOutput, Some(1.0));
+    set(&mut report, Arm::Current, None);
+    set(&mut report, Arm::Random, Some(2.0));
+    let budgets = [report.rows[0].budget];
+    let (aggregates, beaten) = aggregate(&report.rows, &budgets).expect("aggregates");
+    let a = &aggregates[0];
+    assert_eq!(a.paired_rows_excluded_vs_current, 1);
+    assert_eq!(a.paired_rows_excluded_vs_random, 0);
+    assert!(a.cached_output_vs_current.is_none());
+    assert!(
+        a.cached_output_vs_random.is_some(),
+        "random and cachedOutput both selected, so they are compared"
+    );
+    let case = beaten
+        .iter()
+        .find(|c| c.arm == Arm::Random)
+        .expect("random beat cachedOutput and is listed");
+    assert_eq!(case.arm_score, 2.0);
+    assert_eq!(case.cached_output_score, Some(1.0));
+    assert!(
+        beaten.iter().all(|c| c.arm != Arm::Current),
+        "current selected nothing, so it beat nothing"
+    );
+
+    // And the mirror: random selects nothing, current beats cachedOutput.
+    set(&mut report, Arm::Current, Some(3.0));
+    set(&mut report, Arm::Random, None);
+    let (aggregates, beaten) = aggregate(&report.rows, &budgets).expect("aggregates");
+    let a = &aggregates[0];
+    assert_eq!(a.paired_rows_excluded_vs_current, 0);
+    assert_eq!(a.paired_rows_excluded_vs_random, 1);
+    assert!(a.cached_output_vs_current.is_some());
+    assert!(a.cached_output_vs_random.is_none());
+    let case = beaten
+        .iter()
+        .find(|c| c.arm == Arm::Current)
+        .expect("current beat cachedOutput and is listed");
+    assert_eq!(case.cached_output_score, Some(1.0));
+    assert!(beaten.iter().all(|c| c.arm != Arm::Random));
 }

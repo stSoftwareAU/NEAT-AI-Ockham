@@ -309,9 +309,11 @@ The report is JSON in camelCase.
   and against random over (parent, seed). Under `searchWallClockMs` an arm can
   finish a feasible row with no selection. Each arm therefore carries
   `rowsWithoutSelection`, the feasible rows in which it selected nothing; its
-  `regret` and `selectedDelta` distributions cover only its other rows. The
-  paired comparisons need a selection from cachedOutput, current and random,
-  so `pairedRowsExcluded` counts the feasible rows they leave out.
+  `regret` and `selectedDelta` distributions cover only its other rows. Each
+  paired comparison needs a selection from cachedOutput and from the arm it is
+  compared with, and is independent of the other arm, so
+  `pairedRowsExcludedVsCurrent` and `pairedRowsExcludedVsRandom` count the
+  feasible rows each one leaves out.
 - `casesBeatingCachedOutput[]`: every case where current or random selected a
   strictly better full score than cachedOutput, and every case where current or
   random selected while cachedOutput selected nothing (a loss for cachedOutput,
