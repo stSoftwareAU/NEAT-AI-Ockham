@@ -2,91 +2,141 @@
 
 ## Summary
 
-Adds an opt-in, report-only `neat_ai_ockham audit-preservation <manifest.json> --out <report.json>` subcommand. For each pruned or quantised child it measures how well the child preserves its parent's held-out outputs. Each measure is normalised against two trivial controls: predicting the parent's mean output, and a record-shuffled copy of the parent's outputs (one per seed). It also reports task loss and latency separately. It compares a preservation gate against the current sample gate. The gate's threshold is fitted on calibration children over calibration records. The comparison runs on disjoint validation children over untouched validation records, and reports false rejections of genuinely better children, AUC, and a paired bootstrap interval on the AUC gain. Nothing in the ordinary run path changes, and the command never writes a creature. No representative run has been made, so no benefit is claimed. Part of #264.
+`audit-preservation` can now freeze its manifest. The report records
+`versions.manifestSha256`, the SHA-256 of the manifest bytes. With the new
+optional `--manifest-sha256 <SHA256>` flag, a run whose manifest differs from
+the predeclared digest is refused before the manifest is parsed, before any
+creature or corpus is read, and before anything is written. A matching run
+records `versions.manifestFrozen = true`. Before this change the report echoed
+the manifest but did not identify it, so nobody could show that the controls,
+seeds, sample size, limits and success rule were fixed before the run.
+
+The paper's full text still cannot be fetched, and no representative corpora
+exist on this host. The method stays unpinned, no representative run has been
+made, and no benefit is claimed. Part of #264.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The issue asks whether parent-output similarity, measured against trivial controls, carries diagnostic value beyond the current sampled error. A separate subcommand answers that offline without touching acceptance.
-- Normalising by the mean-output and shuffled controls stops a collapsed child that outputs a constant from looking good: one equal to the parent mean scores exactly 0.
+- #269 delivered the audit. Its open gaps were the paper method, representative
+  runs, and predeclaration that could not be shown. Only the last can be closed
+  on this host.
+- A digest check is the smallest way to show predeclaration. It reuses
+  `crate::incumbent::sha256_hex` and leaves the manifest schema unchanged.
 
 ### Essential Design Decisions
 
-- Score: `preservationVsMean = 1 − E_child/E_mean` and `preservationVsShuffle = 1 − E_child/mean_s E_shuf(s)`. A denominator of zero, or below 1e-24, gives `null` with the degenerate reason `zeroVarianceParent` or `zeroShuffleError`, so the report never holds NaN or infinity.
-- Authoritative `fullDelta` and the current `sampleDelta` are manifest inputs from earlier scorer runs. The audit never runs the scorer and never decides anything, so parent similarity cannot stand in for authoritative fitness.
-- Each child has a required `role` (`calibration` or `validation`). θ is fitted only on calibration children scored on the calibration corpus (balanced accuracy, ties go to the smallest θ). The gates count only validation children scored on the validation corpus, so neither a validation child nor a validation record informs θ.
-- Reuses `load_incumbent` (creature validation and SHA-256), the corpus streaming helpers, `compile_creature`, `ordering::SplitMix64`, and `model::auc` for the Mann–Whitney AUC. `SplitMix64` and `model::auc` are now `pub(crate)`; only their visibility changed. The `--out` overwrite guard (`refuse_input_overwrite` and its helpers) and the atomic report writer live once in `ockham/src/output_guard.rs`, shared by `bench-strata` and `audit-preservation`; the manifest size cap reuses `strata::manifest::MAX_MANIFEST_BYTES`. A fix to the guard therefore protects both subcommands.
-- `ockham/build.rs` records `git describe --always --dirty --abbrev=40` as `versions.gitCommit`. Uncommitted edits add `-dirty`; without git the value is `"unknown"`.
-- Costs add `evaluationMs` (θ search, gates and the AUC-gain bootstrap), `totalMs` (the whole wall clock) and `childPreparationMs`, which sums each child's declared `preparationMs`. The audit cannot measure the cost of producing a child, so the manifest declares it.
-- A validation child whose score is `null` (for example a validation corpus where the parent's output is constant) is not counted as scored. When any validation child has no score, the preservation gate's `rejected`, `falseRejections` and `falseRejectionRate` are `null` instead of a 0% rate for a gate that judged nobody, and `coverage.validationChildrenScored` and `childrenScored` count only children with a score.
-- A non-finite parent output on a split no longer aborts the audit. Every child on that split fails by name, `splits.<split>.parent.failure` is set, and the report is written as `notEvaluable`.
+- `run_audit` takes a required `frozen_manifest_sha256: Option<&str>`, so the
+  compiler names every caller. `None` keeps the earlier behaviour apart from
+  the two added report fields.
+- The check (`refuse_unless_frozen`, private in `ockham/src/preservation.rs`)
+  runs straight after `read_manifest` and before `parse_manifest`. A digest is
+  64 hex digits in either case. A malformed value is echoed in the error, cut
+  to 80 characters.
+- A freeze proves that the manifest bytes did not change after the digest was
+  recorded, not when it was recorded. The recording time comes from the
+  operator's own record, such as a commit. The docs say so.
+- Open PR #275 (Issue #263) adds a similar check for `bench-strata` in
+  `ockham/src/strata/bench.rs`. It is not on Develop, so this audit has its own
+  private helper. The two checks are not shared yet.
 
 ### Undiscoverable Facts
 
-- Only the abstract of arXiv:2611.13681 was available, and the full method is not pinned. Fetching `arxiv.org` was retried this run and failed (no network access).
-- neat-core clamps non-finite activations: a NaN corpus input gives a huge finite output, not a non-finite one. In that fixture the doubled-weight child scored `preservationVsMean = 1.0`, the same as an exact copy. This negative finding is recorded in `docs/preservation-audit.md`. The formulas are this crate's own, and the report and docs say so.
-- No private corpora, elite manifest or real scorer outputs were available in this run.
+- On 2026-11-15, `curl` to `arxiv.org/abs/2611.13681` and `export.arxiv.org`
+  got `CONNECT tunnel failed, response 403`. The method is still not pinned.
+- `rust_scorer` is not on `PATH`, and no private or representative corpora are
+  available here.
 
 ## Evidence
 
-Backend/CLI only. The tests and the gate below were run on the head.
+This is a backend/CLI change, with no UI files.
 
 ```mermaid
 flowchart LR
-    M[manifest] --> L[load parent + children, read only]
-    L --> C[calibration corpus: outputs, controls, scores]
-    C --> V[validation corpus: same measures, never used to fit theta]
-    V --> T[fit threshold on calibration scores only]
-    T --> G[sample gate vs preservation gate on validation]
-    G --> R[report JSON: paired rows, CIs, coverage, costs, failures]
+    R[Operator records sha256 of manifest, e.g. in a commit] --> C[audit-preservation --manifest-sha256]
+    C --> L[read manifest bytes]
+    L --> F{refuse_unless_frozen}
+    F -- differs or malformed --> X[refused: no creature or corpus read, no report]
+    F -- matches --> A[parse, validate, audit]
+    A --> O[report: versions.manifestSha256, versions.manifestFrozen = true]
 ```
+
+- Docs updated:
+  - `docs/preservation-audit.md`: a new "Freezing the manifest" section, a
+    pointer from "Predeclared parameters and compute limits", the `versions`
+    bullet in "Report fields", the "Flow" chart, and the retry note in "Known
+    limitations and negative findings";
+  - `README.md` section "Preservation audit (opt-in, report-only)".
+- Issue numbers cited: #269 (the merged audit PR for this issue) and #275 (open
+  PR, "Experiment: Compare worst-stratum ablation guidance and Pareto pruning
+  (Issue #263)").
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — "compute held-out output preservation normalised against mean-output and record-shuffled controls" — evidence: `ockham/src/preservation.rs::ratio_score_identical_and_degenerate` — reviewer: met
-- **met** — "Specify formula and degenerate zero-variance handling" — evidence: `docs/preservation-audit.md`, `ockham/src/preservation.rs::constant_child_at_parent_mean_scores_zero_and_constant_parent_is_degenerate` — reviewer: met
-- **met** — "include deliberately collapsed parent/child fixtures" — evidence: `ockham/src/preservation.rs::collapsed_parent_audit_is_degenerate_and_not_evaluable`, `ockham/src/preservation.rs::end_to_end_fixture_audit_writes_and_returns_the_same_report` — reviewer: met
-- **partial** — "Compare diagnostic value and possible screening benefit with current sample error, measuring false rejection of genuinely better children" — evidence: `ockham/src/preservation.rs::evaluate` (role-split children), `sample_gate_false_rejection_that_preservation_keeps_is_met`, `preservation_false_rejection_above_sample_rate_is_not_met`, `sample_tolerance_boundary_is_not_a_rejection` — reviewer: partial — reason: θ and the gates now use disjoint children, but `sampleDelta`/`fullDelta` are still manifest inputs and the sampled screen in `promote.rs` is not run
-- **met** — "Report task loss and actual latency separately" — evidence: `ockham/src/preservation.rs::shuffle_control_task_loss_and_latency_are_reported` (task loss recomputed independently, latency non-negative) — reviewer: met — reason: the timing covers the whole streamed pass including corpus reading; the docs now say so in both places
+- **met** — "For pruned/quantised descendants compute held-out output preservation normalised against mean-output and record-shuffled controls" — evidence: `ockham/src/preservation.rs::shuffle_control_task_loss_and_latency_are_reported` (merged in #269) — reviewer: met
+- **met** — "Specify formula and degenerate zero-variance handling" — evidence: `docs/preservation-audit.md` "Degenerate handling", `ockham/src/preservation.rs::constant_child_at_parent_mean_scores_zero_and_constant_parent_is_degenerate` — reviewer: met
+- **met** — "include deliberately collapsed parent/child fixtures" — evidence: `ockham/src/preservation.rs::collapsed_parent_audit_is_degenerate_and_not_evaluable` — reviewer: met
+- **partial** — "Compare diagnostic value and possible screening benefit with current sample error, measuring false rejection of genuinely better children" — evidence: `ockham/src/preservation.rs::sample_gate_false_rejection_that_preservation_keeps_is_met`, `preservation_false_rejection_above_sample_rate_is_not_met` — reviewer: met — reason: the comparison works on fixtures, but `sampleDelta`/`fullDelta` are still manifest inputs and no representative children have been compared, so the screening benefit is unmeasured
+- **met** — "Report task loss and actual latency separately" — evidence: `ockham/src/preservation.rs::shuffle_control_task_loss_and_latency_are_reported` — reviewer: met
 - **met** — "Begin report-only: parent similarity never substitutes for authoritative fitness or proves a useful parent" — evidence: `ockham/tests/preservation_audit.rs::an_end_to_end_audit_writes_a_report_and_leaves_the_parent_untouched` — reviewer: met
-- **met** — "Reuse existing mechanisms" — evidence: `ockham/src/preservation.rs::auc` delegates to `model::auc`; `load_incumbent`, corpus helpers, `SplitMix64`; `ockham/src/output_guard.rs` holds the single overwrite guard and atomic writer shared with `bench-strata`, and the manifest cap reuses `strata::manifest::MAX_MANIFEST_BYTES` — reviewer: met
-- **met** — "Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance" — evidence: `ockham/src/main.rs` new subcommand only — reviewer: met
-- **partial** — "Predeclare controls, seeds, sample size, compute limits and success/failure criteria. Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs" — evidence: `ockham/build.rs`, `versions.gitCommit`, `costs.evaluationMs`/`totalMs`/`childPreparationMs`, `role_and_preparation_cost_refusals_name_their_field` — reviewer: partial — reason: preparation and search cost is optional and self-reported, not measured (the reviewer's dirty-tree gap was then fixed with `--dirty`)
-- **met** — "Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks" — evidence: 18 unit tests in `preservation.rs`, 2 in `output_guard.rs`, 3 CLI tests, with hand-computable `run_audit` fixtures for the shuffle control, both gates' false rejections, `aucGain.value` and a reproducible `ci95`, the `met` outcome and its `notMet` twin, the `sampleTolerance` boundary, the smallest-θ tie (`fit_threshold_maximises_balanced_accuracy_with_smallest_tie`) and `run_audit_refuses_an_out_path_that_names_an_input`; `./quality.sh` passed on the working tree — reviewer: met
-- **met** — "Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage" — evidence: paired rows with scores, `non_finite_parent_split_fails_every_child_and_is_not_evaluable`, coverage by role, `constant_parent_validation_leaves_preservation_gate_and_coverage_null` — reviewer: met
-- **partial** — "Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs" — evidence: `docs/preservation-audit.md` "Known limitations and negative findings" — reviewer: partial — reason: the negative findings are recorded and no success is claimed, but no representative run exists (no private corpora here), so nobody has yet decided whether the code is worth keeping
-- **met** — "Keep public implementation and fixtures application-agnostic" — evidence: synthetic fixtures in `ockham/tests/preservation_audit.rs` — reviewer: met
-- **missing** — "Read and pin the full method before reproducing it" — reviewer: missing — reason: fetching arXiv:2611.13681 failed again this run (no network access); only the abstract is cited
-- **unrequested** — `SplitMix64` and `model::auc` made `pub(crate)`, and `audit-preservation` added to the README contract list — reviewer: unrequested — reason: needed to reuse the existing RNG, and the README contract test requires every subcommand to be listed
-- **unrequested** — manifest hardening (1 MiB cap, `deny_unknown_fields`, atomic write through the shared writer, `sampleTolerance`) — reviewer: unrequested — reason: input validation at the trust boundary and a tunable version of the current sample gate
+- **missing** — "Read and pin the full method before reproducing it" — reviewer: missing — reason: arXiv:2611.13681 is still unfetchable (`CONNECT tunnel failed, response 403` on 2026-11-15)
+- **met** — "First inspect current code, merged work and repository instructions. Reuse existing mechanisms" — evidence: `ockham/src/preservation.rs::run_audit` hashes with `crate::incumbent::sha256_hex` — reviewer: met
+- **met** — "Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance. No automatic deployment or default change" — evidence: optional flag in `ockham/src/main.rs`; every existing `run_audit` test call passes `None` and keeps its assertions — reviewer: met
+- **partial** — "Predeclare controls, seeds, sample size, compute limits and success/failure criteria. Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs" — evidence: `ockham/src/preservation.rs::mismatched_digest_is_refused_before_anything_is_read_or_written`, `frozen_audit_with_the_predeclared_digest_records_it`, `versions.manifestSha256` — reviewer: met — reason: the freeze now exists, but no representative manifest has been frozen with it, and `preparationMs` is still self-reported rather than measured
+- **met** — "Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks" — evidence: `ockham/src/preservation.rs::frozen_audit_with_the_predeclared_digest_records_it` (positive), `malformed_digest_is_refused` and `ockham/tests/preservation_audit.rs::a_wrong_manifest_sha256_is_refused_and_no_report_is_written` (negative); `./quality.sh < /dev/null` passed on 0049a6e — reviewer: partial — reason: the reviewer is read-only and could not run the gate; it was run here on the head and passed
+- **partial** — "Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit" — evidence: `docs/preservation-audit.md` "Freezing the manifest" and "Report fields" — reviewer: met — reason: the command and report exist, but only fixture results exist, and the issue says fixtures alone do not demonstrate a benefit
+- **partial** — "Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs" — evidence: `docs/preservation-audit.md` "Known limitations and negative findings" — reviewer: partial — reason: no success is claimed and the findings are recorded, but the keep-or-remove decision needs a representative run
+- **met** — "Keep public implementation and fixtures application-agnostic" — evidence: synthetic fixtures only in `ockham/src/preservation.rs` tests — reviewer: met
+- **met** — "Leave unassigned until an implementer actively starts" — evidence: this run assigned nobody — reviewer: missing — reason: the reviewer said "not assessable" from a diff; assignment is issue state
+- **unrequested** — the `latencyMsPer1kRecords` sentence moved to its own bullet in `docs/preservation-audit.md` — reviewer: unrequested — reason: it had been joined onto the unrelated arXiv bullet that this diff edits
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean** — no `CODING-STANDARDS.md` exists, so the review used `CONTRIBUTING.md` principles 1 and 3–8 (creature never written, acceptance only by the full scorer, optional and isolated, no TypeScript, version bump by CI), the README-as-contract rule, and named tests that exist. The `readme_contract.rs` list change still fails without the new subcommand.
+- **clean** — The repository has no `CODING-STANDARDS.md`, so the reviewer used `CONTRIBUTING.md` and `README.md`. It found no rule enforced by review only. It checked:
+  - that the audit stays report-only and the freeze is an opt-in refusal (principles 1, 4 and 6);
+  - that the docs and the flow chart match the code;
+  - that no named test is missing;
+  - that no stub stands in for another binary;
+  - that no workflow changed;
+  - that both edited existing tests fail without the code they test.
+
+  It also flagged `ockham/src/preservation.rs:1251-1253` as likely to fail `cargo fmt --check`, while saying it could not run the check. I ran `cargo fmt --all --check` on the head and it exited 0, and the full gate's fmt stage passed, so that is not a violation.
 
 ## Test Plan
 
-- Added `ockham/tests/preservation_audit.rs`: help output, a missing manifest refused by name, and an end-to-end run that leaves the parent bytes unchanged.
-- Added unit tests in `ockham/src/preservation.rs`: ratio and degenerate scores, a collapsed child and a constant parent, AUC edges, threshold fit, bootstrap reproducibility, manifest refusals by field with a valid control, width mismatch refused, and an end-to-end report.
-- Modified `ockham/tests/readme_contract.rs`: `SUBCOMMANDS` gains `audit-preservation` alongside Develop's `bench-strata` (from #263); no assertion removed.
-- Follow-up commit 626fa63 adds `collapsed_parent_audit_is_degenerate_and_not_evaluable`: a constant parent runs through `run_audit` and reaches `notEvaluable`. It adds `non_finite_parent_split_fails_every_child_and_is_not_evaluable`, which drives the parent-failure split and `evaluate` directly because the core clamps non-finite activations. It also adds `role_and_preparation_cost_refusals_name_their_field`, and the end-to-end test gains role, paired-row, gitCommit and cost assertions.
-- `./quality.sh < /dev/null` on the working tree committed as 626fa63: passed ("All quality checks passed!", exit 0).
-- After merging Develop (which brought in the `bench-strata` subcommand), the conflicts in `README.md`, `ockham/src/lib.rs`, `ockham/src/main.rs` and `ockham/tests/readme_contract.rs` were resolved by keeping both subcommands. `cargo fmt`, `cargo clippy --all-targets --all-features -D warnings`, markdownlint and the `readme_contract` and `strata_bench` tests passed on the merged tree.
-- After the spec review, `build.rs` switched to `git describe --dirty`. The preservation unit and CLI tests and clippy were then re-run and passed; the worker re-runs the full gate.
-- Known gap noted by the spec reviewer: `run_split` still scores every child on both corpora. So `failures` and `recordsActivated` include out-of-role passes, which `evaluate` ignores and which never inform θ.
-- Review round on the head after `e5d1883`:
-  - The report-path guard, its helpers and its single test were duplicated from `strata/bench.rs`. They now live once in `ockham/src/output_guard.rs` (`pub(crate)`), used by both `strata::bench::run_bench` and `preservation::run_audit`, along with the atomic JSON writer. The copy in `preservation.rs` and its duplicate test are deleted.
-  - Test-change note (TDD rule 3; no `CODING-STANDARDS.md` exists): the base's test `strata::bench::tests::a_report_path_that_names_an_input_is_refused` is moved, not removed, to `output_guard::tests::a_report_path_that_names_an_input_is_refused`. The base's obsolete location is `strata/bench.rs`. The remaining behaviour is identical (same path, `.tmp` sibling, corpus directory and fine path), and the symlink and hard-link cases now also assert the refusal message. `ockham/src/strata/bench.rs` still covers its own use of the guard through `run_bench`. The new `output_guard::tests::a_report_is_written_atomically_and_leaves_no_tmp_file` covers the writer. The duplicate `preservation::tests` copy was this PR's own addition, so it owes no note.
-  - `run_audit_refuses_an_out_path_that_names_an_input` drives `run_audit` with `--out` equal to the parent, a child, the manifest and a path inside each corpus, and asserts the message, unchanged input bytes and no `.tmp` file.
-  - `constant_parent_validation_leaves_preservation_gate_and_coverage_null` covers a varying calibration corpus with a constant-parent validation corpus: θ is fitted, the preservation gate's counts and rate are `null`, `validationChildrenScored` is 0 and the criterion is `notEvaluable`.
-  - `fit_threshold_maximises_balanced_accuracy_with_smallest_tie` now has a real tie (`[0.1, 0.2, 0.3, 0.4]` with `[true, false, true, false]`, θ = 0.1 and 0.3 both at balanced accuracy 0.5) and a corrected comment; a `>=` mutation of the tie-break fails it.
-  - New `run_audit` tests: `sample_gate_false_rejection_that_preservation_keeps_is_met` (sample gate falsely rejects a better child, `aucGain.value` 0.25, a reproducible `ci95`, `met`), `preservation_false_rejection_above_sample_rate_is_not_met` (`notMet` through the false-rejection clause), `sample_tolerance_boundary_is_not_a_rejection`, and `shuffle_control_task_loss_and_latency_are_reported` (non-null shuffle score, three seed-dependent shuffle errors, task loss recomputed independently, latency).
-  - `docs/preservation-audit.md` now says `latencyMsPer1kRecords` times the whole streamed pass, and says validation is scored in the same run but never informs θ. The module doc and both flow charts match.
-  - `README.md` lists `output_guard.rs` in the repository layout (the layout contract test requires it).
-  - `./quality.sh < /dev/null` passed on the working tree (shell checks, codespell, markdownlint, `cargo fmt --check`, clippy `-D warnings`, `cargo test --all-features`, rustdoc).
-- Not covered by a test: a child `nonFiniteOutput` through activation (unreachable with the clamping core) and the 1 MiB manifest cap through `run_audit` (the shared constant is covered in `strata::manifest`).
+- Added to `ockham/src/preservation.rs` (`mod tests`):
+  - `frozen_audit_with_the_predeclared_digest_records_it`: the digest is computed independently with `sha2` and passed in upper case. The returned and on-disk reports have `manifestFrozen == true` and `manifestSha256` equal to the lowercase digest.
+  - `mismatched_digest_is_refused_before_anything_is_read_or_written`: the manifest's parent names a missing file. A one-character-off digest is refused, naming both digests and "predeclared". The error does not name the missing parent, and no report or `.tmp` is written. Positive controls:
+    - the correct digest on the same manifest gets past the freeze and fails on the missing parent;
+    - the untouched fixture with its digest is accepted.
+  - `malformed_digest_is_refused`: 63 hex digits, 64 characters with a non-hex `g`, and 200 characters are each refused with "64 hex digits", with no report written. Only the 200-character case is checked for the cut to 80 characters.
+- Added to `ockham/tests/preservation_audit.rs`: `a_wrong_manifest_sha256_is_refused_and_no_report_is_written`. The CLI exits non-zero with "predeclared" on stderr for a manifest that would not even parse, and writes no report.
+- Edited existing tests (no assertion removed):
+  - `end_to_end_fixture_audit_writes_and_returns_the_same_report` also asserts `manifestFrozen == false` and `manifestSha256`;
+  - `audit_preservation_help_lists_out_and_says_report_only` also expects `--manifest-sha256`;
+  - the 12 existing `run_audit` calls gain `None`.
+- TDD: the new tests were written first and failed to compile against the old signature (`E0061: this function takes 2 arguments but 3 arguments were supplied`).
+- Callers of `run_audit` checked: `ockham/src/main.rs` (passes the flag) and the test calls above. No other caller exists.
+- Results:
+  - `cargo test -p neat_ai_ockham --lib preservation`: 21 passed;
+  - `--test preservation_audit`: 4 passed;
+  - `--test readme_contract`: 10 passed;
+  - clippy `-D warnings` and `cargo fmt --check` were clean;
+  - `./quality.sh < /dev/null` on 0049a6e: "All quality checks passed!" (exit 0).
+
+## Merge verification
+
+CI and pull-request review have not been observed yet.
+
+Not done, and still a risk:
+
+- the paper method is not pinned;
+- no representative run has been made, and none is frozen;
+- the keep-or-remove decision is still open;
+- the freeze check duplicates the one in open PR #275 and is not shared with it;
+- macOS was not checked.
