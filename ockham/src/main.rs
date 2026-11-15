@@ -256,7 +256,9 @@ enum Command {
         /// Extra argument passed verbatim to the scorer (repeatable).
         #[arg(long = "scorer-arg")]
         scorer_args: Vec<String>,
-        /// Predeclared SHA-256 of the manifest bytes; the run is refused before any work if they differ. Freeze the manifest by recording this digest before running.
+        /// Predeclared SHA-256 of the manifest bytes; the run is refused before any
+        /// work if they differ. Freeze the manifest by recording this digest before
+        /// running.
         #[arg(long, value_name = "SHA256")]
         manifest_sha256: Option<String>,
     },
@@ -501,6 +503,13 @@ fn bench_strata(
             return ExitCode::FAILURE;
         }
     };
+    let frozen = manifest_sha256.map_or(Ok(()), |expected| {
+        neat_ai_ockham::strata::bench::refuse_unless_frozen(manifest, &loaded.sha256, expected)
+    });
+    if let Err(e) = frozen {
+        eprintln!("{e}");
+        return ExitCode::FAILURE;
+    }
     let probe = neat_ai_ockham::strata::bench::wall_clock_probe(
         loaded.manifest.calibration[0].dir.clone(),
         loaded.manifest.latency_records,

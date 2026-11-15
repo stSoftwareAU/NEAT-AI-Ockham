@@ -721,10 +721,16 @@ fn malformed_digest_is_refused_before_any_work() {
         .expect_err("a malformed digest must refuse the run");
 
         assert!(err.contains("64 hex digits"), "{err}");
-        assert!(
-            !err.contains(&long),
-            "the echoed value must be truncated: {err}"
-        );
+        if bad == long.as_str() {
+            assert!(
+                !err.contains(&long),
+                "the echoed value must be truncated: {err}"
+            );
+            assert!(
+                err.contains(&"z".repeat(80)),
+                "the first 80 characters must be echoed: {err}"
+            );
+        }
         assert!(!fx.report().exists(), "no report may be written");
         assert!(
             !fx.root().join("report.json.work").exists(),

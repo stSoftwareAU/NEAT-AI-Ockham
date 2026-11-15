@@ -83,13 +83,19 @@ pub fn work_dir_for(out: &Path) -> PathBuf {
 /// Refuse a frozen run whose manifest bytes differ from the predeclared digest.
 ///
 /// `expected` must be 64 ASCII hex digits in either case; it is compared
-/// case-insensitively against `actual`, the manifest's SHA-256.
+/// case-insensitively against `actual`, the manifest's SHA-256. Both the CLI's
+/// latency-probe read and `run_bench` call this, so every manifest read a frozen
+/// run uses is checked.
 ///
 /// # Errors
 ///
 /// A message naming `--manifest-sha256` when `expected` is malformed, or naming
 /// both digests when they differ.
-fn refuse_unless_frozen(manifest_path: &Path, actual: &str, expected: &str) -> Result<(), String> {
+pub fn refuse_unless_frozen(
+    manifest_path: &Path,
+    actual: &str,
+    expected: &str,
+) -> Result<(), String> {
     let wanted = expected.to_ascii_lowercase();
     if wanted.len() != 64 || !wanted.bytes().all(|b| b.is_ascii_hexdigit()) {
         let shown: String = expected.chars().take(80).collect();
@@ -110,7 +116,8 @@ fn refuse_unless_frozen(manifest_path: &Path, actual: &str, expected: &str) -> R
 ///
 /// When `frozen_manifest_sha256` is given, the manifest's bytes must hash to
 /// that digest, and the report records `versions.manifestFrozen` as true. The
-/// check happens before any other work.
+/// check runs straight after the manifest is loaded and validated, before the
+/// input-overwrite guard, the scratch directory and any scoring.
 ///
 /// The scratch directory is `<out_path>.work`. It must not already exist: an
 /// existing one is refused and left untouched. It is removed before this
@@ -120,7 +127,7 @@ fn refuse_unless_frozen(manifest_path: &Path, actual: &str, expected: &str) -> R
 /// # Errors
 ///
 /// A message naming the stage that failed, the manifest problem, a malformed
-/// or mismatched `frozen_manifest_sha256` (refused before any work, with no
+/// or mismatched `frozen_manifest_sha256` (refused before any scoring, with no
 /// report written), an existing scratch directory, a scorer failure, or a
 /// failed cleanup.
 pub fn run_bench(
