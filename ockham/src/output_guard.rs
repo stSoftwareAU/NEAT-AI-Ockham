@@ -1,7 +1,7 @@
 //! Shared output-path safety and atomic report writing for the report-only
-//! subcommands (`bench-strata`, `audit-preservation`).
+//! subcommands (`bench-strata`, `audit-preservation`, `bench-additivity`).
 //!
-//! Both subcommands rename their report into place, so a `--out` that names
+//! Each subcommand renames its report into place, so a `--out` that names
 //! the supplied creature would overwrite it, breaking the rule that the
 //! creature is never written to. One copy of the guard means a fix to a missed
 //! link case protects every subcommand.

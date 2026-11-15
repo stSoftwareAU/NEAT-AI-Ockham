@@ -42,12 +42,14 @@
 //! | screening coverage over the incumbent | [`mod@coverage`] | #37 |
 //! | GRQ commit-description coverage files | [`mod@coverage`], [`run`] | #40 |
 //! | injected run-budget clock | [`clock`] | #214 |
+//! | cached-output bundle-ranking experiment (opt-in benchmark) | [`additivity`] | #260 |
 //! | report-only preservation audit (opt-in, never changes acceptance) | [`preservation`] | #264 |
 //! | worst-stratum / Pareto pruning experiment (opt-in) | [`strata`] | #263 |
 
 #![warn(missing_docs)]
 
 pub mod ablation;
+pub mod additivity;
 pub mod baseline;
 pub mod blocked;
 pub mod cancel;
