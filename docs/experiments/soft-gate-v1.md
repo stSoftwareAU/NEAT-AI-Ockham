@@ -1,0 +1,245 @@
+# Soft-gate nested-budget experiment, v1
+
+The optional runtime implementation was **removed** after the investigation
+failed to establish representative benefit. The maintained binary has no
+`soft-gate` subcommand or library API. This document records the historical
+protocol; its descriptions below apply to the pinned archived implementation,
+not to features installed by the current tree.
+
+The [maintenance decision](soft-gate-retirement-v1.json) distinguishes two
+conclusions: the scientific result is inconclusive because actual coverage is
+**zero representative creatures and zero representative pairs**; the optional
+implementation has not earned its maintenance cost and is removed now. No
+optimisation benefit or representative negative result is claimed. The synthetic
+run's negative score interval, failed held-out-error and latency criteria, and
+failed first preflight remain recorded rather than being discarded.
+
+## Method pin and adaptations
+
+The research source is [Your Transformer Is Secretly Elastic,
+arXiv:2610.20588v1](https://arxiv.org/html/2610.20588v1), sections 3.1–3.2 and
+A.3.2–A.3.3. The reference implementation is
+[secretly-elastic at 3cc29a2b32045c0ee697b673e2c3be8f92b70e57](https://github.com/WalterSimoncini/secretly-elastic/tree/3cc29a2b32045c0ee697b673e2c3be8f92b70e57).
+Its relevant source SHA-256 checksums are embedded in each manifest:
+
+| Reference file under `src/models/prunable/refine/` | SHA-256 |
+|---|---|
+| `core.py` | `497ea32b356f85e1a5bfcc1804fff8b6fa20ccfc53fec17a683ef4e7e88e41d3` |
+| `masking.py` | `24ba6d00ec5cd4f178e5067fd66a69d3a61f6ab59f76f806ff3f2928eaafca7d` |
+| `budget.py` | `1be8638223a105b41406ab2f6f76f2974f71f5df91c3634f570642c709312f49` |
+
+The paper freezes model weights and learns median-centred log-scores. A
+stop-gradient ranking threshold gives sigmoid masks for multiple sparsity
+targets. Its vision configuration uses temperature 0.2 and Adam with learning
+rate 0.1, betas 0.9/0.999, no weight decay and 300 steps. Its initial scores
+approximate per-weight Fisher information; its joint threshold uses unit FLOPs.
+The reference's `budget.py` selects the last unit within the cumulative cost
+allowance, retaining at least one unit for the threshold.
+
+NEAT-specific choices in `neat-soft-gate-fd-v1` are:
+
+- Capacity is **retained original hidden-neuron identities**, with unit cost
+  one. Hard targets are `floor(fraction * original hidden count)` for full,
+  90%, 75% and 50%. Neuron, constant, synapse and growth-unit counts remain
+  separate measurements; hidden capacity does not promise equal latency.
+- Only forward-only networks with untyped edges and `IDENTITY`, `LOGISTIC`
+  or `TANH` non-constant activations are supported, with 1–4096 hidden neurons.
+  Listed constants are frozen and excluded from the ranking. Other activations
+  are refused, including aggregates and discontinuous functions.
+- The pinned core's `CompiledNetwork::activate` owns inference semantics.
+  Its `propagate_topological_loop` computes weight/bias update proposals rather
+  than derivatives of this gate loss. v1 therefore uses **central finite
+  differences of the actual MSE**, not that learning algorithm or invented
+  activation derivatives. A hidden gate multiplies its outgoing weights on an
+  ephemeral clone; the parent's ordinary weights and biases stay fixed.
+  Core applies its normal accumulation, squash, clamping and f32 rounding.
+  This edge-modulation parameterisation can round differently from multiplying
+  a stored post-activation. It does not replace core inference.
+- Initial saliency is the mean squared per-record loss derivative with respect
+  to a unit gate, evaluated at gate one, rather than per-weight Fisher scores.
+  Scores are clamped to `1e-12`, logged and median-centred once. The derivative
+  step defaults to `0.001`; f32 cancellation and saturation remain limitations.
+  Fitting differentiates loss with respect to masks while holding each cutoff
+  fixed, then applies the analytic sigmoid derivative. Adam epsilon is `1e-8`.
+- Each step averages the three reduced-target gradients on the same cyclic
+  batch of at most 32 calibration records; the full parent has no learnable
+  mask. The paired seed chooses batch phase and deterministic tie order.
+- Hard candidates follow one removal sequence through `prune_hidden_neuron`.
+  Calibration-only parent activation means supply approximate rewrite hints.
+  Bias compensation and exact cascades belong to the core rewrite report,
+  separately from gate fitting. These hints are frozen parent statistics,
+  not re-estimated statistics of each provisional topology.
+
+Nesting means each smaller candidate's retained original hidden UUID set is a
+subset of the preceding set. Constant conversions and newly introduced support
+nodes are reported separately. Quantisation and cascade overshoot are reported
+against the requested fraction; a target the sequence cannot reach is marked
+unreachable. The full candidate is the original parent, including its bytes.
+
+## Predeclaration and cost
+
+`prepare` creates a format-version-1 manifest without fitting or evaluating
+validation data. It pins full creature, corpus, scorer and executable SHA-256
+checksums, the build's core commit, reference sources, hardware and the recorded
+scorer environment. Corpus checksums cover every byte; the ordinary fast corpus
+identity remains a cache key. The scorer is explicitly CPU/MSE. On Unix,
+experiment directories are created with mode 0700 and manifest/result/candidate
+files with mode 0600. Calibration and latency data are each limited to 64 MiB.
+
+Review the generated choices before running. The initial manifest declares ten
+paired seeds, 300 fitting steps, 100 independent trials per reduced budget and
+equal limits **per complete four-budget family**: 900 active seconds, 100 million
+record evaluations, one million explicitly counted compilations, 100,000 rewrite
+requests and 100 GB of accounted IO. The default split reserves the last requested
+validation records and uses `SampleSpec` to select calibration ranges from the
+remaining prefix. Validation does not enter fitting, statistics or selection.
+Final full-corpus judging deliberately includes the validation records.
+
+Shared preparation time, including the earlier `prepare` invocation, is charged
+in full to both arms. Active family time includes fitting, construction, search,
+candidate writes, scoring and diagnostics. Final input-integrity verification
+is also charged to both. Record charges include initial saliency, fitting,
+statistics, selection, full scoring, validation and latency warmups/repetitions.
+Compilation/IO counters describe explicitly instrumented work; wall time also
+covers core validation and filesystem overhead outside those counters.
+
+The independent control restarts from the same parent for each reduced target
+and each trial. It selects the lowest **calibration MSE**, using seeded random
+removal orders and the same core rewrites and compensation hints. Each target
+gets one third of the paired gate family's measured construction time, subject
+to the declared trial and resource caps. It reserves record/compilation work for
+final evaluation. A trial already started finishes. Total measured family costs
+must agree within 10% for a retention verdict; unmatched pairs remain reported
+and cannot demonstrate success. Gates run first to determine this allowance,
+so execution-order and shared-host timing effects remain limitations.
+
+The limits fail closed before subsequent work and after blocking operations;
+they cannot interrupt a running scorer call. Use an outer process timeout to
+bound a hung external scorer. An overrun is a failed family, never success.
+Failures write `results.json` and return a non-zero exit. Existing output
+directories and manifest destinations are refused.
+
+The initial manifest's retention criteria require a representative-data declaration, ten or more complete
+seed pairs, a conservative 95% paired-score interval wholly above 0.001, no
+more than 1% relative held-out MSE degradation against the paired control
+(absolute tolerance `1e-12`), at least 5% latency reduction at 75% and 50%,
+reachable budgets, capacity overshoot at most 2.5 percentage points for both
+arms, and matched total cost. The interval uses 2.263 standard errors, a
+conservative t critical value for at least ten pairs. It describes seed
+variation conditional on this one creature/corpus/host, not uncertainty across
+creatures. Latency is indicative on a shared host and never a CI assertion.
+Numerical thresholds may be edited before locking; the runtime reads those
+thresholds from the manifest. Representative status, complete pairs and a
+minimum of ten pairs remain prerequisites for retention.
+A completed, cost-matched representative study with at least ten pairs missing
+the performance criteria records a removal decision for the optional
+implementation; an absent or cost-unmatched representative study is
+inconclusive and does not earn a deployment or default change.
+
+## Historical replay and artefacts
+
+The source at commit `91e0d56ee27627382989a09dbc31b54b64f90d20` contains the
+complete experimental implementation, correctness tests and public generator.
+It is retained in git history rather than compiled into the maintained library
+or binary. The replay script is not in the maintained tree either; it
+is kept at commit `03cdc00a843571753ac7dfc6832b0f1bb7d90be7`. Neither
+historical commit is reachable from the pull request's own history, so both
+are preserved by the git tag `issue-262-soft-gate-history`, which is what is
+fetched. From a clone of this repository with a built real scorer, run:
+
+```bash
+git fetch origin tag issue-262-soft-gate-history
+git worktree add --detach /tmp/soft-gate-replay-source \
+  03cdc00a843571753ac7dfc6832b0f1bb7d90be7
+/tmp/soft-gate-replay-source/scripts/replay-soft-gate-smoke.sh \
+  /absolute/path/to/rust_scorer /tmp/new-soft-gate-replay < /dev/null
+git worktree remove /tmp/soft-gate-replay-source
+```
+
+This requires Git, Cargo/Rust from the pinned toolchain, Python 3, tar and GNU
+`timeout` (use a GNU timeout on the command path on macOS). It exports only the
+pinned historical source into a temporary directory, builds it with `--locked`,
+and regenerates the exact synthetic parent/corpus. Their checksums must match
+the archived manifest. The supplied scorer is copied and checksummed; the script
+makes no claim that an arbitrary scorer matches the original scorer binary.
+`prepare` then records fresh absolute paths, hardware, executable/scorer pins and
+preparation costs. The historical seeds, split sizes, fit/search limits and
+success thresholds are copied from the archived declaration before locking the
+new manifest SHA-256 and starting any fitting or evaluation. An existing output
+directory is refused. Artefacts are private on Unix (`umask 077`). The historical
+source export is removed on exit; the copied binaries, generated inputs, new
+`manifest.json`, `manifest.sha256`, `replay.json` and study outputs remain.
+
+This reproduces the protocol, not identical build bytes, shared-host timings or
+cost-matching outcomes. The original declaration and results are unchanged.
+`replay.json` links the source commit and original/new manifest checksums. The
+six-hour timeout bounds the run phase; a failed scorer or family writes the
+historical harness's failure report, while an external timeout can interrupt
+before that report is written. Build/input-generation failures return nonzero.
+Representative comparison remains unperformed; this command does not turn
+synthetic data into representative evidence.
+
+`study/results.json` contains paired distributions/uncertainty, failures, actual
+split coverage, costs, candidate counts/identities, rewrite compensation, full
+scorer results, held-out MSE, inference latency samples and error/growth and
+error/latency Pareto flags. Candidate JSON files remain under
+`seed-<seed>-<arm>/candidates/`: `baseline.json` is the full parent and `c1.json`–
+`c3.json` are the reduced targets. These diagnostic files do not publish
+`best.json` or adopt a prune.
+
+```mermaid
+flowchart TD
+    M[Reviewed manifest and SHA-256] --> C[Calibration ranges only]
+    C --> G[Frozen-parent gate fit]
+    C --> I[Independent searches from parent]
+    G --> N[One nested rewrite sequence]
+    I --> R[One chosen candidate per reduced target]
+    N --> F[Full authoritative scorer]
+    R --> F
+    V[Untouched validation ranges] --> D[Diagnostic error and latency]
+    F --> E[Paired results and Pareto frontiers]
+    D --> E
+```
+
+The archived [preflight manifest](soft-gate-smoke-preflight-manifest-v1.json)
+and [failed preflight results](soft-gate-smoke-preflight-results-v1.json) record
+an adapter-contract failure found by the real scorer: the first harness omitted
+the reserved `baseline` stem. No family completed that preflight. The archived
+corrected test scorer uses the real output parser, and the archived harness
+writes `baseline.json`.
+
+The corrected [smoke manifest](soft-gate-smoke-manifest-v1.json) was committed
+before running the release CLI. Its [paired results](soft-gate-smoke-results-v1.json)
+contain 10 complete pairs over 512 synthetic records: 64 calibration records,
+128 untouched validation records, and **zero representative creatures**. The
+compact archive retains scores, errors, sizes, median latencies, costs and
+compensation totals. The [full results JSON, compressed](soft-gate-smoke-full-results-v1.json.gz)
+preserves per-neuron rankings, identities, latency repetitions and rewrite trails;
+its decompressed SHA-256 is recorded in the compact archive.
+
+| Target | Hidden neurons | Synapses | Growth units |
+|---|---:|---:|---:|
+| Full | 20 | 60 | 26.0 |
+| 90% | 18 | 54 | 23.4 |
+| 75% | 15 | 45 | 19.5 |
+| 50% | 10 | 30 | 13.0 |
+
+The gate arm's mean paired full-score difference was −0.0001831, with a
+conditional 95% interval of [−0.0002441, −0.0001222]. It also missed the
+held-out-error and latency criteria. Total charged family costs matched within
+the declared 10% tolerance. These are **synthetic wiring results on a shared,
+parallel host**, not evidence for mature NEAT-AI creatures. The predeclared
+representativeness prerequisite fails, so the scientific result remains
+inconclusive. The separate maintenance decision removes the optional runtime
+implementation because no representative benefit has justified keeping it.
+No population acceptance follows from this run.
+
+The historical replay command was also run in this retry with a freshly built
+archived executable and the available real scorer. Its [new manifest](soft-gate-replay-manifest-v1.json),
+[full results, compressed](soft-gate-replay-full-results-v1.json.gz) and
+[verification record](soft-gate-replay-verification-v1.json) preserve 20 completed
+families, ten paired seeds, zero failures and zero representative creatures.
+The paired score distribution and interval match the original synthetic run;
+the scorer hash and timing samples differ; the executable hash matches the
+original build. This verifies that the
+retired protocol can be replayed, without establishing representative benefit.

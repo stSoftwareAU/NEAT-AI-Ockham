@@ -1,0 +1,3204 @@
+{
+  "acceptance": "diagnostic candidates only; no best.json or population entry",
+  "arms": [
+    {
+      "constructionSeconds": 0.015623042,
+      "cost": {
+        "compilations": 1013,
+        "elapsedSeconds": 0.4165737919999999,
+        "ioBytes": 176716033,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 41408,
+        "rewrites": 10
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001758958
+          },
+          "medianLatencyNs": 109.375,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0025863559663291307,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.002653826452013016,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997343833547987,
+            "timeTaken": 0.001758958
+          },
+          "medianLatencyNs": 101.5625,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031020282451798315,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -7.330716225006223e-06
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001788913620482757,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.002311477112215697,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976865728877843,
+            "timeTaken": 0.001758958
+          },
+          "medianLatencyNs": 87.21875,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.003084519983401665,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": -8.826089484957676e-05
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0006684172400255295,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0025515423618218567,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9974471576381782,
+            "timeTaken": 0.001758958
+          },
+          "medianLatencyNs": 62.5,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0042025886652609,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.010972624092100427
+            }
+          }
+        }
+      ],
+      "name": "gates",
+      "searchTrials": [],
+      "seed": 7
+    },
+    {
+      "constructionSeconds": 0.016374792,
+      "cost": {
+        "compilations": 76,
+        "elapsedSeconds": 0.41691662499999993,
+        "ioBytes": 176716050,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 12160,
+        "rewrites": 265
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001489791
+          },
+          "medianLatencyNs": 111.96875,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0022781351643193174,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.0023550090767293017,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976426509232708,
+            "timeTaken": 0.001489791
+          },
+          "medianLatencyNs": 102.875,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.002796074760759521,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": 0.0054854485770465715
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0013819690551831057,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.002244078525970349,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9977539714740297,
+            "timeTaken": 0.001489791
+          },
+          "medianLatencyNs": 88.53125,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.003245139817775464,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": -0.010033053920539721
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0005127691405040591,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0019412121307784483,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9980574878692215,
+            "timeTaken": 0.001489791
+          },
+          "medianLatencyNs": 65.125,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0033237616362868823,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.0022168947959695963
+            }
+          }
+        }
+      ],
+      "name": "independent",
+      "searchTrials": [
+        35,
+        17,
+        11
+      ],
+      "seed": 7
+    },
+    {
+      "constructionSeconds": 0.015633417,
+      "cost": {
+        "compilations": 1013,
+        "elapsedSeconds": 0.4166541669999999,
+        "ioBytes": 176716033,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 41408,
+        "rewrites": 10
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001630625
+          },
+          "medianLatencyNs": 125.0,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0025863559663291307,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.002653826452013016,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997343833547987,
+            "timeTaken": 0.001630625
+          },
+          "medianLatencyNs": 114.5625,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031020282451798315,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -7.330716225006223e-06
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001788913620482757,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.002311477112215697,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976865728877843,
+            "timeTaken": 0.001630625
+          },
+          "medianLatencyNs": 97.65625,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.003084519983401665,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": -8.826089484957676e-05
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0006684172400255295,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0025515423618218567,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9974471576381782,
+            "timeTaken": 0.001630625
+          },
+          "medianLatencyNs": 71.625,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0042025886652609,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.010972624092100427
+            }
+          }
+        }
+      ],
+      "name": "gates",
+      "searchTrials": [],
+      "seed": 19
+    },
+    {
+      "constructionSeconds": 0.016222417,
+      "cost": {
+        "compilations": 76,
+        "elapsedSeconds": 0.416494834,
+        "ioBytes": 176716062,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 12160,
+        "rewrites": 265
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001527291
+          },
+          "medianLatencyNs": 110.6875,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0022801868098033416,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.0023910247984974633,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976066352015025,
+            "timeTaken": 0.001527291
+          },
+          "medianLatencyNs": 100.28125,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0028577732736989672,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -0.0007333690123691949
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0013048394828525805,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.0019191975838435595,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9980788524161565,
+            "timeTaken": 0.001527291
+          },
+          "medianLatencyNs": 87.21875,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.002745123024804693,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": 0.002171076594108643
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.00048394159717935674,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0026852406863172376,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9973134593136828,
+            "timeTaken": 0.001527291
+          },
+          "medianLatencyNs": 57.3125,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.004550147558688416,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": -0.000934653017914293
+            }
+          }
+        }
+      ],
+      "name": "independent",
+      "searchTrials": [
+        35,
+        17,
+        11
+      ],
+      "seed": 19
+    },
+    {
+      "constructionSeconds": 0.015883583,
+      "cost": {
+        "compilations": 1013,
+        "elapsedSeconds": 0.4167139579999999,
+        "ioBytes": 176716032,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 41408,
+        "rewrites": 10
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.00139525
+          },
+          "medianLatencyNs": 125.0,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0025863559663291307,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.002653826452013016,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997343833547987,
+            "timeTaken": 0.00139525
+          },
+          "medianLatencyNs": 115.875,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031020282451798315,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -7.330716225006223e-06
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001788913620482757,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.002311477112215697,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976865728877843,
+            "timeTaken": 0.00139525
+          },
+          "medianLatencyNs": 88.53125,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.003084519983401665,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": -8.826089484957676e-05
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0006674698655726641,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.002544786687861196,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9974539133121388,
+            "timeTaken": 0.00139525
+          },
+          "medianLatencyNs": 65.09375,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.004197258660073285,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.00553202114888938
+            }
+          }
+        }
+      ],
+      "name": "gates",
+      "searchTrials": [],
+      "seed": 31
+    },
+    {
+      "constructionSeconds": 0.016565333,
+      "cost": {
+        "compilations": 76,
+        "elapsedSeconds": 0.4173819579999999,
+        "ioBytes": 176716069,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 12160,
+        "rewrites": 265
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001725709
+          },
+          "medianLatencyNs": 113.28125,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0022858564063944872,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.0023615691206489813,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997636090879351,
+            "timeTaken": 0.001725709
+          },
+          "medianLatencyNs": 109.375,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.002794360057005302,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -0.004516812244390293
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0012908278496930703,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.0019932250950356768,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9980048249049643,
+            "timeTaken": 0.001725709
+          },
+          "medianLatencyNs": 87.25,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0028826343039265495,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": 0.0005774628711382654
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0005013532768038149,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0027387286944726328,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9972599713055273,
+            "timeTaken": 0.001725709
+          },
+          "medianLatencyNs": 57.28125,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0046168471189466775,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.00032358359407258465
+            }
+          }
+        }
+      ],
+      "name": "independent",
+      "searchTrials": [
+        35,
+        17,
+        11
+      ],
+      "seed": 31
+    },
+    {
+      "constructionSeconds": 0.016105333,
+      "cost": {
+        "compilations": 1013,
+        "elapsedSeconds": 0.4164604169999999,
+        "ioBytes": 176716033,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 41408,
+        "rewrites": 10
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001488583
+          },
+          "medianLatencyNs": 110.65625,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0025863559663291307,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.002653826452013016,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997343833547987,
+            "timeTaken": 0.001488583
+          },
+          "medianLatencyNs": 101.5625,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031020282451798315,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -7.330716225006223e-06
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001788913620482757,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.002311477112215697,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976865728877843,
+            "timeTaken": 0.001488583
+          },
+          "medianLatencyNs": 87.21875,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.003084519983401665,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": -8.826089484957676e-05
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0006684172400255295,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0025515423618218567,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9974471576381782,
+            "timeTaken": 0.001488583
+          },
+          "medianLatencyNs": 62.5,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0042025886652609,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.010972624092100427
+            }
+          }
+        }
+      ],
+      "name": "gates",
+      "searchTrials": [],
+      "seed": 43
+    },
+    {
+      "constructionSeconds": 0.016796708,
+      "cost": {
+        "compilations": 79,
+        "elapsedSeconds": 0.41696991699999997,
+        "ioBytes": 176716068,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 12352,
+        "rewrites": 274
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.00150025
+          },
+          "medianLatencyNs": 110.6875,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0022858564063944872,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.0023615691206489813,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997636090879351,
+            "timeTaken": 0.00150025
+          },
+          "medianLatencyNs": 101.5625,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.002794360057005302,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -0.004516812244390293
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0012908278496930703,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.0019932250950356768,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9980048249049643,
+            "timeTaken": 0.00150025
+          },
+          "medianLatencyNs": 87.25,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0028826343039265495,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": 0.0005774628711382654
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0004913294402073873,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0024456159459777093,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9975530840540223,
+            "timeTaken": 0.00150025
+          },
+          "medianLatencyNs": 62.5,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.004150523198670887,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.0056687090217272355
+            }
+          }
+        }
+      ],
+      "name": "independent",
+      "searchTrials": [
+        37,
+        18,
+        11
+      ],
+      "seed": 43
+    },
+    {
+      "constructionSeconds": 0.015831417,
+      "cost": {
+        "compilations": 1013,
+        "elapsedSeconds": 0.4158857089999999,
+        "ioBytes": 176716033,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 41408,
+        "rewrites": 10
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001329417
+          },
+          "medianLatencyNs": 110.6875,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0025863559663291307,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.002653826452013016,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997343833547987,
+            "timeTaken": 0.001329417
+          },
+          "medianLatencyNs": 101.5625,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031020282451798315,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -7.330716225006223e-06
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001788913620482757,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.002311477112215697,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976865728877843,
+            "timeTaken": 0.001329417
+          },
+          "medianLatencyNs": 87.25,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.003084519983401665,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": -8.826089484957676e-05
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0006684172400255295,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0025515423618218567,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9974471576381782,
+            "timeTaken": 0.001329417
+          },
+          "medianLatencyNs": 63.8125,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0042025886652609,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.010972624092100427
+            }
+          }
+        }
+      ],
+      "name": "gates",
+      "searchTrials": [],
+      "seed": 59
+    },
+    {
+      "constructionSeconds": 0.016551917,
+      "cost": {
+        "compilations": 77,
+        "elapsedSeconds": 0.41687658399999994,
+        "ioBytes": 176716049,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 12224,
+        "rewrites": 267
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001562667
+          },
+          "medianLatencyNs": 110.6875,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0022593417733802143,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.0023963518116701713,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976013081883298,
+            "timeTaken": 0.001562667
+          },
+          "medianLatencyNs": 100.28125,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.002887989211864609,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": 0.0032532040159462686
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0013213055867699977,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.0022231795677617383,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9977748704322382,
+            "timeTaken": 0.001562667
+          },
+          "medianLatencyNs": 95.0625,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0032487609283240633,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": 0.006164212481041355
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0005005542670793063,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0028105130501024575,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9971881869498975,
+            "timeTaken": 0.001562667
+          },
+          "medianLatencyNs": 57.3125,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.004740911728002924,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": -0.007214952403261021
+            }
+          }
+        }
+      ],
+      "name": "independent",
+      "searchTrials": [
+        36,
+        17,
+        11
+      ],
+      "seed": 59
+    },
+    {
+      "constructionSeconds": 0.016004166,
+      "cost": {
+        "compilations": 1013,
+        "elapsedSeconds": 0.416304751,
+        "ioBytes": 176716033,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 41408,
+        "rewrites": 10
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001502167
+          },
+          "medianLatencyNs": 110.65625,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0025863559663291307,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.002653826452013016,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997343833547987,
+            "timeTaken": 0.001502167
+          },
+          "medianLatencyNs": 100.28125,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031020282451798315,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -7.330716225006223e-06
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001788913620482757,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.002311477112215697,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976865728877843,
+            "timeTaken": 0.001502167
+          },
+          "medianLatencyNs": 87.21875,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.003084519983401665,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": -8.826089484957676e-05
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0006684172400255295,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0025515423618218567,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9974471576381782,
+            "timeTaken": 0.001502167
+          },
+          "medianLatencyNs": 62.5,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0042025886652609,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.010972624092100427
+            }
+          }
+        }
+      ],
+      "name": "gates",
+      "searchTrials": [],
+      "seed": 71
+    },
+    {
+      "constructionSeconds": 0.016667584,
+      "cost": {
+        "compilations": 78,
+        "elapsedSeconds": 0.4185167919999999,
+        "ioBytes": 176716062,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 12288,
+        "rewrites": 272
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.0014265
+          },
+          "medianLatencyNs": 110.6875,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0022308865149161094,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.0022410545903226004,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9977566054096774,
+            "timeTaken": 0.0014265
+          },
+          "medianLatencyNs": 111.96875,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0026114336452255247,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -0.001099069192823313
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0013213055867699977,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.0022231795677617383,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9977748704322382,
+            "timeTaken": 0.0014265
+          },
+          "medianLatencyNs": 93.75,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0032487609283240633,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": 0.006164212481041355
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0004777469469409611,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0027611678210748207,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9972375321789252,
+            "timeTaken": 0.0014265
+          },
+          "medianLatencyNs": 69.0,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.004665022076429177,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.0005575649384195304
+            }
+          }
+        }
+      ],
+      "name": "independent",
+      "searchTrials": [
+        36,
+        18,
+        11
+      ],
+      "seed": 71
+    },
+    {
+      "constructionSeconds": 0.0162425,
+      "cost": {
+        "compilations": 1013,
+        "elapsedSeconds": 0.4166104169999999,
+        "ioBytes": 176716032,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 41408,
+        "rewrites": 10
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001448166
+          },
+          "medianLatencyNs": 126.28125,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0025863559663291307,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.002653826452013016,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997343833547987,
+            "timeTaken": 0.001448166
+          },
+          "medianLatencyNs": 101.5625,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031020282451798315,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -7.330716225006223e-06
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001788913620482757,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.002311477112215697,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976865728877843,
+            "timeTaken": 0.001448166
+          },
+          "medianLatencyNs": 85.9375,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.003084519983401665,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": -8.826089484957676e-05
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0006674698655726641,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.002544786687861196,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9974539133121388,
+            "timeTaken": 0.001448166
+          },
+          "medianLatencyNs": 57.3125,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.004197258660073285,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.00553202114888938
+            }
+          }
+        }
+      ],
+      "name": "gates",
+      "searchTrials": [],
+      "seed": 89
+    },
+    {
+      "constructionSeconds": 0.016944791,
+      "cost": {
+        "compilations": 79,
+        "elapsedSeconds": 0.41766554199999995,
+        "ioBytes": 176716064,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 12352,
+        "rewrites": 274
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001647958
+          },
+          "medianLatencyNs": 110.6875,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0022308865149161094,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.0022410545903226004,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9977566054096774,
+            "timeTaken": 0.001647958
+          },
+          "medianLatencyNs": 100.28125,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0026114336452255247,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -0.001099069192823313
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0013694606322004013,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.0018944098872160212,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.998103640112784,
+            "timeTaken": 0.001647958
+          },
+          "medianLatencyNs": 85.9375,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0026567725852235913,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": 0.003022693078694787
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.00046245573091657067,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.002565246379848424,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9974334536201516,
+            "timeTaken": 0.001647958
+          },
+          "medianLatencyNs": 63.78125,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0043672899270057325,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": -0.0017258965925510705
+            }
+          }
+        }
+      ],
+      "name": "independent",
+      "searchTrials": [
+        37,
+        18,
+        11
+      ],
+      "seed": 89
+    },
+    {
+      "constructionSeconds": 0.01609625,
+      "cost": {
+        "compilations": 1013,
+        "elapsedSeconds": 0.41684516699999996,
+        "ioBytes": 176716033,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 41408,
+        "rewrites": 10
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001444292
+          },
+          "medianLatencyNs": 127.59375,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0025863559663291307,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.002653826452013016,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997343833547987,
+            "timeTaken": 0.001444292
+          },
+          "medianLatencyNs": 101.5625,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031020282451798315,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -7.330716225006223e-06
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001788913620482757,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.002311477112215697,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976865728877843,
+            "timeTaken": 0.001444292
+          },
+          "medianLatencyNs": 88.53125,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.003084519983401665,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": -8.826089484957676e-05
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0006684172400255295,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0025515423618218567,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9974471576381782,
+            "timeTaken": 0.001444292
+          },
+          "medianLatencyNs": 62.5,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0042025886652609,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.010972624092100427
+            }
+          }
+        }
+      ],
+      "name": "gates",
+      "searchTrials": [],
+      "seed": 101
+    },
+    {
+      "constructionSeconds": 0.016840375,
+      "cost": {
+        "compilations": 78,
+        "elapsedSeconds": 0.4173615839999999,
+        "ioBytes": 176716064,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 12288,
+        "rewrites": 272
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001477584
+          },
+          "medianLatencyNs": 125.0,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0022581565578589534,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.00239984962784799,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997597810372152,
+            "timeTaken": 0.001477584
+          },
+          "medianLatencyNs": 100.28125,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.002891510917089386,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -0.0025903643975537416
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0013694606322004013,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.0018944098872160212,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.998103640112784,
+            "timeTaken": 0.001477584
+          },
+          "medianLatencyNs": 85.9375,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0026567725852235913,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": 0.003022693078694787
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0005273428386371756,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0026770686785324155,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9973216313214676,
+            "timeTaken": 0.001477584
+          },
+          "medianLatencyNs": 62.5,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.004502088991986777,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.0007898267680476153
+            }
+          }
+        }
+      ],
+      "name": "independent",
+      "searchTrials": [
+        36,
+        18,
+        11
+      ],
+      "seed": 101
+    },
+    {
+      "constructionSeconds": 0.016365166,
+      "cost": {
+        "compilations": 1013,
+        "elapsedSeconds": 0.41678675,
+        "ioBytes": 176716032,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 41408,
+        "rewrites": 10
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001472791
+          },
+          "medianLatencyNs": 110.6875,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0025863559663291307,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.002653826452013016,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997343833547987,
+            "timeTaken": 0.001472791
+          },
+          "medianLatencyNs": 100.28125,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031020282451798315,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -7.330716225006223e-06
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001788913620482757,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.002311477112215697,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976865728877843,
+            "timeTaken": 0.001472791
+          },
+          "medianLatencyNs": 87.21875,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.003084519983401665,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": -8.826089484957676e-05
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0006674698655726641,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.002544786687861196,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9974539133121388,
+            "timeTaken": 0.001472791
+          },
+          "medianLatencyNs": 58.59375,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.004197258660073285,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.00553202114888938
+            }
+          }
+        }
+      ],
+      "name": "gates",
+      "searchTrials": [],
+      "seed": 127
+    },
+    {
+      "constructionSeconds": 0.01689825,
+      "cost": {
+        "compilations": 78,
+        "elapsedSeconds": 0.41717995799999996,
+        "ioBytes": 176716055,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 12288,
+        "rewrites": 272
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001368875
+          },
+          "medianLatencyNs": 126.3125,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0022593417733802143,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.0023963518116701713,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976013081883298,
+            "timeTaken": 0.001368875
+          },
+          "medianLatencyNs": 113.28125,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.002887989211864609,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": 0.0032532040159462686
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001319719598955687,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.0018259499015060997,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9981721000984939,
+            "timeTaken": 0.001368875
+          },
+          "medianLatencyNs": 85.9375,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.002572787315881946,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": 0.00272142837263052
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0005125833079272568,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.002652570212200605,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9973461297877995,
+            "timeTaken": 0.001368875
+          },
+          "medianLatencyNs": 62.5,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.0044652999994735845,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.010095651565898459
+            }
+          }
+        }
+      ],
+      "name": "independent",
+      "searchTrials": [
+        36,
+        18,
+        11
+      ],
+      "seed": 127
+    },
+    {
+      "constructionSeconds": 0.015943917,
+      "cost": {
+        "compilations": 1013,
+        "elapsedSeconds": 0.41662441699999997,
+        "ioBytes": 176716032,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 41408,
+        "rewrites": 10
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.00139025
+          },
+          "medianLatencyNs": 125.0,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0025863559663291307,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.002653826452013016,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.997343833547987,
+            "timeTaken": 0.00139025
+          },
+          "medianLatencyNs": 101.5625,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031020282451798315,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -7.330716225006223e-06
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001788913620482757,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.002311477112215697,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9976865728877843,
+            "timeTaken": 0.00139025
+          },
+          "medianLatencyNs": 97.65625,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.003084519983401665,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": -8.826089484957676e-05
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0006674698655726641,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.002544786687861196,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9974539133121388,
+            "timeTaken": 0.00139025
+          },
+          "medianLatencyNs": 71.625,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.004197258660073285,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": 0.00553202114888938
+            }
+          }
+        }
+      ],
+      "name": "gates",
+      "searchTrials": [],
+      "seed": 149
+    },
+    {
+      "constructionSeconds": 0.016865208,
+      "cost": {
+        "compilations": 78,
+        "elapsedSeconds": 0.4173909589999999,
+        "ioBytes": 176716068,
+        "preparationSeconds": 0.29105229199999993,
+        "recordEvaluations": 12288,
+        "rewrites": 272
+      },
+      "measurements": [
+        {
+          "authoritativeImprovement": false,
+          "calibrationMse": 0.003093880556764144,
+          "full": {
+            "complexityPenalty": 2.5999999999999997e-06,
+            "costName": "MSE",
+            "error": 0.0029041710757328255,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9970932289242672,
+            "timeTaken": 0.001668542
+          },
+          "medianLatencyNs": 110.65625,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.0031223745649922832,
+          "target": 1.0,
+          "achievedCapacity": 1.0,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 26.0,
+            "hiddenNeurons": 20,
+            "synapses": 60
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 0,
+            "biasFolds": 0,
+            "biasDeltaByTarget": {}
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0022129720771811097,
+          "full": {
+            "complexityPenalty": 2.34e-06,
+            "costName": "MSE",
+            "error": 0.002281481931856337,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9977161780681437,
+            "timeTaken": 0.001668542
+          },
+          "medianLatencyNs": 100.25,
+          "paretoErrorGrowth": false,
+          "paretoErrorLatency": false,
+          "validationMse": 0.002704582081977481,
+          "target": 0.9,
+          "achievedCapacity": 0.9,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 23.4,
+            "hiddenNeurons": 18,
+            "synapses": 54
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 2,
+            "biasFolds": 2,
+            "biasDeltaByTarget": {
+              "output-0": -0.003734279224212579
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.001298478932959881,
+          "full": {
+            "complexityPenalty": 1.95e-06,
+            "costName": "MSE",
+            "error": 0.0019217701482266052,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9980762798517734,
+            "timeTaken": 0.001668542
+          },
+          "medianLatencyNs": 85.9375,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.002754653281903719,
+          "target": 0.75,
+          "achievedCapacity": 0.75,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 19.5,
+            "hiddenNeurons": 15,
+            "synapses": 45
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 5,
+            "biasFolds": 5,
+            "biasDeltaByTarget": {
+              "output-0": 0.006329769002045497
+            }
+          }
+        },
+        {
+          "authoritativeImprovement": true,
+          "calibrationMse": 0.0005295724564708722,
+          "full": {
+            "complexityPenalty": 1.2999999999999998e-06,
+            "costName": "MSE",
+            "error": 0.0028124782533674886,
+            "gpuBackend": "cpu-fallback",
+            "recordCount": 512,
+            "score": 0.9971862217466325,
+            "timeTaken": 0.001668542
+          },
+          "medianLatencyNs": 62.5,
+          "paretoErrorGrowth": true,
+          "paretoErrorLatency": true,
+          "validationMse": 0.004717224268006689,
+          "target": 0.5,
+          "achievedCapacity": 0.5,
+          "size": {
+            "constantNeurons": 0,
+            "growthUnits": 13.0,
+            "hiddenNeurons": 10,
+            "synapses": 30
+          },
+          "reachable": true,
+          "capacityOvershoot": 0.0,
+          "rewriteCompensation": {
+            "requests": 10,
+            "biasFolds": 10,
+            "biasDeltaByTarget": {
+              "output-0": -0.0027630545734938436
+            }
+          }
+        }
+      ],
+      "name": "independent",
+      "searchTrials": [
+        36,
+        18,
+        11
+      ],
+      "seed": 149
+    }
+  ],
+  "corpusRecords": 512,
+  "coverage": {
+    "calibrationRecords": 64,
+    "completedFamilies": 20,
+    "excluded": "other activations, typed edges, recurrence; untested data is not evidence",
+    "representativeCreatures": 0,
+    "requestedFamilies": 20,
+    "supportedActivations": [
+      "IDENTITY",
+      "LOGISTIC",
+      "TANH"
+    ],
+    "validationRecords": 128
+  },
+  "dataProvenance": "Public untrained 20-hidden TANH wiring fixture generated by ockham/examples/soft_gate_smoke.rs; not representative NEAT evolution data",
+  "exclusions": [
+    "No representative-data claim; smoke study only"
+  ],
+  "failedArms": [],
+  "failures": [],
+  "formatVersion": 1,
+  "hardware": "aarch64-linux; logical CPUs=6; CPU architecture: 8; CPU implementer\t: 0x61; CPU part\t: 0x000; MemTotal:       16505020 kB",
+  "limitsPerFourBudgetFamily": {
+    "compilations": 1000000,
+    "ioBytes": 100000000000,
+    "recordEvaluations": 100000000,
+    "rewrites": 100000,
+    "seconds": 900.0
+  },
+  "manifestSha256": "5f9b4fcc8fc41bbd225267837b67e1a1919782993be0ae506e9e25506d7fc43b",
+  "method": "neat-soft-gate-fd-v1",
+  "pairedSeedsRequested": [
+    7,
+    19,
+    31,
+    43,
+    59,
+    71,
+    89,
+    101,
+    127,
+    149
+  ],
+  "pairedSummary": {
+    "complete": true,
+    "completePairs": 10,
+    "conservative95Interval": [
+      -0.00024405861660281607,
+      -0.00012218491487738767
+    ],
+    "criteria": {
+      "capacityOvershoot": true,
+      "completePairs": true,
+      "heldOutError": false,
+      "latencyReduction": false,
+      "matchedCost": true,
+      "minimumPairs": true,
+      "pairedScoreGain": false,
+      "reachableBudgets": true,
+      "representativeData": false
+    },
+    "meanScoreDelta": -0.00018312176574010187,
+    "pairedScoreDeltas": [
+      -0.0003255153975241972,
+      -0.00017379428579744616,
+      -0.00013885578064420923,
+      -0.0002388119214627634,
+      -2.8933832172062232e-05,
+      -9.714798229713367e-05,
+      -0.0002697931315676083,
+      -0.00018183924415138272,
+      -0.00021173944223769797,
+      -0.00016478663954651768
+    ],
+    "standardError": 2.692746392519408e-05,
+    "totalFamilyCostPairs": [
+      {
+        "fractionalImbalance": 0.0008223058986914768,
+        "gatesSeconds": 0.4165737919999999,
+        "independentSeconds": 0.41691662499999993,
+        "matched": true,
+        "seed": 7
+      },
+      {
+        "fractionalImbalance": 0.0003824106720140597,
+        "gatesSeconds": 0.4166541669999999,
+        "independentSeconds": 0.416494834,
+        "matched": true,
+        "seed": 19
+      },
+      {
+        "fractionalImbalance": 0.0016004525044659504,
+        "gatesSeconds": 0.4167139579999999,
+        "independentSeconds": 0.4173819579999999,
+        "matched": true,
+        "seed": 31
+      },
+      {
+        "fractionalImbalance": 0.0012219106924206515,
+        "gatesSeconds": 0.4164604169999999,
+        "independentSeconds": 0.41696991699999997,
+        "matched": true,
+        "seed": 43
+      },
+      {
+        "fractionalImbalance": 0.002376902512711191,
+        "gatesSeconds": 0.4158857089999999,
+        "independentSeconds": 0.41687658399999994,
+        "matched": true,
+        "seed": 59
+      },
+      {
+        "fractionalImbalance": 0.005285429503148688,
+        "gatesSeconds": 0.416304751,
+        "independentSeconds": 0.4185167919999999,
+        "matched": true,
+        "seed": 71
+      },
+      {
+        "fractionalImbalance": 0.0025262438336367374,
+        "gatesSeconds": 0.4166104169999999,
+        "independentSeconds": 0.41766554199999995,
+        "matched": true,
+        "seed": 89
+      },
+      {
+        "fractionalImbalance": 0.0012373371670928292,
+        "gatesSeconds": 0.41684516699999996,
+        "independentSeconds": 0.4173615839999999,
+        "matched": true,
+        "seed": 101
+      },
+      {
+        "fractionalImbalance": 0.0009425380880832686,
+        "gatesSeconds": 0.41678675,
+        "independentSeconds": 0.41717995799999996,
+        "matched": true,
+        "seed": 127
+      },
+      {
+        "fractionalImbalance": 0.0018365083945192158,
+        "gatesSeconds": 0.41662441699999997,
+        "independentSeconds": 0.4173909589999999,
+        "matched": true,
+        "seed": 149
+      }
+    ],
+    "uncertaintyUnit": "seed; conditional on this creature, corpus, scorer and host; not across-creature evidence",
+    "verdict": "inconclusive"
+  },
+  "representative": false,
+  "retentionDecision": "undecided-inconclusive-study",
+  "status": "completed",
+  "archiveFormat": "soft-gate-smoke-summary-v1",
+  "archiveOmissions": [
+    "Per-neuron rankings, retained identities, latency repetitions and detailed rewrite trails are preserved in soft-gate-smoke-full-results-v1.json.gz."
+  ],
+  "fullOutputSha256": "66c8adc46570c04bedfb5f84b1bda7d0f5f1aa249fae3a50a5ace6be575d82ac",
+  "sourceBuildCommit": "b91629f"
+}
