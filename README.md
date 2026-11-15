@@ -2531,7 +2531,10 @@ neat_ai_ockham bench-strata manifest.json --out report.json --scorer rust_scorer
 The manifest names a parent creature, three to five calibration strata with
 matching validation strata, the seeds and the compute limits. `--scorer`
 selects the scorer binary (default `rust_scorer`), and `--scorer-arg` passes
-further arguments to it verbatim. The method, controls, success rule and
+further arguments to it verbatim. To show that a representative manifest was
+predeclared, record its `sha256sum` before the run and pass it as
+`--manifest-sha256 <digest>`; the run is then refused before any scoring if the
+manifest bytes differ. The method, controls, success rule and
 report fields are described in
 [docs/strata-experiment.md](docs/strata-experiment.md).
 
