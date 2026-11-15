@@ -47,6 +47,12 @@ made, and no benefit is claimed. Part of #264.
   got `CONNECT tunnel failed, response 403`. The method is still not pinned.
 - `rust_scorer` is not on `PATH`, and no private or representative corpora are
   available here.
+- Re-checked at 2026-11-15T02:36Z, after the completion checks named five
+  criteria as not met: both arXiv URLs still return `CONNECT tunnel failed,
+  response 403`, `which rust_scorer` finds nothing, and a host-wide search
+  found only throwaway test creatures under `/tmp`. Each of the five needs the
+  paper or a representative run, so none was changed to `met` and no code was
+  added for them.
 
 ## Evidence
 
