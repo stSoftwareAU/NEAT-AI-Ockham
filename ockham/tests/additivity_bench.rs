@@ -295,27 +295,12 @@ fn end_to_end_reports_every_arm_and_leaves_the_parent_alone() {
                 .is_some_and(|bytes| bytes > 0),
             "a Linux run must measure its own peak resident set"
         );
-        // Each row reads the cumulative high-water mark at its end, so the values
-        // follow row order and the run-end value is at least the last row's.
-        let mut previous = 0;
         for (index, row) in report.rows.iter().enumerate() {
             let Some(bytes) = row.measured_peak_rss_bytes else {
                 panic!("row {index} has no measured peak resident set");
             };
             assert!(bytes > 0, "row {index} measured {bytes} bytes");
-            assert!(
-                bytes >= previous,
-                "row {index} peak {bytes} fell below the previous row's {previous}"
-            );
-            previous = bytes;
         }
-        let run_end = report
-            .measured_peak_rss_bytes
-            .expect("a Linux run measures its run-end peak");
-        assert!(
-            run_end >= previous,
-            "run-end peak {run_end} is below the last row's {previous}"
-        );
     }
     assert!(!report.representative);
     assert!(

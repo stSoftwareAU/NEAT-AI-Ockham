@@ -226,10 +226,12 @@ If `targets` or `y0` cannot be cached, every estimate for that parent is
   chunk buffers, and one predicted-output accumulator the size of a cache entry.
 - `measuredPeakRssBytes` is the bench process's own peak resident set (`VmHWM`
   from `/proc/self/status`). The top-level value is read at the end of the run.
-  Each `rows[]` entry carries the same measure read at the end of that row: a
-  high-water mark so far, cumulative and never decreasing from one row to the
-  next. Both are `null` where the file is unavailable, or its `VmHWM` line is
-  missing or malformed. They exclude the external scorer child processes.
+  Each `rows[]` entry carries the same measure read at the end of that row. Each
+  reading is the process's `VmHWM` as the kernel reports it at that point, which
+  is approximate, so successive readings are not guaranteed to be monotone from
+  one row to the next. Both are `null` where the file is unavailable, or its
+  `VmHWM` line is missing or malformed. They exclude the external scorer child
+  processes.
 - At most three cache files are open at once. A cached-output estimate holds
   two at most: one bundle member and a fresh `y0` reader, both closed before the
   next member. The targets reader is opened last, alone. Each reader holds one

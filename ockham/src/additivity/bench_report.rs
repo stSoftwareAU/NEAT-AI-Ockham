@@ -427,11 +427,12 @@ pub struct BenchRow {
     pub search: Option<SearchPool>,
     /// One result per arm, in report order. Empty for infeasible rows.
     pub arms: Vec<ArmRow>,
-    /// The bench process's peak resident set in bytes (`VmHWM`) read at the end
-    /// of this row. It is a high-water mark so far: cumulative, so it never
-    /// decreases from one row to the next. The external scorer child processes
-    /// are not included. `None` where `/proc/self/status` is unavailable, or its
-    /// `VmHWM` line is missing or malformed.
+    /// The bench process's peak resident set in bytes (`VmHWM`) as the kernel
+    /// reports it at the end of this row. The reading is approximate, so
+    /// successive rows' readings are not guaranteed to be monotone. The external
+    /// scorer child processes are not included. `None` where
+    /// `/proc/self/status` is unavailable, or its `VmHWM` line is missing or
+    /// malformed.
     pub measured_peak_rss_bytes: Option<u64>,
 }
 
