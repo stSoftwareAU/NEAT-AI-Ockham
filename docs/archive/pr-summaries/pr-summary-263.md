@@ -56,6 +56,15 @@ representative run has been made, and no benefit is claimed. Part of #263.
   task-layer prior, NSGA-II), with no hyper-parameters.
 - **Inputs:** `rust_scorer` is not on `PATH`, and no representative corpus is
   available on this host.
+- **Re-check after the completion gate (same day):** curl to
+  `arxiv.org/abs`, `export.arxiv.org` and the Semantic Scholar API still got
+  `000`, and `github.com/AMD-AGI/SliMOO` still returned 404. WebFetch of
+  `arxiv.org/html/2610.27812v1` and of the paperswithcode mirror got "proxy
+  refused the connection". A web search still turned up no hyper-parameters.
+  A filesystem-wide `find` found no `rust_scorer` binary. The five `partial`
+  criteria below each need the paper's full text or a representative corpus
+  and scorer, so they stay `partial`. A representative manifest or result was
+  not invented to fill the gap.
 
 ## Evidence
 
