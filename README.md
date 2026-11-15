@@ -1933,6 +1933,15 @@ The default ordering changes only if benchmark evidence shows better
 scorer-verified improvement economics. Until then `random` stays the default and
 remains available as the control for every comparison.
 
+## Soft-gate experiment archive
+
+The #262 soft-gate investigation did not establish representative optimisation
+benefit. Its optional runtime implementation was removed because it had not
+justified its maintenance cost. The [archived protocol, negative smoke results
+and historical replay command](docs/experiments/soft-gate-v1.md) preserve the
+investigation without adding a production command. Representative comparison
+remains unperformed; the synthetic evidence supports no benefit claim.
+
 ## Cascade-aware structural saving
 
 Cutting one hidden neuron strands structure on both sides of it. A neuron that
@@ -2813,6 +2822,7 @@ NEAT-AI-Ockham/
 │   ├── incident-response.md # emergency dependency fast lane (SECURITY.md)
 │   ├── additivity-experiment.md # opt-in offline experiment (#260): manifest, arms, report
 │   ├── preservation-audit.md # report-only preservation audit: method and limits
+│   ├── experiments/         # protocols, manifests and public smoke evidence
 │   └── strata-experiment.md # opt-in worst-stratum vs aggregate vs Pareto bench
 ├── scripts/
 │   ├── runlib.sh          # canonical build → install → clean (owned by core)

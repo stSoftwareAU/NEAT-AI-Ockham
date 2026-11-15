@@ -1,0 +1,139 @@
+{
+  "formatVersion": 1,
+  "experimentSourceCommit": "91e0d56ee27627382989a09dbc31b54b64f90d20",
+  "archivedManifestSha256": "5f9b4fcc8fc41bbd225267837b67e1a1919782993be0ae506e9e25506d7fc43b",
+  "replayManifestSha256": "38fb598923ce0b2d9d04efbe342243695c5b9caf8df95d0e22e494903aeabf24",
+  "representative": false,
+  "purpose": "protocol replay only; timings and fresh build/scorer pins can differ",
+  "command": "scripts/replay-soft-gate-smoke.sh /absolute/path/to/rust_scorer /tmp/new-soft-gate-replay < /dev/null",
+  "observedExitCode": 0,
+  "observedDateUtc": "2026-11-14",
+  "manifest": "soft-gate-replay-manifest-v1.json",
+  "fullResults": "soft-gate-replay-full-results-v1.json.gz",
+  "fullOutputSha256": "03650748b5f49b0749882bf6b946a9fabe535b116ece93e58dcb2636372b841d",
+  "status": "completed",
+  "coverage": {
+    "calibrationRecords": 64,
+    "completedFamilies": 20,
+    "excluded": "other activations, typed edges, recurrence; untested data is not evidence",
+    "representativeCreatures": 0,
+    "requestedFamilies": 20,
+    "supportedActivations": [
+      "IDENTITY",
+      "LOGISTIC",
+      "TANH"
+    ],
+    "validationRecords": 128
+  },
+  "pairedSummary": {
+    "complete": true,
+    "completePairs": 10,
+    "conservative95Interval": [
+      -0.00024405861660281607,
+      -0.00012218491487738767
+    ],
+    "criteria": {
+      "capacityOvershoot": true,
+      "completePairs": true,
+      "heldOutError": false,
+      "latencyReduction": false,
+      "matchedCost": true,
+      "minimumPairs": true,
+      "pairedScoreGain": false,
+      "reachableBudgets": true,
+      "representativeData": false
+    },
+    "meanScoreDelta": -0.00018312176574010187,
+    "pairedScoreDeltas": [
+      -0.0003255153975241972,
+      -0.00017379428579744616,
+      -0.00013885578064420923,
+      -0.0002388119214627634,
+      -2.8933832172062232e-05,
+      -9.714798229713367e-05,
+      -0.0002697931315676083,
+      -0.00018183924415138272,
+      -0.00021173944223769797,
+      -0.00016478663954651768
+    ],
+    "standardError": 2.692746392519408e-05,
+    "totalFamilyCostPairs": [
+      {
+        "fractionalImbalance": 0.011808508006002553,
+        "gatesSeconds": 0.08588087500000001,
+        "independentSeconds": 0.08486675,
+        "matched": true,
+        "seed": 7
+      },
+      {
+        "fractionalImbalance": 0.0038667129314451515,
+        "gatesSeconds": 0.084155167,
+        "independentSeconds": 0.084481834,
+        "matched": true,
+        "seed": 19
+      },
+      {
+        "fractionalImbalance": 0.011159037527523624,
+        "gatesSeconds": 0.08398704300000001,
+        "independentSeconds": 0.084934834,
+        "matched": true,
+        "seed": 31
+      },
+      {
+        "fractionalImbalance": 0.008277367535575461,
+        "gatesSeconds": 0.083858125,
+        "independentSeconds": 0.084558043,
+        "matched": true,
+        "seed": 43
+      },
+      {
+        "fractionalImbalance": 0.009584584147210659,
+        "gatesSeconds": 0.08454887600000001,
+        "independentSeconds": 0.08536708400000001,
+        "matched": true,
+        "seed": 59
+      },
+      {
+        "fractionalImbalance": 0.015583799473261247,
+        "gatesSeconds": 0.084023,
+        "independentSeconds": 0.085353126,
+        "matched": true,
+        "seed": 71
+      },
+      {
+        "fractionalImbalance": 0.010810436071734804,
+        "gatesSeconds": 0.085311459,
+        "independentSeconds": 0.086243792,
+        "matched": true,
+        "seed": 89
+      },
+      {
+        "fractionalImbalance": 0.007070970188837132,
+        "gatesSeconds": 0.083692292,
+        "independentSeconds": 0.084288292,
+        "matched": true,
+        "seed": 101
+      },
+      {
+        "fractionalImbalance": 0.006665504312327142,
+        "gatesSeconds": 0.08413137600000001,
+        "independentSeconds": 0.08469591700000001,
+        "matched": true,
+        "seed": 127
+      },
+      {
+        "fractionalImbalance": 0.0056114485419823225,
+        "gatesSeconds": 0.08401087600000001,
+        "independentSeconds": 0.084484959,
+        "matched": true,
+        "seed": 149
+      }
+    ],
+    "uncertaintyUnit": "seed; conditional on this creature, corpus, scorer and host; not across-creature evidence",
+    "verdict": "inconclusive"
+  },
+  "failures": [],
+  "scientificVerdict": "undecided-inconclusive-study",
+  "archivedScoreDistributionReproduced": true,
+  "limitation": "Synthetic wiring evidence only. No representative creature/corpus pair was supplied or identified; no optimisation benefit is established. Fresh timings and the scorer hash differ from the original run; the executable hash matches the original build."
+}
