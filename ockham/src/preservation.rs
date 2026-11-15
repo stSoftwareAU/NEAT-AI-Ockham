@@ -17,6 +17,13 @@
 //! - `E_shuf(s) = Σ(p[π_s(r)] − p)² / (RK)` for seeded permutations `π_s`
 //! - `preservationVsMean = 1 − E_child / E_mean`
 //! - `preservationVsShuffle = 1 − E_child / mean_s E_shuf(s)`
+//! - `fps = clip(1 − E_child / min(E_mean, mean_s E_shuf), 0, 1)`, the
+//!   Functional Preservation Score of arXiv:2611.13681 (pinned to
+//!   `shared/fps.py` of github.com/Praveg432/functional-preservation-score at
+//!   commit 2b716ddb632b6c8674e74615e0b65af3f28c9f17), equal to
+//!   `clip(min(preservationVsMean, preservationVsShuffle), 0, 1)`. It is `null`
+//!   exactly when a `degenerate` reason is present, and is diagnostic only: it
+//!   never enters θ, `aucGain` or the criterion.
 //! - `taskLoss = Σ(c − t)² / (RK)`, reported but never used to decide
 //!
 //! Degenerate handling: a control denominator below `1e-24` (including exactly
@@ -62,8 +69,9 @@ E_shuf(s)=sum((p[pi_s(r)]-p)^2)/(RK); preservationVsMean=1-E_child/E_mean; \
 preservationVsShuffle=1-E_child/mean_s(E_shuf); taskLoss=sum((c-t)^2)/(RK); \
 threshold fitted on calibration (balanced accuracy, smallest-theta tie-break); \
 gates and AUC evaluated on validation; aucGain bootstrap over children; \
-denominators below 1e-24 give null";
-const SOURCE: &str = "arXiv:2611.13681 (abstract only; full method not retrieved)";
+denominators below 1e-24 give null; \
+fps=clip(1-E_child/min(E_mean,mean_s(E_shuf)),0,1) (FPS of arXiv:2611.13681), null when either control is degenerate; fps is diagnostic only";
+const SOURCE: &str = "arXiv:2611.13681; FPS pinned to github.com/Praveg432/functional-preservation-score@2b716ddb632b6c8674e74615e0b65af3f28c9f17 shared/fps.py";
 
 /// Which corpus a child is judged on: calibration children fit θ, validation
 /// children are scored by both gates. A child is never in both.
@@ -278,6 +286,24 @@ fn ratio_score(num: f64, den: f64) -> Option<f64> {
     }
     let score = 1.0 - num / den;
     score.is_finite().then_some(score)
+}
+
+/// The paper's Functional Preservation Score and the control it was taken
+/// against: `clip(1 − error / min(mean_error, shuffle_error), 0, 1)`.
+///
+/// `None` when either control error is NaN or below the degenerate epsilon, so
+/// no value is invented. `"shuffle"` is named only when it is strictly smaller.
+fn fps_score(error: f64, mean_error: f64, shuffle_error: f64) -> Option<(f64, &'static str)> {
+    let degenerate = |e: f64| e.is_nan() || e < DEGENERATE_EPS;
+    if degenerate(mean_error) || degenerate(shuffle_error) {
+        return None;
+    }
+    let (best, control) = if shuffle_error < mean_error {
+        (shuffle_error, "shuffle")
+    } else {
+        (mean_error, "mean")
+    };
+    ratio_score(error, best).map(|s| (s.clamp(0.0, 1.0), control))
 }
 
 /// Squared error between outputs and targets for one record (`f64` accumulate).
@@ -753,6 +779,10 @@ struct ChildReport {
     output_error: Option<f64>,
     preservation_vs_mean: Option<f64>,
     preservation_vs_shuffle: Option<f64>,
+    /// Functional Preservation Score; diagnostic only.
+    fps: Option<f64>,
+    /// The control `fps` was taken against, `"mean"` or `"shuffle"`.
+    fps_control: Option<&'static str>,
     ci95: Option<[f64; 2]>,
     collapsed_child: bool,
     degenerate: Vec<&'static str>,
@@ -773,6 +803,8 @@ struct SplitReport {
 struct SplitRun {
     report: SplitReport,
     preserved: Vec<Option<f64>>,
+    /// Per-child `fps` on this split.
+    fps: Vec<Option<f64>>,
     failures: Vec<Option<String>>,
     activated: u64,
     elapsed_ms: f64,
@@ -786,6 +818,8 @@ fn failed_child(name: &str, failure: String) -> ChildReport {
         output_error: None,
         preservation_vs_mean: None,
         preservation_vs_shuffle: None,
+        fps: None,
+        fps_control: None,
         ci95: None,
         collapsed_child: false,
         degenerate: Vec::new(),
@@ -810,6 +844,7 @@ fn score_child(
     let error = mean_error(&cp.child_rec, k);
     let vs_mean = ratio_score(error, ctrl.mean_error);
     let vs_shuffle = ratio_score(error, ctrl.shuffle_mean);
+    let fps = fps_score(error, ctrl.mean_error, ctrl.shuffle_mean);
     let ci95 = vs_mean.and_then(|_| {
         bootstrap_ci(
             &cp.child_rec,
@@ -825,6 +860,8 @@ fn score_child(
         output_error: Some(error),
         preservation_vs_mean: vs_mean,
         preservation_vs_shuffle: vs_shuffle,
+        fps: fps.map(|(v, _)| v),
+        fps_control: fps.map(|(_, c)| c),
         ci95,
         collapsed_child: parent_varies && !cp.columns.varies(),
         degenerate: degenerate_reasons(vs_mean, vs_shuffle),
@@ -860,6 +897,7 @@ fn parent_failed_split(
                 .collect(),
         },
         preserved: vec![None; children.len()],
+        fps: vec![None; children.len()],
         failures: vec![Some(failure); children.len()],
         activated: stats.activated,
         elapsed_ms: stats.elapsed_ms,
@@ -885,6 +923,7 @@ fn run_split(
     let mut elapsed_ms = pp.stats.elapsed_ms;
     let mut child_reports = Vec::with_capacity(children.len());
     let mut preserved = Vec::with_capacity(children.len());
+    let mut fps = Vec::with_capacity(children.len());
     let mut failures = Vec::with_capacity(children.len());
     for child in children {
         let cp = child_pass(&child.creature, split.dir, split.records, k, &pp.rows)?;
@@ -899,6 +938,7 @@ fn run_split(
             (records, k),
             settings,
         );
+        fps.push(report.fps);
         child_reports.push(report);
         preserved.push(score);
     }
@@ -918,6 +958,7 @@ fn run_split(
     Ok(SplitRun {
         report,
         preserved,
+        fps,
         failures,
         activated,
         elapsed_ms,
@@ -968,6 +1009,17 @@ struct GateReport {
 struct Gates {
     sample: GateReport,
     preservation: GateReport,
+    /// Diagnostic only: no θ is fitted on `fps`, and it does not enter
+    /// `aucGain` or `criterion`.
+    fps: FpsDiagnostic,
+}
+
+/// AUC of validation comparison children's `fps` for predicting "better".
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FpsDiagnostic {
+    /// `null` when any comparison child's `fps` is null.
+    auc: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -980,6 +1032,8 @@ struct PairedRow {
     sample_delta: f64,
     /// `preservationVsMean` on the child's own split (calibration or validation).
     preservation_vs_mean: Option<f64>,
+    /// `fps` on the child's own split; diagnostic only.
+    fps: Option<f64>,
     sample_rejects: bool,
     /// θ applied to validation children only; `null` for calibration children.
     preservation_rejects: Option<bool>,
@@ -1152,25 +1206,30 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
         &val_preserved,
     );
 
-    let row = |i: usize, preserved: Option<f64>, rejects: Option<bool>| PairedRow {
-        name: children[i].name.clone(),
-        role: children[i].role,
-        better: is_better(i),
-        full_delta: children[i].full_delta,
-        sample_delta: children[i].sample_delta,
-        preservation_vs_mean: preserved,
-        sample_rejects: sample_rejects_at(i),
-        preservation_rejects: rejects,
-    };
+    let val_fps: Vec<Option<f64>> = comparison.iter().map(|&i| val.fps[i]).collect();
+    let fps_gate = gate_report(&[], false, &better, &val_fps);
+
+    let row =
+        |i: usize, preserved: Option<f64>, fps: Option<f64>, rejects: Option<bool>| PairedRow {
+            name: children[i].name.clone(),
+            role: children[i].role,
+            better: is_better(i),
+            full_delta: children[i].full_delta,
+            sample_delta: children[i].sample_delta,
+            preservation_vs_mean: preserved,
+            fps,
+            sample_rejects: sample_rejects_at(i),
+            preservation_rejects: rejects,
+        };
     let mut paired: Vec<PairedRow> = cal_children
         .iter()
-        .map(|&i| row(i, cal.preserved[i], None))
+        .map(|&i| row(i, cal.preserved[i], cal.fps[i], None))
         .collect();
     paired.extend(
         comparison
             .iter()
             .enumerate()
-            .map(|(j, &i)| row(i, val.preserved[i], preserved_rejects[j])),
+            .map(|(j, &i)| row(i, val.preserved[i], val.fps[i], preserved_rejects[j])),
     );
 
     let preserved_all: Option<Vec<f64>> = val_preserved.iter().copied().collect();
@@ -1221,6 +1280,7 @@ fn evaluate(children: &[Child], cal: &SplitRun, val: &SplitRun, m: &Manifest) ->
         gates: Gates {
             sample: sample_gate,
             preservation: preserved_gate,
+            fps: FpsDiagnostic { auc: fps_gate.auc },
         },
         paired,
         auc_gain: AucGain { value, ci95 },
@@ -1449,6 +1509,32 @@ mod tests {
         let text = v.to_string();
         let m = parse_manifest(&text)?;
         validate_manifest(&m, Path::new("."))
+    }
+
+    #[test]
+    fn fps_matches_the_paper_formula_and_picks_the_best_control() {
+        type Want = Option<(f64, &'static str)>;
+        let cases: [(f64, f64, f64, Want); 8] = [
+            (0.5, 2.0, 4.0, Some((0.75, "mean"))),
+            (0.5, 2.0, 1.0, Some((0.5, "shuffle"))),
+            (3.0, 2.0, 4.0, Some((0.0, "mean"))),
+            (0.0, 2.0, 1.0, Some((1.0, "shuffle"))),
+            (1.0, 2.0, 2.0, Some((0.5, "mean"))),
+            (0.3, 0.0, 1.0, None),
+            (0.3, 2.0, 1e-25, None),
+            (0.3, 2.0, f64::NAN, None),
+        ];
+        for (e, em, es, want) in cases {
+            let got = fps_score(e, em, es);
+            match (got, want) {
+                (None, None) => {}
+                (Some((v, c)), Some((wv, wc))) => {
+                    assert!((v - wv).abs() < 1e-12, "{e} {em} {es}: {v} vs {wv}");
+                    assert_eq!(c, wc, "{e} {em} {es}");
+                }
+                _ => panic!("{e} {em} {es}: {got:?} vs {want:?}"),
+            }
+        }
     }
 
     #[test]
@@ -1904,6 +1990,11 @@ mod tests {
             json!(false)
         );
 
+        // FPS is diagnostic only: it is reported but decides nothing.
+        assert_eq!(value["gates"]["fps"]["auc"], json!(1.0));
+        assert_eq!(paired_row(&value, "v-copy")["fps"], json!(1.0));
+        assert_eq!(paired_row(&value, "v-bad1")["fps"], json!(0.0));
+
         assert_eq!(value["aucGain"]["value"], json!(0.25));
         let ci = value["aucGain"]["ci95"].as_array().unwrap();
         let (lo, hi) = (ci[0].as_f64().unwrap(), ci[1].as_f64().unwrap());
@@ -2005,12 +2096,23 @@ mod tests {
         // The exact copy has zero error, so its shuffle score is 1 (not null).
         let copy = child_entry(cal, "cal-copy");
         assert_eq!(copy["preservationVsShuffle"], json!(1.0));
+        assert_eq!(copy["fps"], json!(1.0));
         // A child with error has a shuffle score tied to the control errors.
         let bad = child_entry(cal, "cal-bad");
         let e_child = bad["outputError"].as_f64().unwrap();
         let expected = 1.0 - e_child / shuffle_mean;
         let got = bad["preservationVsShuffle"].as_f64().unwrap();
         assert!((got - expected).abs() < 1e-12, "{got} vs {expected}");
+        // A collapsed child is worse than the trivial prediction: FPS clips to 0.
+        assert!(bad["preservationVsMean"].as_f64().unwrap() < 0.0, "{bad}");
+        assert_eq!(bad["fps"], json!(0.0));
+        // Here the mean control is the smaller one, so FPS is the mean score.
+        let w110 = child_entry(cal, "cal-w110");
+        assert!(shuffle_mean > cal["parent"]["meanControlError"].as_f64().unwrap());
+        assert_eq!(w110["fpsControl"], json!("mean"));
+        let fps = w110["fps"].as_f64().unwrap();
+        let vs_mean = w110["preservationVsMean"].as_f64().unwrap();
+        assert!((fps - vs_mean).abs() < 1e-12, "{fps} vs {vs_mean}");
 
         // Task loss: target is 0.5 x0 + 0.1 and the identity parent outputs x0.
         let parent_loss = corpus_mean(40, 0, |x| (x - (0.5 * x + 0.1)).powi(2));
@@ -2146,6 +2248,8 @@ mod tests {
             for child in split["children"].as_array().unwrap() {
                 assert!(child["preservationVsMean"].is_null(), "{child}");
                 assert!(child["ci95"].is_null(), "{child}");
+                assert!(child["fps"].is_null(), "{child}");
+                assert!(child["fpsControl"].is_null(), "{child}");
                 assert_eq!(child["collapsedChild"], json!(false), "{child}");
                 let reasons = child["degenerate"].as_array().unwrap();
                 assert!(reasons.contains(&json!("zeroVarianceParent")), "{child}");
@@ -2153,6 +2257,7 @@ mod tests {
         }
         assert!(value["threshold"].is_null());
         assert!(value["gates"]["preservation"]["auc"].is_null());
+        assert!(value["gates"]["fps"]["auc"].is_null());
         assert_eq!(value["criterion"]["status"], json!("notEvaluable"));
         let failures = value["failures"].to_string();
         assert!(failures.contains("threshold not fittable"), "{failures}");
@@ -2207,10 +2312,15 @@ mod tests {
         let report = serde_json::to_value(&failed.report).unwrap();
         assert!(report["parent"]["failure"].is_string());
         assert!(report["parent"]["taskLoss"].is_null());
+        for c in report["children"].as_array().unwrap() {
+            assert!(c["fps"].is_null(), "{c}");
+            assert!(c["fpsControl"].is_null(), "{c}");
+        }
 
         let cal = SplitRun {
             report: failed.report,
             preserved: vec![Some(0.9), Some(0.1), Some(0.9)],
+            fps: vec![Some(0.9), Some(0.1), Some(0.9)],
             failures: vec![None, None, None],
             activated: 0,
             elapsed_ms: 0.0,
