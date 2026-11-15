@@ -135,7 +135,14 @@ spec reviewer judged them over `git diff origin/Develop` and the issue body:
     `fps`, and its paired row carries the validation value. Likewise
     `cal-w110`'s calibration-split and validation-split `fps` are both numbers
     that differ, and its paired row carries the calibration value. The
-    criterion is still `met`.
+    criterion is still `met`. The collapsed calibration child `cal-bad` has
+    `preservationVsMean < 0` and a paired-row `fps` of 0.0, so a calibration
+    row that read `preservationVsMean` would differ.
+  - `fps_auc_is_reported_from_fps_and_not_from_preservation_vs_mean` (new): two
+    validation children, a better `collapsed.json` and a worse 3.0-weight
+    creature, both score below 0 on `preservationVsMean` at different depths,
+    so `gates.preservation.auc == 1.0`. Their `fps` both clip to 0 and tie, so
+    `gates.fps.auc == 0.5`.
   - `constant_parent_validation_leaves_preservation_gate_and_coverage_null`:
     `gates.fps.auc` and `v-slip`'s paired-row `fps` are `null`, while
     `v-slip`'s calibration-split `fps` is a number.
@@ -151,10 +158,13 @@ spec reviewer judged them over `git diff origin/Develop` and the issue body:
   `constant_parent_validation_leaves_preservation_gate_and_coverage_null`
   fails. With only the paired-row read changed, both fail. For the calibration
   paired row, reading `val.fps[i]` or `None` instead of `cal.fps[i]` fails
-  `sample_gate_false_rejection_that_preservation_keeps_is_met`. The code was
-  then restored.
+  `sample_gate_false_rejection_that_preservation_keeps_is_met`; reading
+  `cal.preserved[i]` there fails it too, through the `cal-bad` assertion.
+  Reading `val.preserved[i]` instead of `val.fps[i]` for `gates.fps.auc` fails
+  only `fps_auc_is_reported_from_fps_and_not_from_preservation_vs_mean`. The
+  code was then restored.
 - Results:
-  - `cargo test -p neat_ai_ockham --lib preservation`: 22 passed;
+  - `cargo test -p neat_ai_ockham --lib preservation`: 23 passed;
   - `--test preservation_audit`: 4 passed;
   - `--test readme_contract`: 10 passed;
   - clippy `-D warnings` and `cargo fmt` were clean;

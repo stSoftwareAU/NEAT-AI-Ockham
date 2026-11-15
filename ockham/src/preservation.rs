@@ -2014,6 +2014,15 @@ mod tests {
         );
         assert_ne!(w110_cal, w110_val);
         assert_eq!(paired_row(&value, "cal-w110")["fps"], w110_cal);
+        // The collapsed calibration child scores below zero on
+        // `preservationVsMean`, so its clipped `fps` differs from that score.
+        assert!(
+            child_entry(&value["splits"]["calibration"], "cal-bad")["preservationVsMean"]
+                .as_f64()
+                .unwrap()
+                < 0.0
+        );
+        assert_eq!(paired_row(&value, "cal-bad")["fps"], json!(0.0));
 
         assert_eq!(value["aucGain"]["value"], json!(0.25));
         let ci = value["aucGain"]["ci95"].as_array().unwrap();
@@ -2025,6 +2034,38 @@ mod tests {
         // The same seeds reproduce the same interval.
         let again = run_audit(&manifest, &root.join("again.json"), None).unwrap();
         assert_eq!(again["aucGain"]["ci95"], value["aucGain"]["ci95"]);
+    }
+
+    /// `gates.fps.auc` is the AUC of `fps`, not of `preservationVsMean`. Both
+    /// validation children score below zero on `preservationVsMean` but at
+    /// different depths, so that AUC ranks them; `fps` clips both to 0 and
+    /// ties them, so its AUC is 0.5.
+    #[test]
+    fn fps_auc_is_reported_from_fps_and_not_from_preservation_vs_mean() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let manifest = gate_fixture(
+            root,
+            vec![
+                validation_child("v-better", "collapsed.json", 0.01, 0.01),
+                validation_child("v-worse", "huge.json", -0.04, -0.01),
+            ],
+            0.0,
+        );
+        write_creature(&root.join("huge.json"), &weighted(3.0));
+        let value = run_audit(&manifest, &root.join("report.json"), None).unwrap();
+
+        let better = paired_row(&value, "v-better");
+        let worse = paired_row(&value, "v-worse");
+        let (better_p, worse_p) = (
+            better["preservationVsMean"].as_f64().unwrap(),
+            worse["preservationVsMean"].as_f64().unwrap(),
+        );
+        assert!(worse_p < better_p && better_p < 0.0, "{better_p} {worse_p}");
+        assert_eq!(better["fps"], json!(0.0));
+        assert_eq!(worse["fps"], json!(0.0));
+        assert_eq!(value["gates"]["preservation"]["auc"], json!(1.0));
+        assert_eq!(value["gates"]["fps"]["auc"], json!(0.5));
     }
 
     /// Negative twin: the preservation gate falsely rejects a better child
