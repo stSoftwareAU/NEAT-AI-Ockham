@@ -295,6 +295,27 @@ fn end_to_end_reports_every_arm_and_leaves_the_parent_alone() {
                 .is_some_and(|bytes| bytes > 0),
             "a Linux run must measure its own peak resident set"
         );
+        // Each row reads the cumulative high-water mark at its end, so the values
+        // follow row order and the run-end value is at least the last row's.
+        let mut previous = 0;
+        for (index, row) in report.rows.iter().enumerate() {
+            let Some(bytes) = row.measured_peak_rss_bytes else {
+                panic!("row {index} has no measured peak resident set");
+            };
+            assert!(bytes > 0, "row {index} measured {bytes} bytes");
+            assert!(
+                bytes >= previous,
+                "row {index} peak {bytes} fell below the previous row's {previous}"
+            );
+            previous = bytes;
+        }
+        let run_end = report
+            .measured_peak_rss_bytes
+            .expect("a Linux run measures its run-end peak");
+        assert!(
+            run_end >= previous,
+            "run-end peak {run_end} is below the last row's {previous}"
+        );
     }
     assert!(!report.representative);
     assert!(
@@ -1192,6 +1213,40 @@ fn a_search_wall_clock_budget_stops_each_arm_after_three_scored_picks() {
         }
         assert_eq!(arm.selected_bundle, Some(expected.bundle), "{:?}", arm.arm);
         assert_eq!(arm.selected_score, Some(expected.score), "{:?}", arm.arm);
+    }
+}
+
+#[test]
+fn a_search_wall_clock_budget_shorter_than_one_call_makes_one_pick_and_selects_nothing() {
+    let fixture = Fixture::new();
+    let manifest = search_manifest(&fixture, Some(5));
+    let clock = ManualClock::new();
+    let scorer = ClockedScorer {
+        inner: FaithfulScorer::new(),
+        clock: clock.clone(),
+        step: Duration::from_millis(10),
+    };
+    let workspace = manifest.cache_dir.join("workspace");
+
+    let report = run_bench(&manifest, &scorer, &clock, &workspace).expect("bench runs");
+
+    // Positive control: the three-pick test above uses this same fixture and
+    // step, and under its 25 ms budget the arms do select a bundle.
+    let row = &report.rows[0];
+    assert!(row.feasible, "{:?}", row.reason);
+    assert!(row.search.is_some(), "feasible rows carry a search pool");
+    for arm in &row.arms {
+        // Each arm starts its first call (0 < 5), and that call ends at 10, past
+        // the 5 ms budget. The pick is kept but not within budget, so nothing is
+        // selectable and the search stops after one pick.
+        assert_eq!(arm.picks.len(), 1, "{:?}", arm.arm);
+        assert!(!arm.picks[0].within_budget, "{:?}", arm.arm);
+        assert_eq!(arm.full_scorer_calls, 1, "{:?}", arm.arm);
+        assert_eq!(arm.stopped_by, Some(SearchStop::WallClock), "{:?}", arm.arm);
+        assert_eq!(arm.cost_ms.scorer, 10, "{:?}", arm.arm);
+        assert_eq!(arm.selected_bundle, None, "{:?}", arm.arm);
+        assert_eq!(arm.selected_score, None, "{:?}", arm.arm);
+        assert_eq!(arm.selected_regret, None, "{:?}", arm.arm);
     }
 }
 
