@@ -2486,7 +2486,8 @@ as population-ready unless the fresh frontier comparison also succeeds.
 ## Preservation audit (opt-in, report-only)
 
 ```bash
-neat_ai_ockham audit-preservation <manifest.json> --out <report.json>
+neat_ai_ockham audit-preservation <manifest.json> --out <report.json> \
+  [--manifest-sha256 <SHA256>]
 ```
 
 `audit-preservation` asks how much of its parent's behaviour a compressed child
@@ -2494,8 +2495,10 @@ keeps, scored on the same records against two controls: the parent's mean output
 and the parent's outputs with the records shuffled under predeclared seeds. It
 writes one JSON report and changes nothing else. It never changes acceptance,
 never writes a creature, and its similarity scores never substitute for the
-authoritative full scorer. The hypothesis, formulas, limits and success rule are
-in [docs/preservation-audit.md](docs/preservation-audit.md).
+authoritative full scorer. `--manifest-sha256` freezes the manifest, and the
+report records `versions.manifestSha256` and `versions.manifestFrozen`. The
+hypothesis, formulas, limits and success rule are in
+[docs/preservation-audit.md](docs/preservation-audit.md).
 
 ## Stratum-guided pruning experiment (opt-in)
 
