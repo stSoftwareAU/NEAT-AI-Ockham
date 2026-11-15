@@ -26,8 +26,9 @@ comparison remains unperformed. Part of #262.
   history, preserved by the pushed tag `issue-262-soft-gate-history`. The
   protocol and `soft-gate-retirement-v1.json` replay them from a worktree of
   that commit; the maintained tree carries no replay script.
-- The branch is one commit on `Develop` (the earlier commit-by-commit history
-  is what the tag preserves). This was required: the worker's pre-push gate
+- The branch's content is one commit on `Develop`, followed only by worker
+  checkpoint commits that touch this summary (the earlier commit-by-commit
+  history is what the tag preserves). This was required: the worker's pre-push gate
   scans every commit ahead of the base, and any commit touching a `.sh` file
   makes it run `ci.yml`'s runlib refresh step outside Actions, where it fails
   on `RUNNER_TEMP: unbound variable`. That blocked the two earlier attempts.
@@ -76,13 +77,63 @@ flowchart LR
 
 ## Acceptance Criteria
 
-- **missing** — Compare independent pruning searches under equal total cost.
-  Measure full/held-out error, latency and Pareto frontier. — reason: performed
-  only on the public synthetic smoke fixture; no representative creature/corpus
-  pair was available, so the representative comparison is still to run.
-- **missing** — Do not claim success before representative runs. — reason: no
-  success is claimed, but the representative runs this criterion waits on have
-  not been performed, so the investigation's verdict stays open.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Freeze ordinary weights; fit hidden-neuron gates on a calibration
+  sample across multiple capacity targets. — evidence:
+  `docs/experiments/soft-gate-v1.md`, `soft-gate-smoke-results-v1.json` —
+  reviewer: met
+- **met** — Produce nested full/90%/75%/50% candidates using canonical rewrites
+  and actual achieved sizes. — evidence: `soft-gate-smoke-results-v1.json`
+  (`achievedCapacity`, hidden counts 20/18/15/10) — reviewer: met
+- **partial** — Compare independent pruning searches under equal total cost.
+  Measure full/held-out error, latency and Pareto frontier. — evidence:
+  `docs/experiments/soft-gate-smoke-results-v1.json` (cost-matched pairs,
+  `full.error`, `validationMse`, `medianLatencyNs`, Pareto flags),
+  `soft-gate-retirement-v1.json` `outstanding` — reviewer: partial — reason:
+  run only on an untrained synthetic TANH fixture; the comparison on an
+  existing representative creature has not been run because no representative
+  creature/corpus is available here (no scorer env, private manifest, creature
+  or corpus found on this machine in this run).
+- **met** — Non-differentiable activations need an explicit supported method or
+  exclusion; no silent fictitious gradients. — evidence:
+  `docs/experiments/soft-gate-v1.md`, results `coverage.excluded` — reviewer:
+  met
+- **met** — Read and pin the full method. — evidence: method-pin table in
+  `docs/experiments/soft-gate-v1.md`, manifest `referenceSourceSha256` —
+  reviewer: met
+- **partial** — Inspect current code and reuse existing mechanisms; the issue
+  owns the missing controlled comparison. — evidence:
+  `docs/experiments/soft-gate-v1.md` — reviewer: partial — reason: reuse is
+  shown, but the representative comparison the issue owns is still outstanding.
+- **met** — Opt-in only; preserve ordinary behaviour, interfaces, immutable
+  parents; no deployment or default change. — evidence: `ockham/src/`
+  unchanged; `ockham/tests/soft_gate_archive.rs::retired_experiment_is_absent_from_the_installed_command`
+  — reviewer: met
+- **met** — Predeclare controls, seeds, sample size, compute limits and
+  success/failure criteria; identify versions; separate calibration from
+  untouched validation; count all costs. — evidence:
+  `docs/experiments/soft-gate-smoke-manifest-v1.json` — reviewer: met (for the
+  synthetic run; no representative manifest exists)
+- **met** — Deterministic positive/negative tests; normal quality checks;
+  research runs separate from CI. — evidence:
+  `ockham/tests/soft_gate_archive.rs` (4 tests pass) — reviewer: met
+- **met** — Reproducible command/manifest and machine-readable results with
+  paired distributions, uncertainty, failures and actual coverage. — evidence:
+  `soft-gate-retirement-v1.json` `replayCommand`,
+  `soft-gate-replay-verification-v1.json` — reviewer: met
+- **met** — Record negative findings and remove optional code that does not
+  earn its maintenance cost. — evidence: `soft-gate-retirement-v1.json`
+  `negativeFindings`/`removed` — reviewer: met
+- **met** — Do not claim success before representative runs. — evidence:
+  `soft-gate-retirement-v1.json` `scientificVerdict:
+  inconclusive-no-representative-comparison`, `README.md`, the introduction of
+  `docs/experiments/soft-gate-v1.md` — reviewer: met — no success, benefit or
+  default change is claimed; the representative runs themselves are tracked
+  under the comparison criterion above.
+- **met** — Keep public implementation and fixtures application-agnostic. —
+  evidence: manifest `dataProvenance` (public synthetic fixture) — reviewer:
+  met
 
 ## Test Plan
 
