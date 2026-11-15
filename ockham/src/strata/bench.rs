@@ -80,7 +80,37 @@ pub fn work_dir_for(out: &Path) -> PathBuf {
     out.with_file_name(name)
 }
 
+/// Refuse a frozen run whose manifest bytes differ from the predeclared digest.
+///
+/// `expected` must be 64 ASCII hex digits in either case; it is compared
+/// case-insensitively against `actual`, the manifest's SHA-256.
+///
+/// # Errors
+///
+/// A message naming `--manifest-sha256` when `expected` is malformed, or naming
+/// both digests when they differ.
+fn refuse_unless_frozen(manifest_path: &Path, actual: &str, expected: &str) -> Result<(), String> {
+    let wanted = expected.to_ascii_lowercase();
+    if wanted.len() != 64 || !wanted.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let shown: String = expected.chars().take(80).collect();
+        return Err(format!(
+            "--manifest-sha256 must be 64 hex digits, got '{shown}'"
+        ));
+    }
+    if wanted != actual {
+        return Err(format!(
+            "manifest '{}' has sha256 {actual}, not the predeclared --manifest-sha256 {wanted}; the manifest changed after it was frozen",
+            manifest_path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Run the experiment and write its report to `out_path`.
+///
+/// When `frozen_manifest_sha256` is given, the manifest's bytes must hash to
+/// that digest, and the report records `versions.manifestFrozen` as true. The
+/// check happens before any other work.
 ///
 /// The scratch directory is `<out_path>.work`. It must not already exist: an
 /// existing one is refused and left untouched. It is removed before this
@@ -89,15 +119,21 @@ pub fn work_dir_for(out: &Path) -> PathBuf {
 ///
 /// # Errors
 ///
-/// A message naming the stage that failed, the manifest problem, an existing
-/// scratch directory, a scorer failure, or a failed cleanup.
+/// A message naming the stage that failed, the manifest problem, a malformed
+/// or mismatched `frozen_manifest_sha256` (refused before any work, with no
+/// report written), an existing scratch directory, a scorer failure, or a
+/// failed cleanup.
 pub fn run_bench(
     manifest_path: &Path,
     out_path: &Path,
     scorer: &dyn DirectoryScorer,
     latency: &dyn Fn(&CreatureExport) -> Result<f64, String>,
+    frozen_manifest_sha256: Option<&str>,
 ) -> Result<StrataReport, String> {
     let loaded = manifest::load(manifest_path)?;
+    if let Some(expected) = frozen_manifest_sha256 {
+        refuse_unless_frozen(manifest_path, &loaded.sha256, expected)?;
+    }
     let m = &loaded.manifest;
     let files = [m.parent.as_path(), manifest_path];
     let dirs: Vec<&Path> = m
@@ -116,7 +152,13 @@ pub fn run_bench(
     }
     std::fs::create_dir(&work)
         .map_err(|e| format!("cannot create scratch directory '{}': {e}", work.display()))?;
-    let result = execute(&loaded, &work, scorer, latency);
+    let result = execute(
+        &loaded,
+        &work,
+        scorer,
+        latency,
+        frozen_manifest_sha256.is_some(),
+    );
     let removal = std::fs::remove_dir_all(&work);
     let report = match (result, removal) {
         (Ok(report), Ok(())) => report,
@@ -190,6 +232,7 @@ fn execute(
     work: &Path,
     scorer: &dyn DirectoryScorer,
     latency: &dyn Fn(&CreatureExport) -> Result<f64, String>,
+    manifest_frozen: bool,
 ) -> Result<StrataReport, String> {
     let started = Instant::now();
     let m = &loaded.manifest;
@@ -203,6 +246,7 @@ fn execute(
     let mut run = Run {
         manifest: m,
         manifest_sha256: loaded.sha256.clone(),
+        manifest_frozen,
         neat_core,
         incumbent,
         work: work.to_path_buf(),
@@ -335,6 +379,7 @@ struct ArmTimer {
 struct Run<'a> {
     manifest: &'a Manifest,
     manifest_sha256: String,
+    manifest_frozen: bool,
     neat_core: String,
     incumbent: Incumbent,
     work: PathBuf,
@@ -975,6 +1020,7 @@ impl Run<'_> {
                 neat_core_source: self.neat_core.clone(),
                 parent_checksum: self.incumbent.checksum.clone(),
                 manifest_sha256: self.manifest_sha256.clone(),
+                manifest_frozen: self.manifest_frozen,
                 calibration: versions_of(&self.cal),
                 validation: versions_of(&self.val),
             },

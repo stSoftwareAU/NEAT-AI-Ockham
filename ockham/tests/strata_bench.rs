@@ -359,7 +359,7 @@ fn end_to_end_worst_stratum_avoids_the_minority_regression_that_aggregate_walks_
     let probe = synapse_probe();
     let parent_before = std::fs::read(fx.parent()).unwrap();
 
-    let report = run_bench(&manifest, &fx.report(), &scorer, &probe).expect("the bench runs");
+    let report = run_bench(&manifest, &fx.report(), &scorer, &probe, None).expect("the bench runs");
 
     // The report is on disk, under the documented schema.
     let on_disk: Value = serde_json::from_slice(&std::fs::read(fx.report()).unwrap()).unwrap();
@@ -492,6 +492,8 @@ fn end_to_end_worst_stratum_avoids_the_minority_regression_that_aggregate_walks_
     // The parent's checksum is recorded as the SHA-256 of its bytes.
     assert_eq!(report.versions.parent_checksum, sha256_hex(&parent_before));
     assert_eq!(report.versions.scorer_identity, "stratum-scorer-fixture");
+    // No --manifest-sha256 was given, so the run is not a frozen one.
+    assert_eq!(on_disk["versions"]["manifestFrozen"], false);
 }
 
 #[test]
@@ -499,8 +501,8 @@ fn uniform_costs_do_not_meet_the_worst_stratum_criterion() {
     let fx = Fixture::new();
     let manifest = fx.manifest(|_| {});
     let scorer = StratumScorer::new(uniform_costs(-0.005));
-    let report =
-        run_bench(&manifest, &fx.report(), &scorer, &synapse_probe()).expect("the bench runs");
+    let report = run_bench(&manifest, &fx.report(), &scorer, &synapse_probe(), None)
+        .expect("the bench runs");
 
     let criterion = report
         .criteria
@@ -561,7 +563,7 @@ fn existing_scratch_directory_is_refused_and_left_untouched() {
     std::fs::write(work.join("marker.txt"), "keep me").unwrap();
     let scorer = StratumScorer::new(trap_costs());
 
-    let err = run_bench(&manifest, &fx.report(), &scorer, &synapse_probe())
+    let err = run_bench(&manifest, &fx.report(), &scorer, &synapse_probe(), None)
         .expect_err("an existing scratch directory must be refused");
 
     assert!(err.contains("already exists"), "{err}");
@@ -578,8 +580,14 @@ fn scorer_failure_names_its_stage_and_removes_the_scratch_directory() {
     let fx = Fixture::new();
     let manifest = fx.manifest(|_| {});
 
-    let err = run_bench(&manifest, &fx.report(), &FailingScorer, &synapse_probe())
-        .expect_err("a failing scorer must fail the run");
+    let err = run_bench(
+        &manifest,
+        &fx.report(),
+        &FailingScorer,
+        &synapse_probe(),
+        None,
+    )
+    .expect_err("a failing scorer must fail the run");
 
     assert!(err.contains("stage 'importance'"), "{err}");
     assert!(err.contains("boom"), "{err}");
@@ -595,7 +603,7 @@ fn bench_strata_help_lists_its_flags() {
     let out = bin().args(["bench-strata", "--help"]).output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    for flag in ["--out", "--scorer", "--scorer-arg"] {
+    for flag in ["--out", "--scorer", "--scorer-arg", "--manifest-sha256"] {
         assert!(text.contains(flag), "--help lacks {flag}: {text}");
     }
 }
@@ -609,4 +617,149 @@ fn bench_strata_names_a_missing_manifest_and_exits_non_zero() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(stderr.contains("/nonexistent.json"), "{stderr}");
+}
+
+/// SHA-256 of a file's bytes as lowercase hex, computed with `sha2` directly
+/// rather than through the crate, so a freeze is checked against an
+/// independent digest.
+fn file_sha256_hex(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(std::fs::read(path).unwrap());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A valid 64-digit lowercase hex string that differs from `digest` in its
+/// first character only.
+fn one_char_different(digest: &str) -> String {
+    let first = if digest.starts_with('0') { '1' } else { '0' };
+    format!("{first}{}", &digest[1..])
+}
+
+#[test]
+fn frozen_run_with_the_predeclared_digest_records_that_it_was_checked() {
+    let fx = Fixture::new();
+    let manifest = fx.manifest(|_| {});
+    let digest = file_sha256_hex(&manifest);
+    let scorer = StratumScorer::new(trap_costs());
+
+    // The operator may record the digest in either case.
+    let upper = digest.to_uppercase();
+    let report = run_bench(
+        &manifest,
+        &fx.report(),
+        &scorer,
+        &synapse_probe(),
+        Some(upper.as_str()),
+    )
+    .expect("a frozen run with the correct digest runs");
+
+    assert!(report.versions.manifest_frozen, "{:?}", report.versions);
+    assert_eq!(report.versions.manifest_sha256, digest);
+    let on_disk: Value = serde_json::from_slice(&std::fs::read(fx.report()).unwrap()).unwrap();
+    assert_eq!(on_disk["versions"]["manifestFrozen"], true);
+    assert_eq!(on_disk["versions"]["manifestSha256"], digest.as_str());
+}
+
+#[test]
+fn mismatched_digest_is_refused_before_any_work_and_the_correct_digest_is_accepted() {
+    let fx = Fixture::new();
+    let manifest = fx.manifest(|_| {});
+    let actual = file_sha256_hex(&manifest);
+    let wrong = one_char_different(&actual);
+    let scorer = StratumScorer::new(trap_costs());
+
+    let err = run_bench(
+        &manifest,
+        &fx.report(),
+        &scorer,
+        &synapse_probe(),
+        Some(wrong.as_str()),
+    )
+    .expect_err("a digest that differs from the manifest must refuse the run");
+
+    assert!(err.contains(&actual), "{err}");
+    assert!(err.contains(&wrong), "{err}");
+    assert!(err.contains("predeclared"), "{err}");
+    assert!(!fx.report().exists(), "no report may be written");
+    assert!(
+        !fx.root().join("report.json.work").exists(),
+        "no scratch directory may be created"
+    );
+    assert!(scorer.calls.borrow().is_empty(), "nothing may be scored");
+
+    // Positive control: the same fixture with the correct digest is accepted,
+    // so the refusal above is caused by the digest alone.
+    run_bench(
+        &manifest,
+        &fx.report(),
+        &scorer,
+        &synapse_probe(),
+        Some(actual.as_str()),
+    )
+    .expect("the correct digest is accepted");
+    assert!(fx.report().exists(), "the accepted run writes its report");
+}
+
+#[test]
+fn malformed_digest_is_refused_before_any_work() {
+    let fx = Fixture::new();
+    let manifest = fx.manifest(|_| {});
+    let actual = file_sha256_hex(&manifest);
+    let short = actual[..63].to_string();
+    let non_hex = format!("{}g", &actual[..63]);
+    let long = "z".repeat(200);
+
+    for bad in [short.as_str(), non_hex.as_str(), long.as_str()] {
+        let scorer = StratumScorer::new(trap_costs());
+        let err = run_bench(
+            &manifest,
+            &fx.report(),
+            &scorer,
+            &synapse_probe(),
+            Some(bad),
+        )
+        .expect_err("a malformed digest must refuse the run");
+
+        assert!(err.contains("64 hex digits"), "{err}");
+        assert!(
+            !err.contains(&long),
+            "the echoed value must be truncated: {err}"
+        );
+        assert!(!fx.report().exists(), "no report may be written");
+        assert!(
+            !fx.root().join("report.json.work").exists(),
+            "no scratch directory may be created"
+        );
+        assert!(scorer.calls.borrow().is_empty(), "nothing may be scored");
+    }
+}
+
+#[test]
+fn bench_strata_refuses_a_wrong_manifest_sha256_before_the_scorer_runs() {
+    let fx = Fixture::new();
+    let manifest = fx.manifest(|_| {});
+    let wrong = one_char_different(&file_sha256_hex(&manifest));
+
+    let out = bin()
+        .arg("bench-strata")
+        .arg(&manifest)
+        .arg("--out")
+        .arg(fx.report())
+        .args([
+            "--manifest-sha256",
+            wrong.as_str(),
+            "--scorer",
+            "/nonexistent",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(stderr.contains("predeclared"), "{stderr}");
+    assert!(
+        !stderr.contains("/nonexistent"),
+        "the scorer must not be reached: {stderr}"
+    );
+    assert!(!fx.report().exists(), "no report may be written");
 }
