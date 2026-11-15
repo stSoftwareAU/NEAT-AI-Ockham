@@ -238,6 +238,9 @@ enum Command {
         /// Where to write the JSON report (written atomically).
         #[arg(long, value_name = "REPORT")]
         out: PathBuf,
+        /// Predeclared SHA-256 of the manifest; the audit is refused unless the manifest's bytes match it.
+        #[arg(long, value_name = "SHA256")]
+        manifest_sha256: Option<String>,
     },
     /// Run the opt-in worst-stratum vs aggregate vs Pareto pruning experiment (#263).
     ///
@@ -256,6 +259,11 @@ enum Command {
         /// Extra argument passed verbatim to the scorer (repeatable).
         #[arg(long = "scorer-arg")]
         scorer_args: Vec<String>,
+        /// Predeclared SHA-256 of the manifest bytes; the run is refused before any
+        /// work if they differ. Freeze the manifest by recording this digest before
+        /// running.
+        #[arg(long, value_name = "SHA256")]
+        manifest_sha256: Option<String>,
     },
 }
 
@@ -305,8 +313,17 @@ fn main() -> ExitCode {
             }
         };
     }
-    if let Some(Command::AuditPreservation { manifest, out }) = &cli.command {
-        return match neat_ai_ockham::preservation::run_audit(manifest, out) {
+    if let Some(Command::AuditPreservation {
+        manifest,
+        out,
+        manifest_sha256,
+    }) = &cli.command
+    {
+        return match neat_ai_ockham::preservation::run_audit(
+            manifest,
+            out,
+            manifest_sha256.as_deref(),
+        ) {
             Ok(report) => {
                 let status = report["criterion"]["status"].as_str().unwrap_or("unknown");
                 eprintln!(
@@ -326,9 +343,16 @@ fn main() -> ExitCode {
         out,
         scorer,
         scorer_args,
+        manifest_sha256,
     }) = &cli.command
     {
-        return bench_strata(manifest, out, scorer, scorer_args);
+        return bench_strata(
+            manifest,
+            out,
+            scorer,
+            scorer_args,
+            manifest_sha256.as_deref(),
+        );
     }
     if let Some(Command::Report { journals }) = cli.command {
         if journals.is_empty() {
@@ -477,7 +501,13 @@ fn bench_additivity(manifest_path: &Path, out: &Path) -> Result<String, String> 
 }
 
 /// Run `bench-strata` and print the report path, or the error on stderr.
-fn bench_strata(manifest: &Path, out: &Path, scorer: &Path, scorer_args: &[String]) -> ExitCode {
+fn bench_strata(
+    manifest: &Path,
+    out: &Path,
+    scorer: &Path,
+    scorer_args: &[String],
+    manifest_sha256: Option<&str>,
+) -> ExitCode {
     let loaded = match neat_ai_ockham::strata::manifest::load(manifest) {
         Ok(loaded) => loaded,
         Err(e) => {
@@ -485,6 +515,13 @@ fn bench_strata(manifest: &Path, out: &Path, scorer: &Path, scorer_args: &[Strin
             return ExitCode::FAILURE;
         }
     };
+    let frozen = manifest_sha256.map_or(Ok(()), |expected| {
+        neat_ai_ockham::incumbent::refuse_unless_frozen(manifest, &loaded.sha256, expected)
+    });
+    if let Err(e) = frozen {
+        eprintln!("{e}");
+        return ExitCode::FAILURE;
+    }
     let probe = neat_ai_ockham::strata::bench::wall_clock_probe(
         loaded.manifest.calibration[0].dir.clone(),
         loaded.manifest.latency_records,
@@ -493,7 +530,13 @@ fn bench_strata(manifest: &Path, out: &Path, scorer: &Path, scorer_args: &[Strin
         binary: scorer.to_path_buf(),
         extra_args: scorer_args.to_vec(),
     };
-    match neat_ai_ockham::strata::bench::run_bench(manifest, out, &external, &probe) {
+    match neat_ai_ockham::strata::bench::run_bench(
+        manifest,
+        out,
+        &external,
+        &probe,
+        manifest_sha256,
+    ) {
         Ok(_) => {
             println!("{}", out.display());
             ExitCode::SUCCESS

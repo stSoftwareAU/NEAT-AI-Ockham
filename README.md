@@ -2486,7 +2486,8 @@ as population-ready unless the fresh frontier comparison also succeeds.
 ## Preservation audit (opt-in, report-only)
 
 ```bash
-neat_ai_ockham audit-preservation <manifest.json> --out <report.json>
+neat_ai_ockham audit-preservation <manifest.json> --out <report.json> \
+  [--manifest-sha256 <SHA256>]
 ```
 
 `audit-preservation` asks how much of its parent's behaviour a compressed child
@@ -2494,8 +2495,10 @@ keeps, scored on the same records against two controls: the parent's mean output
 and the parent's outputs with the records shuffled under predeclared seeds. It
 writes one JSON report and changes nothing else. It never changes acceptance,
 never writes a creature, and its similarity scores never substitute for the
-authoritative full scorer. The hypothesis, formulas, limits and success rule are
-in [docs/preservation-audit.md](docs/preservation-audit.md).
+authoritative full scorer. `--manifest-sha256` freezes the manifest, and the
+report records `versions.manifestSha256` and `versions.manifestFrozen`. The
+hypothesis, formulas, limits and success rule are in
+[docs/preservation-audit.md](docs/preservation-audit.md).
 
 ## Stratum-guided pruning experiment (opt-in)
 
@@ -2519,7 +2522,10 @@ neat_ai_ockham bench-strata manifest.json --out report.json --scorer rust_scorer
 The manifest names a parent creature, three to five calibration strata with
 matching validation strata, the seeds and the compute limits. `--scorer`
 selects the scorer binary (default `rust_scorer`), and `--scorer-arg` passes
-further arguments to it verbatim. The method, controls, success rule and
+further arguments to it verbatim. To show that a representative manifest was
+predeclared, record its `sha256sum` before the run and pass it as
+`--manifest-sha256 <digest>`; the run is then refused before any scoring if the
+manifest bytes differ. The method, controls, success rule and
 report fields are described in
 [docs/strata-experiment.md](docs/strata-experiment.md).
 

@@ -2,219 +2,170 @@
 
 ## Summary
 
-Runs the merged `bench-strata` experiment (from #268) once with the real
-`rust_scorer` on a synthetic stratified pilot, and commits the record. A new
-example, `ockham/examples/strata_pilot.rs`, writes the pilot inputs
-deterministically, and four tests pin what it writes.
-`docs/research/strata-pilot-v1/` holds the manifest, parent, the eight
-`records.bin` corpora (about 25 KB), the raw report and a write-up. A test pins
-the committed corpora to their checksums and checks the generator against them
-within a libm tolerance.
+`bench-strata` can now freeze its manifest. The operator records the
+manifest's SHA-256 before a representative run and passes it as
+`--manifest-sha256 <digest>`. If the manifest bytes differ, the run is refused
+before any scoring, scratch directory or report. The report records
+`versions.manifestFrozen`, so a later reader can see that the run's controls,
+seeds, limits and success rule were fixed when the digest was recorded. This
+closes the predeclaration gap that the #272 review left open: there, the
+synthetic pilot's manifest was committed in the same commit as its results.
 
-The branch also repairs `.gitleaks.toml`. Under gitleaks 8.30.1 the base
-config failed to load, so no secret scan could run.
-
-The pilot is **inconclusive**. On all ten seeds, aggregate, worst-stratum and
-Pareto selected the same dead-wood bundle. No arm had a minority regression,
-and the predeclared criterion is not met for either treatment.
-
-The paper's full text could still not be fetched, so the method stays unpinned.
-No representative run was possible. Library code, CLI and defaults are
-unchanged. Part of #263.
+The paper's full text still cannot be fetched, and this host still has no
+representative corpora and no `rust_scorer`. The method stays unpinned, no
+representative run has been made, and no benefit is claimed. Part of #263.
 
 ## Spec
 
 ### Intent and Rationale
 
-- After #268 merged, the open gaps were a real-scorer run, the removal decision
-  and the method pin. With no private corpora, the most this host can produce is
-  a real-scorer synthetic pilot. It follows the pattern of
-  `docs/research/connection-budget-v1/`.
-- The generator is an example, not library code, so it adds nothing to the
-  installed binary or the public API.
-- This replaces PR #271, which was closed after its review stalled. That
-  review asked for a test that pins the generated corpora. This branch adds it as
-  `committed_corpora_match_the_record_and_regenerated_targets`.
+- #268 (bench) and #272 (synthetic real-scorer pilot) are merged. Their
+  remaining gaps are an unpinned method, no representative run, and
+  predeclaration that cannot be shown. Only the last can be closed on this
+  host.
+- A digest check is the smallest way to show predeclaration. It reuses the
+  `sha256` that `strata::manifest::load` already computes, and leaves the
+  manifest schema unchanged.
 
 ### Essential Design Decisions
 
-- **Inputs:** the fixture has four strata, one of them a minority (`rare`, 48
-  records per split). Each stratum has a specialist neuron, and there are shared
-  and dead-wood neurons. Targets are the parent's outputs after near-zero
-  weights are removed, so cutting the dead wood wins on complexity and every
-  other cut loses.
-- **Pinning:** the eight `.bin` corpora are committed. An earlier revision
-  pinned only the sha256 of regenerated corpora, but targets pass through
-  neat-core's TANH, which is `f32::tanh` and calls the host libm `tanhf`. With
-  an older glibc libm preloaded, regenerated targets moved by up to `1.2e-7`
-  (about two ulps) and every checksum failed. The pins now apply to bytes that do not
-  depend on libm:
-  - each committed file's sha256 must equal the `report.md` table, and its
-    identity and record count must equal `report.json`;
-  - the committed manifest must resolve to those directories;
-  - regenerated inputs, which use only SHA-256 and f64 arithmetic, must equal
-    the committed inputs exactly;
-  - regenerated and teacher targets must be within `TARGET_TOLERANCE = 3e-7`
-    of the committed ones. Every stratum's largest teacher-versus-parent gap
-    (at least `1.79e-6`) must still exceed 4 x that tolerance.
-
-  The generated `manifest.json` and `parent.json` involve no libm call, and a
-  test still checks them byte for byte.
-- **gitleaks config:** the base `.gitleaks.toml` held an empty `[allowlist]`
-  (`commits = []`). gitleaks 8.30.1 refuses that config with "`[[allowlists]]`
-  must contain at least one check for: commits, paths, regexes, or stopwords",
-  so the secret scan could not run. It is now `[extend] useDefault = true`,
-  which loads, so gitleaks' default rules apply to every PR scan.
-- **Removal:** the code stays opt-in. The pilot shows no benefit, but it is no
-  representative negative result either, so removal waits on a representative
-  run. `docs/strata-experiment.md` "Status" records this decision.
+- `run_bench` takes a required `frozen_manifest_sha256: Option<&str>`. `None`
+  keeps the previous behaviour, and no caller can omit the argument without
+  the compiler saying so.
+- `refuse_unless_frozen` (public in `ockham/src/incumbent.rs`, beside
+  `sha256_hex`) is the one implementation of the freeze check. It is shared
+  with `audit-preservation` (#276), whose private copy in
+  `ockham/src/preservation.rs` was moved here; `bench-strata` adds no second
+  copy. It runs in `run_bench` straight after the manifest is loaded and
+  validated, and also on the CLI's first read, which builds the latency probe,
+  so every manifest read that a frozen run uses is checked. A digest is 64 hex
+  digits in either case. A malformed value is echoed in the error, cut to 80
+  characters. A later change to the digest rule or message now applies to both
+  commands.
+- `versions.manifestFrozen` is an added field in output-only JSON (`Versions`
+  derives only `Serialize`), so the schema stays `ockham-strata-bench/1`. The
+  committed pilot `report.json` predates the field and was not regenerated. The
+  docs say that the pilot was not frozen.
+- A freeze proves that the bytes did not change after the digest was recorded,
+  not when it was recorded. The recording time comes from the operator's own
+  record, such as a commit.
 
 ### Undiscoverable Facts
 
-- **Paper:** on 2026-11-14 the host proxy refused every fetch, in three
-  rounds. The URLs tried were `arxiv.org/{abs,pdf,html}/2610.27812`,
-  `export.arxiv.org`, the Semantic Scholar API, Hugging Face Papers,
-  `paperswithcode.co`, `alphaxiv.org`, `scholar.archive.org` and the
-  `r.jina.ai` reader. A fourth check later that day also failed: `curl` to
-  `arxiv.org`, `export.arxiv.org` and the Semantic Scholar API could not
-  connect. The authors' promised code, `github.com/AMD-AGI/SliMOO`,
-  returns 404. Web search gives only excerpts: SliMOO v1 (2026-10-20), TLIP
-  single-layer probing with 8,192 tokens per task, a task-layer prior and
-  NSGA-II.
-- **Scorer:** built from NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`
-  (sha256 `d057a334…bbf7`), which has the same neat-core pin, v0.23.4, as
-  Ockham.
-- **Rerun:** a second run reproduced every selection, score, paired difference
-  and criterion. The Pareto archive size differed, because latency is measured
-  on the wall clock.
+- **Paper:** on 2026-11-15, `curl` to `arxiv.org/{abs,pdf}/2610.27812`,
+  `export.arxiv.org` and the Semantic Scholar API could not connect
+  (`000`). WebFetch of `arxiv.org/abs/2610.27812` and
+  `arxiv.org/html/2610.27812v1` got "proxy refused the connection".
+  `github.com/AMD-AGI/SliMOO` returned 404. Web search still gives only the
+  abstract-level description (SliMOO: task-layer probing, a
+  task-layer prior, NSGA-II), with no hyper-parameters.
+- **Inputs:** `rust_scorer` is not on `PATH`, and no representative corpus is
+  available on this host.
+- **Re-check after the completion gate (same day):** curl to
+  `arxiv.org/abs`, `export.arxiv.org` and the Semantic Scholar API still got
+  `000`, and `github.com/AMD-AGI/SliMOO` still returned 404. WebFetch of
+  `arxiv.org/html/2610.27812v1` and of the paperswithcode mirror got "proxy
+  refused the connection". A web search still turned up no hyper-parameters.
+  A filesystem-wide `find` found no `rust_scorer` binary. The five `partial`
+  criteria below each need the paper's full text or a representative corpus
+  and scorer, so they stay `partial`. A representative manifest or result was
+  not invented to fill the gap.
 
 ## Evidence
 
-This changes an example, its tests, docs, committed pilot data and the
-gitleaks config. There are no UI files and no `ockham/src/` change.
+This is a backend/CLI change to an opt-in bench, with no UI files.
 
 ```mermaid
 flowchart LR
-    G[strata_pilot example] --> I[manifest + parent + 8 strata .bin]
-    I --> B[bench-strata, real rust_scorer]
-    B --> R[report.json]
-    R --> W[docs/research/strata-pilot-v1/report.md]
-    I --> C[committed .bin in strata-pilot-v1]
-    W -. checksums and identities .-> T[corpus test]
-    C --> T
-    G -. inputs exact, targets within 3e-7 .-> T
+    R[Operator records sha256 of manifest, e.g. in a commit] --> C[bench-strata --manifest-sha256]
+    C --> L[load + validate manifest]
+    L --> F{refuse_unless_frozen}
+    F -- differs or malformed --> X[refused: no scratch dir, no scoring, no report]
+    F -- matches --> B[bench runs]
+    B --> O[report: versions.manifestSha256, versions.manifestFrozen = true]
 ```
 
-Pilot results (`docs/research/strata-pilot-v1/report.json`):
-
-- 10 of 10 hidden neurons were measured, with 0 failures. The fitted
-  temperature was 0.25 for both informed arms.
-- Aggregate, worst-stratum and Pareto each selected `{d0,d1,d2,d3}` on every
-  seed. The validation delta was 5.947e-7, with 0 minority regressions.
-- The paired differences of each treatment against aggregate were all 0, with
-  95% interval `[0, 0]`. Both criteria are `met: false`.
-- The random control won on 4 of 10 seeds. Worst-stratum minus random had a
-  validation delta of 4.755e-7, with 95% interval `[3.862e-7, 5.649e-7]`.
-- The run made 208 scorer invocations. Wall-clock figures are indicative only,
-  because the host is shared.
+- #268: Experiment: Compare worst-stratum ablation guidance and Pareto pruning
+  (Issue #263), the merged bench.
+- #272: Experiment: Compare worst-stratum ablation guidance and Pareto pruning
+  (Issue #263), the merged synthetic pilot.
+- Docs updated: `docs/strata-experiment.md` (a new "Freezing the manifest"
+  section, the `versions` bullet in "Report", and a "Status" bullet) and the
+  `README.md` section "Stratum-guided pruning experiment (opt-in)".
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **missing** — Read and pin the full method before reproducing it — evidence: `report.json` `method.source` says "full text not retrieved". `docs/strata-experiment.md` records the failed fetch rounds — reviewer: missing — reason: the full text is still unread. A fourth check on 2026-11-14 also failed: `curl` to `arxiv.org/abs/2610.27812`, `export.arxiv.org` and the Semantic Scholar API cannot connect (HTTP 000), and `github.com/AMD-AGI/SliMOO` returns 404.
-- **partial** — Measure per-neuron removal cost on 3–5 representative calibration strata — evidence: `report.json` `coverage`, 10 of 10 neurons on 4 strata — reviewer: partial — reason: the strata are synthetic, and no representative run was possible.
-- **met** — Compare aggregate, exp(-max/T) and a bounded Pareto archive on stratum error, connections and latency — evidence: `ockham/src/strata/{sampler,pareto}.rs` (merged in #268), with every arm in `report.json` `runs` and `arms` — reviewer: met
-- **met** — Fit scales and temperature without holdout access — evidence: `ockham/src/strata/bench.rs` fits on calibration only, and `report.json` `fitted` and `method.temperatureFit` record it — reviewer: met
-- **met** — Measure minority regressions, full fitness, removals and wins/hour — evidence: `report.json` `arms[]` `minorityRegressions`, `validationDelta`, `hiddenRemoved`, `synapsesRemoved` and `winsPerHour` — reviewer: met
-- **met** — Canonically build and score combined cuts — evidence: `report.json` `runs[].bundlesScored`, with the selected bundles scored on validation — reviewer: met
-- **met** — First inspect current code, merged work and repository instructions. Reuse existing mechanisms — evidence: `ockham/examples/strata_pilot.rs` reuses `corpus::write_bin_file`, `fixtures` and `strata::manifest::load`, and there is no `ockham/src/` change — reviewer: met
-- **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance — evidence: the only new code is the `[[example]] strata_pilot` target; `existing_directory_is_refused_and_left_untouched` — reviewer: met
-- **partial** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria — evidence: `docs/research/strata-pilot-v1/manifest.json`, `report.json` `versions` and `costs`, and `two_fresh_directories_are_byte_identical_and_load`, which asserts that validation differs from calibration — reviewer: partial — reason: the manifest first appears in the same commit as the results, so predeclaration before the run cannot be shown. This diff corrects the temperature-fit cost in `docs/strata-experiment.md` "Compute limits" and states in `report.md` "Costs" that the rerun's calls are not counted, but it cannot count them.
-- **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks — evidence: `ockham/examples/strata_pilot.rs::tests::committed_corpora_match_the_record_and_regenerated_targets` (positive) and `existing_directory_is_refused_and_left_untouched` (negative). Both pass with the host glibc 2.41 libm and with an older glibc libm preloaded. `./quality.sh < /dev/null` passed over this tree — reviewer: met
-- **partial** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage — evidence: `report.md` "Reproduce", the committed inputs in `docs/research/strata-pilot-v1/`, and `report.json` `paired[].differences`, `ci95`, `failures` and `coverage` — reviewer: partial — reason: the results are synthetic only. `bench-strata` was not rerun from the committed directory, because this host has no `rust_scorer`, and representative coverage is zero.
-- **partial** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs — evidence: `docs/strata-experiment.md` "Status" and `report.md` "Interpretation" — reviewer: partial — reason: the findings are recorded and no success is claimed. The removal decision waits on a representative run, which needs private corpora that this host does not have.
-- **met** — Keep public implementation and fixtures application-agnostic — evidence: the strata are named `alpha`, `beta`, `gamma` and `rare`, and there are no host paths or private names in the diff or in `report.json` — reviewer: met
-- **partial** — Leave unassigned until an implementer actively starts — evidence: the worker assigns the issue only when it claims it for an active run — reviewer: partial — reason: the issue is assigned under an active claim, but the prerequisite of reading the paper is still unmet.
-- **unrequested** — crate version 0.1.93 to 0.1.94 in `ockham/Cargo.toml` and `Cargo.lock` — reviewer: unrequested — reason: the CI auto-increment commit `1364bf7`, which has no functional effect.
-- **unrequested** — `.gitleaks.toml`: empty `[allowlist]` replaced with `[extend] useDefault = true` — reviewer: unrequested — reason: gitleaks 8.30.1 refuses the base config ("`[[allowlists]]` must contain at least one check for: commits, paths, regexes, or stopwords"). The reviewer also found that a config without `[extend]` loads no rules: a planted GitHub-token pattern gave "no leaks found" under it, and "leaks found: 1" with `useDefault = true`. The default rules now apply to every PR scan. CI pins gitleaks 8.24.2, and whether that version also rejects the old config was not checked.
-- **unrequested** — `docs/archive/pr-summaries/pr-summary-263.md` replaces the #268 summary — reviewer: unrequested — reason: the run instructions require each PR's summary to replace the earlier one. Git history and #268 keep the earlier record.
+- **partial** — Estimate per-neuron removal cost on 3–5 representative calibration strata. Compare aggregate-only pruning with probabilities proportional to exp(-max_t I[t,i]/temperature) and a bounded Pareto archive over stratum error, connections and measured latency. Fit scales/temperature without final-holdout access. Measure minority-stratum regressions, full fitness, removals and wins per hour. Canonically build and score combined cuts — evidence: `ockham/src/strata/bench.rs` (merged in #268), `docs/research/strata-pilot-v1/report.json` — reviewer: partial — reason: no representative strata are available on this host; only fixtures and the synthetic pilot have run
+- **partial** — Read and pin the full method before reproducing it — evidence: `docs/strata-experiment.md` "Source paper (full text unread)" — reviewer: partial — reason: the full text is still unfetchable (curl `000`, proxy refusal, and the code repository returns 404 on 2026-11-15), so the method is not pinned
+- **met** — First inspect current code, merged work and repository instructions. Reuse existing mechanisms; if functionality already exists, this issue still owns the missing controlled comparison rather than a second implementation — evidence: `ockham/src/incumbent.rs::refuse_unless_frozen`, the single helper moved out of `preservation.rs` and shared by `audit-preservation` and `bench-strata`, compares against `loaded.sha256` from `strata::manifest::load` — reviewer: met
+- **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance. No automatic deployment or default change — evidence: optional flag; `None` keeps prior behaviour in every existing `ockham/tests/strata_bench.rs` call — reviewer: met
+- **partial** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria. Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs — evidence: `ockham/tests/strata_bench.rs::mismatched_digest_is_refused_before_any_work_and_the_correct_digest_is_accepted`, `versions.manifestFrozen` — reviewer: partial — reason: the freeze mechanism now exists, but no representative manifest has been frozen with it
+- **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks. Research runs are separate from routine feature CI — evidence: `ockham/tests/strata_bench.rs::frozen_run_with_the_predeclared_digest_records_that_it_was_checked` (positive), `malformed_digest_is_refused_before_any_work` and `bench_strata_refuses_a_wrong_manifest_sha256_before_the_scorer_runs` (negative); `./quality.sh < /dev/null` passed — reviewer: met — reason: the reviewer could not run the gate; it was run here on the head and passed
+- **partial** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit — evidence: `docs/strata-experiment.md` "Freezing the manifest" and "Report"; `docs/research/strata-pilot-v1/report.json` — reviewer: partial — reason: only synthetic results exist; no representative run is possible here
+- **partial** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs — evidence: `docs/strata-experiment.md` "Status" — reviewer: met — reason: no success is claimed and the findings are recorded, but the removal decision still needs a representative run, so this stays partial
+- **met** — Keep public implementation and fixtures application-agnostic; private corpora/results and operational integration remain private — evidence: the new code, docs and tests use no private names or paths — reviewer: met
+- **met** — Leave unassigned until an implementer actively starts. `work-on` authorises the investigation, not skipping prerequisite verification — evidence: this run assigned nothing, and merged work, the paper and host inputs were checked before coding — reviewer: missing — reason: the reviewer said it is "not assessable" from a diff; assignment is issue state, not code
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — docs must match the code: the older-libm drift was called "one ulp", but all targets are below 0.85, so `1.2e-7` is about two ulps — evidence: `ockham/examples/strata_pilot.rs:377` and `docs/research/strata-pilot-v1/report.md:139` — reason: fixed in this diff. Both now say "about two ulps", and the `3e-7` tolerance is unchanged. The reviewer recomputed the teacher in f64, and the committed targets lie within `9.3e-8` of it.
-- **clean** — The repository has no `CODING-STANDARDS.md`, so the reviewer checked against `CONTRIBUTING.md` and `quality.sh`. Areas checked:
-  - `sha256sum` of the eight committed `records.bin` files, `parent.json`, `manifest.json` and `report.json` matches `report.md`;
-  - the report's cost, version and fixture claims match `report.json` and `parent.json`;
-  - the test is deterministic across hosts: inputs and committed bytes are compared exactly, and only libm-dependent targets use a tolerance;
-  - the `.bin` files are binary to git, and committing about 25 KB under `docs/research/` follows the `connection-budget-v1` precedent; the `.gitignore` artefact rule covers only root runtime outputs;
-  - `.gitleaks.toml` is valid v8 config, and `gitleaks git origin/Develop..HEAD` finds no leaks;
-  - `cargo fmt --check`, clippy with `-D warnings`, `markdownlint-cli2` and `scripts/spell-check.sh` are clean;
-  - the version bump is mirrored in `Cargo.lock`.
+- **clean** — The repository has no `CODING-STANDARDS.md`, so the reviewer used `CONTRIBUTING.md`, `README.md` and `docs/strata-experiment.md`. It found no rule enforced by review only. It checked:
+  - the eight CONTRIBUTING principles (the parent is never written, scorer acceptance is unchanged, no TypeScript);
+  - that the docs match the code;
+  - that no named test is missing;
+  - that no new stub stands in for another binary;
+  - that no workflow changed;
+  - that `sha2` is already a dependency;
+  - that both edited existing tests (the end-to-end `manifestFrozen == false` assertion, and `--help` listing `--manifest-sha256`) fail without the code they test.
 
-  Mutation table: targets from the parent, the dead-wood threshold, the input stream index and a flipped committed byte each fail `committed_corpora_match_the_record_and_regenerated_targets`.
+  Its optional notes on the CLI's unchecked first manifest read, the "before any work" wording and a truncation assertion that applied to every input were fixed in `48604d5`.
 
 ## Test Plan
 
-- `ockham/examples/strata_pilot.rs` and its tests are added. `ockham/Cargo.toml`
-  gets `[[example]] strata_pilot` with `test = true`, so the tests run under
-  `cargo test --workspace`:
-  - `committed_corpora_match_the_record_and_regenerated_targets` checks five
-    things:
-    - each of the eight committed `records.bin` files has the sha256 that
-      `report.md` gives it, and the committed `manifest.json` resolves to
-      those directories;
-    - each committed stratum's `corpus_info` identity and record count equal
-      `versions.calibration` and `versions.validation` in `report.json`;
-    - regenerated inputs equal the committed inputs and `record_input` exactly,
-      and every stratum has its own input at full scale and the others scaled
-      down;
-    - regenerated targets, and the teacher's outputs on this host, are within
-      `TARGET_TOLERANCE` (`3e-7`) of every committed target;
-    - in each stratum, some committed target differs from the unmodified
-      parent's output by more than 4 x `TARGET_TOLERANCE`.
-  - `two_fresh_directories_are_byte_identical_and_load` checks determinism, the
-    record counts, that validation is not a copy of calibration, byte identity
-    with the committed `manifest.json` and `parent.json`, and the parent's
-    structure.
-  - `rare_calibration_is_full_scale_in_input_three_only` checks the stratum
-    scaling.
-  - `existing_directory_is_refused_and_left_untouched` checks the refusal, and
-    that a sentinel file survives.
-- Portability: at the previous head, the old checksum test failed with
-  `LD_PRELOAD=/opt/semgrep/lib/python3.13/site-packages/semgrep/bin/libs/libm.so.6`,
-  an older glibc libm (`cal/alpha/records.bin sha256 differs from report.md`).
-  At this head, the same test binary gives 4 passed with and without that
-  preload. The largest target drift measured under that preload was
-  `1.192e-7`.
-- Mutations, each red on the new test, then restored:
-  - targets from the parent instead of the teacher (regenerated target
-    differs);
-  - dead-wood threshold `1e-4` changed to `1e-9` (regenerated target differs);
-  - input stream index `j` changed to `j + 1` (regenerated inputs differ);
-  - one byte flipped in committed `val/rare/records.bin` (sha256 differs from
-    `report.md`).
-- `cargo test -p neat_ai_ockham --example strata_pilot`: 4 passed.
-  `cargo clippy -p neat_ai_ockham --examples --tests -- -D warnings`: clean.
-  `markdownlint-cli2`: 0 issues.
-- `gitleaks dir` with the base config: `Failed to load config` (see the
-  gitleaks entry above). With this branch's config it reports `no leaks found`,
-  including over `docs/research/strata-pilot-v1/`.
-- Real-scorer pilot run, then a fresh rerun: both exited 0. The selections,
-  scores, paired results and criteria were identical.
-- `./quality.sh < /dev/null` over this working tree (`eb5b065` plus the
-  changes in this commit): `All quality checks passed!` (exit 0). After that
-  run, only one doc comment and markdown wording changed. The example tests
-  (4 passed), `cargo fmt --check` and `markdownlint-cli2` were rerun.
-- No existing test from `Develop` was edited. The replaced test was added on
-  this branch, and its successor keeps every check except exact equality of
-  regenerated target bytes.
-- Not run: any representative run, because no private corpora were available.
-  `bench-strata` was not rerun from the committed directory, because no
-  `rust_scorer` binary is on this host. The test checks that the committed
-  manifest loads and resolves to the committed corpora.
+- Added to `ockham/tests/strata_bench.rs`:
+  - `frozen_run_with_the_predeclared_digest_records_that_it_was_checked`: the
+    digest, computed independently with `sha2` and passed in upper case, is
+    accepted. The in-memory and on-disk report have `manifestFrozen == true`
+    and `manifestSha256` equal to the lowercase digest.
+  - `mismatched_digest_is_refused_before_any_work_and_the_correct_digest_is_accepted`:
+    a digest that differs by one character is refused. The error names both
+    digests and "predeclared", there is no report and no `report.json.work`,
+    and the scorer gets zero calls. A positive control on the same fixture,
+    with the correct digest, is accepted and writes its report.
+  - `malformed_digest_is_refused_before_any_work`: 63 hex digits, 64 characters
+    with one non-hex, and 200 characters are each refused with "64 hex digits".
+    Nothing is written or scored, and only the 200-character case is checked
+    for truncation to 80 characters.
+  - `bench_strata_refuses_a_wrong_manifest_sha256_before_the_scorer_runs`
+    (CLI): exits non-zero with "predeclared" on stderr, never reaches
+    `--scorer /nonexistent`, and writes no report.
+- Edited existing tests (no assertion removed):
+  - the end-to-end test also asserts `versions.manifestFrozen == false`;
+  - `bench_strata_help_lists_its_flags` also expects `--manifest-sha256`;
+  - four existing `run_bench` calls gain `None`.
+- TDD: the new tests were written first and failed to compile against the
+  unchanged `run_bench` (`E0061: this function takes 4 arguments but 5
+  arguments were supplied`).
+- Callers of `run_bench` checked: `ockham/src/main.rs` (passes the flag) and
+  the four test calls. The other `run_bench` callers belong to
+  `additivity::bench` and are unaffected.
+- `cargo test -p neat_ai_ockham --test strata_bench`: 11 passed.
+  `cargo test -p neat_ai_ockham --test readme_contract`: 10 passed. Clippy
+  with `-D warnings`, `cargo fmt --check` and rustdoc with `-D warnings` were
+  clean.
+- Review round on head `789977e`: the duplicate `refuse_unless_frozen` was
+  removed from `strata/bench.rs` and `preservation.rs` and kept once in
+  `ockham/src/incumbent.rs`. `main.rs`, `run_bench` and `run_audit` call it.
+  No test changed: the `strata_bench.rs` tests and the inline `preservation.rs`
+  tests cover it through both commands.
+- `./quality.sh < /dev/null` on the working tree after that change:
+  `All quality checks passed!` (exit 0).
+- Docs sweep: I read `docs/strata-experiment.md` ("Manifest", "Report",
+  "Status") and the README section. The pilot `report.md` is a historical
+  record and is unchanged.
 
 ## Merge verification
 
@@ -223,7 +174,7 @@ CI and pull-request review have not been observed yet.
 Not done, and still a risk:
 
 - the paper method is not pinned;
-- there is no representative run;
-- the removal decision is still open.
-- CI pins gitleaks 8.24.2, and its result with the new `.gitleaks.toml` has
-  not been observed yet.
+- no representative run has been made, and none is frozen;
+- the removal decision is still open;
+- the committed pilot `report.json` has no `manifestFrozen` field;
+- macOS was not checked.
