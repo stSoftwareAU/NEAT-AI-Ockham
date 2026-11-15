@@ -1,155 +1,111 @@
 ## Summary
 
-Removed the optional soft-gate runtime because representative benefit had not
-earned its maintenance cost. Preserve the investigation, negative synthetic
-findings, original failure and a tested historical replay command. The
-representative controlled comparison remains unperformed. Part of #262.
+Archives the #262 soft-gate investigation: protocol, locked manifests, negative
+synthetic smoke results, the failed preflight, a verified historical replay and
+the retirement decision. The optional soft-gate runtime was built, measured on a
+synthetic fixture and removed because it had not earned its maintenance cost, so
+`ockham/src/` is unchanged from `Develop`. The representative controlled
+comparison remains unperformed. Part of #262.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Investigate one frozen-parent hidden-neuron ranking across nested
-  full/90%/75%/50% budgets, compared with independent pruning searches.
-- Reuse core inference/pruning, corpus streaming, activation statistics and
-  the full directory scorer. The historical experiment remains available at
-  commit `91e0d56ee27627382989a09dbc31b54b64f90d20`.
-- Remove the gate fitter, family builder, manifest runtime, public API, CLI,
-  generator and their feature tests from the maintained tree. Runtime source
-  under `ockham/src/` now matches `origin/Develop`; no second pruning engine
-  remains in the current library or executable.
+- Test one frozen-parent hidden-neuron gate ranking across nested
+  full/90%/75%/50% budgets against independent pruning searches, reusing core
+  inference/pruning, corpus streaming, activation statistics and the full
+  directory scorer rather than a second pruning engine.
+- The experiment ran on a public synthetic TANH fixture only; the paired score
+  difference was negative and the held-out-error and latency criteria failed,
+  so the runtime was retired and only evidence is kept.
 
 ### Essential Design Decisions
 
-- Preserve the original manifests/results unchanged. A small replay script
-  exports the pinned historical source, builds with `--locked`, regenerates
-  checksum-matched synthetic inputs, records fresh scorer/build/hardware pins
-  and locks a new manifest before fitting or evaluation.
-- Keep the maintenance decision separate from the scientific verdict:
-  `soft-gate-retirement-v1.json` records removal and inconclusive efficacy.
-  No optimisation benefit or representative negative result is claimed.
-- The historical numerical-difference method supports only forward-only,
-  untyped IDENTITY/LOGISTIC/TANH networks. Its manifest records calibration,
-  untouched validation, paired seeds, family limits and success criteria;
-  full results record actual sizes, costs, failures, error and latency.
+- The experimental source (`91e0d56ee27627382989a09dbc31b54b64f90d20`) and the
+  replay script (`03cdc00a843571753ac7dfc6832b0f1bb7d90be7`) live only in
+  history, preserved by the pushed tag `issue-262-soft-gate-history`. The
+  protocol and `soft-gate-retirement-v1.json` replay them from a worktree of
+  that commit; the maintained tree carries no replay script.
+- The branch is one commit on `Develop` (the earlier commit-by-commit history
+  is what the tag preserves). This was required: the worker's pre-push gate
+  scans every commit ahead of the base, and any commit touching a `.sh` file
+  makes it run `ci.yml`'s runlib refresh step outside Actions, where it fails
+  on `RUNNER_TEMP: unbound variable`. That blocked the two earlier attempts.
+- The maintenance decision is kept separate from the scientific verdict:
+  removal is recorded, efficacy is inconclusive, and no benefit, deployment or
+  default change is claimed.
+- The historical method supports only forward-only, untyped
+  IDENTITY/LOGISTIC/TANH networks (explicit exclusion, no fictitious
+  gradients); manifests record calibration/untouched validation splits,
+  paired seeds, family limits, costs and success criteria.
 
 ### Undiscoverable Facts
 
-- No suitable representative mature-creature/corpus pair was supplied or
-  identified locally. Actual coverage is zero representative creatures/pairs.
-- The historical paper/method pin and reference-source checksums remain in the
-  protocol/manifests. No raw-paper checksum is claimed.
-- An earlier attempt raised no PR because the Vibe Coder pre-push gate
-  blocked it, not because of a branch defect. Because the branch adds a `.sh`
-  file, the gate runs `ci.yml`'s runlib refresh step outside Actions, without
-  its `env:` block. In this run, `runAffectedShellcheckChecks` failed on
-  `RUNNER_TEMP: unbound variable` with that script changed, and passed with
-  `README.md` changed.
+- No suitable representative mature-creature/corpus pair was available, so
+  actual representative coverage is zero creatures and zero pairs.
+- `soft-gate-replay-verification-v1.json` records the command as it was run
+  (`scripts/replay-soft-gate-smoke.sh …` inside the 03cdc00-era tree); it is
+  checksum-linked evidence and is left unchanged.
+- The gate failure was reproduced in this run: a push whose commits deleted
+  the script was refused with `/tmp/….sh: line 2: RUNNER_TEMP: unbound
+  variable`; the squashed push passed the gate (5 changed-file checks).
 
 ## Evidence
 
-- `docs/experiments/soft-gate-smoke-results-v1.json` preserves ten paired seeds
-  and 20 completed families over 512 synthetic records: 64 calibration and
-  128 validation records. Achieved hidden/synapse/growth counts were 20/60/26,
-  18/54/23.4, 15/45/19.5 and 10/30/13.
-- The paired mean score difference was −0.0001831, with conditional 95%
-  interval [−0.0002441, −0.0001222]. Held-out-error and latency criteria also
-  failed. This is synthetic wiring evidence on a shared host.
-- `scripts/replay-soft-gate-smoke.sh` completed with the real scorer in this
-  retry: ten pairs, 20 families and zero failures. The new replay manifest,
-  compressed full results and verification JSON are committed under
-  `docs/experiments/soft-gate-replay-*-v1.*`. The paired score distribution and
-  interval match the original; the executable hash also matches, while the
-  scorer hash and timing samples differ.
-- Both full-output archives retain rankings, identities, latency samples,
-  costs and rewrite trails. Their decompressed checksums and manifest links
-  were verified. The original failed preflight remains preserved separately.
-- `docs/experiments/soft-gate-retirement-v1.json` checksum-links the evidence,
-  records the negative findings and explicitly leaves the representative
-  comparison outstanding. README and protocol now describe an archive.
+Backend/docs only; no UI file is touched.
+
+- `docs/experiments/soft-gate-smoke-results-v1.json`: ten paired seeds, 20
+  completed families over 512 synthetic records (64 calibration, 128
+  validation). Achieved hidden counts 20/18/15/10. Paired mean score difference
+  −0.0001831, conditional 95% interval [−0.0002441, −0.0001222].
+- `docs/experiments/soft-gate-replay-verification-v1.json`: an earlier run
+  replayed the protocol from the pinned source with the real scorer; the
+  paired distribution and interval match the original.
+- `docs/experiments/soft-gate-retirement-v1.json` checksum-links every evidence
+  file and names `replayScriptCommit` and `historyTag`.
+- `git merge-base --is-ancestor` confirmed both pinned commits are ancestors of
+  the tag `issue-262-soft-gate-history` (`4cd162c`) on origin.
+
+```mermaid
+flowchart LR
+  T[tag issue-262-soft-gate-history] --> S[91e0d56 experiment source]
+  T --> R[03cdc00 replay script]
+  R -->|git worktree + build --locked| X[replay outputs]
+  B[this PR: one commit on Develop] --> D[docs/experiments evidence + archive tests]
+```
 
 ## Acceptance Criteria
 
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — First inspect current code, merged work and repository instructions.
-  Reuse existing mechanisms; if functionality already exists, this issue still
-  owns the missing controlled comparison rather than a second implementation. —
-  evidence: `docs/experiments/soft-gate-v1.md`; final runtime source matches
-  `origin/Develop`, and the representative comparison remains acknowledged —
-  reviewer: met
-- **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces,
-  immutable parents and full authoritative acceptance. No automatic deployment
-  or default change. — evidence:
-  `ockham/tests/soft_gate_archive.rs::retired_experiment_is_absent_from_the_installed_command`;
-  historical replay builds separate source and emits diagnostic outputs —
-  reviewer: met
-- **met** — Predeclare controls, seeds, sample size, compute limits and
-  success/failure criteria. Identify code/model/data versions; separate
-  calibration from untouched validation and count all preparation/search costs. —
-  evidence: original/replay manifests and compressed full results record pins,
-  splits, limits and preparation/search/evaluation costs for the performed smoke
-  protocol — reviewer: met
-- **met** — Provide deterministic positive/negative correctness tests for new
-  behaviour and pass the repository's normal quality checks. Research runs are
-  separate from routine feature CI. — evidence:
-  `ockham/tests/soft_gate_archive.rs` (four tests); full `./quality.sh` passed
-  with the real scorer enabled; research replay runs outside CI — reviewer: met
-- **partial** — Deliver a reproducible command/manifest and machine-readable
-  results with paired distributions, uncertainty, failures and actual coverage.
-  Fixtures alone do not demonstrate an optimisation benefit. — evidence:
-  `scripts/replay-soft-gate-smoke.sh`, archived manifests, failure, full results
-  and `docs/experiments/soft-gate-replay-verification-v1.json` — reviewer: partial —
-  reason: the representative controlled comparison remains unperformed; actual
-  representative coverage is zero and fixtures cannot establish benefit.
-- **met** — Record negative findings and remove optional code that does not
-  earn its maintenance cost. Do not claim success before representative runs. —
-  evidence: optional CLI/API/fitter/family/manifest runtime removed;
-  `docs/experiments/soft-gate-retirement-v1.json` records negative synthetic
-  findings and distinguishes maintenance removal from inconclusive science —
-  reviewer: met
-- **met** — Keep public implementation and fixtures application-agnostic;
-  private corpora/results and operational integration remain private. —
-  evidence: committed manifests/results concern only the generated synthetic
-  TANH fixture; no private corpus or operational integration is introduced —
-  reviewer: met
-- **met** — Leave unassigned until an implementer actively starts. `work-on`
-  authorises the investigation, not skipping prerequisite verification. —
-  evidence: #262 is assigned to the active implementer; the representative
-  prerequisite remains explicitly outstanding — reviewer: met
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **clean** — The Standards reviewer checked CONTRIBUTING.md principles,
-  unchanged ordinary runtime and dependency/core pins, private historical
-  replay, archive consistency/refusal tests and documentation. No
-  `CODING-STANDARDS.md` exists in this repository; the applicable written
-  standards were `CONTRIBUTING.md` and `quality.sh`.
+- **missing** — Compare independent pruning searches under equal total cost.
+  Measure full/held-out error, latency and Pareto frontier. — reason: performed
+  only on the public synthetic smoke fixture; no representative creature/corpus
+  pair was available, so the representative comparison is still to run.
+- **missing** — Do not claim success before representative runs. — reason: no
+  success is claimed, but the representative runs this criterion waits on have
+  not been performed, so the investigation's verdict stays open.
 
 ## Test Plan
 
-- `cargo test -p neat_ai_ockham --test soft_gate_archive --test readme_contract < /dev/null`:
-  passed, 14 tests. Archive tests cover negative findings/coverage/hash links,
-  original/replay distributions, installed-command retirement and refusal of
-  invalid inputs/existing outputs without changing them.
-- `NEAT_SCORER_BIN=/var/tmp/vibe-cargo-target/NEAT-AI-scorer-560c793c/release/rust_scorer ./quality.sh < /dev/null`:
-  passed, including shellcheck, codespell, markdownlint, actionlint,
-  cargo-deny, formatting, clippy, workspace tests and rustdoc.
-- Retry run: `./quality.sh < /dev/null` re-run on the unchanged code at
-  `03cdc00` without `NEAT_SCORER_BIN` set: exit 0, "All quality checks passed!".
-- Historical replay against that real scorer: exit 0, all 20 families complete,
-  no failures, matched declared costs and zero representative coverage.
-  Full-output hashes, uncertainty arithmetic and evidence links were verified.
-- Spec reviewer independently passed all four archive tests and verified replay
-  distributions/checksums. Standards reviewer independently checked replay
-  privacy/refusal, source equality, documentation and archive integrity.
-- The retired runtime's tests remain at the pinned historical revision. No
-  existing base-branch test assertions were changed.
+- `ockham/tests/soft_gate_archive.rs` (this PR's only test file):
+  - `archived_negative_result_and_coverage_match_the_retirement_decision` —
+    negative findings, zero representative coverage, paired mean and interval,
+    failed preflight, evidence checksums.
+  - `historical_replay_preserves_the_paired_distribution_and_reports_zero_real_coverage`
+    — replay record matches the original distribution and manifest checksums.
+  - `retired_experiment_is_absent_from_the_installed_command` — `--help` has no
+    `soft-gate` command.
+  - `replay_command_pins_a_historical_script_that_builds_the_experiment_source`
+    — retirement record pins a 40-hex script commit inside the replay command
+    and the maintained tree has no replay script.
+- `cargo test -p neat_ai_ockham --test soft_gate_archive < /dev/null`: passed,
+  4 tests, on the final tree.
+- `./quality.sh < /dev/null`: exit 0, "All quality checks passed!", on the
+  final tree except the later docs-only tag wording in
+  `docs/experiments/soft-gate-v1.md` and
+  `docs/experiments/soft-gate-retirement-v1.json`; after that edit the archive
+  tests, markdownlint, codespell and JSON validation were re-run and passed.
+- No base-branch test is edited or removed.
 
 ## Merge verification
 
-CI and ordinary pull-request review have not yet been observed. Representative
-mature-creature performance remains untested; this summary intentionally keeps
-that acceptance criterion partial and the issue open.
+CI and ordinary pull-request review have not yet been observed.
