@@ -163,9 +163,11 @@ pub struct Report {
     verdict: String,
     reasons: Vec<String>,
     audit_cost_ms: u64,
-    /// Audit wall time outside every pool's ledger (early collection failures,
-    /// history loading and between-pool work); already inside `audit_cost_ms`,
-    /// so not added again to `total_research_ms`.
+    /// Audit wall time that no strategy ledger charges (early collection
+    /// failures and between-pool work). Protocol setup and history loading are
+    /// excluded because trial ledgers already charge them (`preparationMs`,
+    /// `historicalScoringMs`). Already inside `audit_cost_ms`, so not added
+    /// again to `total_research_ms`.
     unpooled_audit_ms: u64,
     pilot_cost_ms: u64,
     freezing_cost_ms: u64,
@@ -394,7 +396,9 @@ pub fn evaluate(
         audit_cost_ms: audit.elapsed_ms,
         unpooled_audit_ms: audit
             .elapsed_ms
-            .saturating_sub(audit.pools.iter().map(pool_cost_ms).sum::<u64>()),
+            .saturating_sub(audit.pools.iter().map(pool_cost_ms).sum::<u64>())
+            .saturating_sub(audit.protocol_preparation_ms)
+            .saturating_sub(audit.histories.iter().map(|h| h.loading_ms).sum::<u64>()),
         pilot_cost_ms: audit.pilot_cost_ms,
         freezing_cost_ms: audit.freezing_cost_ms,
         historical_acquisition_ms: audit.histories.iter().map(|h| h.acquisition_ms).sum(),

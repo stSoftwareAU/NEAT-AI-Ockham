@@ -818,12 +818,18 @@ fn comparison_reports_audit_time_outside_every_pool_ledger() {
     a.pools[0].elapsed_ms = 0;
     // An early collection failure produces no pool, so it has no ledger.
     a.failures.push("val seed 9: maxRunMs exhausted".into());
-    // Five pools at 100_000 ms, one charged 483 ms, plus 2_500 ms unpooled.
-    a.elapsed_ms = 502_983;
+    // Protocol setup and history loading sit inside the audit wall time but
+    // trial ledgers already charge them, so they must not be reported as
+    // unpooled. Distinct large values make each subtraction observable.
+    a.protocol_preparation_ms = 700;
+    a.histories[0].loading_ms = 3_000;
+    // Five pools at 100_000 ms, one charged 483 ms, setup 700 ms, history
+    // loading 3_000 ms, plus 2_500 ms unpooled.
+    a.elapsed_ms = 502_983 + 700 + 3_000;
     let output =
         serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
     assert_eq!(output["unpooledAuditMs"], 2_500);
-    assert_eq!(output["auditCostMs"], 502_983);
+    assert_eq!(output["auditCostMs"], 506_683);
     assert_eq!(
         output["totalResearchMs"].as_u64().unwrap() - output["evaluationCostMs"].as_u64().unwrap(),
         output["auditCostMs"].as_u64().unwrap()
