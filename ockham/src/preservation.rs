@@ -944,6 +944,10 @@ struct NamedDigest {
 struct Versions {
     ockham: &'static str,
     git_commit: &'static str,
+    /// SHA-256 of the manifest bytes as read.
+    manifest_sha256: String,
+    /// True only when the run was checked against a matching `--manifest-sha256`.
+    manifest_frozen: bool,
     parent_sha256: String,
     children: Vec<NamedDigest>,
     calibration_corpus: String,
@@ -1235,15 +1239,50 @@ fn split_records(name: &str, max: u64, info: &CorpusInfo) -> Result<u64, String>
     Ok(records)
 }
 
+/// Refuse unless `expected` is 64 hex digits (any ASCII case) equal to the
+/// manifest's `actual` SHA-256.
+///
+/// Called before the manifest is parsed, so a mismatch reads no creature or
+/// corpus and writes nothing.
+fn refuse_unless_frozen(manifest_path: &Path, actual: &str, expected: &str) -> Result<(), String> {
+    let expected_lower = expected.to_ascii_lowercase();
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let shown: String = expected.chars().take(80).collect();
+        return Err(format!(
+            "--manifest-sha256 must be 64 hex digits, got '{shown}'"
+        ));
+    }
+    if expected_lower != actual {
+        return Err(format!(
+            "manifest '{}' has sha256 {actual}, not the predeclared --manifest-sha256 \
+             {expected_lower}; the manifest changed after it was frozen",
+            manifest_path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Run the preservation audit described by `manifest_path` and write the
 /// report JSON to `out_path`.
+///
+/// `frozen_manifest_sha256` is the predeclared SHA-256 of the manifest bytes
+/// (any ASCII case); `None` means the run is not frozen. When it is `Some` and
+/// does not match, the run is refused before the manifest is parsed.
 ///
 /// Relative manifest paths resolve against the manifest's directory. The
 /// report is written atomically and the same value is returned. Report-only:
 /// this never writes a creature and never changes acceptance.
-pub fn run_audit(manifest_path: &Path, out_path: &Path) -> Result<serde_json::Value, String> {
+pub fn run_audit(
+    manifest_path: &Path,
+    out_path: &Path,
+    frozen_manifest_sha256: Option<&str>,
+) -> Result<serde_json::Value, String> {
     let started = Instant::now();
     let text = read_manifest(manifest_path)?;
+    let manifest_sha256 = crate::incumbent::sha256_hex(text.as_bytes());
+    if let Some(expected) = frozen_manifest_sha256 {
+        refuse_unless_frozen(manifest_path, &manifest_sha256, expected)?;
+    }
     let manifest = parse_manifest(&text)?;
     let echo: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("manifest: {e}"))?;
@@ -1329,6 +1368,8 @@ pub fn run_audit(manifest_path: &Path, out_path: &Path) -> Result<serde_json::Va
         versions: Versions {
             ockham: env!("CARGO_PKG_VERSION"),
             git_commit: env!("OCKHAM_GIT_COMMIT"),
+            manifest_sha256,
+            manifest_frozen: frozen_manifest_sha256.is_some(),
             parent_sha256: parent.checksum.clone(),
             children: children
                 .iter()
@@ -1387,6 +1428,7 @@ mod tests {
     use crate::fixtures::identity_creature;
     use neat_core::creature_to_json_pretty;
     use serde_json::json;
+    use sha2::{Digest, Sha256};
 
     fn base_manifest() -> serde_json::Value {
         json!({
@@ -1610,7 +1652,7 @@ mod tests {
         let manifest = fixture(dir.path(), false);
         let out = dir.path().join("report.json");
 
-        let value = run_audit(&manifest, &out).unwrap();
+        let value = run_audit(&manifest, &out, None).unwrap();
 
         assert_eq!(value["schema"], SCHEMA);
         assert_eq!(value["evidence"], EVIDENCE);
@@ -1631,6 +1673,11 @@ mod tests {
         assert_eq!(value["costs"]["childPreparationMs"], json!(50.0));
         assert_eq!(value["costs"]["childrenWithPreparationCost"], json!(4));
         assert!(value["versions"]["gitCommit"].is_string());
+        assert_eq!(value["versions"]["manifestFrozen"], json!(false));
+        assert_eq!(
+            value["versions"]["manifestSha256"],
+            json!(file_sha256_hex(&manifest))
+        );
 
         // θ comes from the calibration children; the gates count only the
         // disjoint validation children, so validation-only rejects appear.
@@ -1656,6 +1703,93 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         assert_eq!(on_disk, value);
         assert!(!value.to_string().contains("NaN"));
+    }
+
+    /// Lowercase hex SHA-256 of a file, computed here rather than through the
+    /// crate's own helper so the expected digest is independent of the code.
+    fn file_sha256_hex(path: &Path) -> String {
+        format!("{:x}", Sha256::digest(std::fs::read(path).unwrap()))
+    }
+
+    #[test]
+    fn frozen_audit_with_the_predeclared_digest_records_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = fixture(dir.path(), false);
+        let out = dir.path().join("report.json");
+        let digest = file_sha256_hex(&manifest);
+
+        let value = run_audit(&manifest, &out, Some(&digest.to_uppercase())).unwrap();
+
+        assert_eq!(value["versions"]["manifestSha256"], json!(digest));
+        assert_eq!(value["versions"]["manifestFrozen"], json!(true));
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        assert_eq!(on_disk["versions"]["manifestSha256"], json!(digest));
+        assert_eq!(on_disk["versions"]["manifestFrozen"], json!(true));
+    }
+
+    #[test]
+    fn mismatched_digest_is_refused_before_anything_is_read_or_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let manifest = fixture(root, false);
+        // The parent now names a file that does not exist. A run that gets past
+        // the freeze reaches the parent load and names it; a refused run must not.
+        let mut edited: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+        edited["parent"] = json!("missing-parent.json");
+        std::fs::write(&manifest, edited.to_string()).unwrap();
+
+        let real = file_sha256_hex(&manifest);
+        let mut wrong = real.clone();
+        let flipped = if real.starts_with('0') { "1" } else { "0" };
+        wrong.replace_range(0..1, flipped);
+        assert_ne!(wrong, real);
+
+        let out = root.join("report.json");
+        let mut tmp = out.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let err = run_audit(&manifest, &out, Some(&wrong)).unwrap_err();
+        assert!(err.contains(&wrong), "{err}");
+        assert!(err.contains(&real), "{err}");
+        assert!(err.contains("predeclared"), "{err}");
+        assert!(!err.contains("missing-parent.json"), "{err}");
+        assert!(!out.exists());
+        assert!(!Path::new(&tmp).exists());
+
+        // Positive control: the correct digest passes the freeze and reaches
+        // the parent load, which names the missing file.
+        let err = run_audit(&manifest, &out, Some(&real)).unwrap_err();
+        assert!(err.contains("missing-parent.json"), "{err}");
+        assert!(!out.exists());
+
+        // Positive control: the untouched fixture with its correct digest is accepted.
+        let fresh = tempfile::tempdir().unwrap();
+        let ok_manifest = fixture(fresh.path(), false);
+        let digest = file_sha256_hex(&ok_manifest);
+        run_audit(
+            &ok_manifest,
+            &fresh.path().join("report.json"),
+            Some(&digest),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn malformed_digest_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = fixture(dir.path(), false);
+        let out = dir.path().join("report.json");
+        let long = "z".repeat(200);
+        let inputs = ["a".repeat(63), format!("{}g", "a".repeat(63)), long.clone()];
+        for input in &inputs {
+            let err = run_audit(&manifest, &out, Some(input)).unwrap_err();
+            assert!(err.contains("64 hex digits"), "{err}");
+            assert!(!out.exists());
+        }
+        let err = run_audit(&manifest, &out, Some(&long)).unwrap_err();
+        assert!(!err.contains(&long), "{err}");
+        assert!(err.contains(&long[..80]), "{err}");
     }
 
     /// Mean of `f(x0)` over the records `write_corpus` writes.
@@ -1745,7 +1879,7 @@ mod tests {
             0.0,
         );
         let out = root.join("report.json");
-        let value = run_audit(&manifest, &out).unwrap();
+        let value = run_audit(&manifest, &out, None).unwrap();
 
         // θ is the calibration score of the 1.1x child.
         let theta = value["threshold"].as_f64().unwrap();
@@ -1778,7 +1912,7 @@ mod tests {
         assert_eq!(value["coverage"]["validationChildrenScored"], json!(4));
 
         // The same seeds reproduce the same interval.
-        let again = run_audit(&manifest, &root.join("again.json")).unwrap();
+        let again = run_audit(&manifest, &root.join("again.json"), None).unwrap();
         assert_eq!(again["aucGain"]["ci95"], value["aucGain"]["ci95"]);
     }
 
@@ -1799,7 +1933,7 @@ mod tests {
             ],
             0.0,
         );
-        let value = run_audit(&manifest, &root.join("report.json")).unwrap();
+        let value = run_audit(&manifest, &root.join("report.json"), None).unwrap();
 
         let sample = &value["gates"]["sample"];
         assert_eq!(sample["rejected"], json!(1));
@@ -1825,7 +1959,7 @@ mod tests {
         };
         let dir = tempfile::tempdir().unwrap();
         let manifest = gate_fixture(dir.path(), children(), 0.02);
-        let tolerant = run_audit(&manifest, &dir.path().join("report.json")).unwrap();
+        let tolerant = run_audit(&manifest, &dir.path().join("report.json"), None).unwrap();
         assert_eq!(tolerant["gates"]["sample"]["rejected"], json!(1));
         assert_eq!(tolerant["gates"]["sample"]["falseRejections"], json!(0));
         assert_eq!(
@@ -1835,7 +1969,7 @@ mod tests {
 
         let strict_dir = tempfile::tempdir().unwrap();
         let manifest = gate_fixture(strict_dir.path(), children(), 0.0);
-        let strict = run_audit(&manifest, &strict_dir.path().join("report.json")).unwrap();
+        let strict = run_audit(&manifest, &strict_dir.path().join("report.json"), None).unwrap();
         assert_eq!(strict["gates"]["sample"]["rejected"], json!(2));
         assert_eq!(strict["gates"]["sample"]["falseRejections"], json!(1));
     }
@@ -1854,7 +1988,7 @@ mod tests {
             ],
             0.0,
         );
-        let value = run_audit(&manifest, &root.join("report.json")).unwrap();
+        let value = run_audit(&manifest, &root.join("report.json"), None).unwrap();
         let cal = &value["splits"]["calibration"];
 
         let shuffle: Vec<f64> = cal["parent"]["shuffleControlErrors"]
@@ -1913,7 +2047,7 @@ mod tests {
             .collect();
         write_bin_file(&val.join("part-000.bin"), &records).unwrap();
 
-        let value = run_audit(&manifest, &root.join("report.json")).unwrap();
+        let value = run_audit(&manifest, &root.join("report.json"), None).unwrap();
 
         assert!(value["threshold"].is_number());
         let preserved_gate = &value["gates"]["preservation"];
@@ -1949,7 +2083,7 @@ mod tests {
         ];
         for (what, target) in &inputs {
             let before = std::fs::read(target).unwrap();
-            let err = run_audit(&manifest, target).unwrap_err();
+            let err = run_audit(&manifest, target, None).unwrap_err();
             assert!(err.contains("would overwrite the input"), "{what}: {err}");
             assert!(
                 err.contains(target.file_name().unwrap().to_str().unwrap()),
@@ -1962,7 +2096,7 @@ mod tests {
         }
         for corpus in ["calibration", "validation"] {
             let target = root.join(corpus).join("report.json");
-            let err = run_audit(&manifest, &target).unwrap_err();
+            let err = run_audit(&manifest, &target, None).unwrap_err();
             assert!(err.contains("inside the input corpus"), "{err}");
             assert!(!target.exists());
         }
@@ -1974,7 +2108,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manifest = fixture(dir.path(), true);
         let out = dir.path().join("report.json");
-        let err = run_audit(&manifest, &out).unwrap_err();
+        let err = run_audit(&manifest, &out, None).unwrap_err();
         assert!(err.contains("wide"), "{err}");
         assert!(!out.exists());
     }
@@ -2004,7 +2138,7 @@ mod tests {
         );
         let out = root.join("report.json");
 
-        let value = run_audit(&manifest, &out).unwrap();
+        let value = run_audit(&manifest, &out, None).unwrap();
 
         for split in ["calibration", "validation"] {
             let split = &value["splits"][split];

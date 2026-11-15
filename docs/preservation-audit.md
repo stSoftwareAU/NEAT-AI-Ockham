@@ -90,7 +90,8 @@ It is indicative only and is never used to decide anything.
 ## Predeclared parameters and compute limits
 
 Fix these before the run. The manifest records them, so the report can be
-checked against them afterwards.
+checked against them afterwards. To show the manifest was not edited after
+that, see [Freezing the manifest](#freezing-the-manifest).
 
 | Parameter | Rule |
 |---|---|
@@ -106,6 +107,30 @@ checked against them afterwards.
 
 `fullDelta` and `sampleDelta` must be finite. `calibration` and `validation`
 must not resolve to the same path.
+
+## Freezing the manifest
+
+`--manifest-sha256` freezes the manifest. Record the SHA-256 of the manifest
+bytes before the run, then pass that digest to the command:
+
+```bash
+sha256sum manifest.json
+neat_ai_ockham audit-preservation manifest.json --out report.json \
+  --manifest-sha256 <SHA256>
+```
+
+Replace `<SHA256>` with the digest recorded before the run. It is 64 hex digits,
+in either case. The digest is checked straight after the manifest file is read,
+before the manifest is parsed and before any creature or corpus is read. A
+malformed value or a mismatch is refused, and nothing is written: no report and
+no `<out>.tmp`. A malformed value is echoed in the error, cut to 80 characters.
+
+When the digest matches, the report sets `versions.manifestFrozen` to `true` and
+records `versions.manifestSha256`. Without the flag, `manifestFrozen` is `false`.
+
+A freeze proves that the manifest bytes did not change after the digest was
+recorded. It does not prove when that happened. The recording time comes from
+the operator's own record, so commit the digest (or the manifest) before the run.
 
 ## Calibration and validation
 
@@ -175,8 +200,11 @@ demonstration of benefit until representative runs exist.
   an exact copy. The score cannot tell children apart when the corpus holds
   such records.
 - The arXiv full text could not be fetched here (no network access), so the
-  method is still not pinned to the paper. `latencyMsPer1kRecords` times the whole streamed pass, so
-  it includes corpus reading and per-record scoring, not only the activation loop.
+  method is still not pinned to the paper. A retry on 2026-11-15 also failed:
+  `curl` to `arxiv.org/abs/2611.13681` and `export.arxiv.org` got
+  `CONNECT tunnel failed, response 403`.
+- `latencyMsPer1kRecords` times the whole streamed pass, so it includes corpus
+  reading and per-record scoring, not only the activation loop.
 
 ## Manifest example
 
@@ -226,8 +254,10 @@ top-level fields are:
 - `versions`: the crate version, `gitCommit` (from `git describe --always
   --dirty` at build time, with `-dirty` for uncommitted edits, or `"unknown"`
   without git),
-  SHA-256 of the parent and of each child, and the
-  identity of each corpus.
+  SHA-256 of the parent and of each child, the
+  identity of each corpus, `manifestSha256` (SHA-256 of the manifest bytes as
+  read), and `manifestFrozen` (`true` only when the run was checked against a
+  matching `--manifest-sha256`, otherwise `false`).
 - `manifest`: an echo of the input manifest.
 - `threshold`: the fitted `theta`, or `null`.
 - `splits`: `calibration` and `validation`, each with per-child scores,
@@ -258,7 +288,9 @@ top-level fields are:
 
 ```mermaid
 flowchart TD
-    A[Read manifest] --> B{Valid limits and paths?}
+    A[Read manifest] --> Z{"--manifest-sha256 given and different or malformed?"}
+    Z -- yes --> X2["Refuse; no creature or corpus read, nothing written"]
+    Z -- no --> B{Valid limits and paths?}
     B -- no --> X[Refuse, naming the field]
     B -- yes --> C[Check child and corpus widths]
     C --> D[Score calibration split]

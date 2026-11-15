@@ -50,7 +50,28 @@ fn audit_preservation_help_lists_out_and_says_report_only() {
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
     assert!(text.contains("--out"), "{text}");
+    assert!(text.contains("--manifest-sha256"), "{text}");
     assert!(text.to_lowercase().contains("report-only"), "{text}");
+}
+
+#[test]
+fn a_wrong_manifest_sha256_is_refused_and_no_report_is_written() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = tmp.path().join("manifest.json");
+    std::fs::write(&manifest, r#"{"parent": "parent.json"}"#).unwrap();
+    let report = tmp.path().join("report.json");
+    let out = bin()
+        .arg("audit-preservation")
+        .arg(&manifest)
+        .arg("--out")
+        .arg(&report)
+        .arg("--manifest-sha256")
+        .arg("0".repeat(64))
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(stderr(&out).contains("predeclared"), "{}", stderr(&out));
+    assert!(!report.exists());
 }
 
 #[test]
