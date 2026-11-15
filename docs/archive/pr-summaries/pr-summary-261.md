@@ -31,6 +31,10 @@ impossible on this host, so the experiment outcome is still open. Part of #261.
   `rust_scorer`. A search of `/` (excluding hidden directories and build
   caches) found only unrelated browser and cargo `.bin` files, and
   `experiments.jsonl` journals from a different application under `/tmp`.
+  A repeat search on 2026-11-15, after the completion checks flagged the four
+  `partial` criteria below, found the same: no `rust_scorer` on `PATH` and no
+  representative corpus or history. Those criteria stay `partial` because each
+  needs a representative run that cannot happen here.
 
 ## Evidence
 
