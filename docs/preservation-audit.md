@@ -179,7 +179,7 @@ the operator's own record, so commit the digest (or the manifest) before the run
 The threshold `theta` is fitted on the calibration split only. Both the records
 and the children are split: every child carries a `role`. Calibration children,
 scored on the calibration corpus, fit `theta`. Validation children, scored on the
-validation corpus, are the only ones the gates count. A child is never in both.
+validation corpus, are the only ones the gates count. A child has one role, never both.
 
 1. Each calibration `preservationVsMean` score is a candidate `theta`.
 2. The chosen `theta` maximises balanced accuracy, `(TPR + TNR) / 2`. A child is
@@ -310,8 +310,10 @@ top-level fields are:
   matching `--manifest-sha256`, otherwise `false`).
 - `manifest`: an echo of the input manifest.
 - `threshold`: the fitted `theta`, or `null`.
-- `splits`: `calibration` and `validation`, each with per-child scores
-  (including `fps` and `fpsControl`), `ci95`, `collapsedChild`, `degenerate`, `taskLoss` and
+- `splits`: `calibration` and `validation`, each with per-child scores for
+  every child whatever its role (including `fps` and `fpsControl`). Only a
+  child's scores on its own role's split feed `theta`, the gates and its paired
+  row. Each split also has `ci95`, `collapsedChild`, `degenerate`, `taskLoss` and
   `latencyMsPer1kRecords`. The split's `parent` entry carries `failure` (a
   non-finite parent output) and `null` task loss and control error when it
   fails.

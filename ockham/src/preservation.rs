@@ -1994,6 +1994,16 @@ mod tests {
         assert_eq!(value["gates"]["fps"]["auc"], json!(1.0));
         assert_eq!(paired_row(&value, "v-copy")["fps"], json!(1.0));
         assert_eq!(paired_row(&value, "v-bad1")["fps"], json!(0.0));
+        // A validation row's `fps` comes from the validation split, not from
+        // the same child's calibration-split score.
+        let slip_val = child_entry(&value["splits"]["validation"], "v-slip")["fps"].clone();
+        let slip_cal = child_entry(&value["splits"]["calibration"], "v-slip")["fps"].clone();
+        assert!(
+            slip_val.is_number() && slip_cal.is_number(),
+            "{slip_val} {slip_cal}"
+        );
+        assert_ne!(slip_val, slip_cal);
+        assert_eq!(paired_row(&value, "v-slip")["fps"], slip_val);
 
         assert_eq!(value["aucGain"]["value"], json!(0.25));
         let ci = value["aucGain"]["ci95"].as_array().unwrap();
@@ -2163,6 +2173,16 @@ mod tests {
             "{preserved_gate}"
         );
         assert!(preserved_gate["auc"].is_null(), "{preserved_gate}");
+        // The FPS diagnostic reads the validation split too: it is null even
+        // though the same child has a calibration-split FPS.
+        assert!(
+            value["gates"]["fps"]["auc"].is_null(),
+            "{}",
+            value["gates"]["fps"]
+        );
+        let slip_cal = &child_entry(&value["splits"]["calibration"], "v-slip")["fps"];
+        assert!(slip_cal.is_number(), "{slip_cal}");
+        assert!(paired_row(&value, "v-slip")["fps"].is_null());
         assert_eq!(value["coverage"]["calibrationChildrenScored"], json!(3));
         assert_eq!(value["coverage"]["validationChildrenScored"], json!(0));
         assert_eq!(value["coverage"]["childrenScored"], json!(3));

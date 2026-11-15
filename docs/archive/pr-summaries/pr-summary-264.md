@@ -86,8 +86,10 @@ flowchart LR
 - Docs updated:
   - `docs/preservation-audit.md`: "Purpose and status", "Formulas",
     "Degenerate handling", the new "Departures from the pinned method", "Gates
-    and the success rule", "Known limitations and negative findings" and
-    "Report fields";
+    and the success rule", "Calibration and validation", "Known limitations
+    and negative findings" and "Report fields". "Report fields" now says that
+    `splits` scores every child on both corpora, and that only the child's own
+    role's split feeds `theta`, the gates and its paired row;
   - `README.md`: the section "Preservation audit (opt-in, report-only)".
 - A grep of `docs/preservation-audit.md` and `ockham/src/preservation.rs` for
   `abstract` and `pinned` on the head finds no remaining abstract-only or
@@ -95,12 +97,15 @@ flowchart LR
 
 ## Acceptance Criteria
 
-The issue has no Acceptance Criteria or Definition of done heading. These parts
-of its "Execution and acceptance" list are still undone:
+<!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **missing** — "Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit" — reason: the command, manifest and report exist, but no representative run has been made; this host has no representative corpora and no `rust_scorer`
-- **missing** — "Compare diagnostic value and possible screening benefit with current sample error, measuring false rejection of genuinely better children" — reason: the comparison runs on fixtures only; `sampleDelta` and `fullDelta` are still manifest inputs, and no representative children have been compared
-- **missing** — "Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs" — reason: an analytic negative finding is recorded (FPS adds only the clip at 0 when the shuffle error exceeds the mean error), but the keep-or-remove decision needs a representative run
+The issue has no Acceptance Criteria or Definition of done heading. These three
+items from its "Execution and acceptance" list are still open. An independent
+spec reviewer judged them over `git diff origin/Develop` and the issue body:
+
+- **partial** — "Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit" — evidence: `audit-preservation`, manifest with `--manifest-sha256`, report with `paired`, `ci95`, `failures` and `coverage` (`ockham/src/preservation.rs::end_to_end_fixture_audit_writes_and_returns_the_same_report`) — reviewer: partial — reason: only fixture results exist; no representative run is possible here (no private corpora, no `rust_scorer`)
+- **partial** — "Compare diagnostic value and possible screening benefit with current sample error, measuring false rejection of genuinely better children" — evidence: `ockham/src/preservation.rs::sample_gate_false_rejection_that_preservation_keeps_is_met`, `gates.sample` vs `gates.preservation` and diagnostic `gates.fps` — reviewer: partial — reason: the comparison runs on fixture children only; `fullDelta` and `sampleDelta` are manifest inputs, and no real children have been compared
+- **partial** — "Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs" — evidence: `docs/preservation-audit.md` "Known limitations and negative findings"; `evidence: "fixture-or-unverified"` in the report — reviewer: partial — reason: negative findings are recorded and no success is claimed, but the keep-or-remove decision needs a representative run
 
 ## Test Plan
 
@@ -126,13 +131,24 @@ of its "Execution and acceptance" list are still undone:
     and `fpsControl` are `null`, and `gates.fps.auc` is `null`.
   - `sample_gate_false_rejection_that_preservation_keeps_is_met`:
     `gates.fps.auc == 1.0`, `v-copy` `fps` is 1.0, and `v-bad1` `fps` is 0.0.
-    The criterion is still `met`.
+    `v-slip`'s validation-split `fps` differs from its calibration-split
+    `fps`, and its paired row carries the validation value. The criterion is
+    still `met`.
+  - `constant_parent_validation_leaves_preservation_gate_and_coverage_null`:
+    `gates.fps.auc` and `v-slip`'s paired-row `fps` are `null`, while
+    `v-slip`'s calibration-split `fps` is a number.
   - `non_finite_parent_split_fails_every_child_and_is_not_evaluable`: failed
     children have `null` `fps` and `fpsControl`. The test's `SplitRun` literal
     gains the new `fps` field.
 - TDD: the extended tests were written first, and they failed to compile:
   - `error[E0425]: cannot find function 'fps_score' in this scope`;
   - `error[E0560]: struct 'preservation::SplitRun' has no field named 'fps'`.
+- Red check for the split assertions: changing `evaluate` to read `cal.fps[i]`
+  instead of `val.fps[i]` fails the tests. With both reads changed, the two
+  tests above fail. With only the `gates.fps.auc` read changed,
+  `constant_parent_validation_leaves_preservation_gate_and_coverage_null`
+  fails. With only the paired-row read changed, both fail. The code was then
+  restored.
 - Results:
   - `cargo test -p neat_ai_ockham --lib preservation`: 22 passed;
   - `--test preservation_audit`: 4 passed;
