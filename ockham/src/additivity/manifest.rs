@@ -82,7 +82,8 @@ pub struct BenchManifest {
     /// Pruning budgets, strictly ascending fractions in (0, 1].
     #[serde(default = "default_budgets")]
     pub budgets: Vec<f64>,
-    /// Bundles audited per (parent, budget, seed).
+    /// Bundles audited per (parent, budget, seed). It also sets the search pool's
+    /// requested size.
     pub audit_pool: usize,
     /// Predeclared per-arm budget of full-scorer evaluations.
     pub full_evaluations: usize,

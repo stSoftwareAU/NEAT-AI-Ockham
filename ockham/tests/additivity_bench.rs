@@ -402,6 +402,10 @@ fn predictions_only_order_and_the_best_full_score_among_picks_selects() {
 
     let report = run(&manifest);
 
+    // Search-vs-audit score comparisons made, and those whose search index differs
+    // from the audit index of the same creature.
+    let mut comparisons = 0;
+    let mut index_differs = 0;
     for row in report.rows.iter().filter(|r| r.feasible) {
         for arm_row in &row.arms {
             assert!(
@@ -437,6 +441,10 @@ fn predictions_only_order_and_the_best_full_score_among_picks_selects() {
                 // audit pool, the two full scores must agree.
                 let digest = &search.bundles[pick.bundle].creature_digest;
                 if let Some(audited) = row.bundles.iter().find(|b| &b.creature_digest == digest) {
+                    comparisons += 1;
+                    if audited.index != pick.bundle {
+                        index_differs += 1;
+                    }
                     assert!(
                         (pick.score - audited.score).abs() < 1e-9,
                         "search and audit scores must agree for the same creature"
@@ -450,6 +458,14 @@ fn predictions_only_order_and_the_best_full_score_among_picks_selects() {
             );
         }
     }
+    assert!(
+        comparisons > 0,
+        "at least one pick must share its creature with the audit pool, so the score agreement is checked"
+    );
+    assert!(
+        index_differs > 0,
+        "at least one compared pick must have a search index different from its audit index"
+    );
     assert_eq!(
         listing(&fixture.path("train")),
         train_before,
@@ -1151,6 +1167,8 @@ fn a_search_wall_clock_budget_stops_each_arm_after_three_scored_picks() {
         // Nothing but the scorer advances the manual clock, so every charged
         // phase costs zero: 0 < 25 calls (10 ms), 10 < 25 calls (20 ms),
         // 20 < 25 calls (30 ms), and 30 is not below 25, so the search stops.
+        // The third call ends at 30, past the 25 ms budget, so its pick is kept
+        // and charged but is not within budget.
         assert_eq!(arm.picks.len(), 3, "{:?}", arm.arm);
         assert_eq!(arm.full_scorer_calls, 3, "{:?}", arm.arm);
         assert_eq!(arm.stopped_by, Some(SearchStop::WallClock), "{:?}", arm.arm);
@@ -1160,6 +1178,20 @@ fn a_search_wall_clock_budget_stops_each_arm_after_three_scored_picks() {
             "{:?}: only the arm's own scorer calls may take time",
             arm.arm
         );
+        let within: Vec<bool> = arm.picks.iter().map(|p| p.within_budget).collect();
+        assert_eq!(within, vec![true, true, false], "{:?}", arm.arm);
+        // The selection is the best full score among the first two picks, the
+        // only within-budget ones, ties to the lower bundle index.
+        let mut expected = &arm.picks[0];
+        for pick in &arm.picks[1..2] {
+            if pick.score > expected.score
+                || (pick.score == expected.score && pick.bundle < expected.bundle)
+            {
+                expected = pick;
+            }
+        }
+        assert_eq!(arm.selected_bundle, Some(expected.bundle), "{:?}", arm.arm);
+        assert_eq!(arm.selected_score, Some(expected.score), "{:?}", arm.arm);
     }
 }
 
@@ -1182,6 +1214,11 @@ fn without_a_search_budget_each_arm_makes_one_batched_call_over_its_picks() {
     assert!(row.feasible, "{:?}", row.reason);
     for arm in &row.arms {
         assert_eq!(arm.picks.len(), 6, "{:?}", arm.arm);
+        assert!(
+            arm.picks.iter().all(|p| p.within_budget),
+            "{:?}: without a budget every pick is within budget",
+            arm.arm
+        );
         assert_eq!(arm.full_scorer_calls, 1, "{:?}", arm.arm);
         assert_eq!(
             arm.stopped_by,
@@ -1200,7 +1237,9 @@ fn arms_rank_a_separate_search_pool_and_regret_is_paired_within_it() {
 
     let report = run(&manifest);
 
+    let mut checked_rows = 0;
     for row in report.rows.iter().filter(|r| r.feasible) {
+        checked_rows += 1;
         let search = row
             .search
             .as_ref()
@@ -1243,6 +1282,10 @@ fn arms_rank_a_separate_search_pool_and_regret_is_paired_within_it() {
             }
         }
     }
+    assert!(
+        checked_rows > 0,
+        "at least one feasible row must be checked"
+    );
 }
 
 #[test]

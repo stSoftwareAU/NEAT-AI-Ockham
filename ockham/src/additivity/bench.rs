@@ -7,7 +7,7 @@
 //! A second, separately seeded search pool is only estimated: each arm orders it
 //! and sends its own picks to full-scorer calls, under an optional per-arm
 //! wall-clock budget. Predictions only order the picks; the best full score among
-//! an arm's picks is its selection. Nothing here accepts a creature.
+//! an arm's within-budget picks is its selection. Nothing here accepts a creature.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -256,7 +256,7 @@ struct Single {
 /// What the bench keeps of a materialised, unique pool bundle once its creature
 /// is no longer needed.
 struct BundleMeta {
-    /// Positions in the ranked singles.
+    /// Indices into the parent's `singles`, in requested rank order.
     members: Vec<usize>,
     member_uuids: Vec<String>,
     before: StructureSnapshot,
@@ -278,6 +278,11 @@ impl BundleMeta {
     /// Synapses the materialised cut removed.
     fn synapses_removed(&self) -> usize {
         self.before.synapses.saturating_sub(self.after.synapses)
+    }
+
+    /// Growth units the materialised cut removed.
+    fn growth_units_removed(&self) -> f64 {
+        self.before.growth_units - self.after.growth_units
     }
 }
 
@@ -590,7 +595,9 @@ impl<'a> ParentRun<'a> {
         for (budget_index, &budget) in manifest.budgets.iter().enumerate() {
             let k = requested_removals(budget, self.hidden.len());
             for &seed in &manifest.seeds {
-                out.push(self.run_row(budget_index, budget, k, seed)?);
+                let mut row = self.run_row(budget_index, budget, k, seed)?;
+                row.measured_peak_rss_bytes = measured_peak_rss_bytes();
+                out.push(row);
             }
         }
         Ok(())
@@ -738,6 +745,7 @@ impl<'a> ParentRun<'a> {
             validation_parent_score: None,
             search: None,
             arms: Vec::new(),
+            measured_peak_rss_bytes: None,
         };
         if k == 0 {
             row.reason = Some("parent has no hidden neurons".to_string());
@@ -827,7 +835,7 @@ impl<'a> ParentRun<'a> {
                     spliced_neurons: s.spliced.clone(),
                     hidden_removed: s.hidden_removed(),
                     synapses_removed: s.synapses_removed(),
-                    growth_units_removed: s.before.growth_units - s.after.growth_units,
+                    growth_units_removed: s.growth_units_removed(),
                     meets_budget: s.hidden_removed() >= k,
                     creature_digest: s.digest.clone(),
                     score: result.score,
@@ -843,24 +851,11 @@ impl<'a> ParentRun<'a> {
         // Audit ranking of every arm, scored against the audit truth.
         let mut audit_arms: Vec<(Arm, Vec<usize>, AuditMetrics)> = Vec::with_capacity(ARMS.len());
         for arm in ARMS {
-            let ranking = match arm {
-                Arm::Current => rank::rank_current(n),
-                Arm::Random => rank::rank_random(n, arm_seed(RANDOM_STREAM)),
-                Arm::AdditiveLoss => rank::rank_by_estimate(&audit_est.additive),
-                Arm::CachedOutput => rank::rank_by_estimate(&audit_est.cached),
-            };
-            // `predicts()` is true only for the two predictor arms, so the `_`
-            // branch is the additive one.
-            let predicted: Option<&[Option<f64>]> =
-                arm.predicts().then_some(if arm == Arm::CachedOutput {
-                    audit_est.cached.as_slice()
-                } else {
-                    audit_est.additive.as_slice()
-                });
+            let ranking = rank_arm(arm, n, arm_seed(RANDOM_STREAM), &audit_est);
             let metrics: AuditMetrics = rank::audit(
                 &ranking,
                 &truth,
-                predicted,
+                predicted_for(arm, &audit_est),
                 &actual_gain,
                 manifest.min_improvement,
                 manifest.top_k,
@@ -887,7 +882,7 @@ impl<'a> ParentRun<'a> {
                 members: s.meta.member_uuids.clone(),
                 hidden_removed: s.meta.hidden_removed(),
                 synapses_removed: s.meta.synapses_removed(),
-                growth_units_removed: s.meta.before.growth_units - s.meta.after.growth_units,
+                growth_units_removed: s.meta.growth_units_removed(),
                 meets_budget: s.meta.hidden_removed() >= k,
                 creature_digest: s.meta.digest.clone(),
                 additive_loss: search_est.additive[i],
@@ -901,21 +896,9 @@ impl<'a> ParentRun<'a> {
         let mut arms = Vec::with_capacity(ARMS.len());
         for (arm, ranking, metrics) in audit_arms {
             let started = clock.now();
-            let search_ranking = match arm {
-                Arm::Current => rank::rank_current(m),
-                Arm::Random => rank::rank_random(m, arm_seed(RANDOM_SEARCH_STREAM)),
-                Arm::AdditiveLoss => rank::rank_by_estimate(&search_est.additive),
-                Arm::CachedOutput => rank::rank_by_estimate(&search_est.cached),
-            };
+            let search_ranking = rank_arm(arm, m, arm_seed(RANDOM_SEARCH_STREAM), &search_est);
             let ranking_ms = clock.ms_since(started);
-            // `predicts()` is true only for the two predictor arms, so the `_`
-            // branch is the additive one.
-            let predicted: Option<&[Option<f64>]> =
-                arm.predicts().then_some(if arm == Arm::CachedOutput {
-                    search_est.cached.as_slice()
-                } else {
-                    search_est.additive.as_slice()
-                });
+            let predicted = predicted_for(arm, &search_est);
             let inference_ms = match arm {
                 Arm::AdditiveLoss => search_est.additive_ms,
                 Arm::CachedOutput => search_est.cached_read_ms,
@@ -931,12 +914,7 @@ impl<'a> ParentRun<'a> {
                 single_proposals: if needs_setup { self.singles_ms } else { 0 },
                 cache_build: if needs_setup { self.setup_build_ms } else { 0 },
                 cache_read_inference: if needs_setup {
-                    self.setup_read_ms
-                        + if arm == Arm::CachedOutput {
-                            search_est.cached_read_ms
-                        } else {
-                            0
-                        }
+                    self.setup_read_ms + inference_ms
                 } else {
                     0
                 },
@@ -953,7 +931,9 @@ impl<'a> ParentRun<'a> {
                 + cost.ranking;
 
             let limit = search_ranking.len().min(manifest.full_evaluations);
-            let mut scored_picks: Vec<(usize, ScoreResult)> = Vec::with_capacity(limit);
+            // Each pick: bundle index, its full score, and whether its call ended
+            // within the wall-clock budget (always true without one).
+            let mut scored_picks: Vec<(usize, ScoreResult, bool)> = Vec::with_capacity(limit);
             let mut scorer_calls: u64 = 0;
             match manifest.search_wall_clock_ms {
                 None => {
@@ -975,7 +955,7 @@ impl<'a> ParentRun<'a> {
                         cost.scorer = clock.ms_since(started);
                         scorer_calls = 1;
                         for &i in picked {
-                            scored_picks.push((i, take_result(&mut results, i)?));
+                            scored_picks.push((i, take_result(&mut results, i)?, true));
                         }
                     }
                 }
@@ -996,7 +976,10 @@ impl<'a> ParentRun<'a> {
                         )?;
                         cost.scorer += clock.ms_since(started);
                         scorer_calls += 1;
-                        scored_picks.push((i, take_result(&mut results, i)?));
+                        // The call may end past the budget: its pick and its
+                        // time still count, but the pick is not selectable.
+                        let within_budget = charged.saturating_add(cost.scorer) <= budget_ms;
+                        scored_picks.push((i, take_result(&mut results, i)?, within_budget));
                     }
                 }
             }
@@ -1011,25 +994,33 @@ impl<'a> ParentRun<'a> {
 
             let picks: Vec<Pick> = scored_picks
                 .iter()
-                .map(|(i, result)| Pick {
+                .map(|(i, result, within_budget)| Pick {
                     bundle: *i,
                     score: result.score,
+                    within_budget: *within_budget,
                 })
                 .collect();
-            let best = picks.iter().fold(None::<&Pick>, |best, pick| match best {
-                None => Some(pick),
-                Some(b) => {
-                    if pick.score > b.score || (pick.score == b.score && pick.bundle < b.bundle) {
-                        Some(pick)
-                    } else {
-                        Some(b)
-                    }
-                }
-            });
+            // Best full score among the within-budget picks, ties to the lower index.
+            let best =
+                picks
+                    .iter()
+                    .filter(|pick| pick.within_budget)
+                    .fold(None::<&Pick>, |best, pick| match best {
+                        None => Some(pick),
+                        Some(b) => {
+                            if pick.score > b.score
+                                || (pick.score == b.score && pick.bundle < b.bundle)
+                            {
+                                Some(pick)
+                            } else {
+                                Some(b)
+                            }
+                        }
+                    });
             let selected = best.map(|p| p.bundle);
             let chosen = selected
-                .and_then(|i| scored_picks.iter().find(|(j, _)| *j == i))
-                .map(|(_, result)| result);
+                .and_then(|i| scored_picks.iter().find(|(j, _, _)| *j == i))
+                .map(|(_, result, _)| result);
             arms.push(ArmRow {
                 arm,
                 ranking,
@@ -1368,7 +1359,8 @@ fn take_result(
 }
 
 /// The bench process's own peak resident set in bytes, from `/proc/self/status`.
-/// `None` where that file is unreadable or has no `VmHWM` line (non-Linux).
+/// `None` where that file is unreadable, or its `VmHWM` line is missing or
+/// malformed (non-Linux).
 fn measured_peak_rss_bytes() -> Option<u64> {
     fs::read_to_string("/proc/self/status")
         .ok()
@@ -1377,7 +1369,7 @@ fn measured_peak_rss_bytes() -> Option<u64> {
 
 /// Peak resident set in bytes from a `/proc/self/status` text, whose `VmHWM:`
 /// line is in kB. `None` when the line is absent or its value is malformed.
-pub(crate) fn parse_vm_hwm_bytes(status: &str) -> Option<u64> {
+fn parse_vm_hwm_bytes(status: &str) -> Option<u64> {
     let value = status
         .lines()
         .find_map(|line| line.strip_prefix("VmHWM:"))?;
@@ -1387,6 +1379,26 @@ pub(crate) fn parse_vm_hwm_bytes(status: &str) -> Option<u64> {
         return None;
     }
     kilobytes.checked_mul(1024)
+}
+
+/// One arm's ordering of a pool of `n` unique bundles. `random_seed` is used only
+/// by the random arm.
+fn rank_arm(arm: Arm, n: usize, random_seed: u64, est: &Estimates) -> Vec<usize> {
+    match arm {
+        Arm::Current => rank::rank_current(n),
+        Arm::Random => rank::rank_random(n, random_seed),
+        Arm::AdditiveLoss => rank::rank_by_estimate(&est.additive),
+        Arm::CachedOutput => rank::rank_by_estimate(&est.cached),
+    }
+}
+
+/// The estimates an arm predicts with, or `None` for the arms that predict nothing.
+fn predicted_for(arm: Arm, est: &Estimates) -> Option<&[Option<f64>]> {
+    match arm {
+        Arm::AdditiveLoss => Some(est.additive.as_slice()),
+        Arm::CachedOutput => Some(est.cached.as_slice()),
+        Arm::Current | Arm::Random => None,
+    }
 }
 
 /// `ceil(budget × hidden)` with a tiny tolerance so `0.2 × 5` stays 1.

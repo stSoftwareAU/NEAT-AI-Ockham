@@ -35,7 +35,8 @@ pub struct ManifestEcho {
     pub core_fraction: f64,
     /// Cost function name.
     pub cost: String,
-    /// Bundles audited per (parent, budget, seed).
+    /// Bundles audited per (parent, budget, seed). It also sets the search pool's
+    /// requested size.
     pub audit_pool: usize,
     /// Per-arm full-scorer budget: at most this many search-pool picks are scored.
     pub full_evaluations: usize,
@@ -214,6 +215,10 @@ pub struct Pick {
     pub bundle: usize,
     /// Full score from the arm's own search call.
     pub score: f64,
+    /// Whether the call ended within the wall-clock budget. Always true without a
+    /// budget. A pick whose call ended past it still counts in `cost_ms.scorer`,
+    /// but it is not eligible for selection.
+    pub within_budget: bool,
 }
 
 /// A unique bundle of the search pool. It is estimated but never scored as a
@@ -282,7 +287,8 @@ pub struct ArmCost {
     pub single_proposals: u64,
     /// Cache entry construction for the parent.
     pub cache_build: u64,
-    /// Cache reads for singles, plus, for `cachedOutput`, the search pool's
+    /// Cache reads for singles, plus the search pool's estimate time: for
+    /// `additiveLoss`, the additive-sum estimates; for `cachedOutput`, its
     /// cached-output estimate reads.
     pub cache_read_inference: u64,
     /// Materialising the search pool.
@@ -321,13 +327,14 @@ pub struct ArmRow {
     /// Search pool ordering the arm produced, over `search.bundles`.
     pub search_ranking: Vec<usize>,
     /// The search-pool picks the arm scored, in ranking order, each with its
-    /// search-call score.
+    /// search-call score and whether it was within the wall-clock budget.
     pub picks: Vec<Pick>,
     /// Why the search stopped: all `fullEvaluations` picks scored, the pool ran
     /// out first, or the wall-clock budget did. Always `Some` on a feasible row.
     pub stopped_by: Option<SearchStop>,
-    /// Index into `search.bundles` of the best full score among the picks, or
-    /// `None` when there were no picks.
+    /// Index into `search.bundles` of the best full score among the within-budget
+    /// picks, ties to the lower index. `None` when no pick is within budget,
+    /// including when there were no picks.
     pub selected_bundle: Option<usize>,
     /// Selected bundle's full score.
     pub selected_score: Option<f64>,
@@ -420,6 +427,12 @@ pub struct BenchRow {
     pub search: Option<SearchPool>,
     /// One result per arm, in report order. Empty for infeasible rows.
     pub arms: Vec<ArmRow>,
+    /// The bench process's peak resident set in bytes (`VmHWM`) read at the end
+    /// of this row. It is a high-water mark so far: cumulative, so it never
+    /// decreases from one row to the next. The external scorer child processes
+    /// are not included. `None` where `/proc/self/status` is unavailable, or its
+    /// `VmHWM` line is missing or malformed.
+    pub measured_peak_rss_bytes: Option<u64>,
 }
 
 /// Distribution summary for one arm across the rows of one budget.
@@ -500,8 +513,8 @@ pub struct BenchReport {
     pub cases_beating_cached_output: Vec<BeatenCase>,
     /// The bench process's own peak resident set in bytes (`VmHWM`), read at the
     /// end of the run. The external scorer child processes are not included.
-    /// `None` where `/proc/self/status` is unavailable. `ramBoundBytes` stays
-    /// the computed bound.
+    /// `None` where `/proc/self/status` is unavailable, or its `VmHWM` line is
+    /// missing or malformed. `ramBoundBytes` stays the computed bound.
     pub measured_peak_rss_bytes: Option<u64>,
 }
 

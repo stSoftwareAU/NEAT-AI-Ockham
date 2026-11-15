@@ -49,7 +49,7 @@ flowchart TD
     T --> SP[Search pool: own seed, same size, materialised and estimated, never fully scored]
     SP --> G[Arms: current, additiveLoss, cachedOutput, random rank the search pool]
     G --> H[Search: each arm full-scores its top picks, batched or one per pick under searchWallClockMs]
-    H --> V[Selected = best full score among picks; predictions never choose]
+    H --> V[Selected = best full score among within-budget picks; predictions never choose]
     V --> X[Optional held-out score of selections]
     X --> REP[Report JSON: rows, cache stats, aggregates, beating cases]
 ```
@@ -96,7 +96,7 @@ unknown fields are refused.
 | `budgets` | no | 1 to 8 strictly ascending fractions in (0, 1]. Default `[0.1, 0.2, 0.3, 0.4]`. A budget `b` removes `ceil(b × hidden neurons)`. |
 | `auditPool` | yes | Requested size of the audit pool and of the search pool, per (parent, budget, seed). 2 to 64. |
 | `fullEvaluations` | yes | Per-arm full-scorer budget `E`, between 1 and `auditPool`: each arm full-scores at most `E` search-pool picks. |
-| `searchWallClockMs` | no | Per-arm wall-clock budget in milliseconds, 1 to 604800000 (7 days). Absent means no budget: each arm's picks go in one batched scorer call. With a budget, each arm scores one pick per call, in ranking order, until its charged time plus scorer time reaches the budget. Charged time is the arm's own proposals, cache build and reads, search-pool materialisation and ranking. |
+| `searchWallClockMs` | no | Per-arm wall-clock budget in milliseconds, 1 to 604800000 (7 days). Absent means no budget: each arm's picks go in one batched scorer call. With a budget, each arm scores one pick per call, in ranking order, and starts a new call only while its charged time plus scorer time is below the budget. The last call may end past the budget: its pick is recorded as not within budget and cannot be selected. Charged time is the arm's own proposals, cache build and reads, search-pool materialisation and ranking. |
 | `topK` | no | Audit recall depth: the top-ranked bundles per arm counted by top-k recall. It does not bound full scoring; `fullEvaluations` does. Default `3`. |
 | `minImprovement` | yes | Non-negative promotion threshold used by the audit. |
 | `decisionRule` | yes | Predeclared adoption rule, echoed verbatim. At most 2000 characters. |
@@ -147,10 +147,13 @@ can share bundles.
 
 Each arm full-scores its top `fullEvaluations` picks from the search pool. With
 no `searchWallClockMs`, those picks go in one batched scorer call. With one, the
-arm makes one call per pick, in ranking order, and stops once its charged time
-plus scorer time reaches the budget. The selected bundle is the best full score
-among the picks scored, ties to the lower search-pool index. The prediction
-orders the picks; it never chooses the winner.
+arm makes one call per pick, in ranking order. It starts a call only while its
+charged time plus scorer time is below the budget, so the last call may end past
+it. That pick still counts in `costMs` but is marked `withinBudget: false` and
+cannot be selected. The selected bundle is the best full score among the
+within-budget picks, ties to the lower search-pool index. If no pick is within
+budget, nothing is selected. The prediction orders the picks; it never chooses
+the winner.
 
 Predicted improvements are core loss reductions `L0 − loss`, in MSE units. The
 promotion audit compares each prediction with the bundle's full-corpus error
@@ -222,8 +225,11 @@ If `targets` or `y0` cannot be cached, every estimate for that parent is
   × 4` bytes: the corpus stream's input and target chunks, four bench-owned
   chunk buffers, and one predicted-output accumulator the size of a cache entry.
 - `measuredPeakRssBytes` is the bench process's own peak resident set (`VmHWM`
-  from `/proc/self/status`), read at the end of the run. It is `null` where that
-  file is unavailable. It excludes the external scorer child processes.
+  from `/proc/self/status`). The top-level value is read at the end of the run.
+  Each `rows[]` entry carries the same measure read at the end of that row: a
+  high-water mark so far, cumulative and never decreasing from one row to the
+  next. Both are `null` where the file is unavailable, or its `VmHWM` line is
+  missing or malformed. They exclude the external scorer child processes.
 - At most three cache files are open at once. A cached-output estimate holds
   two at most: one bundle member and a fresh `y0` reader, both closed before the
   next member. The targets reader is opened last, alone. Each reader holds one
@@ -277,15 +283,20 @@ The report is JSON in camelCase.
 - Each `arms[]` entry records `ranking` (over the audit pool) and the audit
   metrics (spearman, top-k recall, regret, false promotions and rejections,
   unestimated count); `searchRanking` (over `search.bundles`); `picks`, each
-  with its `bundle` index into `search.bundles` and its search score; `stoppedBy`
+  with its `bundle` index into `search.bundles`, its search score and its
+  `withinBudget` flag (always true without `searchWallClockMs`); `stoppedBy`
   (`fullEvaluations`, `poolExhausted` or `wallClock`); `selectedBundle`, an index
   into `search.bundles`, with its score, error, penalty, delta, `selectedRegret`,
   `selectedHiddenRemoved` and `selectedSynapsesRemoved`; `validationScore`;
   `fullScorerCalls`; `recordEvaluations`; `costMs`; and `inferenceLatencyMs`.
+  Each row also records `measuredPeakRssBytes`, the peak-resident-set reading
+  described under Memory above, taken at the end of that row.
 - `selectedRegret` is paired: the best `selectedScore` among the row's arms
   minus this arm's. The audit's own regret stays in `audit.regret`.
 - `fullScorerCalls` is 1 for a batched call, one per pick under
   `searchWallClockMs`, and 0 when the budget was spent before the first pick.
+- `selectedBundle` is `null` when no pick is within budget, including when no
+  pick was scored.
 - For the two predictor arms, `inferenceLatencyMs` is the measured prediction
   time (the additive sum for additiveLoss, the streamed prediction for
   cachedOutput) divided by the search-pool bundles that had an estimate. It is
@@ -308,8 +319,10 @@ reported apart from the economics.
 
 - `singleProposals` and `cacheBuild`: parent-level one-off costs, charged to
   arms that rank by singles (current, additiveLoss, cachedOutput).
-- `cacheReadInference`: reading single losses for those arms, plus streamed
-  cached-output prediction for cachedOutput.
+- `cacheReadInference`: reading single losses for those arms, plus the search
+  pool's estimate time: the additive sum for additiveLoss, and the streamed
+  cached-output prediction for cachedOutput. The additive sum is charged to
+  additiveLoss only.
 - `poolMaterialisation`: the search pool's materialisation, shared by every arm.
   The audit pool's materialisation is charged to no arm. It is reported at row
   level as `poolMaterialisationMs`.
@@ -318,8 +331,10 @@ reported apart from the economics.
   under `searchWallClockMs`.
 
 With `searchWallClockMs`, the first five parts are fixed before the first pick.
-Each pick then adds its scorer time, and the arm stops once charged plus scorer
-time reaches the budget. `costMs.total` is the sum of all six parts.
+Each pick then adds its scorer time. A new call starts only while charged plus
+scorer time is below the budget, so the last call may end past it. Its time
+still counts in `scorer`, and its pick is marked `withinBudget: false`.
+`costMs.total` is the sum of all six parts.
 
 Random is charged pool materialisation, its own ranking and its own scorer
 calls. It is not charged single proposals, cache builds or cache reads. Its pool
