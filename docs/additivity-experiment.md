@@ -269,7 +269,10 @@ The report is JSON in camelCase.
   the audit pool), `validationParentScore`, `search` and `arms[]`.
 - `search` is the search pool: `requested`, `size`, `duplicates`, `refused`,
   `bundles[]`, `materialisationMs` and `estimateMs`. It is `null` for infeasible
-  rows. Its `bundles[]` entries record `index`, `members`, `hiddenRemoved`,
+  rows. Its `bundles[]` entries record `index`, `members`, `overlaps`,
+  `missing`, `cascadeNeurons`, `splicedNeurons` (the same structural-removal
+  diagnostics as the audit bundles, so a search bundle the audit pool never
+  drew still names every neuron its cut removed), `hiddenRemoved`,
   `synapsesRemoved`, `growthUnitsRemoved`, `meetsBudget`, `creatureDigest`,
   `additiveLoss` and `cachedOutput`. Search bundles have no full score, since
   they are never scored as a whole.

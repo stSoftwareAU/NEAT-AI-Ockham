@@ -268,6 +268,25 @@ struct BundleMeta {
 }
 
 impl BundleMeta {
+    /// Members absent from the core's requested list: another member's cascade,
+    /// constant fold or splice took them.
+    fn overlaps(&self) -> Vec<String> {
+        self.member_uuids
+            .iter()
+            .filter(|u| !self.requested.contains(u))
+            .cloned()
+            .collect()
+    }
+
+    /// Members that are not hidden neurons of the parent.
+    fn missing(&self, hidden: &HashSet<String>) -> Vec<String> {
+        self.member_uuids
+            .iter()
+            .filter(|u| !hidden.contains(*u))
+            .cloned()
+            .collect()
+    }
+
     /// Hidden neurons the materialised cut removed.
     fn hidden_removed(&self) -> usize {
         self.before
@@ -819,18 +838,8 @@ impl<'a> ParentRun<'a> {
                 BundleRow {
                     index: i,
                     members: s.member_uuids.clone(),
-                    overlaps: s
-                        .member_uuids
-                        .iter()
-                        .filter(|u| !s.requested.contains(u))
-                        .cloned()
-                        .collect(),
-                    missing: s
-                        .member_uuids
-                        .iter()
-                        .filter(|u| !self.hidden.contains(*u))
-                        .cloned()
-                        .collect(),
+                    overlaps: s.overlaps(),
+                    missing: s.missing(&self.hidden),
                     cascade_neurons: s.cascade.clone(),
                     spliced_neurons: s.spliced.clone(),
                     hidden_removed: s.hidden_removed(),
@@ -880,6 +889,10 @@ impl<'a> ParentRun<'a> {
             .map(|(i, s)| SearchBundle {
                 index: i,
                 members: s.meta.member_uuids.clone(),
+                overlaps: s.meta.overlaps(),
+                missing: s.meta.missing(&self.hidden),
+                cascade_neurons: s.meta.cascade.clone(),
+                spliced_neurons: s.meta.spliced.clone(),
                 hidden_removed: s.meta.hidden_removed(),
                 synapses_removed: s.meta.synapses_removed(),
                 growth_units_removed: s.meta.growth_units_removed(),

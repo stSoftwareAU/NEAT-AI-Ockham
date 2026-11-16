@@ -59,6 +59,10 @@ elite manifest, private corpora or `rust_scorer`, so the representative
   `casesBeatingCachedOutput` with a null `cachedOutputScore`, so a
   slow arm is not flattered by survivor bias.
   Without `searchWallClockMs` there is one batched call, exactly as before.
+- **Search bundles keep the removal diagnostics.** A search bundle may be
+  absent from the audit pool, so `search.bundles[]` records `overlaps`,
+  `missing`, `cascadeNeurons` and `splicedNeurons` too, built by the same
+  `BundleMeta` helpers as the audit `bundles[]`.
 - **Report format version 2.** The report shape changed (`rows[].search`,
   `searchRanking`, `stoppedBy`, `withinBudget`, `measuredPeakRssBytes`).
   The manifest format stays version 1, because the new field is optional and
@@ -245,6 +249,13 @@ New tests:
     `searchRanking` is a permutation, picks index `search.bundles`, and the
     paired regret holds.
   - `the_search_pool_draws_member_sets_the_audit_pool_does_not_hold`.
+  - `search_bundles_record_cascades_and_overlaps_including_those_the_audit_pool_lacks`:
+    on the chain parent with a pool of 12 of the 35 member sets, every
+    `search.bundles[]` entry names each hidden neuron it removed
+    (`hiddenRemoved` = members - overlaps + cascade + spliced), removed-neuron
+    identities come from the chain, and at least one search-only bundle (its
+    `creatureDigest` is absent from the audit pool) records an overlap or
+    cascade neuron.
 
 Edited existing tests (no assertion removed):
 
@@ -262,10 +273,10 @@ Edited existing tests (no assertion removed):
 
 Results (working tree after the review fixes):
 
-- `cargo test --test additivity_bench`: 21 passed.
+- `cargo test --test additivity_bench`: 22 passed.
 - `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
   --all-features` with the gate's deny flags, `cargo test --workspace
-  --all-features` (1001 passed) and `cargo doc` with `-D warnings`: all clean.
+  --all-features` (1009 passed) and `cargo doc` with `-D warnings`: all clean.
 
 An earlier gate run failed on a per-row monotone-RSS assertion added in this
 PR. The kernel's reading is approximate, so the assertion and the matching

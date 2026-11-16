@@ -231,6 +231,18 @@ pub struct SearchBundle {
     pub index: usize,
     /// Requested member UUIDs, in rank order.
     pub members: Vec<String>,
+    /// Same as [`BundleRow::overlaps`]: members absent from the core's
+    /// requested list.
+    pub overlaps: Vec<String>,
+    /// Same as [`BundleRow::missing`]: members that are not hidden neurons of
+    /// the parent.
+    pub missing: Vec<String>,
+    /// Same as [`BundleRow::cascade_neurons`]: neurons removed on top of the
+    /// request.
+    pub cascade_neurons: Vec<String>,
+    /// Same as [`BundleRow::spliced_neurons`]: pass-throughs the cleanup
+    /// spliced out.
+    pub spliced_neurons: Vec<String>,
     /// Hidden neurons removed, from the materialised structure.
     pub hidden_removed: usize,
     /// Synapses removed, from the materialised structure.

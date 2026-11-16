@@ -880,6 +880,86 @@ fn the_bench_records_cascades_overlaps_and_duplicate_creatures() {
     assert!(duplicates_seen > 0, "no duplicate creature was recorded");
 }
 
+#[test]
+fn search_bundles_record_cascades_and_overlaps_including_those_the_audit_pool_lacks() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.path("parents/elite.json"),
+        creature_to_json(&chain_parent()).unwrap(),
+    )
+    .unwrap();
+    let mut manifest = fixture.manifest(vec![0.3], vec![1, 2, 3], 1 << 30);
+    // 35 member sets exist; a pool of 12 is drawn separately for audit and
+    // search, so the search pool holds creatures the audit pool does not.
+    manifest.audit_pool = 12;
+
+    let report = run(&manifest);
+
+    let mut with_overlap = 0;
+    let mut with_cascade = 0;
+    let mut only_in_search = 0;
+    let mut only_in_search_with_removal_beyond_request = 0;
+    for row in report.rows.iter().filter(|r| r.feasible) {
+        let search = row
+            .search
+            .as_ref()
+            .expect("feasible rows carry a search pool");
+        let audit_digests: BTreeSet<&str> = row
+            .bundles
+            .iter()
+            .map(|b| b.creature_digest.as_str())
+            .collect();
+        for bundle in &search.bundles {
+            // Every removed hidden neuron is named, as for an audit bundle.
+            assert_eq!(
+                bundle.hidden_removed,
+                bundle.members.len() - bundle.overlaps.len()
+                    + bundle.cascade_neurons.len()
+                    + bundle.spliced_neurons.len(),
+                "search bundle {} removed neurons it does not name: members {:?}, overlaps {:?}, cascade {:?}, spliced {:?}",
+                bundle.index,
+                bundle.members,
+                bundle.overlaps,
+                bundle.cascade_neurons,
+                bundle.spliced_neurons
+            );
+            assert!(bundle.missing.is_empty());
+            assert!(bundle.spliced_neurons.is_empty());
+            for uuid in &bundle.overlaps {
+                assert!(bundle.members.contains(uuid), "{uuid} is not a member");
+            }
+            // Removed-neuron identities come from the chain, never elsewhere.
+            for uuid in bundle.cascade_neurons.iter().chain(&bundle.overlaps) {
+                assert!(
+                    ["c_a", "c_b", "c_c"].contains(&uuid.as_str()),
+                    "unexpected removed neuron {uuid}"
+                );
+            }
+            with_overlap += usize::from(!bundle.overlaps.is_empty());
+            with_cascade += usize::from(!bundle.cascade_neurons.is_empty());
+            if !audit_digests.contains(bundle.creature_digest.as_str()) {
+                only_in_search += 1;
+                if !bundle.overlaps.is_empty() || !bundle.cascade_neurons.is_empty() {
+                    only_in_search_with_removal_beyond_request += 1;
+                }
+            }
+        }
+    }
+    assert!(with_overlap > 0, "no search bundle recorded an overlap");
+    assert!(
+        with_cascade > 0,
+        "no search bundle recorded a cascade neuron"
+    );
+    assert!(
+        only_in_search > 0,
+        "every search bundle was in the audit pool"
+    );
+    assert!(
+        only_in_search_with_removal_beyond_request > 0,
+        "no search-only bundle recorded an overlap or cascade"
+    );
+}
+
 /// Every hidden neuron a bundle removed is named exactly once: a member the
 /// cut took itself, or a neuron it stranded (cascade or constant fold), or a
 /// pass-through the cleanup spliced out.
