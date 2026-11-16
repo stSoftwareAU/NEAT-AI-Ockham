@@ -5,18 +5,19 @@
 //! compiles each creature, streams the training corpus, and computes the mean
 //! `neat_core::loss::mse_record` and the documented score `1 - error - penalty`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use neat_ai_ockham::ablation::growth_units;
 use neat_ai_ockham::additivity::bench::run_bench;
-use neat_ai_ockham::additivity::bench_report::BenchReport;
+use neat_ai_ockham::additivity::bench_report::{BenchReport, SearchStop, aggregate};
 use neat_ai_ockham::additivity::manifest::{BenchManifest, ResourceLimits, ScorerSpec};
 use neat_ai_ockham::additivity::rank::{ARMS, Arm};
-use neat_ai_ockham::clock::SystemClock;
+use neat_ai_ockham::clock::{Clock, ManualClock, SystemClock};
 use neat_ai_ockham::corpus::{corpus_info, for_each_chunk, write_bin_file};
 use neat_ai_ockham::fixtures::{creature, identity_creature, neuron, synapse};
 use neat_ai_ockham::scorer::{DirectoryScorer, ScoreResult, ScorerError, ScorerMode};
@@ -232,6 +233,7 @@ impl Fixture {
             budgets,
             audit_pool: 6,
             full_evaluations: 3,
+            search_wall_clock_ms: None,
             top_k: 2,
             min_improvement: 0.0,
             decision_rule: "fixture-only test rule".to_string(),
@@ -286,6 +288,20 @@ fn end_to_end_reports_every_arm_and_leaves_the_parent_alone() {
     let report = run(&manifest);
 
     assert_eq!(report.rows.len(), 4, "one row per (budget, seed)");
+    if cfg!(target_os = "linux") {
+        assert!(
+            report
+                .measured_peak_rss_bytes
+                .is_some_and(|bytes| bytes > 0),
+            "a Linux run must measure its own peak resident set"
+        );
+        for (index, row) in report.rows.iter().enumerate() {
+            let Some(bytes) = row.measured_peak_rss_bytes else {
+                panic!("row {index} has no measured peak resident set");
+            };
+            assert!(bytes > 0, "row {index} measured {bytes} bytes");
+        }
+    }
     assert!(!report.representative);
     assert!(
         report.evidence.starts_with("fixture-only:"),
@@ -392,6 +408,10 @@ fn predictions_only_order_and_the_best_full_score_among_picks_selects() {
 
     let report = run(&manifest);
 
+    // Search-vs-audit score comparisons made, and those whose search index differs
+    // from the audit index of the same creature.
+    let mut comparisons = 0;
+    let mut index_differs = 0;
     for row in report.rows.iter().filter(|r| r.feasible) {
         for arm_row in &row.arms {
             assert!(
@@ -418,20 +438,40 @@ fn predictions_only_order_and_the_best_full_score_among_picks_selects() {
                 top
             );
             assert_eq!(arm_row.selected_score, Some(selected_pick.score));
+            let search = row
+                .search
+                .as_ref()
+                .expect("feasible rows carry a search pool");
             for pick in &arm_row.picks {
-                let audited = row.bundles[pick.bundle].score;
-                assert!(
-                    (pick.score - audited).abs() < 1e-9,
-                    "search and audit scores must agree for the same creature"
-                );
+                // A pick is in the search pool; where its creature is also in the
+                // audit pool, the two full scores must agree.
+                let digest = &search.bundles[pick.bundle].creature_digest;
+                if let Some(audited) = row.bundles.iter().find(|b| &b.creature_digest == digest) {
+                    comparisons += 1;
+                    if audited.index != pick.bundle {
+                        index_differs += 1;
+                    }
+                    assert!(
+                        (pick.score - audited.score).abs() < 1e-9,
+                        "search and audit scores must agree for the same creature"
+                    );
+                }
             }
             let expected_picks: Vec<usize> = arm_row.picks.iter().map(|p| p.bundle).collect();
             assert_eq!(
                 expected_picks,
-                arm_row.ranking[..expected_picks.len()].to_vec()
+                arm_row.search_ranking[..expected_picks.len()].to_vec()
             );
         }
     }
+    assert!(
+        comparisons > 0,
+        "at least one pick must share its creature with the audit pool, so the score agreement is checked"
+    );
+    assert!(
+        index_differs > 0,
+        "at least one compared pick must have a search index different from its audit index"
+    );
     assert_eq!(
         listing(&fixture.path("train")),
         train_before,
@@ -840,6 +880,86 @@ fn the_bench_records_cascades_overlaps_and_duplicate_creatures() {
     assert!(duplicates_seen > 0, "no duplicate creature was recorded");
 }
 
+#[test]
+fn search_bundles_record_cascades_and_overlaps_including_those_the_audit_pool_lacks() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.path("parents/elite.json"),
+        creature_to_json(&chain_parent()).unwrap(),
+    )
+    .unwrap();
+    let mut manifest = fixture.manifest(vec![0.3], vec![1, 2, 3], 1 << 30);
+    // 35 member sets exist; a pool of 12 is drawn separately for audit and
+    // search, so the search pool holds creatures the audit pool does not.
+    manifest.audit_pool = 12;
+
+    let report = run(&manifest);
+
+    let mut with_overlap = 0;
+    let mut with_cascade = 0;
+    let mut only_in_search = 0;
+    let mut only_in_search_with_removal_beyond_request = 0;
+    for row in report.rows.iter().filter(|r| r.feasible) {
+        let search = row
+            .search
+            .as_ref()
+            .expect("feasible rows carry a search pool");
+        let audit_digests: BTreeSet<&str> = row
+            .bundles
+            .iter()
+            .map(|b| b.creature_digest.as_str())
+            .collect();
+        for bundle in &search.bundles {
+            // Every removed hidden neuron is named, as for an audit bundle.
+            assert_eq!(
+                bundle.hidden_removed,
+                bundle.members.len() - bundle.overlaps.len()
+                    + bundle.cascade_neurons.len()
+                    + bundle.spliced_neurons.len(),
+                "search bundle {} removed neurons it does not name: members {:?}, overlaps {:?}, cascade {:?}, spliced {:?}",
+                bundle.index,
+                bundle.members,
+                bundle.overlaps,
+                bundle.cascade_neurons,
+                bundle.spliced_neurons
+            );
+            assert!(bundle.missing.is_empty());
+            assert!(bundle.spliced_neurons.is_empty());
+            for uuid in &bundle.overlaps {
+                assert!(bundle.members.contains(uuid), "{uuid} is not a member");
+            }
+            // Removed-neuron identities come from the chain, never elsewhere.
+            for uuid in bundle.cascade_neurons.iter().chain(&bundle.overlaps) {
+                assert!(
+                    ["c_a", "c_b", "c_c"].contains(&uuid.as_str()),
+                    "unexpected removed neuron {uuid}"
+                );
+            }
+            with_overlap += usize::from(!bundle.overlaps.is_empty());
+            with_cascade += usize::from(!bundle.cascade_neurons.is_empty());
+            if !audit_digests.contains(bundle.creature_digest.as_str()) {
+                only_in_search += 1;
+                if !bundle.overlaps.is_empty() || !bundle.cascade_neurons.is_empty() {
+                    only_in_search_with_removal_beyond_request += 1;
+                }
+            }
+        }
+    }
+    assert!(with_overlap > 0, "no search bundle recorded an overlap");
+    assert!(
+        with_cascade > 0,
+        "no search bundle recorded a cascade neuron"
+    );
+    assert!(
+        only_in_search > 0,
+        "every search bundle was in the audit pool"
+    );
+    assert!(
+        only_in_search_with_removal_beyond_request > 0,
+        "no search-only bundle recorded an overlap or cascade"
+    );
+}
+
 /// Every hidden neuron a bundle removed is named exactly once: a member the
 /// cut took itself, or a neuron it stranded (cascade or constant fold), or a
 /// pass-through the cleanup spliced out.
@@ -1068,4 +1188,551 @@ fn bench_additivity_refuses_a_report_path_that_would_overwrite_an_input() {
         !fixture.path("cache").exists(),
         "no scorer work was started"
     );
+}
+
+/// Delegates to the faithful scorer, and spends `step` of the manual clock on
+/// every call, so a wall-clock budget is decided by how many calls were made.
+struct ClockedScorer {
+    inner: FaithfulScorer,
+    clock: ManualClock,
+    step: Duration,
+}
+
+impl DirectoryScorer for ClockedScorer {
+    fn score_directory(
+        &self,
+        creature_dir: &Path,
+        training_dir: &Path,
+        mode: ScorerMode,
+    ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
+        self.clock.advance(self.step);
+        self.inner.score_directory(creature_dir, training_dir, mode)
+    }
+
+    fn identity(&self) -> String {
+        self.inner.identity()
+    }
+}
+
+/// The fixture with `fullEvaluations` equal to the audit pool, so the arms can
+/// send more picks than a short budget allows.
+fn search_manifest(fixture: &Fixture, search_wall_clock_ms: Option<u64>) -> BenchManifest {
+    let mut manifest = fixture.manifest(vec![0.2], vec![1], 1 << 30);
+    manifest.full_evaluations = manifest.audit_pool;
+    manifest.search_wall_clock_ms = search_wall_clock_ms;
+    manifest
+}
+
+#[test]
+fn a_search_wall_clock_budget_stops_each_arm_after_three_scored_picks() {
+    let fixture = Fixture::new();
+    let manifest = search_manifest(&fixture, Some(25));
+    let clock = ManualClock::new();
+    let scorer = ClockedScorer {
+        inner: FaithfulScorer::new(),
+        clock: clock.clone(),
+        step: Duration::from_millis(10),
+    };
+    let workspace = manifest.cache_dir.join("workspace");
+
+    let report = run_bench(&manifest, &scorer, &clock, &workspace).expect("bench runs");
+
+    assert_eq!(report.manifest.search_wall_clock_ms, Some(25));
+    let row = &report.rows[0];
+    assert!(row.feasible, "{:?}", row.reason);
+    let search = row
+        .search
+        .as_ref()
+        .expect("feasible rows carry a search pool");
+    assert!(
+        search.bundles.len() > 3,
+        "the search pool must outlast three picks, has {}",
+        search.bundles.len()
+    );
+    for arm in &row.arms {
+        // Nothing but the scorer advances the manual clock, so every charged
+        // phase costs zero: 0 < 25 calls (10 ms), 10 < 25 calls (20 ms),
+        // 20 < 25 calls (30 ms), and 30 is not below 25, so the search stops.
+        // The third call ends at 30, past the 25 ms budget, so its pick is kept
+        // and charged but is not within budget.
+        assert_eq!(arm.picks.len(), 3, "{:?}", arm.arm);
+        assert_eq!(arm.full_scorer_calls, 3, "{:?}", arm.arm);
+        assert_eq!(arm.stopped_by, Some(SearchStop::WallClock), "{:?}", arm.arm);
+        assert_eq!(arm.cost_ms.scorer, 30, "{:?}", arm.arm);
+        assert_eq!(
+            arm.cost_ms.total, 30,
+            "{:?}: only the arm's own scorer calls may take time",
+            arm.arm
+        );
+        let within: Vec<bool> = arm.picks.iter().map(|p| p.within_budget).collect();
+        assert_eq!(within, vec![true, true, false], "{:?}", arm.arm);
+        // The selection is the best full score among the first two picks, the
+        // only within-budget ones, ties to the lower bundle index.
+        let mut expected = &arm.picks[0];
+        for pick in &arm.picks[1..2] {
+            if pick.score > expected.score
+                || (pick.score == expected.score && pick.bundle < expected.bundle)
+            {
+                expected = pick;
+            }
+        }
+        assert_eq!(arm.selected_bundle, Some(expected.bundle), "{:?}", arm.arm);
+        assert_eq!(arm.selected_score, Some(expected.score), "{:?}", arm.arm);
+    }
+}
+
+#[test]
+fn a_search_wall_clock_budget_shorter_than_one_call_makes_one_pick_and_selects_nothing() {
+    let fixture = Fixture::new();
+    let manifest = search_manifest(&fixture, Some(5));
+    let clock = ManualClock::new();
+    let scorer = ClockedScorer {
+        inner: FaithfulScorer::new(),
+        clock: clock.clone(),
+        step: Duration::from_millis(10),
+    };
+    let workspace = manifest.cache_dir.join("workspace");
+
+    let report = run_bench(&manifest, &scorer, &clock, &workspace).expect("bench runs");
+
+    // Positive control: the three-pick test above uses this same fixture and
+    // step, and under its 25 ms budget the arms do select a bundle.
+    let row = &report.rows[0];
+    assert!(row.feasible, "{:?}", row.reason);
+    assert!(row.search.is_some(), "feasible rows carry a search pool");
+    for arm in &row.arms {
+        // Each arm starts its first call (0 < 5), and that call ends at 10, past
+        // the 5 ms budget. The pick is kept but not within budget, so nothing is
+        // selectable and the search stops after one pick.
+        assert_eq!(arm.picks.len(), 1, "{:?}", arm.arm);
+        assert!(!arm.picks[0].within_budget, "{:?}", arm.arm);
+        assert_eq!(arm.full_scorer_calls, 1, "{:?}", arm.arm);
+        assert_eq!(arm.stopped_by, Some(SearchStop::WallClock), "{:?}", arm.arm);
+        assert_eq!(arm.cost_ms.scorer, 10, "{:?}", arm.arm);
+        assert_eq!(arm.selected_bundle, None, "{:?}", arm.arm);
+        assert_eq!(arm.selected_score, None, "{:?}", arm.arm);
+        assert_eq!(arm.selected_regret, None, "{:?}", arm.arm);
+    }
+}
+
+#[test]
+fn without_a_search_budget_each_arm_makes_one_batched_call_over_its_picks() {
+    let fixture = Fixture::new();
+    let manifest = search_manifest(&fixture, None);
+    let clock = ManualClock::new();
+    let scorer = ClockedScorer {
+        inner: FaithfulScorer::new(),
+        clock: clock.clone(),
+        step: Duration::from_millis(10),
+    };
+    let workspace = manifest.cache_dir.join("workspace");
+
+    let report = run_bench(&manifest, &scorer, &clock, &workspace).expect("bench runs");
+
+    assert_eq!(report.manifest.search_wall_clock_ms, None);
+    let row = &report.rows[0];
+    assert!(row.feasible, "{:?}", row.reason);
+    for arm in &row.arms {
+        assert_eq!(arm.picks.len(), 6, "{:?}", arm.arm);
+        assert!(
+            arm.picks.iter().all(|p| p.within_budget),
+            "{:?}: without a budget every pick is within budget",
+            arm.arm
+        );
+        assert_eq!(arm.full_scorer_calls, 1, "{:?}", arm.arm);
+        assert_eq!(
+            arm.stopped_by,
+            Some(SearchStop::FullEvaluations),
+            "{:?}",
+            arm.arm
+        );
+        assert_eq!(arm.cost_ms.scorer, 10, "{:?}", arm.arm);
+    }
+}
+
+#[test]
+fn arms_rank_a_separate_search_pool_and_regret_is_paired_within_it() {
+    let fixture = Fixture::new();
+    let manifest = fixture.manifest(vec![0.2, 0.4], vec![1, 2], 1 << 30);
+
+    let report = run(&manifest);
+
+    let mut checked_rows = 0;
+    for row in report.rows.iter().filter(|r| r.feasible) {
+        checked_rows += 1;
+        let search = row
+            .search
+            .as_ref()
+            .expect("feasible rows carry a search pool");
+        let m = search.bundles.len();
+        assert!(m > 0, "a feasible row has search bundles");
+        let best = row
+            .arms
+            .iter()
+            .filter_map(|a| a.selected_score)
+            .fold(f64::NEG_INFINITY, f64::max);
+        for arm in &row.arms {
+            let mut ordering = arm.search_ranking.clone();
+            ordering.sort_unstable();
+            assert_eq!(
+                ordering,
+                (0..m).collect::<Vec<usize>>(),
+                "{:?} must rank every search bundle exactly once",
+                arm.arm
+            );
+            assert!(arm.stopped_by.is_some(), "{:?}", arm.arm);
+            for pick in &arm.picks {
+                assert!(pick.bundle < m, "{:?} picked outside the pool", arm.arm);
+            }
+            if let Some(i) = arm.selected_bundle {
+                assert!(i < m, "{:?} selected outside the pool", arm.arm);
+                assert_eq!(
+                    arm.selected_hidden_removed,
+                    Some(search.bundles[i].hidden_removed)
+                );
+            }
+            assert_eq!(
+                arm.selected_regret,
+                arm.selected_score.map(|score| best - score),
+                "{:?}: regret is the row's best selection minus this arm's",
+                arm.arm
+            );
+            if let Some(regret) = arm.selected_regret {
+                assert!(regret >= 0.0, "{:?} regret was {regret}", arm.arm);
+            }
+        }
+    }
+    assert!(
+        checked_rows > 0,
+        "at least one feasible row must be checked"
+    );
+}
+
+#[test]
+fn selected_reductions_come_from_the_search_pool_where_bundles_differ() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.path("parents/elite.json"),
+        creature_to_json(&chain_parent()).unwrap(),
+    )
+    .unwrap();
+    let mut manifest = fixture.manifest(vec![0.3], vec![1, 2, 3], 1 << 30);
+    // The chain's bundles remove different numbers of hidden neurons and
+    // synapses, so an index into the wrong pool reports other reductions.
+    manifest.audit_pool = 35;
+
+    let report = run(&manifest);
+
+    let mut checked = 0;
+    let mut differing_from_audit = 0;
+    for row in report.rows.iter().filter(|r| r.feasible) {
+        let search = row
+            .search
+            .as_ref()
+            .expect("feasible rows carry a search pool");
+        for arm in &row.arms {
+            let Some(i) = arm.selected_bundle else {
+                continue;
+            };
+            checked += 1;
+            assert_eq!(
+                arm.selected_hidden_removed,
+                Some(search.bundles[i].hidden_removed),
+                "{:?}",
+                arm.arm
+            );
+            assert_eq!(
+                arm.selected_synapses_removed,
+                Some(search.bundles[i].synapses_removed),
+                "{:?}",
+                arm.arm
+            );
+            if let Some(audit) = row.bundles.get(i)
+                && (audit.hidden_removed, audit.synapses_removed)
+                    != (
+                        search.bundles[i].hidden_removed,
+                        search.bundles[i].synapses_removed,
+                    )
+            {
+                differing_from_audit += 1;
+            }
+        }
+    }
+    assert!(checked > 0, "at least one selection must be checked");
+    assert!(
+        differing_from_audit > 0,
+        "at least one selection must differ from the audit bundle at its index"
+    );
+}
+
+#[test]
+fn the_search_pool_draws_member_sets_the_audit_pool_does_not_hold() {
+    let fixture = Fixture::new();
+    let manifest = fixture.manifest(vec![0.2, 0.4], vec![1, 2], 1 << 30);
+
+    let report = run(&manifest);
+
+    let member_sets = |uuids: Vec<&Vec<String>>| -> BTreeSet<Vec<String>> {
+        uuids
+            .into_iter()
+            .map(|members| {
+                let mut sorted = members.clone();
+                sorted.sort();
+                sorted
+            })
+            .collect()
+    };
+    let mut differing_rows = 0;
+    for row in report.rows.iter().filter(|r| r.feasible) {
+        let search = row
+            .search
+            .as_ref()
+            .expect("feasible rows carry a search pool");
+        let audit_sets = member_sets(row.bundles.iter().map(|b| &b.members).collect());
+        let search_sets = member_sets(search.bundles.iter().map(|b| &b.members).collect());
+        if search_sets != audit_sets {
+            differing_rows += 1;
+        }
+    }
+    assert!(
+        differing_rows > 0,
+        "at least one row's search pool must hold member sets the audit pool does not"
+    );
+}
+
+/// A clock that moves by `tick_ms` on every reading, so each timed phase costs
+/// a deterministic, non-zero amount that grows with the work it does: the
+/// charged (non-scorer) phases, the scorer calls and everything between.
+struct TickingClock {
+    base: Instant,
+    reads: AtomicU64,
+    tick_ms: u64,
+}
+
+impl TickingClock {
+    fn new(tick_ms: u64) -> Self {
+        Self {
+            base: Instant::now(),
+            reads: AtomicU64::new(0),
+            tick_ms,
+        }
+    }
+}
+
+impl Clock for TickingClock {
+    fn now(&self) -> Instant {
+        let n = self.reads.fetch_add(1, Ordering::SeqCst);
+        self.base + Duration::from_millis(n * self.tick_ms)
+    }
+}
+
+const TICK_MS: u64 = 10;
+
+fn run_ticking(manifest: &BenchManifest) -> BenchReport {
+    let scorer = FaithfulScorer::new();
+    let workspace = manifest.cache_dir.join("workspace");
+    run_bench(manifest, &scorer, &TickingClock::new(TICK_MS), &workspace).expect("bench runs")
+}
+
+fn arm_row(report: &BenchReport, arm: Arm) -> &neat_ai_ockham::additivity::bench_report::ArmRow {
+    report.rows[0]
+        .arms
+        .iter()
+        .find(|a| a.arm == arm)
+        .expect("arm present")
+}
+
+/// What an arm is charged before its own scorer calls.
+fn charged_ms(report: &BenchReport, arm: Arm) -> u64 {
+    let cost = &arm_row(report, arm).cost_ms;
+    cost.total - cost.scorer
+}
+
+#[test]
+fn charged_costs_shorten_the_search_of_the_arms_that_pay_them() {
+    let fixture = Fixture::new();
+    // Reference run without a budget: reads each arm's charged cost.
+    let reference = run_ticking(&search_manifest(&fixture, None));
+    assert!(reference.rows[0].feasible, "{:?}", reference.rows[0].reason);
+    let random_charged = charged_ms(&reference, Arm::Random);
+    assert!(random_charged > 0, "random still pays materialisation");
+    for arm in [Arm::Current, Arm::AdditiveLoss, Arm::CachedOutput] {
+        let cost = &arm_row(&reference, arm).cost_ms;
+        assert!(
+            cost.total > cost.scorer,
+            "{arm:?}: charged phases must cost time"
+        );
+        assert!(cost.single_proposals > 0 && cost.cache_build > 0, "{arm:?}");
+        assert!(
+            charged_ms(&reference, arm) >= random_charged + 2 * TICK_MS,
+            "{arm:?} pays singles and cache costs that random does not"
+        );
+    }
+    let random_cost = &arm_row(&reference, Arm::Random).cost_ms;
+    assert_eq!(random_cost.single_proposals, 0);
+    assert_eq!(random_cost.cache_build, 0);
+    // The search pool's estimate time is charged to the predictor arms that
+    // form it, and to no other: current only reads single losses.
+    assert_eq!(random_cost.cache_read_inference, 0);
+    let current_read = arm_row(&reference, Arm::Current)
+        .cost_ms
+        .cache_read_inference;
+    for arm in [Arm::AdditiveLoss, Arm::CachedOutput] {
+        assert!(
+            arm_row(&reference, arm).cost_ms.cache_read_inference > current_read,
+            "{arm:?} is charged its search-pool inference on top of the single reads"
+        );
+    }
+
+    // A budget that leaves random room for exactly three calls.
+    let budget = random_charged + 2 * TICK_MS + 1;
+    // A fresh fixture: a reused cache directory would make the build cost differ.
+    let report = run_ticking(&search_manifest(&Fixture::new(), Some(budget)));
+    let row = &report.rows[0];
+    assert!(row.feasible, "{:?}", row.reason);
+    for arm in ARMS {
+        let charged = charged_ms(&report, arm);
+        assert_eq!(
+            charged,
+            charged_ms(&reference, arm),
+            "{arm:?}: charged phases do not depend on the budget"
+        );
+        // A call starts only while charged + scorer time is below the budget.
+        let expected = if budget > charged {
+            (budget - charged).div_ceil(TICK_MS)
+        } else {
+            0
+        };
+        let a = arm_row(&report, arm);
+        assert_eq!(a.picks.len() as u64, expected, "{arm:?}");
+        assert_eq!(a.full_scorer_calls, expected, "{arm:?}");
+        assert_eq!(a.cost_ms.scorer, expected * TICK_MS, "{arm:?}");
+        assert_eq!(a.cost_ms.total, charged + expected * TICK_MS, "{arm:?}");
+        assert_eq!(a.stopped_by, Some(SearchStop::WallClock), "{arm:?}");
+    }
+    let random_picks = arm_row(&report, Arm::Random).picks.len();
+    assert_eq!(random_picks, 3);
+    for arm in [Arm::Current, Arm::AdditiveLoss, Arm::CachedOutput] {
+        assert!(
+            arm_row(&report, arm).picks.len() < random_picks,
+            "{arm:?} is charged singles and cache costs, so it scores fewer picks"
+        );
+    }
+}
+
+#[test]
+fn an_arm_with_no_selection_stays_visible_in_the_aggregate() {
+    let fixture = Fixture::new();
+    let reference = run_ticking(&search_manifest(&fixture, None));
+    assert!(reference.rows[0].feasible, "{:?}", reference.rows[0].reason);
+    let random_charged = charged_ms(&reference, Arm::Random);
+    let cached_charged = charged_ms(&reference, Arm::CachedOutput);
+    assert!(
+        cached_charged > random_charged + TICK_MS,
+        "cachedOutput pays costs random does not"
+    );
+
+    // A budget at cachedOutput's charged cost: it cannot start a first call,
+    // while random (charged less) still scores and selects.
+    // A fresh fixture: a reused cache directory would make the build cost differ.
+    let report = run_ticking(&search_manifest(&Fixture::new(), Some(cached_charged)));
+    let row = &report.rows[0];
+    assert!(row.feasible, "{:?}", row.reason);
+    let cached = arm_row(&report, Arm::CachedOutput);
+    assert!(cached.picks.is_empty());
+    assert_eq!(cached.full_scorer_calls, 0);
+    assert_eq!(cached.stopped_by, Some(SearchStop::WallClock));
+    assert_eq!(cached.selected_bundle, None);
+    assert_eq!(cached.selected_score, None);
+    assert_eq!(cached.cost_ms.scorer, 0);
+    assert_eq!(cached.cost_ms.total, cached_charged);
+    let random = arm_row(&report, Arm::Random);
+    let random_score = random.selected_score.expect("random still selects");
+
+    let aggregate = &report.aggregate[0];
+    assert_eq!(aggregate.feasible_rows, 1);
+    let cached_aggregate = aggregate
+        .arms
+        .iter()
+        .find(|a| a.arm == Arm::CachedOutput)
+        .unwrap();
+    assert_eq!(cached_aggregate.rows_without_selection, 1);
+    assert!(cached_aggregate.selected_delta.is_none());
+    let random_aggregate = aggregate
+        .arms
+        .iter()
+        .find(|a| a.arm == Arm::Random)
+        .unwrap();
+    assert_eq!(random_aggregate.rows_without_selection, 0);
+    // The row is excluded from the paired comparison, and said to be.
+    assert_eq!(aggregate.paired_rows_excluded_vs_current, 1);
+    assert_eq!(aggregate.paired_rows_excluded_vs_random, 1);
+    assert!(aggregate.cached_output_vs_current.is_none());
+    assert!(aggregate.cached_output_vs_random.is_none());
+    // And it is listed as a case random won, with no cachedOutput score.
+    let case = report
+        .cases_beating_cached_output
+        .iter()
+        .find(|c| c.arm == Arm::Random)
+        .expect("random selected where cachedOutput selected nothing");
+    assert_eq!(case.cached_output_score, None);
+    assert_eq!(case.arm_score, random_score);
+    assert_eq!(case.seed, row.seed);
+    let json = serde_json::to_value(case).unwrap();
+    assert!(json["cachedOutputScore"].is_null(), "{json}");
+}
+
+#[test]
+fn a_pairwise_comparison_survives_the_other_arm_selecting_nothing() {
+    let fixture = Fixture::new();
+    let mut report = run_ticking(&search_manifest(&fixture, None));
+    assert!(report.rows[0].feasible, "{:?}", report.rows[0].reason);
+    let set = |report: &mut BenchReport, arm: Arm, score: Option<f64>| {
+        let a = report.rows[0]
+            .arms
+            .iter_mut()
+            .find(|a| a.arm == arm)
+            .expect("arm present");
+        a.selected_score = score;
+    };
+    // Current selects nothing; cachedOutput and random both select, random better.
+    set(&mut report, Arm::CachedOutput, Some(1.0));
+    set(&mut report, Arm::Current, None);
+    set(&mut report, Arm::Random, Some(2.0));
+    let budgets = [report.rows[0].budget];
+    let (aggregates, beaten) = aggregate(&report.rows, &budgets).expect("aggregates");
+    let a = &aggregates[0];
+    assert_eq!(a.paired_rows_excluded_vs_current, 1);
+    assert_eq!(a.paired_rows_excluded_vs_random, 0);
+    assert!(a.cached_output_vs_current.is_none());
+    assert!(
+        a.cached_output_vs_random.is_some(),
+        "random and cachedOutput both selected, so they are compared"
+    );
+    let case = beaten
+        .iter()
+        .find(|c| c.arm == Arm::Random)
+        .expect("random beat cachedOutput and is listed");
+    assert_eq!(case.arm_score, 2.0);
+    assert_eq!(case.cached_output_score, Some(1.0));
+    assert!(
+        beaten.iter().all(|c| c.arm != Arm::Current),
+        "current selected nothing, so it beat nothing"
+    );
+
+    // And the mirror: random selects nothing, current beats cachedOutput.
+    set(&mut report, Arm::Current, Some(3.0));
+    set(&mut report, Arm::Random, None);
+    let (aggregates, beaten) = aggregate(&report.rows, &budgets).expect("aggregates");
+    let a = &aggregates[0];
+    assert_eq!(a.paired_rows_excluded_vs_current, 0);
+    assert_eq!(a.paired_rows_excluded_vs_random, 1);
+    assert!(a.cached_output_vs_current.is_some());
+    assert!(a.cached_output_vs_random.is_none());
+    let case = beaten
+        .iter()
+        .find(|c| c.arm == Arm::Current)
+        .expect("current beat cachedOutput and is listed");
+    assert_eq!(case.cached_output_score, Some(1.0));
+    assert!(beaten.iter().all(|c| c.arm != Arm::Random));
 }

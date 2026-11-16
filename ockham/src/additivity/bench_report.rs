@@ -11,8 +11,9 @@ use serde::Serialize;
 use super::manifest::{BenchManifest, REPRESENTATIVE_PARENTS};
 use super::rank::{self, ARMS, Arm, AuditMetrics, Distribution, PairedComparison};
 
-/// Layout version of the report JSON.
-pub const REPORT_FORMAT_VERSION: u32 = 1;
+/// Layout version of the report JSON. Version 2 split the search pool from the
+/// audit pool and added the search-side fields.
+pub const REPORT_FORMAT_VERSION: u32 = 2;
 
 /// Statement written into every report about who may accept a creature.
 pub const AUTHORITY: &str = "predictions only rank candidates for full evaluation; the full-corpus \
@@ -34,14 +35,18 @@ pub struct ManifestEcho {
     pub core_fraction: f64,
     /// Cost function name.
     pub cost: String,
-    /// Bundles audited per (parent, budget, seed).
+    /// Bundles audited per (parent, budget, seed). It also sets the search pool's
+    /// requested size.
     pub audit_pool: usize,
-    /// Per-arm full-scorer budget.
+    /// Per-arm full-scorer budget: at most this many search-pool picks are scored.
     pub full_evaluations: usize,
     /// Top-ranked bundles counted by the top-k recall.
     pub top_k: usize,
     /// Promotion threshold used by the audit.
     pub min_improvement: f64,
+    /// Predeclared per-arm search budget in milliseconds, or `None` when the
+    /// search is not wall-clock limited.
+    pub search_wall_clock_ms: Option<u64>,
     /// Predeclared adoption rule, verbatim.
     pub decision_rule: String,
 }
@@ -59,6 +64,7 @@ impl ManifestEcho {
             full_evaluations: manifest.full_evaluations,
             top_k: manifest.top_k,
             min_improvement: manifest.min_improvement,
+            search_wall_clock_ms: manifest.search_wall_clock_ms,
             decision_rule: manifest.decision_rule.clone(),
         }
     }
@@ -90,10 +96,12 @@ pub struct CacheStats {
     pub peak_bytes: u64,
     /// Configured byte limit.
     pub max_cache_bytes: u64,
-    /// Bound on the bench's own RAM, in bytes, excluding the parent and the
-    /// bundle creatures: one cache entry's accumulator plus fixed chunk buffers.
-    /// The bench also holds at most `auditPool` materialised bundle creatures
-    /// and the parent at once. It never holds neurons × records × outputs.
+    /// Computed bound on the bench's own RAM, in bytes, excluding the parent and
+    /// the bundle creatures: one cache entry's accumulator plus fixed chunk
+    /// buffers. The bench holds at most `auditPool` materialised bundle creatures
+    /// at once, the audit pool then the search pool, never both. The measured
+    /// peak is `measuredPeakRssBytes` on the report. It never holds neurons ×
+    /// records × outputs.
     pub ram_bound_bytes: u64,
     /// Wall time spent building entries, in milliseconds.
     pub build_ms: u64,
@@ -203,19 +211,87 @@ pub struct Refusal {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pick {
-    /// Scored bundle index.
+    /// Index into the row's `search.bundles`.
     pub bundle: usize,
     /// Full score from the arm's own search call.
     pub score: f64,
+    /// Whether the call ended within the wall-clock budget. Always true without a
+    /// budget. A pick whose call ended past it still counts in `cost_ms.scorer`,
+    /// but it is not eligible for selection.
+    pub within_budget: bool,
+}
+
+/// A unique bundle of the search pool. It is estimated but never scored as a
+/// whole: only the picks an arm sends to the scorer get a full score.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchBundle {
+    /// Position in the search pool, also the scorer file name `b{index}.json`
+    /// in each search call.
+    pub index: usize,
+    /// Requested member UUIDs, in rank order.
+    pub members: Vec<String>,
+    /// Same as [`BundleRow::overlaps`]: members absent from the core's
+    /// requested list.
+    pub overlaps: Vec<String>,
+    /// Same as [`BundleRow::missing`]: members that are not hidden neurons of
+    /// the parent.
+    pub missing: Vec<String>,
+    /// Same as [`BundleRow::cascade_neurons`]: neurons removed on top of the
+    /// request.
+    pub cascade_neurons: Vec<String>,
+    /// Same as [`BundleRow::spliced_neurons`]: pass-throughs the cleanup
+    /// spliced out.
+    pub spliced_neurons: Vec<String>,
+    /// Hidden neurons removed, from the materialised structure.
+    pub hidden_removed: usize,
+    /// Synapses removed, from the materialised structure.
+    pub synapses_removed: usize,
+    /// Growth units removed, from the materialised structure.
+    pub growth_units_removed: f64,
+    /// Whether `hidden_removed` reaches the requested removals.
+    pub meets_budget: bool,
+    /// SHA-256 of the materialised creature's canonical JSON.
+    pub creature_digest: String,
+    /// Diagnostic additive loss improvement, `-Σ(Li - L0)`, when estimated.
+    pub additive_loss: Option<f64>,
+    /// Cached-output loss improvement, `L0 - predicted loss`, when estimated.
+    pub cached_output: Option<f64>,
+}
+
+/// The search pool of one row: drawn with its own seed, materialised, and
+/// estimated, separately from the audit pool.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchPool {
+    /// Distinct member sets the search pool drew.
+    pub requested: usize,
+    /// Search-pool bundles the core materialised, including duplicates.
+    pub size: usize,
+    /// Search-pool bundles whose creature repeated an earlier one.
+    pub duplicates: Vec<DuplicateBundle>,
+    /// Search-pool bundles the core refused.
+    pub refused: Vec<Refusal>,
+    /// Unique search-pool bundles, in the order they were materialised.
+    pub bundles: Vec<SearchBundle>,
+    /// Wall time materialising the search pool, in milliseconds.
+    pub materialisation_ms: u64,
+    /// Wall time computing the search pool's estimates, in milliseconds.
+    pub estimate_ms: u64,
 }
 
 /// Milliseconds attributed to one arm's economics.
 ///
 /// Single proposals and cache build or read are charged to arms that rank by
 /// singles (`current`, `additiveLoss`, `cachedOutput`). `random` is charged
-/// pool materialisation, its own ranking and its own scorer call; it is not
-/// charged single proposals, cache build or cache reads. The proposability
-/// screen is shared and reported at parent level.
+/// search-pool materialisation, its own ranking and its own scorer calls; it is
+/// not charged single proposals, cache build or cache reads. The proposability
+/// screen is shared and reported at parent level. The audit pool's costs are not
+/// charged to any arm.
+///
+/// `total` is the sum of the components. Under a `searchWallClockMs` budget the
+/// first five components are what the budget is charged with, and `scorer` is
+/// what the arm's own calls took.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArmCost {
@@ -223,16 +299,31 @@ pub struct ArmCost {
     pub single_proposals: u64,
     /// Cache entry construction for the parent.
     pub cache_build: u64,
-    /// Cache reads for singles, plus inference for predictor arms.
+    /// Cache reads for singles, plus the search pool's estimate time: for
+    /// `additiveLoss`, the additive-sum estimates; for `cachedOutput`, its
+    /// cached-output estimate reads.
     pub cache_read_inference: u64,
-    /// Materialising the pool bundles.
+    /// Materialising the search pool.
     pub pool_materialisation: u64,
-    /// Ordering the pool.
+    /// Ordering the search pool.
     pub ranking: u64,
-    /// The arm's own full-scorer search call.
+    /// The arm's own full-scorer search calls.
     pub scorer: u64,
     /// Sum of the components above.
     pub total: u64,
+}
+
+/// Why an arm's search stopped scoring picks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchStop {
+    /// The arm scored its `fullEvaluations` picks.
+    FullEvaluations,
+    /// The search pool had fewer than `fullEvaluations` unique bundles, and all
+    /// of them were scored.
+    PoolExhausted,
+    /// The wall-clock budget ran out before the arm's picks were all scored.
+    WallClock,
 }
 
 /// One arm's result for one row.
@@ -241,13 +332,21 @@ pub struct ArmCost {
 pub struct ArmRow {
     /// Arm name.
     pub arm: Arm,
-    /// Full pool ordering the arm produced.
+    /// Audit pool ordering the arm produced, over `bundles`.
     pub ranking: Vec<usize>,
-    /// Ranking audit against the full-scorer truth.
+    /// Ranking audit against the full-scorer truth of the audit pool.
     pub audit: AuditMetrics,
-    /// The arm's top-E picks, each with its search-call score.
+    /// Search pool ordering the arm produced, over `search.bundles`.
+    pub search_ranking: Vec<usize>,
+    /// The search-pool picks the arm scored, in ranking order, each with its
+    /// search-call score and whether it was within the wall-clock budget.
     pub picks: Vec<Pick>,
-    /// Best full score among the picks, or `None` when there were no picks.
+    /// Why the search stopped: all `fullEvaluations` picks scored, the pool ran
+    /// out first, or the wall-clock budget did. Always `Some` on a feasible row.
+    pub stopped_by: Option<SearchStop>,
+    /// Index into `search.bundles` of the best full score among the within-budget
+    /// picks, ties to the lower index. `None` when no pick is within budget,
+    /// including when there were no picks.
     pub selected_bundle: Option<usize>,
     /// Selected bundle's full score.
     pub selected_score: Option<f64>,
@@ -257,27 +356,29 @@ pub struct ArmRow {
     pub selected_complexity_penalty: Option<f64>,
     /// Selected score minus the parent's score.
     pub selected_delta: Option<f64>,
-    /// Audit best truth minus the selected truth.
+    /// Best selected score among this row's arms minus this arm's selected
+    /// score. At least zero; paired within the shared search pool. `None` when
+    /// this arm selected nothing. The audit's own regret is `audit.regret`.
     pub selected_regret: Option<f64>,
-    /// Selected bundle's hidden neurons removed.
+    /// Selected bundle's hidden neurons removed, from `search.bundles`.
     pub selected_hidden_removed: Option<usize>,
-    /// Selected bundle's synapses removed.
+    /// Selected bundle's synapses removed, from `search.bundles`.
     pub selected_synapses_removed: Option<usize>,
     /// Held-out score of the selected creature, when validation data is set.
     pub validation_score: Option<f64>,
     /// Held-out error of the selected creature, when validation data is set.
     pub validation_error: Option<f64>,
-    /// Full-scorer calls made for the arm's search. Always 1: each arm makes
-    /// one search call over its own picks.
+    /// Full-scorer calls made for the arm's search: one batched call over its
+    /// picks without a wall-clock budget, else one call per pick scored.
     pub full_scorer_calls: u64,
-    /// Record evaluations: picks times corpus records, plus core records for singles.
+    /// Record evaluations: picks scored times corpus records, plus core records for singles.
     pub record_evaluations: u64,
     /// Cost breakdown in milliseconds.
     pub cost_ms: ArmCost,
-    /// Measured prediction time per estimated bundle, in milliseconds, for
-    /// predictor arms: the time spent forming their predictions, divided by
-    /// the bundles that had an estimate. `None` for non-predictor arms, and
-    /// when no bundle had an estimate.
+    /// Measured prediction time per estimated search-pool bundle, in milliseconds,
+    /// for predictor arms: the time spent forming their search-pool predictions,
+    /// divided by the search bundles that had an estimate. `None` for
+    /// non-predictor arms, and when no search bundle had an estimate.
     pub inference_latency_ms: Option<f64>,
 }
 
@@ -315,26 +416,36 @@ pub struct BenchRow {
     pub reason: Option<String>,
     /// Proposable singles available for removal.
     pub eligible: usize,
-    /// Distinct member sets the pool drew.
+    /// Distinct member sets the audit pool drew.
     pub pool_requested: usize,
-    /// Pool bundles the core materialised, including duplicates.
+    /// Audit-pool bundles the core materialised, including duplicates.
     pub pool_size: usize,
-    /// Pool bundles whose creature repeated an earlier one.
+    /// Audit-pool bundles whose creature repeated an earlier one.
     pub duplicates: Vec<DuplicateBundle>,
-    /// Pool bundles the core refused.
+    /// Audit-pool bundles the core refused.
     pub refused: Vec<Refusal>,
-    /// Unique materialised bundles, scored by the audit.
+    /// Unique audit-pool bundles, scored by the audit.
     pub bundles: Vec<BundleRow>,
     /// Audit call accounting.
     pub audit: AuditCost,
-    /// Wall time materialising the pool, in milliseconds.
+    /// Wall time materialising the audit pool, in milliseconds.
     pub pool_materialisation_ms: u64,
-    /// Wall time computing the row's estimates, in milliseconds.
+    /// Wall time computing the audit pool's estimates, in milliseconds.
     pub estimate_ms: u64,
     /// Parent's held-out score, when validation data is set.
     pub validation_parent_score: Option<f64>,
-    /// One result per arm, in report order.
+    /// The separately drawn search pool the arms ranked and searched. `None`
+    /// for infeasible rows, and for rows that stopped before the search.
+    pub search: Option<SearchPool>,
+    /// One result per arm, in report order. Empty for infeasible rows.
     pub arms: Vec<ArmRow>,
+    /// The bench process's peak resident set in bytes (`VmHWM`) as the kernel
+    /// reports it at the end of this row. The reading is approximate, so
+    /// successive rows' readings are not guaranteed to be monotone. The external
+    /// scorer child processes are not included. `None` where
+    /// `/proc/self/status` is unavailable, or its `VmHWM` line is missing or
+    /// malformed.
+    pub measured_peak_rss_bytes: Option<u64>,
 }
 
 /// Distribution summary for one arm across the rows of one budget.
@@ -347,12 +458,17 @@ pub struct ArmAggregate {
     pub spearman: Option<Distribution>,
     /// Top-k recall of the arm's ordering.
     pub top_k_recall: Option<Distribution>,
-    /// Audit best minus the selected truth.
+    /// Best selected score in the row minus this arm's selected score.
     pub regret: Option<Distribution>,
     /// Selected full score minus the parent's score.
     pub selected_delta: Option<Distribution>,
     /// Arm total cost in milliseconds.
     pub total_ms: Option<Distribution>,
+    /// Feasible rows in which this arm selected nothing (no within-budget pick,
+    /// or no pick at all). Such rows carry no `selectedDelta` or `regret`, so
+    /// those distributions cover only the remaining rows; this count keeps the
+    /// difference visible.
+    pub rows_without_selection: usize,
 }
 
 /// Aggregate over every feasible row of one budget.
@@ -371,6 +487,13 @@ pub struct BudgetAggregate {
     pub cached_output_vs_current: Option<PairedComparison>,
     /// Selected full score: cachedOutput against random, over (parent, seed).
     pub cached_output_vs_random: Option<PairedComparison>,
+    /// Feasible rows left out of the cachedOutput-versus-current comparison
+    /// because cachedOutput or current selected nothing in them. A row where
+    /// cachedOutput selected nothing while current did is also listed in
+    /// `casesBeatingCachedOutput`, with a null `cachedOutputScore`.
+    pub paired_rows_excluded_vs_current: usize,
+    /// The same for the cachedOutput-versus-random comparison.
+    pub paired_rows_excluded_vs_random: usize,
 }
 
 /// A case where an arm selected a strictly better full score than cachedOutput.
@@ -387,8 +510,9 @@ pub struct BeatenCase {
     pub arm: Arm,
     /// That arm's selected full score.
     pub arm_score: f64,
-    /// cachedOutput's selected full score.
-    pub cached_output_score: f64,
+    /// cachedOutput's selected full score; `None` where cachedOutput selected
+    /// nothing in the row (counted as a loss to an arm that did select).
+    pub cached_output_score: Option<f64>,
 }
 
 /// The complete benchmark report written by the CLI.
@@ -413,6 +537,11 @@ pub struct BenchReport {
     pub aggregate: Vec<BudgetAggregate>,
     /// Every case where current or random beat cachedOutput on selected score.
     pub cases_beating_cached_output: Vec<BeatenCase>,
+    /// The bench process's own peak resident set in bytes (`VmHWM`), read at the
+    /// end of the run. The external scorer child processes are not included.
+    /// `None` where `/proc/self/status` is unavailable, or its `VmHWM` line is
+    /// missing or malformed. `ramBoundBytes` stays the computed bound.
+    pub measured_peak_rss_bytes: Option<u64>,
 }
 
 /// Evidence grade for a run over `parents` parents.
@@ -466,26 +595,47 @@ pub fn aggregate(
                     regret: picked(&|a| a.selected_regret),
                     selected_delta: picked(&|a| a.selected_delta),
                     total_ms: picked(&|a| Some(a.cost_ms.total as f64)),
+                    rows_without_selection: feasible
+                        .iter()
+                        .filter(|row| arm_of(row, arm).is_none_or(|a| a.selected_score.is_none()))
+                        .count(),
                 }
             })
             .collect();
 
-        let mut cached = Vec::new();
-        let mut current = Vec::new();
-        let mut random = Vec::new();
+        // Each arm is compared with cachedOutput on its own, over the rows in
+        // which both selected, so one arm selecting nothing never hides the
+        // other arm's win.
+        let mut vs_current = (Vec::new(), Vec::new());
+        let mut vs_random = (Vec::new(), Vec::new());
+        let mut excluded_current = 0;
+        let mut excluded_random = 0;
         for row in &feasible {
             let score = |arm: Arm| arm_of(row, arm).and_then(|a| a.selected_score);
-            let (Some(c), Some(cur), Some(rnd)) = (
-                score(Arm::CachedOutput),
-                score(Arm::Current),
-                score(Arm::Random),
-            ) else {
-                continue;
-            };
-            cached.push(c);
-            current.push(cur);
-            random.push(rnd);
-            for (arm, value) in [(Arm::Current, cur), (Arm::Random, rnd)] {
+            let cached_score = score(Arm::CachedOutput);
+            for (arm, pairs, excluded) in [
+                (Arm::Current, &mut vs_current, &mut excluded_current),
+                (Arm::Random, &mut vs_random, &mut excluded_random),
+            ] {
+                let value = score(arm);
+                // cachedOutput selecting nothing is a loss to any arm that did
+                // select: list it, with no cachedOutput score, never drop it.
+                if let (None, Some(value)) = (cached_score, value) {
+                    beaten.push(BeatenCase {
+                        parent: row.parent.clone(),
+                        budget,
+                        seed: row.seed,
+                        arm,
+                        arm_score: value,
+                        cached_output_score: None,
+                    });
+                }
+                let (Some(c), Some(value)) = (cached_score, value) else {
+                    *excluded += 1;
+                    continue;
+                };
+                pairs.0.push(c);
+                pairs.1.push(value);
                 if value - c > TIE_TOLERANCE {
                     beaten.push(BeatenCase {
                         parent: row.parent.clone(),
@@ -493,25 +643,28 @@ pub fn aggregate(
                         seed: row.seed,
                         arm,
                         arm_score: value,
-                        cached_output_score: c,
+                        cached_output_score: Some(c),
                     });
                 }
             }
         }
-        let pair = |other: &[f64]| -> Result<Option<PairedComparison>, String> {
-            if cached.is_empty() {
-                Ok(None)
-            } else {
-                rank::paired(&cached, other).map(Some)
-            }
-        };
+        let pair =
+            |(cached, other): &(Vec<f64>, Vec<f64>)| -> Result<Option<PairedComparison>, String> {
+                if cached.is_empty() {
+                    Ok(None)
+                } else {
+                    rank::paired(cached, other).map(Some)
+                }
+            };
         out.push(BudgetAggregate {
             budget,
             feasible_rows: feasible.len(),
             infeasible_rows: mine.len() - feasible.len(),
             arms,
-            cached_output_vs_current: pair(&current)?,
-            cached_output_vs_random: pair(&random)?,
+            cached_output_vs_current: pair(&vs_current)?,
+            cached_output_vs_random: pair(&vs_random)?,
+            paired_rows_excluded_vs_current: excluded_current,
+            paired_rows_excluded_vs_random: excluded_random,
         });
     }
     Ok((out, beaten))
