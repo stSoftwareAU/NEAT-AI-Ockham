@@ -73,12 +73,15 @@ This is a docs-only change, with no UI files.
 
 ## Acceptance Criteria
 
-The issue has no Acceptance Criteria or Definition of done heading. These
-parts of it remain undone:
+<!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **missing** — "Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit" — reason: only fixture results exist; a representative run needs a private corpus, a mature creature and `rust_scorer`, none of which are on this host
-- **missing** — "Compare diagnostic value and possible screening benefit with current sample error, measuring false rejection of genuinely better children" — reason: the comparison has run on fixture children only, not on real children
-- **missing** — "Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs" — reason: no success is claimed and the retention rule is now predeclared, but the keep-or-remove decision itself waits for a representative run
+The issue has no Acceptance Criteria or Definition of done heading. The
+criteria below come from its "Execution and acceptance" list. A spec-review
+sub-agent re-checked them against this diff and the issue body on 2026-11-16.
+
+- **partial** — "Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit" — evidence: `ockham/src/preservation.rs`, `docs/preservation-audit.md` — reviewer: partial — reason: the merged command, frozen manifest and JSON report already give paired rows, a bootstrap `ci95`, `failures` and `coverage`, but no non-fixture run exists; it needs a private corpus, a mature creature and `rust_scorer`, none of which are on this host
+- **partial** — "Compare diagnostic value and possible screening benefit with current sample error, measuring false rejection of genuinely better children" — evidence: `ockham/src/preservation.rs` (`gates.sample` against `gates.preservation`) — reviewer: partial — reason: the report can count false rejections of children with `fullDelta > 0` under each gate, but the comparison has run on fixture children only, so neither diagnostic value nor a screening benefit has been measured
+- **partial** — "Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs" — evidence: `docs/preservation-audit.md` ("Representative run and retention rule (private, not yet performed)") — reviewer: partial — reason: no success is claimed and the keep-or-remove rule is fixed in advance, but with no representative run there is no finding to record and nothing has been kept or removed yet
 
 ## Test Plan
 
