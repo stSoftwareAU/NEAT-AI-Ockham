@@ -182,8 +182,8 @@ The five bench stages were re-run at code revision
 `e02ef9f250c7169d7718ba6669b3030989aa6ea2`. The run used the same scorer
 binary and the same generated parents and corpora. Its manifest was rewritten
 from the same raw logs, and the re-curated histories were byte-identical. The
-outputs are in [cost-recount](cost-recount/): the manifest, preflight, freeze,
-gzipped audit and results. Manifest identity is
+outputs are in [cost-recount](cost-recount/): the manifest, preflight, pilot,
+freeze, gzipped audit and results. Their checksums are listed below. Manifest identity is
 `df9353fdc595f3f8bde77d1c239aa2af86b4e6217c4bf8bfd91e34759f1928ee`, and the
 charged `acquisitionMs` values are 438 and 400 (recorded time plus 2 ms of
 curation each).
@@ -228,6 +228,13 @@ the archive, and it does not demonstrate a benefit either.
 | `audit.json` (decompressed) | `687d7905d2fc839eee80119602902de29bd2c00a53edb1bd815fdbffb937be17` |
 | `source-1/history.jsonl` | `814d8ca28dcac4ee4799fe5cc7d46feb3097b01a7406c180a1bac446e1f2263a` |
 | `source-2/history.jsonl` | `deeacf066c3197b35b080612a92c1e7f69bca4ea8800f6a468213b3ca530f979` |
+| `cost-recount/manifest.json` | `321f335edfac4a063d5a8944d4fb97216a0fe283ec2d5afaada50f9dca7989ad` |
+| `cost-recount/preflight.json` | `71ab8cbda3a7c98084e9c1970623b69f016924a95c47599cd8cd8b49c3215ed5` |
+| `cost-recount/pilot.json` | `3659b370b6db24cd1d1b82daf2ccd729dbc0f93b92b9f3e917299707521ad0d4` |
+| `cost-recount/frozen.json` | `baf32530ed90b871f91d0a38ab58170cb3ae190dd6b5bdd934ff4e856e119de4` |
+| `cost-recount/results.json` | `4047ebb8a9cc32a5be93a2e769735e7b132caf1d11c1222814f2c88a13c5b1ab` |
+| `cost-recount/audit.json.gz` | `4b281a2b118a2b9a23f1d82d7ce24108ded4c5382b70d454775696393f233d09` |
+| `cost-recount/audit.json` (decompressed) | `478c59ac19579ee53b4815c910af418bc6529c02ac6fe4032f48e35cf1444bae` |
 
 The archived audit is gzipped with `gzip -n -9`. The decompressed file is
 byte-exact with the run's `audit.json`. The other archived files are byte-exact
