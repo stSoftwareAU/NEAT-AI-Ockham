@@ -813,11 +813,51 @@ mod tests {
                 sha256_hex(&read(&task_dir.join("parent.json")).unwrap()),
                 "parent digest of {id}"
             );
+            // The committed corpus is the run's own bytes: its digest is the manifest's.
+            let committed_corpus = committed.join(id).join("corpus");
             assert_eq!(
                 task["corpusSha256"].as_str().unwrap(),
-                corpus_sha256(&task_dir.join("corpus")).unwrap(),
-                "corpus digest of {id}"
+                corpus_sha256(&committed_corpus).unwrap(),
+                "committed corpus digest of {id}"
             );
+            // A regenerated corpus is compared by value, not by digest: the
+            // targets go through the host libm `tanhf`, whose last bits differ
+            // between libm builds and CPU architectures.
+            let committed_values = corpus_values(&committed_corpus.join("records.bin"));
+            let regenerated = corpus_values(&task_dir.join("corpus").join("records.bin"));
+            assert_eq!(
+                committed_values.len(),
+                regenerated.len(),
+                "record count of {id}"
+            );
+            for (index, (kept, fresh)) in committed_values.iter().zip(&regenerated).enumerate() {
+                let is_target = index % (INPUTS + 1) == INPUTS;
+                let limit = if is_target { TARGET_TOLERANCE } else { 0.0 };
+                assert!(
+                    (kept - fresh).abs() <= limit,
+                    "{id} value {index}: committed {kept}, regenerated {fresh}"
+                );
+            }
         }
+    }
+
+    /// Inputs per record in a synthetic corpus; the target follows them.
+    const INPUTS: usize = 4;
+
+    /// Largest difference allowed between a committed target and one
+    /// regenerated on this host. Targets are sums of a few `tanhf` terms, each
+    /// off by at most a couple of ulps between libm builds, so this is far
+    /// above any libm difference and far below the spread between tasks.
+    const TARGET_TOLERANCE: f32 = 1e-5;
+
+    /// Every little-endian `f32` in a `records.bin`, inputs and targets alike.
+    fn corpus_values(bin: &Path) -> Vec<f32> {
+        let bytes = read(bin).unwrap();
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|word| f32::from_le_bytes(*word))
+            .collect()
     }
 }

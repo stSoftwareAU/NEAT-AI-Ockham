@@ -13,6 +13,12 @@ The [manifest](manifest.json), [preflight](preflight.json),
 transfer arms. The protocol is described in
 [the ranking-v1 experiment](../../experiments/ranking-v1.md).
 
+Each task's generated corpus is committed as `<task>/corpus/records.bin`. Its
+SHA-256 over the concatenated `.bin` bytes is the manifest's `corpusSha256`.
+The generator's targets go through the host libm `tanhf`, whose last bits differ
+between libm builds, so the test regenerates the corpora and compares them by
+value (inputs exactly, targets within `1e-5`) rather than by digest.
+
 ## Versions and pins
 
 - Code revision `a27d638a209e78f24a1ce7d890521c83d058d180`, the manifest's
