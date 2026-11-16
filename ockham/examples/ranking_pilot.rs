@@ -7,7 +7,7 @@
 //! then writes `manifest.json`. An optional `<task>/acquisition-ms` file holds
 //! that ordinary run's wall time in milliseconds.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -189,24 +189,52 @@ struct Curated {
     duplicate: usize,
 }
 
-/// Keep the first row per `(uuid, kind, merged_with)` among rows naming the parent checksum.
+/// Whether a row carries both a full-corpus Δ and a sampled Δ.
+fn is_labelled(row: &CandidateRecord) -> bool {
+    row.full_delta.is_some() && row.sample_delta.is_some()
+}
+
+/// Keep one row per `(uuid, kind, merged_with)` among rows naming the parent checksum.
+///
+/// The kept row is the first labelled one for its key, or the first row for the key
+/// when none is labelled. An ordinary sweep re-screens the same candidate many times
+/// and only promoted ones get a full score, so first-row-wins discards the labelled observation.
+/// Kept rows stay in the order they had in the log.
 fn curate(rows: Vec<CandidateRecord>, parent_sha: &str) -> Curated {
-    let mut seen = BTreeSet::new();
-    let mut curated = Curated {
-        kept: Vec::new(),
-        other_incumbent: 0,
-        duplicate: 0,
-    };
-    for row in rows {
+    let mut other_incumbent = 0;
+    let mut parent_rows = 0;
+    // Position in `rows` of the row kept for each key.
+    let mut kept_at: BTreeMap<(String, String, Option<String>), usize> = BTreeMap::new();
+    for (position, row) in rows.iter().enumerate() {
         if row.creature_checksum != parent_sha {
-            curated.other_incumbent += 1;
-        } else if seen.insert((row.uuid.clone(), row.kind.clone(), row.merged_with.clone())) {
-            curated.kept.push(row);
-        } else {
-            curated.duplicate += 1;
+            other_incumbent += 1;
+            continue;
+        }
+        parent_rows += 1;
+        let key = (row.uuid.clone(), row.kind.clone(), row.merged_with.clone());
+        match kept_at.get(&key).copied() {
+            None => {
+                kept_at.insert(key, position);
+            }
+            Some(current) if is_labelled(row) && !is_labelled(&rows[current]) => {
+                kept_at.insert(key, position);
+            }
+            Some(_) => {}
         }
     }
-    curated
+    let kept_positions: BTreeSet<usize> = kept_at.into_values().collect();
+    let duplicate = parent_rows - kept_positions.len();
+    let kept = rows
+        .into_iter()
+        .enumerate()
+        .filter(|(position, _)| kept_positions.contains(position))
+        .map(|(_, row)| row)
+        .collect();
+    Curated {
+        kept,
+        other_incumbent,
+        duplicate,
+    }
 }
 
 /// SHA-256 over the concatenated `.bin` files of `corpus`, in sorted path order.
@@ -541,9 +569,12 @@ mod tests {
         let other = sha256_hex(b"another incumbent");
         for id in ["source-1", "source-2"] {
             let parent = parent_sha(&dir, id);
+            // An unlabelled screen comes first; the labelled re-screen of the same key follows.
+            let mut labelled = row(&parent, "h0", Some(0.2));
+            labelled.sample_delta = Some(0.5);
             let rows = [
-                row(&parent, "h0", Some(0.1)),
-                row(&parent, "h0", Some(0.2)),
+                row(&parent, "h0", None),
+                labelled,
                 row(&other, "h1", Some(0.3)),
             ];
             write_raw(&dir, id, &rows);
@@ -564,8 +595,8 @@ mod tests {
             );
             assert_eq!(
                 history[0].full_delta,
-                Some(0.1),
-                "{id} keeps the first observation"
+                Some(0.2),
+                "{id} keeps the labelled observation"
             );
         }
 
