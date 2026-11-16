@@ -103,6 +103,10 @@ Mean per-trial strategy cost in the primary cell:
 | target-pairwise | 469.3 |
 | transfer-pairwise | 1303.3 |
 
+Each arm's per-trial cost is its full strategy ledger, which includes the
+preparation and scoring that every arm shares, so the "about four times" ratio
+in the Finding compares totals, not arm-specific overhead.
+
 The verdict is `no-demonstrated-benefit`, with the reason "predeclared
 thresholds: recall=false, false rejection=false, total cost=false".
 
@@ -161,8 +165,12 @@ The representative run remains outstanding.
 The archived audit is gzipped with `gzip -n -9`. The decompressed file is
 byte-exact with the run's `audit.json`. The other archived files are byte-exact
 copies of the run's outputs. The integration test
-`ockham/tests/ranking_pilot_archive.rs` checks these digests against the
-archived bytes.
+`ockham/tests/ranking_pilot_archive.rs` recomputes the decompressed audit, pilot
+and source-history digests from the archived bytes and checks them against the
+digests recorded in `results.json`, `frozen.json` and the manifest. It also
+checks that the manifest identity agrees across preflight, freeze and results,
+the verdict, the primary-cell sign, and that every pool is complete. The
+remaining rows of the table above are a record, not checked by the test.
 
 ## Reproduce
 
@@ -188,7 +196,8 @@ Generate the inputs into a new directory `<dir>`, which must not exist:
 
 Run the two source searches. Time each one in milliseconds (for example with
 `date +%s%3N` before and after), and write the figure to
-`<dir>/$t/acquisition-ms`:
+`<dir>/$t/acquisition-ms`. The file is required: the manifest step refuses a
+source task without it:
 
 ```sh
 for t in source-1 source-2; do

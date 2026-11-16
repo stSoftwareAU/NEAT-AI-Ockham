@@ -4,8 +4,8 @@
 //! `manifest <dir> --scorer <path> --code-revision <40-hex> [--cutoff-unix <u64>]`
 //! curates each source task's `raw-candidates.jsonl` (written beforehand by
 //! `neat_ai_ockham <parent> <corpus> --candidate-log ...`) into `history.jsonl`,
-//! then writes `manifest.json`. An optional `<task>/acquisition-ms` file holds
-//! that ordinary run's wall time in milliseconds.
+//! then writes `manifest.json`. Each source task also needs a `<task>/acquisition-ms`
+//! file holding that ordinary run's wall time in milliseconds; the manifest refuses without it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
@@ -258,7 +258,10 @@ fn corpus_sha256(corpus: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// The operator-recorded wall time of the ordinary run, or 0 when `acquisition-ms` is absent.
+/// The operator-recorded wall time of the ordinary run, in milliseconds.
+///
+/// The file is required: a missing `acquisition-ms` is an error, so an unrecorded
+/// cost never silently becomes 0.
 fn acquisition_ms(task_dir: &Path) -> Result<u64, String> {
     let path = task_dir.join("acquisition-ms");
     match std::fs::read_to_string(&path) {
@@ -266,7 +269,9 @@ fn acquisition_ms(task_dir: &Path) -> Result<u64, String> {
             .trim()
             .parse::<u64>()
             .map_err(|e| format!("'{}': {e}", path.display())),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(0),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            Err(format!("required file '{}' is missing", path.display()))
+        }
         Err(e) => Err(format!("cannot read '{}': {e}", path.display())),
     }
 }
@@ -275,9 +280,10 @@ fn acquisition_ms(task_dir: &Path) -> Result<u64, String> {
 ///
 /// # Errors
 ///
-/// Refuses an existing `manifest.json` or `history.jsonl`, and a source task with
-/// no labelled row for its parent. Curation finishes before the first write, so
-/// a refusal writes no history and no manifest.
+/// Refuses an existing `manifest.json` or `history.jsonl`, a source task with
+/// no fully scored row (full and sampled delta) for its parent, and a source task
+/// with no `acquisition-ms` file. Curation and these checks finish before the first
+/// write, so a refusal writes no history and no manifest.
 pub fn write_manifest(
     dir: &Path,
     scorer: &Path,
@@ -288,6 +294,7 @@ pub fn write_manifest(
     let scorer_sha = sha256_hex(&read(scorer)?);
 
     let mut curated_sources = Vec::new();
+    let mut acquisition = BTreeMap::new();
     for (id, split, ..) in TASKS {
         if split != "source" {
             continue;
@@ -299,12 +306,16 @@ pub fn write_manifest(
         let rows = telemetry::load(&raw)?;
         let total = rows.len();
         let curated = curate(rows, &parent_sha);
-        if !curated.kept.iter().any(|r| r.full_delta.is_some()) {
+        if !curated.kept.iter().any(is_labelled) {
             return Err(format!(
-                "{id}: no labelled row (full_delta) for the parent checksum in '{}'",
+                "{id}: no fully scored row (full and sampled delta) for the parent checksum in '{}'",
                 raw.display()
             ));
         }
+        acquisition.insert(
+            id,
+            acquisition_ms(&task_dir).map_err(|e| format!("{id}: {e}"))?,
+        );
         let kept = curated.kept.len();
         eprintln!(
             "{id}: kept {kept}, dropped {} ({} other incumbent, {} duplicate) of {total} rows",
@@ -328,7 +339,7 @@ pub fn write_manifest(
             Some(json!({
                 "path": absolute(&path)?,
                 "sha256": sha256_hex(&read(&path)?),
-                "acquisitionMs": acquisition_ms(&task_dir)?,
+                "acquisitionMs": acquisition[id],
             }))
         } else {
             None
@@ -500,11 +511,24 @@ mod tests {
         telemetry::append(&dir.join(id).join("raw-candidates.jsonl"), rows).unwrap();
     }
 
-    /// Give each source task a labelled raw log for its own parent.
+    /// A row with both a full-corpus Δ and a sampled Δ, as a fully scored observation has.
+    fn labelled_row(checksum: &str, uuid: &str) -> CandidateRecord {
+        let mut record = row(checksum, uuid, Some(0.1));
+        record.sample_delta = Some(0.5);
+        record
+    }
+
+    /// Record the ordinary run's acquisition wall time (5 ms) for source task `id`.
+    fn write_acquisition(dir: &Path, id: &str) {
+        std::fs::write(dir.join(id).join("acquisition-ms"), "5").unwrap();
+    }
+
+    /// Give each source task a fully scored raw log for its own parent, and its acquisition time.
     fn write_labelled_sources(dir: &Path) {
         for id in ["source-1", "source-2"] {
             let parent = parent_sha(dir, id);
-            write_raw(dir, id, &[row(&parent, "h0", Some(0.1))]);
+            write_raw(dir, id, &[labelled_row(&parent, "h0")]);
+            write_acquisition(dir, id);
         }
     }
 
@@ -578,6 +602,7 @@ mod tests {
                 row(&other, "h1", Some(0.3)),
             ];
             write_raw(&dir, id, &rows);
+            write_acquisition(&dir, id);
         }
         write_manifest(&dir, &scorer, &"a".repeat(40), CUTOFF).unwrap();
         assert!(
@@ -617,7 +642,7 @@ mod tests {
                 );
                 assert_eq!(
                     history["acquisitionMs"].as_u64(),
-                    Some(0),
+                    Some(5),
                     "{id} acquisitionMs"
                 );
             } else {
@@ -657,23 +682,30 @@ mod tests {
     }
 
     #[test]
-    fn source_without_labelled_parent_rows_is_refused_naming_the_task() {
+    fn source_without_fully_scored_parent_row_is_refused_naming_the_task() {
         let (_tmp, dir, scorer) = pilot();
         let parent = parent_sha(&dir, "source-1");
         let other = sha256_hex(b"another incumbent");
+        // The row with a full-corpus Δ alone has no sampled Δ, so it is not fully scored.
         write_raw(
             &dir,
             "source-1",
-            &[row(&parent, "h0", None), row(&other, "h1", Some(0.2))],
+            &[
+                row(&parent, "h0", None),
+                row(&parent, "h1", Some(0.3)),
+                row(&other, "h2", Some(0.2)),
+            ],
         );
         write_raw(
             &dir,
             "source-2",
-            &[row(&parent_sha(&dir, "source-2"), "h0", Some(0.1))],
+            &[labelled_row(&parent_sha(&dir, "source-2"), "h0")],
         );
+        write_acquisition(&dir, "source-1");
+        write_acquisition(&dir, "source-2");
 
         let err = write_manifest(&dir, &scorer, &"a".repeat(40), CUTOFF)
-            .expect_err("a source without labelled parent rows must be refused");
+            .expect_err("a source without a fully scored parent row must be refused");
         assert!(
             err.contains("source-1"),
             "error should name the task: {err}"
@@ -681,6 +713,28 @@ mod tests {
         assert!(!dir.join("source-1").join("history.jsonl").exists());
         assert!(!dir.join("source-2").join("history.jsonl").exists());
         assert!(!dir.join("manifest.json").exists());
+    }
+
+    #[test]
+    fn source_without_acquisition_ms_is_refused_naming_the_task() {
+        let (_tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        std::fs::remove_file(dir.join("source-1").join("acquisition-ms")).unwrap();
+
+        let err = write_manifest(&dir, &scorer, &"a".repeat(40), CUTOFF)
+            .expect_err("a source without acquisition-ms must be refused");
+        assert!(
+            err.contains("source-1"),
+            "error should name the task: {err}"
+        );
+        assert!(!dir.join("source-1").join("history.jsonl").exists());
+        assert!(!dir.join("source-2").join("history.jsonl").exists());
+        assert!(!dir.join("manifest.json").exists());
+
+        // Positive control: the same fixture, with only the missing file added, is accepted.
+        write_acquisition(&dir, "source-1");
+        write_manifest(&dir, &scorer, &"a".repeat(40), CUTOFF).unwrap();
+        assert!(dir.join("manifest.json").exists());
     }
 
     #[test]
