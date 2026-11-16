@@ -255,6 +255,13 @@ archived pilot predates this change. Measured afterwards, curation took 2 ms
 per source and input generation took 4 to 5 ms, together under 0.3% of the
 archived 3469 ms research total.
 
+The bench's `audit::ms` now rounds elapsed time up. Before this, the archived
+run charged sub-millisecond feature, fit, adaptation and ranking work as 0 ms in
+every trial. A recount at `e02ef9f` used the same scorer and inputs. It
+reproduced identical recall, false rejection, paired intervals, coverage and
+verdict, and charged each overhead at no more than about 1 ms per trial. Its
+outputs are in [cost-recount](../research/ranking-pilot-v1/cost-recount/).
+
 The record is [the synthetic pilot report](../research/ranking-pilot-v1/README.md).
 In the primary cell (full history, calibration 8, evaluation 5; 3 validation
 groups), partial-score ordering alone recovered the full true top set in all

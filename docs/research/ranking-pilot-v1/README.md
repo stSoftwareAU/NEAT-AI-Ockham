@@ -169,6 +169,52 @@ The limits are:
 
 The representative run remains outstanding.
 
+## Cost recount with overhead rounded up
+
+In the archived run, `featureMs`, `trainingMs`, `adaptationMs` and `rankingMs`
+are 0 in all 360 trials. The bench's `audit::ms` rounded elapsed time down to
+whole milliseconds, so feature extraction, fitting, adaptation and ranking
+under 1 ms were charged as nothing. That cost was therefore not counted before
+a rejection could be permitted. `audit::ms` now rounds up, so any non-zero work
+costs at least 1 ms (`cost_milliseconds_round_up_so_sub_millisecond_work_is_counted`).
+
+The five bench stages were re-run at code revision
+`e02ef9f250c7169d7718ba6669b3030989aa6ea2`. The run used the same scorer
+binary and the same generated parents and corpora. Its manifest was rewritten
+from the same raw logs, and the re-curated histories were byte-identical. The
+outputs are in [cost-recount](cost-recount/): the manifest, preflight, freeze,
+gzipped audit and results. Manifest identity is
+`df9353fdc595f3f8bde77d1c239aa2af86b4e6217c4bf8bfd91e34759f1928ee`, and the
+charged `acquisitionMs` values are 438 and 400 (recorded time plus 2 ms of
+curation each).
+
+- Verdict: `no-demonstrated-benefit`, with the same three threshold failures.
+- Coverage: 16 pools, 640 visits selected, 632 generated and fully scored, and
+  every pool complete. These match the archive.
+- Recall and false rejection are identical to the archive in every primary-cell
+  trial. All primary-cell paired differences and intervals are identical too,
+  including the negative transfer on validation-2.
+- Every trial now charges ranking time. 216 of 360 trials charge feature time
+  and 144 charge training time.
+
+Mean per-trial overhead and total strategy cost in the primary cell:
+
+| Strategy | Feature (ms) | Training (ms) | Adaptation (ms) | Ranking (ms) | Total (ms) |
+| --- | --- | --- | --- | --- | --- |
+| random | 0 | 0 | 0 | 1 | 240.0 |
+| partial | 0 | 0 | 0 | 1 | 279.3 |
+| multiple-proxies | 1 | 0 | 0 | 1 | 240.8 |
+| target-pairwise | 1 | 1 | 0 | 1 | 382.2 |
+| transfer-pairwise | 1 | 1 | 1 | 1 | 1223.2 |
+
+These figures are upper bounds of about 1 ms each, because of the rounding.
+On these 256-record synthetic corpora, the model's own feature and fit
+overhead is negligible. The transfer arm's extra cost comes from historical
+acquisition and calibration scoring. Total research cost was 2938 ms here
+against 3469 ms archived. Both were measured on a shared host, so the
+difference is noise, not an effect of the change. This recount does not replace
+the archive, and it does not demonstrate a benefit either.
+
 ## Input checksums
 
 | File | sha256 |
