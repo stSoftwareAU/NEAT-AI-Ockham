@@ -1940,7 +1940,10 @@ benefit. Its optional runtime implementation was removed because it had not
 justified its maintenance cost. The [archived protocol, negative smoke results
 and historical replay command](docs/experiments/soft-gate-v1.md) preserve the
 investigation without adding a production command. Representative comparison
-remains unperformed; the synthetic evidence supports no benefit claim.
+remains unperformed; the synthetic evidence supports no benefit claim. The
+protocol's [representative run section](docs/experiments/soft-gate-v1.md#representative-run-private-not-yet-performed)
+gives the commands for running it privately on one mature creature and its
+corpus.
 
 ## Cascade-aware structural saving
 
