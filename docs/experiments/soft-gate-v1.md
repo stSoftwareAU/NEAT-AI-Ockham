@@ -243,3 +243,53 @@ The paired score distribution and interval match the original synthetic run;
 the scorer hash and timing samples differ; the executable hash matches the
 original build. This verifies that the
 retired protocol can be replayed, without establishing representative benefit.
+
+## Representative run (private, not yet performed)
+
+The comparison this issue owns needs one existing, mature creature and its
+own training corpus. Neither is public, and neither was available to the runs
+that produced the evidence above. A holder of such a pair can run the archived
+protocol on it with the historical source. Run every step on the host that
+will run the study, because the runtime refuses a manifest whose recorded
+hardware or scorer environment differs from the current host:
+
+```bash
+git fetch origin tag issue-262-soft-gate-history
+git worktree add --detach /tmp/soft-gate-source \
+  91e0d56ee27627382989a09dbc31b54b64f90d20
+(cd /tmp/soft-gate-source && cargo build --release --locked \
+  -p neat_ai_ockham --bin neat_ai_ockham < /dev/null)
+OCKHAM="$PRIVATE_DIR/neat_ai_ockham"
+cp /tmp/soft-gate-source/target/release/neat_ai_ockham "$OCKHAM"
+"$OCKHAM" soft-gate prepare /abs/creature.json /abs/corpus-dir \
+  --scorer /abs/rust_scorer --out "$PRIVATE_DIR/manifest.json" \
+  --calibration-records 256 --validation-records 256 < /dev/null
+```
+
+Here `$PRIVATE_DIR` is a private directory outside this repository, and `cp`
+copies the binary out so the worktree can be removed. If `CARGO_TARGET_DIR`
+is set, the binary is under that directory instead of `target/`.
+
+`prepare` writes `"representative": false` and the provenance
+`Unclassified input: smoke study until provenance is reviewed`. Before
+locking, review the seeds, splits, fit, limits and criteria, then set
+`"representative": true` and replace `dataProvenance` with a non-empty
+description (at most 4096 bytes) of where the creature and corpus come from.
+`representative` is the operator's own declaration. The runtime validates the
+manifest's shape and pinned inputs, not whether the data is representative,
+and it reports `representativeCreatures` from that flag alone. Lock and run:
+
+```bash
+SHA="$(sha256sum "$PRIVATE_DIR/manifest.json" | cut -d' ' -f1)"
+timeout 21600 "$OCKHAM" soft-gate run "$PRIVATE_DIR/manifest.json" \
+  --manifest-sha256 "$SHA" --out "$PRIVATE_DIR/study" < /dev/null
+```
+
+Any edit after the checksum is taken is refused with `manifest checksum
+mismatch`, and a blank `dataProvenance` is refused before any work starts.
+A scorer failure is a failed family: the run writes `study/results.json` with
+each failure and exits non-zero. Only a run with `representativeData`,
+`completePairs`, `minimumPairs` and `matchedCost` all true can support the
+retention verdict described under **Predeclaration and cost**. Keep its
+manifest and results private. A public record may state only the verdict,
+the paired summary and the coverage counts.
