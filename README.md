@@ -1933,6 +1933,15 @@ The default ordering changes only if benchmark evidence shows better
 scorer-verified improvement economics. Until then `random` stays the default and
 remains available as the control for every comparison.
 
+## Soft-gate experiment archive
+
+The #262 soft-gate investigation did not establish representative optimisation
+benefit. Its optional runtime implementation was removed because it had not
+justified its maintenance cost. The [archived protocol, negative smoke results
+and historical replay command](docs/experiments/soft-gate-v1.md) preserve the
+investigation without adding a production command. Representative comparison
+remains unperformed; the synthetic evidence supports no benefit claim.
+
 ## Cascade-aware structural saving
 
 Cutting one hidden neuron strands structure on both sides of it. A neuron that
@@ -2495,7 +2504,9 @@ keeps, scored on the same records against two controls: the parent's mean output
 and the parent's outputs with the records shuffled under predeclared seeds. It
 writes one JSON report and changes nothing else. It never changes acceptance,
 never writes a creature, and its similarity scores never substitute for the
-authoritative full scorer. `--manifest-sha256` freezes the manifest, and the
+authoritative full scorer. The report also gives the paper's Functional
+Preservation Score (`fps`), pinned to the authors' toolkit, as a diagnostic that
+never enters the success rule. `--manifest-sha256` freezes the manifest, and the
 report records `versions.manifestSha256` and `versions.manifestFrozen`. The
 hypothesis, formulas, limits and success rule are in
 [docs/preservation-audit.md](docs/preservation-audit.md).
@@ -2816,6 +2827,7 @@ NEAT-AI-Ockham/
 │   ├── incident-response.md # emergency dependency fast lane (SECURITY.md)
 │   ├── additivity-experiment.md # opt-in offline experiment (#260): manifest, arms, report
 │   ├── preservation-audit.md # report-only preservation audit: method and limits
+│   ├── experiments/         # protocols, manifests and public smoke evidence
 │   └── strata-experiment.md # opt-in worst-stratum vs aggregate vs Pareto bench
 ├── scripts/
 │   ├── runlib.sh          # canonical build → install → clean (owned by core)
