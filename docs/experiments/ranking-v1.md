@@ -224,8 +224,13 @@ those extra validation scores are in audit cost, not charged as search queries.
 Recorded incomplete calibration pools still incur their measured collection
 cost even though their labels cannot enter fitting. Residual measured pool wall
 time outside the named scoring and feature stages is charged as preparation,
-including candidate file preparation. Early failures that produce no pool remain
-in the actual audit total and failure list; they have no per-pool strategy ledger.
+including candidate file preparation. Early failures that produce no pool and
+between-pool work stay in the actual audit total and failure list; they have no
+per-pool strategy ledger and are reported separately as `unpooledAuditMs`: the audit wall time minus every
+pool's charged cost, minus protocol setup (charged to every trial as
+`preparationMs`) and history loading (charged to transfer trials in
+`historicalScoringMs`), floored at zero. It is part of `auditCostMs` and is not
+added to the total a second time.
 Final result serialisation/writing and build time are outside these runtime totals.
 Timings on this shared host are indicative, never correctness assertions.
 
