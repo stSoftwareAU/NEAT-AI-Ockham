@@ -249,6 +249,11 @@ Source histories are real ordinary `neat_ai_ockham` searches run with
 and every row names the immutable parent. Curation keeps one observation per
 candidate, preferring a fully scored one, and drops rows naming another
 incumbent. Each source history has 12 candidates, 3 of them fully scored.
+The manifest step adds the measured curation wall time, rounded up to whole
+milliseconds, to each source's recorded search time in `acquisitionMs`. The
+archived pilot predates this change. Measured afterwards, curation took 2 ms
+per source and input generation took 4 to 5 ms, together under 0.3% of the
+archived 3469 ms research total.
 
 The record is [the synthetic pilot report](../research/ranking-pilot-v1/README.md).
 In the primary cell (full history, calibration 8, evaluation 5; 3 validation

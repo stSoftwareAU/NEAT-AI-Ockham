@@ -6,11 +6,16 @@
 //! `neat_ai_ockham <parent> <corpus> --candidate-log ...`) into `history.jsonl`,
 //! then writes `manifest.json`. Each source task also needs a `<task>/acquisition-ms`
 //! file holding that ordinary run's wall time in milliseconds; the manifest refuses without it.
+//! The manifest charges each source's `acquisitionMs` as that recorded time plus the
+//! measured wall time of loading and curating its raw log, rounded up to whole
+//! milliseconds, so curation is counted as a preparation cost of the history.
+//! `inputs` reports its own generation time on stderr.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use neat_ai_ockham::corpus::{corpus_info, write_bin_file};
 use neat_ai_ockham::fixtures::{creature, neuron, synapse};
@@ -276,6 +281,13 @@ fn acquisition_ms(task_dir: &Path) -> Result<u64, String> {
     }
 }
 
+/// The acquisition cost charged to a source history: the recorded ordinary-run
+/// time plus the curation wall time, rounded up so non-zero work is never 0 ms.
+fn charged_acquisition_ms(recorded_ms: u64, curation: Duration) -> u64 {
+    let curation_ms = u64::try_from(curation.as_nanos().div_ceil(1_000_000)).unwrap_or(u64::MAX);
+    recorded_ms.saturating_add(curation_ms)
+}
+
 /// Curate each source history, then write `<dir>/manifest.json` naming every task.
 ///
 /// # Errors
@@ -302,6 +314,7 @@ pub fn write_manifest(
         let task_dir = dir.join(id);
         let parent_sha = sha256_hex(&read(&task_dir.join("parent.json"))?);
         refuse_existing(&task_dir.join("history.jsonl"))?;
+        let curation_started = Instant::now();
         let raw = task_dir.join("raw-candidates.jsonl");
         let rows = telemetry::load(&raw)?;
         let total = rows.len();
@@ -312,16 +325,18 @@ pub fn write_manifest(
                 raw.display()
             ));
         }
-        acquisition.insert(
-            id,
-            acquisition_ms(&task_dir).map_err(|e| format!("{id}: {e}"))?,
-        );
+        let curation = curation_started.elapsed();
+        let recorded = acquisition_ms(&task_dir).map_err(|e| format!("{id}: {e}"))?;
+        let charged = charged_acquisition_ms(recorded, curation);
+        acquisition.insert(id, charged);
         let kept = curated.kept.len();
         eprintln!(
-            "{id}: kept {kept}, dropped {} ({} other incumbent, {} duplicate) of {total} rows",
+            "{id}: kept {kept}, dropped {} ({} other incumbent, {} duplicate) of {total} rows; \
+             acquisitionMs {charged} = recorded {recorded} + curation {} ms",
             total - kept,
             curated.other_incumbent,
-            curated.duplicate
+            curated.duplicate,
+            charged - recorded
         );
         curated_sources.push((id, curated.kept));
     }
@@ -455,7 +470,15 @@ fn main() {
         }
     };
     let result = match command {
-        Command::Inputs(dir) => write_inputs(&dir),
+        Command::Inputs(dir) => {
+            let started = Instant::now();
+            write_inputs(&dir).inspect(|()| {
+                eprintln!(
+                    "inputs: generated in {} ms",
+                    started.elapsed().as_nanos().div_ceil(1_000_000)
+                );
+            })
+        }
         Command::Manifest(dir, scorer, revision, cutoff) => {
             write_manifest(&dir, &scorer, &revision, cutoff)
         }
@@ -640,10 +663,10 @@ mod tests {
                     Some(digest.as_str()),
                     "{id} sha256"
                 );
-                assert_eq!(
-                    history["acquisitionMs"].as_u64(),
-                    Some(5),
-                    "{id} acquisitionMs"
+                let charged = history["acquisitionMs"].as_u64().unwrap();
+                assert!(
+                    charged > 5,
+                    "{id} acquisitionMs {charged} must add curation time to the recorded 5 ms"
                 );
             } else {
                 assert!(
@@ -652,6 +675,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn charged_acquisition_adds_curation_rounded_up() {
+        assert_eq!(
+            charged_acquisition_ms(5, Duration::ZERO),
+            5,
+            "no curation work"
+        );
+        assert_eq!(
+            charged_acquisition_ms(5, Duration::from_nanos(1)),
+            6,
+            "any curation work costs at least 1 ms"
+        );
+        assert_eq!(
+            charged_acquisition_ms(5, Duration::from_millis(2)),
+            7,
+            "whole milliseconds are not rounded further"
+        );
+        assert_eq!(
+            charged_acquisition_ms(5, Duration::from_micros(2_001)),
+            8,
+            "a partial millisecond rounds up"
+        );
+        assert_eq!(
+            charged_acquisition_ms(u64::MAX, Duration::from_millis(1)),
+            u64::MAX,
+            "saturates instead of overflowing"
+        );
     }
 
     #[test]

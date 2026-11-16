@@ -68,6 +68,27 @@ parent. These are search-only histories.
 - Acquisition wall time was 436 ms for source-1 and 398 ms for source-2. These
   are charged without amortisation.
 
+### Preparation costs outside the archived total
+
+The archived `totalResearchMs` (3469 ms) charges the two searches' recorded
+acquisition time, plus the pilot, freeze, audit and evaluation. It does not
+include two preparation steps, which were measured afterwards with the release
+`ranking_pilot` binary on the same host:
+
+- Curation. Loading and curating the archived raw logs took 2 ms per source.
+  The re-curated histories were byte-identical to the archived
+  `history.jsonl` files. `ranking_pilot manifest` now adds this curation time,
+  rounded up to whole milliseconds, to each source's `acquisitionMs`. A rerun
+  therefore charges it to the transfer arm. The archived manifest predates
+  that change and records 436 and 398 ms.
+- Input generation. `ranking_pilot inputs` took 4 to 5 ms over three runs. It
+  builds the synthetic parents and corpora that every arm shares, so it is a
+  fixture cost and not a cost of any ranking method. The command now reports it
+  on stderr.
+
+Together these add about 9 ms, under 0.3% of the archived total. They do not
+change any comparison or the verdict.
+
 ## Results
 
 Paired top-5% recall differences in the primary cell, averaged over the three

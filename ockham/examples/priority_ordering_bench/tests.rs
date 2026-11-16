@@ -1075,3 +1075,34 @@ fn verdict_is_inconclusive_when_fewer_than_three_groups_validate() {
             .any(|r| r.contains("independent validation groups"))
     );
 }
+
+#[test]
+fn cost_milliseconds_round_up_so_sub_millisecond_work_is_counted() {
+    use std::time::Duration;
+    assert_eq!(audit::ceil_ms(Duration::ZERO), 0, "no work costs nothing");
+    assert_eq!(
+        audit::ceil_ms(Duration::from_nanos(1)),
+        1,
+        "sub-millisecond feature or fit work is charged, not rounded to 0"
+    );
+    assert_eq!(
+        audit::ceil_ms(Duration::from_micros(999)),
+        1,
+        "just under 1 ms"
+    );
+    assert_eq!(
+        audit::ceil_ms(Duration::from_millis(3)),
+        3,
+        "whole milliseconds"
+    );
+    assert_eq!(
+        audit::ceil_ms(Duration::from_micros(3_001)),
+        4,
+        "partial ms rounds up"
+    );
+    assert_eq!(
+        audit::ceil_ms(Duration::from_secs(u64::MAX)),
+        u64::MAX,
+        "saturates instead of overflowing"
+    );
+}
