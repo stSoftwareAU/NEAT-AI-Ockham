@@ -248,8 +248,17 @@ git checkout 742c5df30fc98ece3afe784be1aca18f925b47b3
 cargo build --release --locked -p rust_scorer
 ```
 
-Build the Ockham binaries at a clean checkout of the code revision. The
-`<target>` placeholder is the cargo target directory:
+Build the Ockham binaries at a clean checkout. The bench refuses a manifest
+whose `codeRevision` is not the checkout's HEAD, so pass that HEAD to the
+manifest step below.
+
+- Revision `a27d638` reproduces the archive. There, `acquisition-ms` is
+  optional and curation is not charged, and costs are rounded down.
+- Revision `e02ef9f` or later reproduces the [cost recount](cost-recount/).
+  There, `acquisition-ms` is required, curation is charged and costs are
+  rounded up. The steps below describe this behaviour.
+
+The `<target>` placeholder is the cargo target directory:
 
 ```sh
 cargo build --release --locked --example ranking_pilot --example priority_ordering_bench --bin neat_ai_ockham

@@ -12,6 +12,14 @@ and an integration test pins its digests. The verdict is
 fusion, target-only pairwise and sparse-history transfer all trail it, and
 transfer shows negative transfer at about four times the per-trial cost.
 
+A second commit fixes cost counting. The bench rounded elapsed time down, so
+feature, fit, adaptation and ranking work under 1 ms was charged as 0 in every
+archived trial. It now rounds up, and `ranking_pilot manifest` charges curation
+time. A recount at `e02ef9f` (`docs/research/ranking-pilot-v1/cost-recount/`)
+used the same scorer and inputs. It reproduced identical recall, intervals,
+coverage and verdict, and each overhead is now charged at no more than about
+1 ms per trial.
+
 This is a negative synthetic finding, not a representative result. The
 representative run and the decision to keep or remove the code are still open.
 Part of #261.
@@ -42,6 +50,9 @@ Part of #261.
   row would discard its labelled observation.
 - **Acquisition cost must be recorded.** A source without an `acquisition-ms`
   file is refused, so an unmeasured historical cost cannot silently count as 0.
+- **Costs round up.** `audit::ms` charges any non-zero work at least 1 ms,
+  so feature and training overhead is counted before rejection could be
+  permitted. The archive is kept as run, and the recount sits beside it.
 - **No code removed.** The pairwise and transfer arms stay research-only in the
   example bench. The issue says "Do not claim success before representative
   runs". Removing the arms on synthetic evidence would decide the
@@ -73,6 +84,11 @@ seeds 7 and 19. Each row is the paired top-5% recall difference with its
 | multiple-proxies − partial | −0.389 | [−0.5, −0.25] |
 | transfer-pairwise − partial | −0.694 | [−0.75, −0.583] |
 | transfer-pairwise − target-pairwise | −0.083 | [−0.25, 0.0] |
+
+In the cost recount, mean primary-cell feature, training, adaptation and ranking
+time is each 0 to 1 ms per trial. Transfer's extra cost is 840 ms of historical
+acquisition and 101 ms of calibration scoring. Input generation (4 to 5 ms) and
+curation (2 ms per source) were measured separately.
 
 Coverage: 16 pools, 640 visits selected and 632 generated and fully scored; all
 pools are complete. The 8 failures are refusals of the protected output neuron.
@@ -126,11 +142,19 @@ flowchart LR
   recomputes the audit, pilot and history digests. It also checks the manifest
   identity across files, the verdict, the sign of the primary cell and that
   every pool is complete.
-- `cargo test --locked --example ranking_pilot --test ranking_pilot_archive < /dev/null`: 7 passed on the final head.
+- `ranking_pilot.rs::tests::charged_acquisition_adds_curation_rounded_up` (new).
+  The manifest test now asserts `acquisitionMs > 5` (recorded 5 plus curation),
+  replacing `== 5`.
+- `priority_ordering_bench/tests.rs::cost_milliseconds_round_up_so_sub_millisecond_work_is_counted` (new).
+- Both new tests, and the changed manifest test, were red-checked: they fail
+  with the old floor rounding or without the curation charge.
+- `cargo test --locked --example ranking_pilot --example priority_ordering_bench --test ranking_pilot_archive < /dev/null`: all passed on the final head.
 - `./quality.sh < /dev/null`: passed on the final head.
 - The real-scorer run is in `docs/research/ranking-pilot-v1/README.md`. It
   includes the commands, the versions and the checksums.
-- No existing test or assertion was edited or removed.
+- One assertion was changed, `acquisitionMs == 5` to `> 5`, because the charge
+  now includes curation. The exact arithmetic is covered by the new unit test.
+- The archive test pins only the original archive, not the recount.
 
 ## Not performed and remaining risk
 
