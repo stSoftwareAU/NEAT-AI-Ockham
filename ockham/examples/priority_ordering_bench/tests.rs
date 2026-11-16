@@ -804,6 +804,55 @@ fn comparison_charges_incomplete_calibration_and_unitemised_preparation() {
     assert_eq!(output["verdict"], "inconclusive");
 }
 
+#[test]
+fn comparison_reports_audit_time_outside_every_pool_ledger() {
+    let m = manifest();
+    let mut a = artificial_audit(&m);
+    // Stage sums are 483 ms (1 + 1 + 1 + 40 * 2 + 40 * 10), so five pools are
+    // charged their full 100_000 ms.
+    for pool in a.pools.iter_mut() {
+        pool.elapsed_ms = 100_000;
+    }
+    // The first pool's raw elapsed time is below its stage sum, so it is charged
+    // the 483 ms stage sum. Raw-elapsed subtraction would therefore give 2_983.
+    a.pools[0].elapsed_ms = 0;
+    // An early collection failure produces no pool, so it has no ledger.
+    a.failures.push("val seed 9: maxRunMs exhausted".into());
+    // Protocol setup and history loading sit inside the audit wall time but
+    // trial ledgers already charge them, so they must not be reported as
+    // unpooled. Distinct large values make each subtraction observable.
+    a.protocol_preparation_ms = 700;
+    a.histories[0].loading_ms = 3_000;
+    // Five pools at 100_000 ms, one charged 483 ms, setup 700 ms, history
+    // loading 3_000 ms, plus 2_500 ms unpooled.
+    a.elapsed_ms = 502_983 + 700 + 3_000;
+    let output =
+        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
+    assert_eq!(output["unpooledAuditMs"], 2_500);
+    assert_eq!(output["auditCostMs"], 506_683);
+    assert_eq!(
+        output["totalResearchMs"].as_u64().unwrap() - output["evaluationCostMs"].as_u64().unwrap(),
+        output["auditCostMs"].as_u64().unwrap()
+            + output["pilotCostMs"].as_u64().unwrap()
+            + output["freezingCostMs"].as_u64().unwrap()
+            + output["historicalAcquisitionMs"].as_u64().unwrap(),
+        "unpooled audit time is already inside auditCostMs and must not be added twice"
+    );
+    assert!(
+        output["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "val seed 9: maxRunMs exhausted")
+    );
+
+    // Measured audit time below the pool sum must saturate at zero, not wrap.
+    a.elapsed_ms = 1_000;
+    let output =
+        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
+    assert_eq!(output["unpooledAuditMs"], 0);
+}
+
 fn git(dir: &std::path::Path, args: &[&str]) {
     let status = std::process::Command::new("git")
         .arg("-C")
