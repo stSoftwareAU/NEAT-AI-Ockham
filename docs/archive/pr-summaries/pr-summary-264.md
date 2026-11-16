@@ -2,173 +2,94 @@
 
 ## Summary
 
-The preservation audit is now pinned to the paper's own method. arxiv.org is
-still unreachable from the worker host, but the paper's comment field names a
-public toolkit, and GitHub is reachable:
-`github.com/Praveg432/functional-preservation-score`, commit
-`2b716ddb632b6c8674e74615e0b65af3f28c9f17`, `shared/fps.py`. The same
-definition is eq. 1 of `paper-arxiv/paper.tex` in that repository.
+The audit command, its controls, the paper's FPS formula and the fixture tests
+were merged in #269, #276 and #277. The one remaining gap is the
+representative run, and with it the keep-or-remove decision. This host still
+has no private corpus, mature creature or `rust_scorer`, and arxiv.org still
+answers `CONNECT tunnel failed, response 403`, so the run cannot be made here.
 
-`audit-preservation` now reports the paper's Functional Preservation Score:
+This PR fixes that run's ground rules in advance. A new section in
+`docs/preservation-audit.md`, "Representative run and retention rule (private,
+not yet performed)", states:
 
-- `fps` and `fpsControl` for each child on each split;
-- `fps` on each paired row;
-- `gates.fps.auc`, a diagnostic for validation children.
+- what a run must contain to count as representative, including a minimum of
+  20 validation children with at least 5 better and 5 not;
+- how `criterion.status` decides keep (`met`), remove (`notMet`) or no verdict
+  (`notEvaluable`);
+- the private build, freeze and run commands;
+- which report fields may be published.
 
-`docs/preservation-audit.md` lists each departure from the pinned method. FPS
-is diagnostic only. The predeclared criterion, `theta`, the preservation gate
-and the schema string are unchanged.
-
-Representative runs are still impossible here: no private corpora and no
-`rust_scorer`. So the screening benefit is unmeasured and the keep-or-remove
-decision is still open. Part of #264.
+The README section links to it. No code, interface or default changes.
+Part of #264.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The method could not be pinned while only the abstract was available. The
-  authors' toolkit is the reference implementation the paper cites, so it is
-  the source to pin to.
-- `preservationVsMean` already equals the paper's `raw` R² score. FPS is
-  therefore `clip(min(preservationVsMean, preservationVsShuffle), 0, 1)`. It
-  comes from the existing control errors, with no second pass over the corpus.
+- The issue requires the keep-or-remove decision to rest on representative
+  runs. The retention rule and the representative bar are fixed now, before
+  any data exists, so the decision cannot be fitted to the result.
+- Documentation only: the command already accepts every input such a run
+  needs, so there is nothing to add to the code until the run exists.
 
 ### Essential Design Decisions
 
-- FPS is `null` whenever a `degenerate` reason is present. The paper instead
-  returns made-up fallbacks: `raw` 1.0 or 0.0, and `fps` 0.0. Returning `null`
-  follows the audit's existing rule that it never invents a value.
-- FPS is diagnostic only. The criterion was predeclared on
-  `preservationVsMean`, so moving it to FPS after the manifest freeze would
-  break that predeclaration.
-- The shuffle null stays the mean over `shuffleSeeds`. The paper uses one numpy
-  permutation. That permutation cannot be reproduced in Rust, and changing the
-  existing control would change `preservationVsShuffle`.
-- The new fields are additive and nothing in the crate reads a report back, so
-  `schema` stays `ockham-preservation-audit/1`.
+- The command does not check the representative bar. Whether a run is
+  representative is the operator's own declaration, and the report's
+  `evidence` field stays `"fixture-or-unverified"` whatever the inputs. The
+  doc says so.
+- The first complete representative run decides. A later run with a changed
+  manifest must report the earlier one, so a bad result cannot be rerun away.
+- `met` keeps the command as a report-only diagnostic and changes no
+  acceptance or default. `notMet` removes it, as the #262 soft-gate code was
+  removed.
+- The minimum of 20 validation children with at least 5 on each side is an
+  assumption chosen here. The issue asks for a predeclared sample size but
+  gives no number.
 
 ### Undiscoverable Facts
 
-- On 2026-11-15, `curl` to `arxiv.org`, `export.arxiv.org`, `huggingface.co`,
-  `api.semanticscholar.org` and `alphaxiv.org` all failed through the proxy
-  (`CONNECT tunnel failed, response 403`, or HTTP code `000`). `github.com`
-  returned 200.
-- `gh search code "2611.13681"` found an arXiv Atom entry. Its comment field
-  says "Code, data loaders, and all result artifacts at
-  https://github.com/Praveg432/functional-preservation-score". The toolkit is
-  MIT-licensed. Only its formula is used here, not its code.
-- `which rust_scorer` finds nothing, and no representative corpora are
-  available on this host.
+- On 2026-11-16, `curl` to `arxiv.org` and `export.arxiv.org` failed with
+  `CONNECT tunnel failed, response 403`, and `which rust_scorer` found nothing.
+- A `--candidate-log` row carries `sampleDelta` and `fullDelta`
+  (`ockham/src/telemetry.rs:543-544`) but no creature. The doc therefore says
+  each child's creature file must come from the operator's own record of the
+  cut.
 
 ## Evidence
 
-This is a backend/CLI change, with no UI files.
+This is a docs-only change, with no UI files.
 
-```mermaid
-flowchart LR
-    P[parent outputs] --> M[E_mean]
-    P --> S[E_shuf mean over shuffleSeeds]
-    C[child outputs] --> E[E_child]
-    M --> V[preservationVsMean = raw]
-    S --> W[preservationVsShuffle]
-    E --> V
-    E --> W
-    V --> F["fps = clip(min(vsMean, vsShuffle), 0, 1)"]
-    W --> F
-    F --> D[gates.fps.auc: diagnostic only]
-    V --> G[theta, preservation gate, criterion: unchanged]
-```
-
-- The pinned definition is `shared/fps.py` at `2b716dd`: `raw = 1 - ss_res /
-  ss_tot`, `raw_null = max(raw(shuffle), raw(mean_pred))` and
-  `fps = clip((raw - raw_null) / (1 - raw_null), 0, 1)`.
-- Docs updated:
-  - `docs/preservation-audit.md`: "Purpose and status", "Formulas",
-    "Degenerate handling", the new "Departures from the pinned method", "Gates
-    and the success rule", "Calibration and validation", "Known limitations
-    and negative findings" and "Report fields". "Report fields" now says that
-    `splits` scores every child on both corpora, and that only the child's own
-    role's split feeds `theta`, the gates and its paired row;
-  - `README.md`: the section "Preservation audit (opt-in, report-only)".
-- A grep of `docs/preservation-audit.md` and `ockham/src/preservation.rs` for
-  `abstract` and `pinned` on the head finds no remaining abstract-only or
-  not-pinned wording.
+- Docs updated: `docs/preservation-audit.md` ("Purpose and status" now links
+  the new final section) and `README.md` (section "Preservation audit (opt-in,
+  report-only)").
+- The rule names in the retention table (`met`, `notMet`, `notEvaluable`)
+  match `ockham/src/preservation.rs:1255-1268`. The publishable fields match
+  the serialised `GateReport`, `Costs` and coverage structs in the same file
+  (camelCase).
+- `#262` is cited as provenance; `gh issue view 262` gives "Experiment: Learn
+  one soft-gate ranking for nested pruning budgets", whose runtime was removed
+  in #278.
 
 ## Acceptance Criteria
 
-<!-- vibe-spec-review inputs="diff+issue-body" -->
+The issue has no Acceptance Criteria or Definition of done heading. These
+parts of it remain undone:
 
-The issue has no Acceptance Criteria or Definition of done heading. These three
-items from its "Execution and acceptance" list are still open. An independent
-spec reviewer judged them over `git diff origin/Develop` and the issue body:
-
-- **partial** — "Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit" — evidence: `audit-preservation`, manifest with `--manifest-sha256`, report with `paired`, `ci95`, `failures` and `coverage` (`ockham/src/preservation.rs::end_to_end_fixture_audit_writes_and_returns_the_same_report`) — reviewer: partial — reason: only fixture results exist; no representative run is possible here (no private corpora, no `rust_scorer`)
-- **partial** — "Compare diagnostic value and possible screening benefit with current sample error, measuring false rejection of genuinely better children" — evidence: `ockham/src/preservation.rs::sample_gate_false_rejection_that_preservation_keeps_is_met`, `gates.sample` vs `gates.preservation` and diagnostic `gates.fps` — reviewer: partial — reason: the comparison runs on fixture children only; `fullDelta` and `sampleDelta` are manifest inputs, and no real children have been compared
-- **partial** — "Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs" — evidence: `docs/preservation-audit.md` "Known limitations and negative findings"; `evidence: "fixture-or-unverified"` in the report — reviewer: partial — reason: negative findings are recorded and no success is claimed, but the keep-or-remove decision needs a representative run
+- **missing** — "Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit" — reason: only fixture results exist; a representative run needs a private corpus, a mature creature and `rust_scorer`, none of which are on this host
+- **missing** — "Compare diagnostic value and possible screening benefit with current sample error, measuring false rejection of genuinely better children" — reason: the comparison has run on fixture children only, not on real children
+- **missing** — "Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs" — reason: no success is claimed and the retention rule is now predeclared, but the keep-or-remove decision itself waits for a representative run
 
 ## Test Plan
 
-- Added to `ockham/src/preservation.rs`:
-  `fps_matches_the_paper_formula_and_picks_the_best_control`. Its eight literal
-  cases were computed from the paper's formula, not from the code:
-  - mean control best: 0.75;
-  - shuffle control best: 0.5;
-  - worse than trivial: clipped to 0;
-  - an exact match: 1;
-  - a tie: `"mean"`;
-  - a zero mean control: `null`;
-  - a shuffle control below `1e-24`: `null`;
-  - a NaN shuffle control: `null`.
-- Extended in `ockham/src/preservation.rs` (no assertion removed):
-  - `shuffle_control_task_loss_and_latency_are_reported`:
-    - the exact copy has `fps` 1.0;
-    - the collapsed child has `preservationVsMean < 0` and `fps == 0.0`, so the
-      clip is shown;
-    - for `cal-w110`, the precondition `shuffle mean > meanControlError` holds,
-      then `fpsControl == "mean"` and `fps` equals its `preservationVsMean`.
-  - `collapsed_parent_audit_is_degenerate_and_not_evaluable`: each child's `fps`
-    and `fpsControl` are `null`, and `gates.fps.auc` is `null`.
-  - `sample_gate_false_rejection_that_preservation_keeps_is_met`:
-    `gates.fps.auc == 1.0`, `v-copy` `fps` is 1.0, and `v-bad1` `fps` is 0.0.
-    `v-slip`'s validation-split `fps` differs from its calibration-split
-    `fps`, and its paired row carries the validation value. Likewise
-    `cal-w110`'s calibration-split and validation-split `fps` are both numbers
-    that differ, and its paired row carries the calibration value. The
-    criterion is still `met`. The collapsed calibration child `cal-bad` has
-    `preservationVsMean < 0` and a paired-row `fps` of 0.0, so a calibration
-    row that read `preservationVsMean` would differ.
-  - `fps_auc_is_reported_from_fps_and_not_from_preservation_vs_mean` (new): two
-    validation children, a better `collapsed.json` and a worse 3.0-weight
-    creature, both score below 0 on `preservationVsMean` at different depths,
-    so `gates.preservation.auc == 1.0`. Their `fps` both clip to 0 and tie, so
-    `gates.fps.auc == 0.5`.
-  - `constant_parent_validation_leaves_preservation_gate_and_coverage_null`:
-    `gates.fps.auc` and `v-slip`'s paired-row `fps` are `null`, while
-    `v-slip`'s calibration-split `fps` is a number.
-  - `non_finite_parent_split_fails_every_child_and_is_not_evaluable`: failed
-    children have `null` `fps` and `fpsControl`. The test's `SplitRun` literal
-    gains the new `fps` field.
-- TDD: the extended tests were written first, and they failed to compile:
-  - `error[E0425]: cannot find function 'fps_score' in this scope`;
-  - `error[E0560]: struct 'preservation::SplitRun' has no field named 'fps'`.
-- Red check for the split assertions: changing `evaluate` to read `cal.fps[i]`
-  instead of `val.fps[i]` fails the tests. With both reads changed, the two
-  tests above fail. With only the `gates.fps.auc` read changed,
-  `constant_parent_validation_leaves_preservation_gate_and_coverage_null`
-  fails. With only the paired-row read changed, both fail. For the calibration
-  paired row, reading `val.fps[i]` or `None` instead of `cal.fps[i]` fails
-  `sample_gate_false_rejection_that_preservation_keeps_is_met`; reading
-  `cal.preserved[i]` there fails it too, through the `cal-bad` assertion.
-  Reading `val.preserved[i]` instead of `val.fps[i]` for `gates.fps.auc` fails
-  only `fps_auc_is_reported_from_fps_and_not_from_preservation_vs_mean`. The
-  code was then restored.
-- Results:
-  - `cargo test -p neat_ai_ockham --lib preservation`: 23 passed;
-  - `--test preservation_audit`: 4 passed;
-  - `--test readme_contract`: 10 passed;
-  - clippy `-D warnings` and `cargo fmt` were clean;
-  - `./quality.sh < /dev/null` on the head's tree: "All quality checks passed!".
+- No test added or edited: the change is documentation only.
+- `cargo test -p neat_ai_ockham --test readme_contract < /dev/null`: 10 passed.
+- markdownlint-cli2 on both files: 0 issues. codespell: clean.
+- `./quality.sh < /dev/null` on the docs commit: exit 0, "All quality checks
+  passed!".
+- Docs sweep: grepped `README.md` and `docs/preservation-audit.md` for
+  `representative`. The other hits name other experiments, and the two hits for
+  this audit now link the new section.
 
 ## Merge verification
 
@@ -176,8 +97,7 @@ CI and pull-request review have not been observed yet.
 
 Not done, and still a risk:
 
-- the method is pinned to the authors' toolkit, not to the arXiv PDF, which
-  could not be fetched;
-- no representative run has been made, and none is frozen;
-- the keep-or-remove decision is still open;
+- the representative run and the keep-or-remove decision;
+- the documented `cargo build --release` command was not run here; the gate
+  built and tested the debug profile;
 - macOS was not checked.
