@@ -14,7 +14,10 @@ Functional Preservation Score (FPS). The departures from the pinned method are
 listed under [Departures from the pinned method](#departures-from-the-pinned-method).
 
 No representative run exists yet. The audit therefore claims no benefit. Its
-output is a diagnostic report, nothing more.
+output is a diagnostic report, nothing more. What a representative run must
+contain, and how its result decides whether the command is kept, is fixed in
+advance under
+[Representative run and retention rule](#representative-run-and-retention-rule-private-not-yet-performed).
 
 ## What it never does
 
@@ -357,3 +360,73 @@ flowchart TD
 
 The flow ends in a report either way. Nothing in it touches the creatures or the
 run path.
+
+## Representative run and retention rule (private, not yet performed)
+
+No representative run has been made. The fixtures in the tests only show that
+the formulas, controls and gates behave as written; they show no screening
+benefit. This section fixes, before any representative run, what such a run
+must contain and what its result decides. The command does not check these
+conditions: whether a run is representative is the operator's own declaration,
+and the report's `evidence` field stays `"fixture-or-unverified"` whatever the
+inputs are.
+
+### What counts as representative
+
+- The parent is a mature creature from real use, not a fixture.
+- Every child is a pruned or quantised descendant of that parent, saved as a
+  creature file. A `--candidate-log` row records a candidate's `sampleDelta`
+  and, when the candidate was scored individually on the full corpus, its
+  `fullDelta`, both against the incumbent with larger better. The row holds no
+  creature, so the child's creature file must come from the operator's own
+  record of the cut.
+- `fullDelta` comes from the authoritative full scorer and `sampleDelta` from
+  the sampled screen the run actually uses, both measured against the same
+  parent.
+- The calibration and validation corpora are disjoint records from the
+  parent's own task.
+- Validation holds at least 20 children, at least 5 of them genuinely better
+  (`fullDelta > 0`) and at least 5 not. Calibration holds at least one of each,
+  so `theta` can be fitted.
+- The manifest is frozen with `--manifest-sha256`, and its digest is recorded
+  before the run.
+
+### Retention rule
+
+The first complete representative run decides. A later run with a changed
+manifest is a new run, and its record must also report the earlier one.
+
+| `criterion.status` | Decision |
+|---|---|
+| `met` | Keep `audit-preservation` as a report-only diagnostic. Acceptance and every default stay unchanged; using the score in acceptance would need its own controlled experiment. |
+| `notMet` | Record the negative finding, then remove `audit-preservation`, its tests and this document, as the #262 soft-gate experiment was retired. |
+| `notEvaluable` | No verdict. Fix the inputs that left a value `null` and make a new frozen run. |
+
+### Commands
+
+Run every step on the private host, with the manifest, corpora, creatures and
+report in a directory outside any checkout:
+
+```bash
+PRIVATE_DIR=/path/outside/any/checkout
+mkdir -p "$PRIVATE_DIR"
+cargo build --release --locked -p neat_ai_ockham --bin neat_ai_ockham < /dev/null
+OCKHAM="${CARGO_TARGET_DIR:-target}/release/neat_ai_ockham"
+# Write $PRIVATE_DIR/manifest.json (see Manifest example), then record its digest
+# before the run.
+SHA=$(sha256sum "$PRIVATE_DIR/manifest.json" | cut -d' ' -f1)
+"$OCKHAM" audit-preservation "$PRIVATE_DIR/manifest.json" \
+  --out "$PRIVATE_DIR/report.json" --manifest-sha256 "$SHA" < /dev/null
+```
+
+`sha256sum` is GNU coreutils; on macOS use `shasum -a 256` instead.
+
+### What may be published
+
+The manifest, the report, child names, paths, corpus identities and the
+paired rows stay private. A public record may carry only:
+`criterion.status`, `aucGain` (value and `ci95`), the `rejected`,
+`falseRejections`, `falseRejectionRate` and `auc` of `gates.sample` and
+`gates.preservation`, `gates.fps.auc`, the `coverage` counts,
+`costs.totalMs` and `costs.childPreparationMs`, `versions.gitCommit` and
+`versions.manifestFrozen`.

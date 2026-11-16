@@ -2511,6 +2511,11 @@ report records `versions.manifestSha256` and `versions.manifestFrozen`. The
 hypothesis, formulas, limits and success rule are in
 [docs/preservation-audit.md](docs/preservation-audit.md).
 
+No representative run has been made, so the audit claims no benefit. The bar a
+run must clear to count as representative, and the keep-or-remove rule its
+result triggers, are fixed in advance under
+[Representative run and retention rule](docs/preservation-audit.md#representative-run-and-retention-rule-private-not-yet-performed).
+
 ## Stratum-guided pruning experiment (opt-in)
 
 `bench-strata` is an offline benchmark of one hypothesis: that ordering
