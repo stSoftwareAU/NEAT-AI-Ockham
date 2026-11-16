@@ -682,4 +682,36 @@ mod tests {
         assert!(!dir.join("source-2").join("history.jsonl").exists());
         assert!(!dir.join("manifest.json").exists());
     }
+
+    #[test]
+    fn committed_pilot_inputs_match_the_generator() {
+        let committed =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/research/ranking-pilot-v1");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&read(&committed.join("manifest.json")).unwrap()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pilot");
+        write_inputs(&dir).unwrap();
+
+        let tasks = manifest["tasks"].as_array().unwrap();
+        assert_eq!(
+            tasks.len(),
+            TASKS.len(),
+            "one committed entry per generated task"
+        );
+        for task in tasks {
+            let id = task["id"].as_str().unwrap();
+            let task_dir = dir.join(id);
+            assert_eq!(
+                task["parentSha256"].as_str().unwrap(),
+                sha256_hex(&read(&task_dir.join("parent.json")).unwrap()),
+                "parent digest of {id}"
+            );
+            assert_eq!(
+                task["corpusSha256"].as_str().unwrap(),
+                corpus_sha256(&task_dir.join("corpus")).unwrap(),
+                "corpus digest of {id}"
+            );
+        }
+    }
 }
