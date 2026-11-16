@@ -250,10 +250,16 @@ The comparison this issue owns needs one existing, mature creature and its
 own training corpus. Neither is public, and neither was available to the runs
 that produced the evidence above. A holder of such a pair can run the archived
 protocol on it with the historical source. Run every step on the host that
-will run the study, because the runtime refuses a manifest whose recorded
-hardware or scorer environment differs from the current host:
+will run the study, and keep the `NEAT_SCORER_ACTIVATION_THREADS`,
+`NEAT_SCORER_FILE_THREADS`, `NEAT_SCORER_GPU_SCRATCH_BYTES`,
+`NEAT_SCORER_READ_BYTES` and `NEAT_SCORER_WORKER_SPLIT` variables unchanged
+between `prepare` and `run`. The runtime records the host's hardware and those
+variables in the manifest, and refuses to run if either differs. The hardware
+record includes the logical CPU count the process may use, so keep the same CPU
+allowance (affinity or container quota) too:
 
 ```bash
+mkdir -m 700 -p "$PRIVATE_DIR"
 git fetch origin tag issue-262-soft-gate-history
 git worktree add --detach /tmp/soft-gate-source \
   91e0d56ee27627382989a09dbc31b54b64f90d20
@@ -261,14 +267,17 @@ git worktree add --detach /tmp/soft-gate-source \
   -p neat_ai_ockham --bin neat_ai_ockham < /dev/null)
 OCKHAM="$PRIVATE_DIR/neat_ai_ockham"
 cp /tmp/soft-gate-source/target/release/neat_ai_ockham "$OCKHAM"
+git worktree remove /tmp/soft-gate-source
 "$OCKHAM" soft-gate prepare /abs/creature.json /abs/corpus-dir \
   --scorer /abs/rust_scorer --out "$PRIVATE_DIR/manifest.json" \
   --calibration-records 256 --validation-records 256 < /dev/null
 ```
 
 Here `$PRIVATE_DIR` is a private directory outside this repository, and `cp`
-copies the binary out so the worktree can be removed. If `CARGO_TARGET_DIR`
-is set, the binary is under that directory instead of `target/`.
+copies the binary out before the worktree is removed. If `CARGO_TARGET_DIR`
+is set, the binary is under that directory instead of `target/`. The
+commands use GNU `timeout` and `sha256sum`; on macOS, put GNU coreutils on the
+command path, as for the replay above.
 
 `prepare` writes `"representative": false` and the provenance
 `Unclassified input: smoke study until provenance is reviewed`. Before
@@ -288,7 +297,8 @@ timeout 21600 "$OCKHAM" soft-gate run "$PRIVATE_DIR/manifest.json" \
 Any edit after the checksum is taken is refused with `manifest checksum
 mismatch`, and a blank `dataProvenance` is refused before any work starts.
 A scorer failure is a failed family: the run writes `study/results.json` with
-each failure and exits non-zero. Only a run with `representativeData`,
+each failure and exits non-zero. If the external `timeout` stops the run,
+`results.json` may not be written. Only a run with `representativeData`,
 `completePairs`, `minimumPairs` and `matchedCost` all true can support the
 retention verdict described under **Predeclaration and cost**. Keep its
 manifest and results private. A public record may state only the verdict,
