@@ -1,106 +1,141 @@
 ## Summary
 
-The controlled proxy/history ranking benchmark merged in #267. This PR closes
-one cost-accounting gap that PR recorded: audit wall time outside every pool's
-strategy ledger was hidden inside the audit total. The comparison report now
-carries `unpooledAuditMs`. It covers early collection failures that produce no
-pool and work between pools; protocol setup and history loading are excluded
-because trial ledgers already charge them. Representative runs remain
-impossible on this host, so the experiment outcome is still open. Part of #261.
+Ran the merged ranking-v1 benchmark (#267, #274) end to end for the first time:
+check, pilot, freeze, audit and evaluate, with the real NEAT-AI-scorer on
+synthetic tasks. The source histories are real, sparse histories from ordinary
+Ockham searches.
+
+The new generator `ockham/examples/ranking_pilot.rs` writes the inputs and the
+digest-bound manifest. The run is archived under `docs/research/ranking-pilot-v1/`,
+and an integration test pins its digests. The verdict is
+`no-demonstrated-benefit`: partial-score ordering alone dominates. Cheap-proxy
+fusion, target-only pairwise and sparse-history transfer all trail it, and
+transfer shows negative transfer at about four times the per-trial cost.
+
+This is a negative synthetic finding, not a representative result. The
+representative run and the decision to keep or remove the code are still open.
+Part of #261.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The issue asks to "count all preparation/search costs". Early failures had
-  no per-pool ledger, so their cost could not be told apart from pool work.
-- Reporting the remainder beside `auditCostMs` makes it visible without
-  inventing a per-strategy split for work no strategy caused.
+- The bench existed, but it had never run against a real scorer. Until it did,
+  there were no machine-readable paired results, no frozen manifest, no
+  fully scored random pools, and no measured costs.
+- The private representative corpora are not on this host. A synthetic,
+  real-scorer pilot was the furthest the protocol could go here. It mirrors
+  #263's `strata-pilot-v1`.
+- The source histories come from ordinary `neat_ai_ockham --candidate-log`
+  searches rather than hand-made rows. They are therefore genuinely sparse
+  (3 of 12 candidates per source are fully scored), as the issue asks.
 
 ### Essential Design Decisions
 
-- `unpooledAuditMs` is the audit wall time minus every pool's *charged* cost
-  (`pool_cost_ms`, which already retains residual pool work), minus
-  `protocol_preparation_ms` (charged to every trial as `preparationMs`) and the
-  histories' `loading_ms` (charged to transfer trials in `historicalScoringMs`),
-  with each subtraction saturating at zero.
-- It is already inside `auditCostMs`, so `totalResearchMs` is unchanged and
-  nothing is counted twice. Strategy ledgers and the verdict are unchanged.
-- The report is output-only JSON (`Report` derives only `Serialize`), so an
-  added field needs no format-version bump and no old-shape reader.
+- **Search-only histories.** The source searches use `--min-improvement 1000000`
+  and `--no-exact-cleanup`, so no cut can be accepted and every row names the
+  immutable parent. The bench's history loader refuses rows from any other
+  incumbent.
+- **Curation rule.** Curation keeps one row per `(uuid, kind, merged_with)`.
+  It prefers the first row that has both a full and a sampled delta. The
+  ordinary sweep screens the same candidate many times, so keeping the first
+  row would discard its labelled observation.
+- **Acquisition cost must be recorded.** A source without an `acquisition-ms`
+  file is refused, so an unmeasured historical cost cannot silently count as 0.
+- **No code removed.** The pairwise and transfer arms stay research-only in the
+  example bench. The issue says "Do not claim success before representative
+  runs". Removing the arms on synthetic evidence would decide the
+  maintenance question before that run exists.
 
 ### Undiscoverable Facts
 
-- This host still has no NEAT-AI corpus `.bin` files, candidate histories or
-  `rust_scorer`. A search of `/` (excluding hidden directories and build
-  caches) found only unrelated browser and cargo `.bin` files, and
-  `experiments.jsonl` journals from a different application under `/tmp`.
-  A repeat search on 2026-11-15, after the completion checks flagged the four
-  `partial` criteria below, found the same: no `rust_scorer` on `PATH` and no
-  representative corpus or history. Those criteria stay `partial` because each
-  needs a representative run that cannot happen here.
+- The issue's arXiv sources were already verified by #267 (see
+  `docs/experiments/ranking-v1.md`). They were not re-fetched in this run.
+- The scorer was built from NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`.
+  Its SHA-256 is `d057a334…`, the same binary identity as #263's pilot.
+- 186 of the 237 validation candidates are synapse cuts, which have no neuron
+  feature vector. The composite and pairwise arms tie them at zero, and this
+  explains much of why those arms trail partial ordering.
 
 ## Evidence
 
-- Backend/CLI only (an `examples/` research bench); no UI file changed.
-- #261: Experiment: Compare cheap proxy ranking with transfer from sparse search histories.
-- #267: the merged PR that delivered the benchmark this change extends.
-- `docs/experiments/ranking-v1.md` cost-reporting paragraph now documents
-  `unpooledAuditMs`.
+Backend/research only; no UI file changed. The protocol section
+`docs/experiments/ranking-v1.md` → "Synthetic pilot" and "Current finding" were
+read and updated, and the full record is `docs/research/ranking-pilot-v1/README.md`.
+
+Primary cell: full history, calibration 8, evaluation 5, 3 validation groups,
+seeds 7 and 19. Each row is the paired top-5% recall difference with its
+95% bootstrap interval:
+
+| Comparison | Mean | 95% interval |
+| --- | --- | --- |
+| partial − random | +0.833 | [0.75, 1.0] |
+| multiple-proxies − partial | −0.389 | [−0.5, −0.25] |
+| transfer-pairwise − partial | −0.694 | [−0.75, −0.583] |
+| transfer-pairwise − target-pairwise | −0.083 | [−0.25, 0.0] |
+
+Coverage: 16 pools, 640 visits selected and 632 generated and fully scored; all
+pools are complete. The 8 failures are refusals of the protected output neuron.
+Total research cost was 3469 ms, measured on a shared host, so treat it as
+indicative.
 
 ```mermaid
 flowchart LR
-    A[Audit wall time auditCostMs] --> P[Per-pool charged cost]
-    A --> L[Protocol setup and history loading: trial ledgers]
-    A --> U[unpooledAuditMs: early failures, between-pool work]
-    P --> S[Strategy ledgers]
-    A --> T[totalResearchMs counted once]
+    G[ranking_pilot inputs] --> O[ordinary neat_ai_ockham --candidate-log]
+    O --> M[ranking_pilot manifest: curate + digest]
+    M --> C[check] --> P[pilot] --> F[freeze] --> A[audit] --> E[evaluate]
+    E --> R[docs/research/ranking-pilot-v1]
 ```
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — First inspect current code, merged work and repository instructions. Reuse existing mechanisms; if functionality already exists, this issue still owns the missing controlled comparison rather than a second implementation. — evidence: `ockham/examples/priority_ordering_bench/evaluation.rs` reuses `pool_cost_ms`, `audit.elapsed_ms` and the `reasons` channel — reviewer: met
-- **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance. No automatic deployment or default change. — evidence: only the example bench and its protocol doc change; `totalResearchMs` unchanged — reviewer: met
-- **partial** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria. Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs. — evidence: `ockham/examples/priority_ordering_bench/tests.rs::comparison_reports_audit_time_outside_every_pool_ledger` — reviewer: met — reason: the reviewer judged only this diff's part; representative provenance, pilot and frozen manifest remain unavailable, and build/final result writing stays outside the totals
-- **partial** — Audit a randomly selected fully scored pool to measure true top-5% recall, false rejection and cold-start/negative-transfer behaviour. — evidence: `ockham/examples/priority_ordering_bench/tests.rs::comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted` — reviewer: met — reason: the reviewer did not list this bullet separately; the audit and metric code exist but no representative pool has been fully scored, because the private inputs are absent here
-- **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks. Research runs are separate from routine feature CI. — evidence: `ockham/examples/priority_ordering_bench/tests.rs::comparison_reports_audit_time_outside_every_pool_ledger` (positive and saturating cases); targeted tests, clippy and fmt pass — reviewer: met
-- **partial** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit. — evidence: `ockham/examples/priority_ordering_bench/evaluation.rs` `unpooledAuditMs` beside `reasons` — reviewer: met — reason: the reviewer judged only this diff's part; the manifest is still illustrative and no representative paired distributions exist
-- **partial** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs. — evidence: `docs/experiments/ranking-v1-availability.json`; no benefit claimed — reviewer: met — reason: no success is claimed, but whether the optional ranker earns its maintenance cost cannot be measured without representative runs
-- **met** — Keep public implementation and fixtures application-agnostic; private corpora/results and operational integration remain private. — evidence: synthetic fixtures only — reviewer: met
-- **met** — Leave unassigned until an implementer actively starts. `work-on` authorises the investigation, not skipping prerequisite verification. — evidence: the issue was left unassigned and the merged work and host inputs were checked first — reviewer: missing — reason: the reviewer said it "cannot judge" assignment from a diff; the assignment state comes from the issue itself
+- **met** — First inspect current code, merged work and repository instructions. Reuse existing mechanisms; if functionality already exists, this issue still owns the missing controlled comparison rather than a second implementation. — evidence: `ockham/examples/ranking_pilot.rs` feeds the existing `priority_ordering_bench` and reuses `telemetry`, `corpus` and `fixtures` — reviewer: met
+- **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance. No automatic deployment or default change. — evidence: example, test and docs only; the source searches cannot accept a cut — reviewer: met
+- **partial** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria. Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs. — evidence: `docs/research/ranking-pilot-v1/manifest.json`, `ockham/examples/ranking_pilot.rs::tests::source_without_acquisition_ms_is_refused_naming_the_task` — reviewer: partial — reason: synthetic only. Generating the inputs and curating the histories are not timed, and the representative frozen manifest is still outstanding.
+- **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks. Research runs are separate from routine feature CI. — evidence: `ockham/examples/ranking_pilot.rs` (6 tests) and `ockham/tests/ranking_pilot_archive.rs`; `./quality.sh` passed — reviewer: met
+- **partial** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit. — evidence: `docs/research/ranking-pilot-v1/results.json`, `docs/research/ranking-pilot-v1/README.md` — reviewer: partial — reason: these are synthetic results only. A rerun's history rows and timings differ, and no representative paired results exist.
+- **partial** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs. — evidence: `docs/experiments/ranking-v1.md` → "Synthetic pilot" — reviewer: partial — reason: the negative finding is recorded. Deciding whether to keep or remove the arms needs the representative run.
+- **met** — Keep public implementation and fixtures application-agnostic; private corpora/results and operational integration remain private. — evidence: generated corpora and parents only — reviewer: met
+- **met** — Leave unassigned until an implementer actively starts. `work-on` authorises the investigation, not skipping prerequisite verification. — evidence: the issue is unassigned; merged work and host inputs were checked first — reviewer: missing — reason: the reviewer said this "can't be judged from a diff". The assignment state comes from the issue itself.
+- **missing** — Audit a randomly selected fully scored pool to measure true top-5% recall, false rejection and cold-start/negative-transfer behaviour. Count feature and training overhead before permitting rejection. — reviewer: missing — reason: this was done on synthetic pools only (`results.json` paired cells). Representative pools are still needed. The reviewer listed only the "Execution and acceptance" bullets, so it gave no verdict on this one.
+- **unrequested** — `ockham/tests/ranking_pilot_archive.rs` pins the archived run's digests and verdict in routine CI — reviewer: unrequested — reason: it keeps the committed evidence consistent with itself. It checks the archive and runs no research; the pattern follows `soft_gate_archive.rs`.
+- **unrequested** — `committed_pilot_inputs_match_the_generator` ties the generator to the committed manifest — reviewer: unrequested — reason: it proves the archived parents and corpora are the generator's output.
+- **unrequested** — the `--cutoff-unix` option on `ranking_pilot manifest` — reviewer: unrequested — reason: it fixes the cutoff so the tests are deterministic.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — the new test could not tell charged pool cost from raw pool elapsed time, because every fixture pool's elapsed time exceeded its stage sum — evidence: `ockham/examples/priority_ordering_bench/tests.rs:812` — reason: fixed in this diff; one pool's elapsed time is now below its stage sum, so a raw-elapsed subtraction gives a different answer
-- **clean** — No `CODING-STANDARDS.md` exists, so the reviewer used `CONTRIBUTING.md`, which marks no rule as enforced by review only. It checked principles 1–8 (immutable creature, acceptance and scorer paths untouched, opt-in bench only, no binary version bump needed), no workflow changes, no stubs of other binaries, no references to absent tests, and doc–code agreement.
+- **clean** — There is no `CODING-STANDARDS.md`, so the reviewer used `CONTRIBUTING.md`. It checked the rules that only review enforces: principles #1 (the creature is never written), #3/#4 (only the full scorer accepts), #6 (optional and isolated), #7 (no TypeScript) and #8 (no binary change, so no version bump). It also checked "no changelog". Other checks: fmt, clippy, tests, codespell and markdownlint; every archived digest and every quoted figure against `results.json`; and the curation rule against the bench's history loader. It changed no existing test.
+- **clean** — The reviewer raised two optional notes, both fixed in this diff:
+  - The refusal check now requires both a full and a sampled delta (`ockham/examples/ranking_pilot.rs`).
+  - A missing `acquisition-ms` file is now refused.
 
 ## Test Plan
 
-- Added `ockham/examples/priority_ordering_bench/tests.rs::comparison_reports_audit_time_outside_every_pool_ledger`.
-  It asserts `unpooledAuditMs == 2_500` when the audit outlasts every pool's
-  charged cost plus a 700 ms protocol setup and 3_000 ms of history loading
-  (distinct values, so omitting either subtraction fails it). One pool's elapsed time is below its stage sum, so a
-  raw-elapsed subtraction would fail it. It also asserts that the failure
-  string reaches `reasons`, and that `totalResearchMs - evaluationCostMs`
-  equals the sum of the other cost fields, so nothing is double charged. A
-  second case asserts the value floors at 0 when the audit time is below the
-  pool sum.
-- Red against the unchanged `evaluation.rs` (`left: Null, right: 2500`), green after. With the new setup/history-loading subtractions removed, the test fails (`left: 6200, right: 2500`).
-- `cargo test --locked --example priority_ordering_bench < /dev/null`: 16 passed.
-- `cargo clippy --locked --example priority_ordering_bench -- -D warnings`: clean.
-- `cargo fmt --check` clean. The full `./quality.sh` was last run on the first
-  commit, before the review fixes; CI runs it on the pushed head.
+- `ockham/examples/ranking_pilot.rs` tests, 6 in total, all new:
+  - determinism, distinct parents and refusal to overwrite;
+  - curation preferring the labelled duplicate (asserts `full_delta == Some(0.2)`) and `acquisitionMs` matching the file;
+  - `source_without_fully_scored_parent_row_is_refused_naming_the_task`, whose fixture includes a full-delta-only row;
+  - `source_without_acquisition_ms_is_refused_naming_the_task`, with a positive control;
+  - manifest keys matching the template;
+  - `committed_pilot_inputs_match_the_generator`.
+- `ockham/tests/ranking_pilot_archive.rs::archived_ranking_pilot_matches_its_digests_and_negative_finding`
+  recomputes the audit, pilot and history digests. It also checks the manifest
+  identity across files, the verdict, the sign of the primary cell and that
+  every pool is complete.
+- `cargo test --locked --example ranking_pilot --test ranking_pilot_archive < /dev/null`: 7 passed on the final head.
+- `./quality.sh < /dev/null`: passed on the final head.
+- The real-scorer run is in `docs/research/ranking-pilot-v1/README.md`. It
+  includes the commands, the versions and the checksums.
 - No existing test or assertion was edited or removed.
-- Docs sweep: `docs/experiments/ranking-v1.md` (cost-reporting paragraph) read
-  and updated; README and CONTRIBUTING do not name audit cost fields.
 
 ## Not performed and remaining risk
 
-No representative pilot, frozen manifest, validation scoring or paired
-benefit/cost assessment, because no private corpora, histories or scorer exist
-on this host. Build time and final result writing stay outside the totals.
-macOS was not checked. CI and PR review have not been observed.
+- There was no representative pilot, frozen representative manifest or
+  representative validation. The private corpora are not on this host.
+- The keep-or-remove decision is still open.
+- The archive test needs `gzip` on `PATH`.
+- macOS was not checked, and CI has not been observed.
