@@ -237,8 +237,9 @@ flowchart LR
   telemetry tests cover its messages and pass unchanged.
 - With stdin from `/dev/null`: `--example ranking_pilot` 23 passed,
   `--example priority_ordering_bench` 18 passed, `--test ranking_pilot_archive`
-  1 passed. Clippy with `-D warnings` and `cargo fmt --check` are clean. The
-  full `./quality.sh` is re-run by the worker on the final head.
+  1 passed. Clippy with `-D warnings` and `cargo fmt --check` are clean.
+  `./quality.sh < /dev/null` passed (exit 0) on `4108066`, the last code
+  commit; only this summary line changed after it.
 - No existing test on `Develop` was edited, except in `tests.rs`: the
   `ceil_ms` test, and `preparationCostMs` added to the audit-time sum test.
 
