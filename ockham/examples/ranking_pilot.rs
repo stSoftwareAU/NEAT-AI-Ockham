@@ -1054,20 +1054,24 @@ mod tests {
 
     #[test]
     fn manifest_preparation_includes_the_recorded_inputs_time() {
+        // Far above any plausible step time, so a dropped inputs term cannot hide behind it.
+        const RECORDED: u64 = 1_000_000_000;
         let (_tmp, dir, scorer) = pilot();
         write_labelled_sources(&dir);
-        std::fs::write(dir.join("inputs-ms"), "7").unwrap();
+        std::fs::write(dir.join("inputs-ms"), RECORDED.to_string()).unwrap();
         assert_accepted(&dir, &scorer, &Limits::DEFAULT);
         let manifest: serde_json::Value =
             serde_json::from_slice(&read(&dir.join("manifest.json")).unwrap()).unwrap();
         let preparation = manifest["preparationMs"].as_u64().unwrap();
         assert!(
-            preparation >= 7,
-            "preparationMs {preparation} must include the recorded 7 ms"
+            preparation > RECORDED,
+            "preparationMs {preparation} must include the recorded {RECORDED} ms \
+             and the manifest step's own non-zero work"
         );
         assert!(
-            preparation > 7,
-            "preparationMs {preparation} must also charge the manifest step's own work"
+            preparation < RECORDED + 600_000,
+            "preparationMs {preparation} must charge the recorded {RECORDED} ms once, \
+             plus only the manifest step's own time"
         );
     }
 
@@ -1292,6 +1296,30 @@ mod tests {
         let link = tmp.path().join("scorer-link");
         symlink(&scorer, &link).unwrap();
         assert_accepted(&dir, &link, &Limits::DEFAULT);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&read(&dir.join("manifest.json")).unwrap()).unwrap();
+
+        // The digest is of the target's bytes, which `pilot` wrote to `scorer`.
+        assert_eq!(
+            manifest["scorerSha256"].as_str().unwrap(),
+            sha256_hex(b"scorer bytes"),
+            "scorerSha256 must hash the symlink's target"
+        );
+
+        // The manifest names the path passed in (the link), not the resolved target.
+        let link_abs = std::path::absolute(&link).unwrap().display().to_string();
+        let target_abs = std::path::absolute(&scorer).unwrap().display().to_string();
+        assert_ne!(link_abs, target_abs, "the link and its target must differ");
+        assert_eq!(
+            manifest["scorer"].as_str().unwrap(),
+            link_abs,
+            "scorer must be the absolute link path, not the resolved target"
+        );
+        assert_ne!(
+            manifest["scorer"].as_str().unwrap(),
+            target_abs,
+            "scorer must not be the resolved target"
+        );
     }
 
     #[test]
