@@ -150,7 +150,7 @@ fn archived_ranking_pilot_matches_its_digests_and_negative_finding() {
         .iter()
         .map(|cell| uint(&cell["kinds"]["synapse"]))
         .sum();
-    assert!(synapses > 0, "the audit includes synapse candidates");
+    assert_eq!(synapses, 496, "synapse candidates audited with features");
 }
 
 /// A non-negative integer field of the archive.

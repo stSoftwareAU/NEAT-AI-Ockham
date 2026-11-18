@@ -3,23 +3,26 @@
 The controlled proxy/history ranking benchmark merged in #267 and #274. This
 PR adds a synthetic, non-representative pilot of that protocol, run with the
 real scorer. It brings back the generator from the closed PR #279 and fixes
-the blocking review finding that stalled #279. It also re-runs the pilot at
-this branch's code (`fad4e74`), replacing #279's two archives, and commits the
-raw search logs, so the curation can be re-run and checked byte for byte. Input
-generation and the manifest step's own time are now charged in
-`totalResearchMs`.
+the blocking review finding that stalled #279. It commits the raw search logs,
+so the curation can be re-run and checked byte for byte. Input generation, the
+manifest step's own time and the preflight `check` stage are now charged in
+`totalResearchMs`. The audit now gives synapse candidates a feature vector, so
+no candidate is ranked featureless. The archived pilot is the re-run at this
+branch's code (`aa41403`) from the committed raw logs and timings. It replaces
+the two archives of #279 and the earlier `fad4e74` run.
 `ranking_pilot manifest` read its inputs with no byte limit and followed task
 paths through symlinks. It now caps every read and digest, refuses symlinks
 and paths that escape the pilot directory, creates its outputs exclusively,
 and finishes every read before its first write. The synthetic finding is
-negative: partial-score ordering alone beats the composite and pairwise arms,
-and sparse-history transfer shows negative transfer. A representative run
+negative: partial-score ordering alone beats the composite and pairwise arms
+even with every candidate featured, sparse-history transfer adds nothing over
+the target-only fit, and it shows negative transfer at cold start. A representative run
 still needs private corpora and histories this host does not have.
 This replaces the stalled PR #284 and answers its review:
 `scorer_may_be_a_symlink` now asserts the recorded scorer digest and path,
-the preparation-time test can no longer pass with the inputs term dropped,
-and "count all preparation/search costs" is recorded as `partial`, naming the
-stages still uncounted.
+and the preparation-time test can no longer pass with the inputs term
+dropped. The preflight is now charged too; the remaining uncounted stages
+are named below.
 Part of #261.
 
 ## Spec
@@ -64,8 +67,13 @@ Part of #261.
   `a27d638` and `e02ef9f`, are not on this branch and are replaced here. The
   run at `fad4e74` reproduced their paired results, coverage and verdict; only
   the timings differ.
-- The scorer was rebuilt at the pinned revision on 18 November 2026. Its
+- The scorer was rebuilt at the pinned revision on 18 November 2026, twice
+  (for the `fad4e74` run and again for the `aa41403` re-run). Both times its
   executable digest matched the archived pin, `d057a334…`.
+- The `aa41403` re-run did not repeat the source searches. It used the
+  committed raw logs, `acquisition-ms` and `inputs-ms`; the regenerated
+  corpora and parents matched the committed digests and both curated
+  histories were byte-identical.
 - This host still has no representative NEAT-AI corpus, candidate history or
   parent (`docs/experiments/ranking-v1-availability.json`). The pilot's corpora
   are generated and homogeneous.
@@ -85,19 +93,32 @@ Part of #261.
   representative.
 - `ockham/examples/priority_ordering_bench/audit.rs`: `audit::ms` now rounds
   up (`ceil_ms`), so feature, fit, adaptation and ranking work under 1 ms is
-  charged rather than counted as 0.
+  charged rather than counted as 0. `synapse_features` gives every synapse
+  visit a vector in the existing 15 columns (the source neuron's activation
+  statistics, `|weight|`, one outgoing edge, one synapse's growth units, the
+  source's depth); `audit_features` merges it with the library's hidden-neuron
+  vectors inside the timed feature block. The library sweep and
+  `FEATURE_NAMES` are unchanged.
+- `experiment.rs`: `check` records `checkMs`; `evaluate` requires
+  `--preflight` and validates it with `preflight_check_ms` (phase, `available`
+  status, manifest identity, integer `checkMs`). `evaluation.rs` reports it as
+  `preflightCostMs` inside `totalResearchMs`.
 - The bench manifest gains an optional `preparationMs` (default 0, not
   serialised when 0, so older manifests keep their identity). The report gains
   `preparationCostMs`, which is added to `totalResearchMs`.
   `ranking_pilot inputs` writes `inputs-ms`. `ranking_pilot manifest` requires
   that file and writes `preparationMs` as its value plus the manifest step's own
   time, excluding curation, which `acquisitionMs` already charges. In the run
-  this is 39 ms of 11,726 ms.
-- `docs/research/ranking-pilot-v1/` holds one archive from `fad4e74`: the
+  this is 25 ms, plus 19 ms of preflight, of 4,049 ms.
+- `docs/research/ranking-pilot-v1/` holds one archive from `aa41403`: the
   manifest, preflight, pilot, freeze, gzipped audit and results, plus
   `inputs-ms`, `source-N/acquisition-ms` and the gzipped raw logs
   `source-N/raw-candidates.jsonl.gz`. #279's two archives and its
-  `cost-recount/` are not carried over; they were never on `Develop`. The README records a
+  `cost-recount/` are not carried over; they were never on `Develop`. The
+  `fad4e74` archive is replaced; the README's `Change from the fad4e74 run`
+  records how adding synapse features moved each primary-cell comparison
+  (transfer − partial −0.694 to −0.611; transfer − target-only −0.083 to 0.0;
+  partial and the composite unchanged). The README records a
   maintenance decision with a predeclared removal rule for the pairwise and
   transfer arms.
 - #261: Experiment: Compare cheap proxy ranking with transfer from sparse search histories.
@@ -110,138 +131,176 @@ flowchart LR
     S --> M[ranking_pilot manifest]
     M -->|caps, symlink and root checks, all reads first| W[history.jsonl and manifest.json, create-new]
     W --> B[priority_ordering_bench: check, pilot, freeze, audit, evaluate]
-    B --> R[results.json: no-demonstrated-benefit]
+    B --> R[results.json: no-demonstrated-benefit, missingFeatures 0, preflightCostMs charged]
 ```
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
+- **met** — Scope: a hypothesis to test, not an established improvement —
+  evidence: `docs/research/ranking-pilot-v1/README.md` ("No success is
+  claimed"), `results.json` verdict `no-demonstrated-benefit` — reviewer: met
 - **met** — Extend or benchmark existing features/model/telemetry rather than
-  create another ranker — evidence: `ockham/examples/ranking_pilot.rs` only
-  generates inputs and a manifest for the existing `priority_ordering_bench`,
-  reusing `telemetry`, `corpus_info` and `pairwise::FitConfig` — reviewer: met
-- **partial** — Compare partial-data score alone, multiple cheap proxies, and
-  a pairwise ranker adapted from historical corpus/task versions — evidence:
-  `docs/research/ranking-pilot-v1/results.json` (five arms) — reviewer:
-  partial — reason: all arms run, but 186 of 237 synthetic validation
-  candidates carry no feature vector, so the proxy and pairwise arms are
-  compared mostly on tied candidates; a representative run is still needed.
+  create another ranker — evidence: changes sit inside the existing
+  `priority_ordering_bench`; `audit::synapse_features` fills the existing 15
+  `FEATURE_NAMES` columns; `ockham/examples/ranking_pilot.rs` only generates
+  inputs and a manifest — reviewer: met
+- **met** — Compare partial-data score alone, multiple cheap proxies, and a
+  pairwise ranker adapted from historical corpus/task versions — evidence:
+  `docs/research/ranking-pilot-v1/results.json` `paired` (`partial`,
+  `multiple-proxies`, `target-pairwise`, `transfer-pairwise` against
+  `random`, `partial` and `target-pairwise`); transfer fits on source
+  histories from separate families, lineages and versions; `missingFeatures`
+  is 0 in every pool;
+  `priority_ordering_bench/tests.rs::every_synapse_visit_gets_a_source_signal_feature_vector`,
+  `ockham/tests/ranking_pilot_archive.rs` — reviewer: met. The reviewer
+  noted that each source history has only 3 labelled rows and only ablation
+  rows, while 186 of the 237 validation candidates are synapse cuts. This
+  weakens the transfer test but does not void the comparison.
 - **partial** — Candidate features: sample error, output variance, functional
   paths, connections, compiled latency and gradient/Fisher signal only if
-  inexpensive/available — evidence: `results.json` `featureSchema` (17
-  existing features) — reviewer: partial — reason: output variance,
-  functional paths and compiled latency are not added, and no cost case for
-  them is measured; `docs/experiments/ranking-v1.md` records why.
+  inexpensive/available — evidence: `results.json` `featureSchema`
+  (`partialDelta` as sample error, `logFanIn`/`logFanOut` as connections);
+  `docs/experiments/ranking-v1.md` — reviewer: partial — reason: output
+  variance (only activation variance is used), functional paths and compiled
+  latency are absent. No availability or cost case is made for leaving them
+  out, although a wall-clock probe exists
+  (`ockham/src/strata/bench.rs::wall_clock_probe`).
 - **met** — Separate parent lineages and corpus versions between fitting and
-  testing — evidence: `docs/research/ranking-pilot-v1/manifest.json`
-  (disjoint lineage and version per task) — reviewer: met
+  testing — evidence: `manifest.json` (distinct lineage, version and parent
+  digest per task; calibration and validation disjoint) — reviewer: met
 - **met** — Audit a randomly selected fully scored pool to measure true top-5%
   recall, false rejection and cold-start/negative-transfer behaviour —
-  evidence: `results.json` (640 selected, 632 generated and fully scored, all
-  pools complete; `negativeTransferTasks` non-empty; calibration budget 0 is
-  the cold start), `ockham/tests/ranking_pilot_archive.rs` — reviewer: met
+  evidence: `results.json` `coverage` (16 seeded pools, 632 of 632 generated
+  candidates fully scored, all complete), per-trial recall and false
+  rejection, the calibration-0 cell, `negativeTransferTasks` — reviewer: met
 - **met** — Count feature and training overhead before permitting rejection —
-  evidence:
-  `ockham/examples/priority_ordering_bench/tests.rs::cost_milliseconds_round_up_so_sub_millisecond_work_is_counted`
-  — reviewer: met
-- **met** — First inspect current code, merged work and repository
-  instructions. Reuse existing mechanisms — evidence: `ranking_pilot.rs`
-  reuses the #267/#274 bench; `telemetry::load` shares `load_from_reader` —
+  evidence: `featureMs`/`trainingMs`/`adaptationMs`/`rankingMs` in all 360
+  trials,
+  `priority_ordering_bench/tests.rs::cost_milliseconds_round_up_so_sub_millisecond_work_is_counted`;
+  operational rejection stays disabled — reviewer: met
+- **met** — Verify the exact paper and method before relying on it —
+  evidence: `docs/experiments/ranking-v1.md` method section (on `Develop`) —
   reviewer: met
+- **met** — First inspect current code, merged work and repository
+  instructions. Reuse existing mechanisms — evidence: reuses the #267/#274
+  bench, `features::extract`, `telemetry` (`load` shares
+  `load_from_reader`) and `Sweep` — reviewer: met
 - **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces,
   immutable parents and full authoritative acceptance. No automatic deployment
-  or default change — evidence: changes confined to `ockham/examples/`, docs
-  and tests, plus the additive `telemetry::load_from_reader` — reviewer: met
+  or default change — evidence: changes confined to `ockham/examples/`,
+  tests and docs, plus the additive `telemetry::load_from_reader`; the
+  library sweep and `FEATURE_NAMES` are unchanged — reviewer: met
 - **met** — Predeclare controls, seeds, sample size, compute limits and
   success/failure criteria — evidence: `manifest.json` (control, seeds 7 and
-  19, visits, `maxTaskMs`, `maxRunMs`, thresholds) — reviewer: met
+  19, visits, `maxTaskMs`, `maxRunMs`, thresholds, minimum groups), bound
+  into preflight, freeze and results — reviewer: met
 - **met** — Identify code/model/data versions — evidence: `manifest.json`
-  `codeRevision` `fad4e74`, `scorerSha256`, parent, corpus and history
-  digests;
-  `ranking_pilot.rs::scorer_may_be_a_symlink` asserts the recorded scorer
-  digest and path — reviewer: met
-- **met** — separate calibration from untouched validation — evidence:
-  disjoint calibration and validation tasks in `manifest.json`; pilot and
-  freeze open calibration only — reviewer: met
-- **partial** — count all preparation/search costs — evidence:
-  `results.json` `preparationCostMs` 39 inside `totalResearchMs` 11,726,
-  `priority_ordering_bench/tests.rs::manifest_preparation_time_is_reported_and_added_to_the_research_total`,
-  `ranking_pilot.rs::manifest_preparation_includes_the_recorded_inputs_time`
-  — reviewer: partial — reason: still uncounted, as the README and
-  `docs/experiments/ranking-v1.md` say: the bench's preflight `check` stage,
-  building the binaries, writing the final results, the manifest step after
-  its first write, and source search time, which the operator times by hand.
+  `codeRevision` `aa41403`, `scorerSha256`, parent, corpus and history
+  digests; README pins the scorer revision, rustc and executable digests —
+  reviewer: met. The reviewer noted that a squash merge leaves `aa41403`
+  reachable only through the PR ref.
+- **met** — Separate calibration from untouched validation — evidence: pilot
+  and freeze open calibration tasks only; validation is touched only by audit
+  and evaluate — reviewer: met
+- **met** — Count all preparation/search costs — evidence: `results.json`
+  `preparationCostMs` 25, `preflightCostMs` 19 (the preflight's `checkMs`),
+  `historicalAcquisitionMs` 1,881, stage sum equal to `totalResearchMs` 4,049;
+  `priority_ordering_bench/tests.rs::preflight_check_time_is_reported_and_added_to_the_research_total`,
+  `::preflight_validation_refuses_mismatched_identity_and_missing_check_time`,
+  `ranking_pilot.rs::manifest_preparation_includes_the_recorded_inputs_time`,
+  `ockham/tests/ranking_pilot_archive.rs` — reviewer: met. The remaining
+  uncounted items are disclosed: building the binaries, the final results
+  write and the manifest step's own writes. The reviewer judged them
+  self-referential, one-off or negligible.
 - **met** — Provide deterministic positive/negative correctness tests for new
   behaviour and pass the repository's normal quality checks. Research runs are
-  separate from routine feature CI — evidence: `ranking_pilot.rs` refusal
-  tests with positive controls, `ockham/tests/ranking_pilot_archive.rs`,
-  `./quality.sh` exit 0 on `cd5d26c` — reviewer: met
-- **partial** — Deliver a reproducible command/manifest and machine-readable
+  separate from routine feature CI — evidence: the synapse-feature and
+  preflight tests in `priority_ordering_bench/tests.rs`, the refusal tests in
+  `ranking_pilot.rs`, `ockham/tests/ranking_pilot_archive.rs`; none of them
+  runs a scorer — reviewer: met. The reviewer ran `cargo test --workspace`,
+  clippy, fmt, codespell and markdownlint but not `quality.sh`, which the
+  worker re-runs.
+- **met** — Deliver a reproducible command/manifest and machine-readable
   results with paired distributions, uncertainty, failures and actual coverage
-  — evidence: README `Reproduce`, `results.json` (`paired`,
-  `recallDeltaCi95`, `coverage[].failures`, `historyCoverage`),
+  — evidence: `manifest.json`, README `Reproduce`, `results.json`
+  (`paired[].taskDeltas`, `recallDeltaCi95` from 1,000 bootstrap replicates,
+  `coverage[].failures`, selected/generated/fullyScored/`missingFeatures`),
   `ranking_pilot.rs::committed_raw_logs_recurate_to_the_committed_histories`
-  — reviewer: partial — reason: only the curation step reproduces byte for
-  byte; the committed manifest names absolute scratch paths, so a re-run from
-  scratch gives new digests and only the verdict and signs compare.
+  — reviewer: met. The reviewer noted that the uncertainty rests on three
+  groups, and that a full rerun reproduces the direction and verdict but not
+  the exact digests.
 - **met** — Fixtures alone do not demonstrate an optimisation benefit —
   evidence: README and `ranking-v1.md` say so; verdict
   `no-demonstrated-benefit` — reviewer: met
 - **partial** — Record negative findings and remove optional code that does
-  not earn its maintenance cost — evidence: README `Finding` and `Maintenance
-  decision`, `ranking-v1.md` `Synthetic pilot` — reviewer: partial — reason:
-  the negative finding is recorded, but nothing is removed; the pairwise and
-  transfer arms are kept until the representative run, under the README's
-  predeclared removal rule.
+  not earn its maintenance cost — evidence: README `Finding`, `Change from the
+  fad4e74 run` and `Maintenance decision`, `ranking-v1.md` `Synthetic pilot`
+  — reviewer: partial — reason: the negative findings are recorded (reviewer:
+  met), but the pairwise and transfer arms trail `partial` (−0.611) at about
+  eight times the cost and are kept. Removal is deferred to a representative
+  run under the predeclared rule, and that run cannot happen on this host.
 - **met** — Do not claim success before representative runs — evidence:
-  README states no success is claimed — reviewer: met
+  verdict `no-demonstrated-benefit`, "The representative run remains
+  outstanding", `Part of #261` — reviewer: met
 - **met** — Keep public implementation and fixtures application-agnostic;
   private corpora/results and operational integration remain private —
-  evidence: generic synthetic creatures and corpora in `ranking_pilot.rs` —
-  reviewer: met. The reviewer noted that the archive records the generating
-  host name and scratch paths; these name no private data.
+  evidence: generated corpora and generic task names; manifest paths name
+  only scratch directories — reviewer: met
 - **met** — Leave unassigned until an implementer actively starts. `work-on`
   authorises the investigation, not skipping prerequisite verification —
-  evidence: README records the scorer rebuild at the pinned revision and its
-  digest match — reviewer: missing — reason: the reviewer could not judge
-  assignment from a diff; assignment is the worker's lifecycle step, and the
-  prerequisite verification is recorded in the README.
+  evidence: the prerequisite checks (method verification, availability
+  preflight, scorer rebuild with a digest match) are documented — reviewer:
+  met. The reviewer noted that assignment cannot be checked from the diff.
 - **unrequested** — Input bounds, symlink and containment checks in
-  `ranking_pilot manifest` (`Limits`, `contained`, `read_bounded`,
-  `hash_capped`, `refuse_existing`) and their tests — reviewer: unrequested —
-  reason: fixes the blocking #279 review finding on the pilot generator.
-- **unrequested** — Public `telemetry::load_from_reader` — reviewer:
-  unrequested — reason: lets the manifest step parse the capped raw-log bytes
-  in place; `telemetry::load` delegates to it.
+  `ranking_pilot manifest`, and the public `telemetry::load_from_reader` —
+  reviewer: unrequested — reason: they fix the blocking #279 review finding
+  on the pilot generator; the API addition is small and additive.
 - **unrequested** — Crate version 0.1.103 to 0.1.104 in `ockham/Cargo.toml`
   and `Cargo.lock` — reviewer: unrequested — reason: the worker's automatic
   version commit for the library change in `telemetry.rs`.
-- **unrequested** — `"preparationMs": 0` in
-  `docs/experiments/ranking-v1.template.json` and `audit::ms` rounding up for
-  every bench timing — reviewer: unrequested — reason: both serve "count all
-  preparation/search costs"; the field is optional and omitted at 0, so older
-  manifests keep their identity.
-- **unrequested** — Rewrite of `docs/archive/pr-summaries/pr-summary-261.md` —
-  reviewer: unrequested — reason: this PR's required summary replaces the
-  earlier PR's copy.
+- **unrequested** — `evaluate` now requires `--preflight` — reviewer:
+  unrequested — reason: it breaks the earlier `evaluate` command line. It
+  serves "count all preparation/search costs", and the docs are updated.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
+- **violation** — doc–code agreement: the `ranking_pilot.rs` module doc said
+  the preflight `check` stage is not timed — evidence:
+  `ockham/examples/ranking_pilot.rs:17` — reason: fixed in this diff
+- **violation** — doc–code agreement: the `ranking-v1.md` cost paragraph left
+  the preflight out of the `totalResearchMs` sum — evidence:
+  `docs/experiments/ranking-v1.md:223` — reason: fixed in this diff
+- **violation** — doc–code agreement: `ranking-v1.md` said only rows with
+  neuron features embed telemetry, but synapse rows now do too, with
+  bench-derived vectors — evidence: `docs/experiments/ranking-v1.md:68`,
+  `ockham/examples/priority_ordering_bench/audit.rs:395` — reason: fixed in
+  this diff. The doc now says that `synapse` rows carry the bench's derived
+  vector, that the committed source histories hold only ablation rows, and
+  that an exporter must choose by `kind`.
+- **violation** — test strength: the preflight refusal cases checked only
+  `is_err()`, and the archive test only that some synapses exist — evidence:
+  `ockham/examples/priority_ordering_bench/tests.rs:974`,
+  `ockham/tests/ranking_pilot_archive.rs:153` — reason: fixed in this diff;
+  the tests now match the error messages and pin 496 synapse candidates
+- **violation** — markdownlint MD018: a summary line began with `#279's` —
+  evidence: `docs/archive/pr-summaries/pr-summary-261.md:12` — reason: fixed
+  in this diff
 - **clean** — There is no `CODING-STANDARDS.md`, so the reviewer used
-  `CONTRIBUTING.md`, which names no rule as enforced by review only. No
-  violations. It checked principles 1–8 (parent never written, acceptance
-  path untouched, optional and isolated, version bump), that no new test
-  asserts only success or presence (`scorer_may_be_a_symlink` now asserts the
-  digest and path), that the one edited existing test
-  (`comparison_reports_audit_time_outside_every_pool_ledger`) still guards its
-  sum, that every named test exists, that no stub stands in for another
-  repository's binary, and doc–code agreement on limits, refusals and the
-  `preparationMs` formula. Optional notes not chased: a FIFO at a pilot path
-  blocks rather than being refused, unchecked `+` on an operator-supplied
-  `preparationMs`, and tests that need `gzip` on `PATH`.
+  `CONTRIBUTING.md`. It checked principles 1–7: creatures are only read,
+  the work stays in the opt-in bench, and the library features and schema are
+  unchanged. Principle 8 needs no further version bump, because these commits
+  touch only examples, tests and docs. No existing assertion was removed or
+  weakened, checked against `origin/Develop` and `f33dc0f`. New tests assert
+  values, not just success. Every README cost, paired-result, cold-start and
+  coverage figure matches `results.json`. All 13 README checksums match
+  `sha256sum`. Clippy with `-D warnings`, fmt and codespell are clean.
+  Advisory, not chased: the new commit subjects lack the optional 🪒 prefix.
+  There is no test for duplicate-edge weight choice or for the key-collision
+  refusal in `audit_features`.
 
 ## Test Plan
 
@@ -279,6 +338,25 @@ flowchart LR
     plus `preparationCostMs` in the existing audit-time sum test.
   - `ockham/tests/ranking_pilot_archive.rs` now also checks the research-cost
     sum, `preparationCostMs`, the acquisition sum and the coverage totals.
+- Added for synapse features and the preflight cost
+  (`priority_ordering_bench/tests.rs`):
+  `every_synapse_visit_gets_a_source_signal_feature_vector` (values for a
+  hidden, an input and an unmeasured source),
+  `synapse_features_leave_neuron_vectors_untouched_and_unknown_keys_absent`,
+  `preflight_check_time_is_reported_and_added_to_the_research_total` (1,234 ms
+  raises the total by exactly 1,234) and
+  `preflight_validation_refuses_mismatched_identity_and_missing_check_time`
+  (wrong identity, missing or non-integer `checkMs`, inconclusive status and
+  wrong phase refused, a valid preflight accepted). Extended:
+  `comparison_reports_audit_time_outside_every_pool_ledger` (preflight 9,000 ms
+  in the sum), `manifest_preparation_time_is_reported_and_added_to_the_research_total`
+  and `audit_scores_sampled_losers_individually_and_preserves_parent` (every
+  generated row, synapses included, has features).
+  `ranking_pilot_archive.rs` now checks `preflightCostMs` equals the
+  preflight's `checkMs` and is in the sum, and that `missingFeatures` totals 0
+  with exactly 496 synapse candidates audited. Against the `fad4e74` archive these new
+  archive assertions fail (no `preflightCostMs`; 496 missing features over all 16 pools, 186 of them in validation); they
+  pass on the re-run.
 - Restored from #279: the other tests in `ockham/examples/ranking_pilot.rs`,
   `ockham/tests/ranking_pilot_archive.rs` (archive digests, verdict and
   coverage), and
@@ -288,14 +366,16 @@ flowchart LR
 - `telemetry::load` now delegates to `load_from_reader`. The existing
   telemetry tests cover its messages and pass unchanged.
 - With stdin from `/dev/null`: `--example ranking_pilot` 23 passed,
-  `--example priority_ordering_bench` 18 passed, `--test ranking_pilot_archive`
+  `--example priority_ordering_bench` 22 passed, `--test ranking_pilot_archive`
   1 passed. Clippy with `-D warnings` and `cargo fmt --check` are clean.
-  `./quality.sh < /dev/null` passed (exit 0) on `cd5d26c`, the last code
-  commit; only this summary changed after it.
-- The only existing test on `Develop` that the diff edits is
-  `priority_ordering_bench/tests.rs::comparison_reports_audit_time_outside_every_pool_ledger`:
-  it gains `preparationCostMs == 0` and that term in its cost sum. No
-  assertion is removed. The `ceil_ms` test is new.
+  `./quality.sh` last passed on `cd5d26c`; the worker re-runs it on this head.
+- The existing tests on `Develop` that the diff edits are in
+  `priority_ordering_bench/tests.rs`:
+  `comparison_reports_audit_time_outside_every_pool_ledger` gains the
+  preparation and preflight terms in its cost sum, every `evaluate` call gains
+  the preflight argument, and
+  `audit_scores_sampled_losers_individually_and_preserves_parent` gains a
+  features assertion. No assertion is removed. The `ceil_ms` test is new.
 
 ## Not performed and remaining risk
 
@@ -304,11 +384,12 @@ paired representative benefit and cost assessment, because no private
 corpora, histories or representative parents exist on this host. All evidence
 here is synthetic and does not demonstrate an optimisation benefit. The
 keep-or-remove decision on the pairwise and transfer arms waits on that run,
-under the rule predeclared in the README. Uncounted costs remain: the bench's
-preflight `check` stage, building the binaries, writing the final results,
-the manifest step after its first write, and hand-timed source searches.
-Output variance, functional paths and compiled latency were not added as
-features. The run commit `fad4e74` is on this branch, but a squash merge
+under the rule predeclared in the README. Uncounted costs remain: building
+the binaries, writing the final results, the manifest step after its first
+write, and hand-timed source searches. Output variance, functional paths and
+compiled latency were not added as features. The re-run did not repeat the
+source searches; it reused the committed raw logs and timings. The run commit
+`aa41403` is on this branch, but a squash merge
 would leave it reachable only through the PR head. The manifests carry absolute
 scratch paths from the generating host. A concurrent path swap is not guarded.
 macOS was not checked. CI and PR review have not been observed.

@@ -971,15 +971,28 @@ fn preflight_validation_refuses_mismatched_identity_and_missing_check_time() {
     for bad in [json!(-1), json!(1.5), json!("12")] {
         let mut wrong = valid.clone();
         wrong["checkMs"] = bad;
-        assert!(preflight_check_ms(&wrong, &identity).is_err(), "{wrong}");
+        assert!(
+            preflight_check_ms(&wrong, &identity)
+                .unwrap_err()
+                .contains("checkMs missing or not a u64"),
+            "{wrong}"
+        );
     }
 
     let mut inconclusive = valid.clone();
     inconclusive["status"] = json!("inconclusive");
-    assert!(preflight_check_ms(&inconclusive, &identity).is_err());
+    assert!(
+        preflight_check_ms(&inconclusive, &identity)
+            .unwrap_err()
+            .contains("phase/status/manifest mismatch")
+    );
     let mut other_phase = valid;
     other_phase["phase"] = json!("pilot");
-    assert!(preflight_check_ms(&other_phase, &identity).is_err());
+    assert!(
+        preflight_check_ms(&other_phase, &identity)
+            .unwrap_err()
+            .contains("phase/status/manifest mismatch")
+    );
 }
 
 fn synapse_stats() -> neat_ai_ockham::stats::ActivationStats {

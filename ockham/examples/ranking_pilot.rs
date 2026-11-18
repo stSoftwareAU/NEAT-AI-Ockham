@@ -13,8 +13,8 @@
 //! whole milliseconds, and reports it on stderr. The manifest refuses without that file
 //! and writes `preparationMs` as that time plus its own wall time up to its first write,
 //! less the curation already charged to `acquisitionMs`, so the bench's
-//! `totalResearchMs` counts this generator's preparation (the bench's own
-//! preflight `check` stage is not timed).
+//! `totalResearchMs` counts this generator's preparation. The bench's preflight
+//! `check` stage is charged separately, as `preflightCostMs`.
 //!
 //! `manifest` treats the pilot directory as untrusted input. It resolves the directory once
 //! and refuses any task path that is a symlink or whose resolved path leaves it. It also

@@ -65,9 +65,13 @@ time of preparation that no other field charges, such as fixture or input
 generation and manifest construction. It is reported as `preparationCostMs`
 and added to `totalResearchMs`. Absent or zero means no recorded charge.
 
-Audit rows with neuron features embed ordinary `CandidateRecord` telemetry. Its
+Audit rows with features embed ordinary `CandidateRecord` telemetry. Its
 `corpusIdentity` uses the manifest's corpus cache identity, so those records can
 be exported as source history for a later, independently partitioned experiment.
+Rows of kind `synapse` carry the bench's derived synapse vector, not a
+library-extracted neuron vector; the committed synthetic source histories,
+from ordinary searches, hold only ablation rows. An exporter should
+keep or drop them by `kind` deliberately.
 The historical loader also reads earlier v1 `random-audit` records that used the
 manifest's full corpus SHA-256 in that field, normalising them in memory to the
 cache identity. Other ordering names do not receive this compatibility conversion;
@@ -220,9 +224,10 @@ positive verdict. Other grid cells diagnose cold starts and sparsity, not pick
 a favourable result after validation. An inconclusive or unsupported result
 never enables deployment or real rejection.
 
-Cost reporting retains pilot, freeze, historical acquisition, manifest
-preparation (`preparationCostMs`), audit and evaluation totals, including
-protocol identity checks; `totalResearchMs` is their sum. It separates the actual
+Cost reporting retains preflight (`preflightCostMs`, the preflight's
+`checkMs`), pilot, freeze, historical acquisition, manifest preparation
+(`preparationCostMs`), audit and evaluation totals, including protocol
+identity checks; `totalResearchMs` is their sum. It separates the actual
 audit wall time from counterfactual
 strategy ledgers: preparation/generation, feature extraction, historical
 acquisition/loading, calibration acquisition, partial scoring, fit, adaptation,
