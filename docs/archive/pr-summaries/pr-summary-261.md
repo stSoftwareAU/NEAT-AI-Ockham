@@ -198,8 +198,7 @@ flowchart LR
   telemetry tests cover its messages and pass unchanged.
 - `cargo test --locked -p neat_ai_ockham --example ranking_pilot`: 18 passed
   on the final head. `./quality.sh < /dev/null` passed ("All quality checks
-  passed!") on the first commit. Only `mod tests` additions followed, and
-  `cargo fmt`, clippy with `-D warnings` and the example's tests pass on them.
+  passed!") on the final head.
 - No existing test on `Develop` was edited, except that `audit.rs` and
   `tests.rs` gained the `ceil_ms` hunk and its test.
 
