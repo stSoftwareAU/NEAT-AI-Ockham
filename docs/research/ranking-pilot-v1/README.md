@@ -23,37 +23,46 @@ value (inputs exactly, targets within `1e-5`) rather than by digest.
 
 ## Versions and pins
 
-- Code revision `fad4e742000261a02a530ea63b465ca6227ec639`, the manifest's
+- Code revision `aa41403530c8cb3a28aaf79ebfc43e6386c75fc5`, the manifest's
   `codeRevision`. It is a commit on this branch. The example that generates
   the inputs, `ockham/examples/ranking_pilot.rs`, and the bench,
   `ockham/examples/priority_ordering_bench.rs`, are both from this revision,
-  and so are the input boundaries and the preparation-cost accounting
-  described below. Later commits on the branch add only this archive, its
-  tests and documentation.
+  and so are the input boundaries, the preparation-cost accounting, the
+  synapse feature vectors and the preflight cost described below. Later
+  commits on the branch add only this archive, its tests and documentation.
 - NEAT-AI-scorer revision `742c5df30fc98ece3afe784be1aca18f925b47b3`, built with
   `cargo build --release --locked -p rust_scorer`. Executable sha256
   `d057a3349da1c28e1319d7e235491597517581b17fda21ea1cf8f0dd55ffbbf7`. The
   scorer was run with `--gpu off --cost MSE`.
 - Release executables built at that revision: bench
-  `725aa37ee18ba3a240cad9cc95ccd1c6d82bd309a071df4eed441499512d8811` (the
+  `931a104cb0771cf9eb8b8bb4252ea483d7adcb993716bac02fd81bb35114c7f5` (the
   freeze binds this digest), `ranking_pilot`
-  `3863ecc5e0f50f8ba908fba34ff76fc767a94f60e9e5e438a351b3dabada1788` and
-  `neat_ai_ockham` `55b73d4516201aef52353ea4da73b8532950513b211ffda83d45cae5bf3d2b79`.
+  `4e648bbf8ec2ca36eea55c5d393405cb58953a8d874f43c31ba14f43b24e02d8` and
+  `neat_ai_ockham` `d285d3210268c7548e1e7b2c2b8877cb18095333fa50498640a614ad70197760`.
 - rustc 1.99.1 (58cf8f9c3 2026-10-13), target `aarch64-unknown-linux-gnu`.
 - Run on 18 November 2026.
-- Manifest identity `a1f6de004715a90b9a25999d1256bb28a1198bdfa42ce34aa52d4c93df399b17`.
+- Manifest identity `f808b7a15182c4bbf8d2c925e65c09b4a6b9eb7ab818d5dc276ee14a62d30e2c`.
   The results, preflight and freeze files all carry this value.
 - The manifest's paths are the run's absolute scratch paths under
-  `/tmp/vibe-scratch/r261b/`. A rerun writes its own paths and digests.
+  `/tmp/vibe-scratch/s261c/`. A rerun writes its own paths and digests.
+- This run is a reproduction from the committed inputs (see Reproduce). The
+  generated corpora and parents matched the committed digests. The source
+  searches were not repeated: the committed raw logs, `acquisition-ms` and
+  `inputs-ms` from the earlier `fad4e74` run were used, and curation
+  reproduced both histories byte for byte.
 
-This archive replaces the earlier run from the closed PR #279 (revisions
+This archive replaces the run at `fad4e74` on this branch, whose audit gave
+the 186 synapse candidates no feature vector and whose preflight time was not
+charged. Its results are summarised under "Change from the `fad4e74` run".
+That run in turn replaced the earlier run from the closed PR #279 (revisions
 `a27d638` and `e02ef9f`) and its `cost-recount/` directory. Neither earlier
 revision is on this branch, their raw candidate logs were never committed, and
-they predate the input boundaries and the preparation-cost accounting. This
-run, at the current code, reproduced every primary-cell and cold-start paired
-difference and interval of the earlier run, as well as its verdict and coverage.
-Only the timings differ. Keeping two superseded archives would add about 15,700
-lines of JSON to maintain and no evidence this run lacks, so they were removed.
+they predate the input boundaries and the preparation-cost accounting. The
+`fad4e74` run reproduced every primary-cell and cold-start paired difference
+and interval of the #279 run, as well as its verdict and coverage; only the
+timings differed. Keeping superseded archives would add thousands of lines of
+JSON to maintain and no evidence this run lacks, so they were removed. The
+`fad4e74` archive remains in this branch's history.
 
 ## Design
 
@@ -97,40 +106,42 @@ parent. These are search-only histories.
   (fully scored) per source. The other nine were screened out without a full
   score.
 - The recorded search wall times, committed as `source-N/acquisition-ms`, were
-  922 ms and 955 ms. The manifest step added curation time of 3 and 4 ms, so
-  the charged `acquisitionMs` values are 925 and 959. They are charged without
+  922 ms and 955 ms. The manifest step added curation time of 2 ms each, so
+  the charged `acquisitionMs` values are 924 and 957. They are charged without
   amortisation.
 
 ## All costs counted
 
-`totalResearchMs` is 11,726 ms. It sums these stages:
+`totalResearchMs` is 4,049 ms. It sums these stages:
 
 | Stage | ms |
 | --- | --- |
-| Preparation (`preparationCostMs`): input generation 9 (committed as `inputs-ms`) plus the manifest step's own 30 ms, excluding curation | 39 |
-| Historical acquisition: two searches plus curation (925 + 959) | 1,884 |
-| Pilot | 660 |
-| Freeze | 71 |
-| Audit (19 ms of it unpooled) | 8,715 |
+| Preparation (`preparationCostMs`): input generation 9 (committed as `inputs-ms`) plus the manifest step's own 16 ms, excluding curation | 25 |
+| Preflight `check` stage (`preflightCostMs`, the preflight's `checkMs`) | 19 |
+| Historical acquisition: two searches plus curation (924 + 957) | 1,881 |
+| Pilot | 145 |
+| Freeze | 48 |
+| Audit (11 ms of it unpooled) | 1,574 |
 | Evaluation | 357 |
-| Total | 11,726 |
+| Total | 4,049 |
 
-Three things are outside these totals: building the binaries, serialising and
-writing the final results, and the bench's preflight `check` stage. The
-preflight's wall time is neither recorded nor charged. It repeats the
-revision, clean-source and scorer-digest checks that the pilot stage charges
-as protocol preparation, which took 47 ms there. So the uncounted preflight
-cost is of that order, well under 1% of the total. The timings were taken on a shared host and are
-indicative only. This run's total is about three times the earlier #279 run's
-3,469 ms. The growth is in protocol setup and scoring time, which the trial
-ledgers share. The arms' own feature, fit, adaptation and ranking overhead is
-the same in both runs.
-The recall, false-rejection and paired results are identical, so the difference
-is in timing only and changes no comparison or verdict.
+The preflight `check` stage now records its own wall time as `checkMs` in
+`preflight.json`. `evaluate` requires `--preflight`, refuses a preflight that
+is not `available` or names another manifest, and adds `checkMs` to
+`totalResearchMs` as `preflightCostMs`.
+
+Still outside these totals, and not measured: building the binaries,
+serialising and writing the final results (the file cannot contain its own
+write time), the manifest step's work after its first write (writing the
+history and manifest files), and the source searches' own timing, which the
+operator takes by hand and records in `acquisition-ms`. The timings were taken
+on a shared host and are indicative only. The `fad4e74` run's total was
+11,726 ms; the difference is host load in protocol setup and scoring time,
+which the trial ledgers share.
 
 Feature, fit, adaptation and ranking time is rounded up to whole milliseconds
 (`audit::ms`), so non-zero work is never charged as 0. All 360 trials charge
-ranking time, 216 charge feature time, 144 charge training time and 64 charge
+ranking time, 216 charge feature time, 144 charge training time and 56 charge
 adaptation time.
 
 ## Results
@@ -143,13 +154,15 @@ validation groups, with 95% bootstrap intervals (1,000 replicates):
 | partial − random | +0.833 | [0.75, 1.0] |
 | multiple-proxies − random | +0.444 | [0.25, 0.583] |
 | multiple-proxies − partial | −0.389 | [−0.5, −0.25] |
-| target-pairwise − partial | −0.611 | [−0.75, −0.5] |
-| transfer-pairwise − random | +0.139 | [0.0, 0.417] |
-| transfer-pairwise − partial | −0.694 | [−0.75, −0.583] |
-| transfer-pairwise − target-pairwise | −0.083 | [−0.25, 0.0] |
+| target-pairwise − random | +0.222 | [0.0, 0.667] |
+| target-pairwise − partial | −0.611 | [−0.75, −0.333] |
+| transfer-pairwise − random | +0.222 | [0.0, 0.667] |
+| transfer-pairwise − partial | −0.611 | [−0.75, −0.333] |
+| transfer-pairwise − target-pairwise | 0.0 | [0.0, 0.0] |
 
-Transfer-pairwise minus target-pairwise was negative on validation-2 in the
-primary cell (`negativeTransferTasks`).
+In the primary cell transfer-pairwise and target-pairwise tied on every task:
+no task showed negative transfer (`negativeTransferTasks` is empty) and none
+showed a gain.
 
 Partial-score ordering recovered the whole true top set (two or three
 candidates) in all six primary trials.
@@ -163,11 +176,11 @@ Mean per-trial strategy cost and overhead in the primary cell:
 
 | Strategy | Feature (ms) | Training (ms) | Adaptation (ms) | Ranking (ms) | Total (ms) |
 | --- | --- | --- | --- | --- | --- |
-| random | 0 | 0 | 0 | 1 | 878.7 |
-| partial | 0 | 0 | 0 | 1 | 1125.8 |
-| multiple-proxies | 1 | 0 | 0 | 1 | 878.0 |
-| target-pairwise | 1 | 1 | 0 | 1 | 1635.0 |
-| transfer-pairwise | 1 | 1 | 1 | 1 | 3522.8 |
+| random | 0 | 0 | 0 | 1 | 245.2 |
+| partial | 0 | 0 | 0 | 1 | 280.7 |
+| multiple-proxies | 1 | 0 | 0 | 1 | 247.0 |
+| target-pairwise | 1 | 1 | 0 | 1 | 379.8 |
+| transfer-pairwise | 1 | 1 | 1 | 1 | 2264.8 |
 
 Each arm's total is its full strategy ledger, including the preparation and
 scoring every arm shares. The model's own feature and fit overhead is at most
@@ -188,21 +201,45 @@ thresholds: recall=false, false rejection=false, total cost=false".
   `results.json` `coverage[].failures`.
 - Validation: six pools with 237 candidates scored, of which 51 are ablation
   cuts and 186 are synapse cuts.
-- The 186 validation synapse candidates have no neuron feature vector
-  (`missingFeatures`). The pairwise and composite arms therefore score them at
-  zero, tying them. This is a large part of why the learned arms trail partial
-  ordering.
+- Every generated candidate now has a feature vector: `missingFeatures` is 0
+  in all 16 pools. The library's feature extraction covers hidden neurons
+  only, so the audit derives each synapse candidate's vector in the bench
+  (`audit::synapse_features`): the source neuron's activation statistics (the
+  signal the synapse carries), `|weight|` as the outgoing weight, one outgoing
+  edge, one synapse's growth units and the source's depth. The library sweep
+  and its feature schema are unchanged.
 - Each pool has 9 to 16 genuine improvements. False rejection for partial
   ordering at evaluation budget 5 is 0.56 to 0.69, so every arm fails the 0.1
   threshold at this budget.
+
+## Change from the `fad4e74` run
+
+The `fad4e74` run left the 186 validation synapse candidates without a feature
+vector, so the composite and pairwise arms tied them at zero. With synapse
+vectors, on the same pools and labels:
+
+- Partial − random (+0.833) and the cold-start cell are unchanged.
+- Multiple-proxies is unchanged (+0.444 versus random, −0.389 versus partial).
+- Transfer-pairwise − partial moved from −0.694 to −0.611, and transfer −
+  random from +0.139 to +0.222.
+- Transfer − target-pairwise moved from −0.083, with negative transfer on
+  validation-2, to an exact tie on every task.
+- Target-pairwise − partial stayed at −0.611; its interval moved from
+  [−0.75, −0.5] to [−0.75, −0.333].
+- The verdict is unchanged.
+
+So the missing synapse features cost the transfer arm a little and caused the
+primary-cell negative transfer, but they do not explain why the learned arms
+trail partial-score ordering.
 
 ## Finding
 
 On this synthetic pilot, partial-score ordering alone dominates. Neither the
 existing composite nor the pairwise fits beat it, and sparse-history transfer
-does not either. Transfer shows negative transfer on validation-2 in the
-primary cell and on two of three tasks at cold start, and costs about three
-times partial's strategy cost.
+does not either, now that every candidate carries features. Transfer adds
+nothing over the target-only fit in the primary cell and shows negative
+transfer on two of three tasks at cold start. It costs about eight times
+partial's strategy cost, almost all of it historical acquisition.
 
 The limits are:
 
@@ -220,10 +257,10 @@ No success is claimed. The representative run remains outstanding.
 - Removed: the superseded #279 archive and its `cost-recount/` directory (see
   above). This run replaces them and can be reproduced from this branch.
 - Kept, research-only: the pairwise and transfer arms of the example bench.
-  They did not earn their cost on this synthetic pilot. But the pilot cannot
-  separate method from fixture: 186 of 237 validation candidates have no
-  feature vector, there are three validation groups and three labelled
-  history rows per source. The arms are the subject of the representative run
+  They did not earn their cost on this synthetic pilot, even with every
+  candidate carrying features. But the pilot cannot separate method from
+  fixture: the corpora are synthetic and homogeneous, and there are three
+  validation groups and three labelled history rows per source. The arms are the subject of the representative run
   that this issue still owes. Nothing calls them outside the opt-in example
   bench, and operational rejection stays disabled.
 - Predeclared removal rule: if the representative run also returns
@@ -237,13 +274,13 @@ No success is claimed. The representative run remains outstanding.
 
 | File | sha256 |
 | --- | --- |
-| `manifest.json` | `a0592ba9a7677aef7849fb3a20d62714958ea801e5fc3906842a2a49996b0a70` |
-| `preflight.json` | `5389e932e3f6669fe9bfcebd612d59ee39ea68baf817a196ca9101d720965230` |
-| `pilot.json` | `e3c7cac9a88ea249d1676ec0d56f8a165832a869cdcad45a2a536e8c0d54cb7e` |
-| `frozen.json` | `e6c1a957452246d807bb244808e21743960c3dfaa6c4cc38cbebfb6881059f97` |
-| `results.json` | `2bf582eea9a9ba1a427ffac25b940843d59852f6046b3914a60d7ce53a1f234a` |
-| `audit.json.gz` | `7f757ea61eeef3d48d818699505ab8d8245f6fa25f1d96caf841db02c924063a` |
-| `audit.json` (decompressed) | `4f2fd6f94fcc5b3ff38efbd504c33be0231c032cf0f28acd573433c675a1c902` |
+| `manifest.json` | `8a426f721a143c3a160177ae6d323388287fd902165641c45d6fa90d5337489f` |
+| `preflight.json` | `2503a17da2b7282e4d3408c7d92845596f0a966299047c8daf2dc9f9b5d54154` |
+| `pilot.json` | `c42f036d0cf54f9253e89c6eadbed9893689801a89956395bc89720c6166833d` |
+| `frozen.json` | `e44583951ed835b4b5b0f1a5a70384b1f999aa1b2f8452adb51b3ce2eebf39c1` |
+| `results.json` | `80ddbdd2ee79883d7a081bfac8bcc26f1e8c7a0402c16399aa3b9f303183c3ec` |
+| `audit.json.gz` | `c91fbef5b26116912bf7a2c10e40dbe4d969cc5a607c9fff002212c4ad7e3e14` |
+| `audit.json` (decompressed) | `3a5ccb3b120016940863aa7a2b9fba29a74f6d7eecf258ece07a54572eaeefea` |
 | `source-1/history.jsonl` | `7f6009f2ef474fd4892801939dafb23d0401c5e50715ef2282513b66a6ab1e3c` |
 | `source-2/history.jsonl` | `9ef60a6a94ea97634e38c4fca48c58431d5088e4ce42ea9d8221c5b844046c1b` |
 | `source-1/raw-candidates.jsonl.gz` | `3e942874ba63051f36cbc8ec39f5f5a99fbcb7e2942181ef716e5bde5b653e4a` |
@@ -261,8 +298,10 @@ Tests check the archive:
   pilot and source-history digests from the archived bytes, and checks them
   against the digests recorded in `results.json`, `frozen.json` and the
   manifest. It also checks the manifest identity across preflight, freeze and
-  results, the verdict, the primary-cell sign, complete coverage, and the
-  research-cost sum including `preparationCostMs`.
+  results, the verdict, the primary-cell sign, complete coverage, the
+  research-cost sum including `preparationCostMs` and `preflightCostMs`, that
+  `preflightCostMs` equals the preflight's `checkMs`, and that no audited
+  candidate lacks a feature vector.
 - `ockham/examples/ranking_pilot.rs::committed_raw_logs_recurate_to_the_committed_histories`
   re-runs the manifest step on the committed raw logs and timings. It checks
   that the curated histories are byte-identical to the committed ones.
@@ -277,7 +316,7 @@ cargo build --release --locked -p rust_scorer
 ```
 
 Build the Ockham binaries at a clean checkout of revision
-`fad4e742000261a02a530ea63b465ca6227ec639` or a later revision of this
+`aa41403530c8cb3a28aaf79ebfc43e6386c75fc5` or a later revision of this
 code. The bench refuses a manifest whose `codeRevision` is not the checkout's
 HEAD, so pass that HEAD to the manifest step below.
 
@@ -373,7 +412,8 @@ Then run the five bench stages in order, writing into a new run directory
   --out <run>/audit < /dev/null
 <target>/release/examples/priority_ordering_bench --experiment evaluate \
   --manifest <dir>/manifest.json --freeze <run>/frozen.json \
-  --audit <run>/audit/audit.json --out <run>/results.json < /dev/null
+  --audit <run>/audit/audit.json --preflight <run>/preflight.json \
+  --out <run>/results.json < /dev/null
 ```
 
 A rerun's timings and history rows differ from this archive, so its digests

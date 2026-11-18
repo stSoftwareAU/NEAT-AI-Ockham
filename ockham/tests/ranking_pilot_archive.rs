@@ -97,12 +97,18 @@ fn archived_ranking_pilot_matches_its_digests_and_negative_finding() {
         "freezingCostMs",
         "historicalAcquisitionMs",
         "preparationCostMs",
+        "preflightCostMs",
         "evaluationCostMs",
     ]
     .iter()
     .map(|key| uint(&results[*key]))
     .sum();
     assert_eq!(uint(&results["totalResearchMs"]), charged);
+
+    // The preflight `check` stage records its own time, and evaluation charges it.
+    let preflight_ms = uint(&results["preflightCostMs"]);
+    assert_eq!(preflight_ms, uint(&preflight["checkMs"]));
+    assert!(preflight_ms > 0, "preflight cost is charged");
 
     // Each source's acquisition is its recorded search time plus curation.
     let mut acquisition = 0;
@@ -137,6 +143,14 @@ fn archived_ranking_pilot_matches_its_digests_and_negative_finding() {
     assert_eq!(total("selected"), 640);
     assert_eq!(total("generated"), 632);
     assert_eq!(total("fullyScored"), 632);
+    // Synapse candidates carry their own feature vectors, so no generated
+    // candidate is ranked without features.
+    assert_eq!(total("missingFeatures"), 0);
+    let synapses: u64 = coverage
+        .iter()
+        .map(|cell| uint(&cell["kinds"]["synapse"]))
+        .sum();
+    assert!(synapses > 0, "the audit includes synapse candidates");
 }
 
 /// A non-negative integer field of the archive.

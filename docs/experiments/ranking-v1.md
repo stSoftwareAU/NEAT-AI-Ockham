@@ -104,10 +104,14 @@ are reported separately.
 
 The ordinary proposal ladder can produce identity, ablation, constant and
 synapse candidates. Group and merge proposals are not enabled in this protocol;
-their coverage is explicitly zero. Existing neuron telemetry cannot represent
-synapse feature vectors. The audit ledger retains those candidates with a
-feature-availability flag; pairwise inputs zero-fill the neuron columns only
-behind that flag. The composite control ties featureless candidates at zero.
+their coverage is explicitly zero. The library's feature extraction covers
+hidden neurons only, so the audit derives a synapse candidate's vector in the
+bench (`audit::synapse_features`) in the same columns: the source neuron's
+activation statistics, `|weight|` as outgoing weight, one outgoing edge, one
+synapse's growth units and the source's depth. The library sweep and schema
+are unchanged. The audit ledger keeps a feature-availability flag; pairwise
+inputs zero-fill the columns only behind that flag, and the composite control
+ties any featureless candidate at zero.
 Activation variance is not output variance; sensitivity here is the existing
 activation-times-outgoing-weight estimate, not a gradient. Functional-path,
 compiled-latency and gradient/Fisher measurements are not added without an
@@ -149,6 +153,7 @@ cargo run --example priority_ordering_bench -- --experiment evaluate \
   --manifest /private/ordering/manifest.json \
   --freeze /private/ordering/frozen.json \
   --audit /private/ordering/audit/audit.json \
+  --preflight /private/ordering/preflight.json \
   --out /private/ordering/results.json < /dev/null
 ```
 
@@ -242,11 +247,12 @@ Timings on this shared host are indicative, never correctness assertions.
 ## Synthetic pilot
 
 A synthetic, non-representative pilot of this protocol was run on 18 November
-2026 at code revision `fad4e742000261a02a530ea63b465ca6227ec639`, with the real
-scorer (NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`). It replaces
-an earlier run from the closed PR #279, whose revisions are not on this branch
-and whose raw logs were never committed. This run reproduced the earlier run's
-paired results, coverage and verdict.
+2026 at code revision `aa41403530c8cb3a28aaf79ebfc43e6386c75fc5`, with the real
+scorer (NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`). It was
+reproduced from the committed inputs, raw search logs and timings of an
+earlier run at `fad4e74`, which left synapse candidates without features and
+did not charge the preflight. That run reproduced the paired results, coverage
+and verdict of the closed PR #279's run.
 Its inputs come from the generator `ockham/examples/ranking_pilot.rs`.
 `ranking_pilot inputs <dir>` writes 8 tasks (2 source, 3 calibration and
 3 validation), each with its own parent, lineage, corpus version and
@@ -266,9 +272,11 @@ whole milliseconds, to each source's recorded search time in `acquisitionMs`.
 file. It writes `preparationMs` as that time plus its own wall time up to its
 first write, less the curation already charged to `acquisitionMs`, so
 `totalResearchMs` counts the generator's preparation. In the archived run that
-is 39 ms of an 11,726 ms total. The bench's preflight `check` stage is still
-not timed or charged. Its checks repeat ones the pilot stage charges, which
-took 47 ms there.
+is 25 ms of a 4,049 ms total. The preflight `check` stage records `checkMs`,
+and `evaluate` requires `--preflight` and charges it as `preflightCostMs`
+(19 ms). Still uncounted: building the binaries, writing the final results,
+the manifest step after its first write, and the source searches' own timing,
+which the operator takes by hand.
 
 The manifest step refuses symlinks among the pilot-owned inputs and any path
 resolving outside the pilot directory, creates `history.jsonl` and
@@ -282,14 +290,17 @@ fit, adaptation and ranking work is charged at least 1 ms rather than 0.
 The record is [the synthetic pilot report](../research/ranking-pilot-v1/README.md).
 In the primary cell (full history, calibration 8, evaluation 5; 3 validation
 groups), partial-score ordering alone recovered the full true top set in all
-6 trials (+0.833 recall versus random, 95% interval [0.75, 1.0]). Transfer-pairwise
-recall minus partial was −0.694 [−0.75, −0.583], and minus target-only it was
-−0.083 [−0.25, 0.0], with negative transfer on one task. At cold start
-(calibration 0), transfer minus target-only was −0.167 [−0.25, 0.0], negative on
-two tasks. Transfer cost about three times partial's strategy cost. The verdict
-is `no-demonstrated-benefit`. 186 of 237 validation candidates were synapse cuts
-with no neuron feature vector, which the composite and pairwise arms tie at
-zero. This is a negative synthetic finding, not a representative result. The
+6 trials (+0.833 recall versus random, 95% interval [0.75, 1.0]). Every audited
+candidate, including the 186 validation synapse cuts, carried a feature vector.
+The composite minus partial was −0.389 [−0.5, −0.25]. Transfer-pairwise recall
+minus partial was −0.611 [−0.75, −0.333], and minus target-only it was 0.0
+[0.0, 0.0], a tie on every task. At cold start (calibration 0), transfer minus
+target-only was −0.167 [−0.25, 0.0], negative on two tasks. Transfer cost about
+eight times partial's strategy cost. The verdict is `no-demonstrated-benefit`.
+Without synapse features (the `fad4e74` run) transfer minus partial was −0.694
+and transfer minus target-only −0.083, so the missing features do not explain
+the learned arms' deficit. This is a negative synthetic finding, not a
+representative result. The
 report's maintenance decision keeps the pairwise and transfer arms research-only
 until the representative run. It also predeclares that they are removed if that
 run also shows no benefit over partial ordering.

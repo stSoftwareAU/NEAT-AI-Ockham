@@ -5,7 +5,7 @@
     0,
     8
   ],
-  "codeRevision": "fad4e742000261a02a530ea63b465ca6227ec639",
+  "codeRevision": "aa41403530c8cb3a28aaf79ebfc43e6386c75fc5",
   "evaluationBudgets": [
     2,
     5
@@ -33,9 +33,9 @@
   "minimumIndependentGroups": 3,
   "minimumRecallGain": 0.05,
   "pilotVisits": 8,
-  "preparationMs": 39,
+  "preparationMs": 25,
   "protocol": "ockham-ranking-v1",
-  "scorer": "/tmp/vibe-scratch/r261b/rust_scorer",
+  "scorer": "/tmp/vibe-scratch/s261c/scorer-target/release/rust_scorer",
   "scorerArgs": [
     "--gpu",
     "off",
@@ -51,41 +51,41 @@
   "statsRecords": 512,
   "tasks": [
     {
-      "corpus": "/tmp/vibe-scratch/r261b/pilot/source-1/corpus",
+      "corpus": "/tmp/vibe-scratch/s261c/pilot-v2/source-1/corpus",
       "corpusIdentity": "521e6fb7dc4fe1e2",
       "corpusSha256": "7d92bcf13c1fd9d9d71bd05128c8f5c6202f1244f37129fa4a960bba6e691bda",
       "corpusVersion": "version-1",
       "family": "source-a",
       "history": {
-        "acquisitionMs": 925,
-        "path": "/tmp/vibe-scratch/r261b/pilot/source-1/history.jsonl",
+        "acquisitionMs": 924,
+        "path": "/tmp/vibe-scratch/s261c/pilot-v2/source-1/history.jsonl",
         "sha256": "7f6009f2ef474fd4892801939dafb23d0401c5e50715ef2282513b66a6ab1e3c"
       },
       "id": "source-1",
       "lineage": "lineage-1",
-      "parent": "/tmp/vibe-scratch/r261b/pilot/source-1/parent.json",
+      "parent": "/tmp/vibe-scratch/s261c/pilot-v2/source-1/parent.json",
       "parentSha256": "5bac0d181b726324cae8690b5944cbb551060e00cc2e44596d2de98f49d5921c",
       "split": "source"
     },
     {
-      "corpus": "/tmp/vibe-scratch/r261b/pilot/source-2/corpus",
+      "corpus": "/tmp/vibe-scratch/s261c/pilot-v2/source-2/corpus",
       "corpusIdentity": "3362882ceb1c104e",
       "corpusSha256": "87d2c4d512d1cca5685fa600a55a1cf008f7621b1a507a10787c32863f86def5",
       "corpusVersion": "version-2",
       "family": "source-b",
       "history": {
-        "acquisitionMs": 959,
-        "path": "/tmp/vibe-scratch/r261b/pilot/source-2/history.jsonl",
+        "acquisitionMs": 957,
+        "path": "/tmp/vibe-scratch/s261c/pilot-v2/source-2/history.jsonl",
         "sha256": "9ef60a6a94ea97634e38c4fca48c58431d5088e4ce42ea9d8221c5b844046c1b"
       },
       "id": "source-2",
       "lineage": "lineage-2",
-      "parent": "/tmp/vibe-scratch/r261b/pilot/source-2/parent.json",
+      "parent": "/tmp/vibe-scratch/s261c/pilot-v2/source-2/parent.json",
       "parentSha256": "7c0b9f27fd2aa47b0cb6e7e0d0b1849e7b69b68c84b286115956ee05fbb4e403",
       "split": "source"
     },
     {
-      "corpus": "/tmp/vibe-scratch/r261b/pilot/calibration-1/corpus",
+      "corpus": "/tmp/vibe-scratch/s261c/pilot-v2/calibration-1/corpus",
       "corpusIdentity": "2d031cc2094ff58b",
       "corpusSha256": "9965fdf794a873009426fccbf7bf1de61e039eef53d2ac15bbd95ff22a75e6f1",
       "corpusVersion": "version-3",
@@ -93,12 +93,12 @@
       "history": null,
       "id": "calibration-1",
       "lineage": "lineage-3",
-      "parent": "/tmp/vibe-scratch/r261b/pilot/calibration-1/parent.json",
+      "parent": "/tmp/vibe-scratch/s261c/pilot-v2/calibration-1/parent.json",
       "parentSha256": "72a3f7609c08a7fcbff49653f3e03fef364d00e6371769d69ec3ab2f56beac7a",
       "split": "calibration"
     },
     {
-      "corpus": "/tmp/vibe-scratch/r261b/pilot/calibration-2/corpus",
+      "corpus": "/tmp/vibe-scratch/s261c/pilot-v2/calibration-2/corpus",
       "corpusIdentity": "768740b8c4544114",
       "corpusSha256": "2d691a3f4acb0993363d8073d8400f68e2dd2d63e76db6be97ffa27c0a28de58",
       "corpusVersion": "version-4",
@@ -106,12 +106,12 @@
       "history": null,
       "id": "calibration-2",
       "lineage": "lineage-4",
-      "parent": "/tmp/vibe-scratch/r261b/pilot/calibration-2/parent.json",
+      "parent": "/tmp/vibe-scratch/s261c/pilot-v2/calibration-2/parent.json",
       "parentSha256": "0f3dc286bbafb14df9019bb40086b0127cf9a5ca2152f54ead6908f9a9a5afb1",
       "split": "calibration"
     },
     {
-      "corpus": "/tmp/vibe-scratch/r261b/pilot/calibration-3/corpus",
+      "corpus": "/tmp/vibe-scratch/s261c/pilot-v2/calibration-3/corpus",
       "corpusIdentity": "076a7132550d01a9",
       "corpusSha256": "9aa88ff640f33222825210d6b9b359b70bbea321da3630e5d7a446009d956bc6",
       "corpusVersion": "version-5",
@@ -119,12 +119,12 @@
       "history": null,
       "id": "calibration-3",
       "lineage": "lineage-5",
-      "parent": "/tmp/vibe-scratch/r261b/pilot/calibration-3/parent.json",
+      "parent": "/tmp/vibe-scratch/s261c/pilot-v2/calibration-3/parent.json",
       "parentSha256": "0af268fecb75bb3cdf17a997a1de611baae69676fc1b13850c4c2785be98e6bf",
       "split": "calibration"
     },
     {
-      "corpus": "/tmp/vibe-scratch/r261b/pilot/validation-1/corpus",
+      "corpus": "/tmp/vibe-scratch/s261c/pilot-v2/validation-1/corpus",
       "corpusIdentity": "d5e835dc39b660c8",
       "corpusSha256": "e25b461406e47d3a8a8977f2009dd94a79ebd881431192b4fa09dad18f3f7377",
       "corpusVersion": "version-6",
@@ -132,12 +132,12 @@
       "history": null,
       "id": "validation-1",
       "lineage": "lineage-6",
-      "parent": "/tmp/vibe-scratch/r261b/pilot/validation-1/parent.json",
+      "parent": "/tmp/vibe-scratch/s261c/pilot-v2/validation-1/parent.json",
       "parentSha256": "f39f89a30af3be249ac3aad8d93bd30600a4c9310933eb81d26ece90b2681ea5",
       "split": "validation"
     },
     {
-      "corpus": "/tmp/vibe-scratch/r261b/pilot/validation-2/corpus",
+      "corpus": "/tmp/vibe-scratch/s261c/pilot-v2/validation-2/corpus",
       "corpusIdentity": "a33913158dc4b773",
       "corpusSha256": "ef0d7e6d7bc57a55614548c6e66c3d8a2b21b94b465e30e392e21a07105084a4",
       "corpusVersion": "version-7",
@@ -145,12 +145,12 @@
       "history": null,
       "id": "validation-2",
       "lineage": "lineage-7",
-      "parent": "/tmp/vibe-scratch/r261b/pilot/validation-2/parent.json",
+      "parent": "/tmp/vibe-scratch/s261c/pilot-v2/validation-2/parent.json",
       "parentSha256": "a40bd2940902402238dd523e9f52f30c8e334589b24232d928a063610d3cbf73",
       "split": "validation"
     },
     {
-      "corpus": "/tmp/vibe-scratch/r261b/pilot/validation-3/corpus",
+      "corpus": "/tmp/vibe-scratch/s261c/pilot-v2/validation-3/corpus",
       "corpusIdentity": "494305dd0dd191bf",
       "corpusSha256": "3578f625bc4e8a27656c1231e4b371042b226c333353c6f1504fedcaeeceea29",
       "corpusVersion": "version-8",
@@ -158,7 +158,7 @@
       "history": null,
       "id": "validation-3",
       "lineage": "lineage-8",
-      "parent": "/tmp/vibe-scratch/r261b/pilot/validation-3/parent.json",
+      "parent": "/tmp/vibe-scratch/s261c/pilot-v2/validation-3/parent.json",
       "parentSha256": "6124dfcdfecbf951d2651913938a105468b7166f3ee2510dce1d903b512b3f35",
       "split": "validation"
     }
