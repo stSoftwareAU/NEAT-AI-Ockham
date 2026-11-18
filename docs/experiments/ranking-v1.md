@@ -265,8 +265,10 @@ whole milliseconds, to each source's recorded search time in `acquisitionMs`.
 `<dir>/inputs-ms`; the manifest step refuses a pilot directory without that
 file. It writes `preparationMs` as that time plus its own wall time up to its
 first write, less the curation already charged to `acquisitionMs`, so
-`totalResearchMs` counts all preparation. In the archived run that is 39 ms of
-an 11,726 ms total.
+`totalResearchMs` counts the generator's preparation. In the archived run that
+is 39 ms of an 11,726 ms total. The bench's preflight `check` stage is still
+not timed or charged. Its checks repeat ones the pilot stage charges, which
+took 47 ms there.
 
 The manifest step refuses symlinks among the pilot-owned inputs and any path
 resolving outside the pilot directory, creates `history.jsonl` and

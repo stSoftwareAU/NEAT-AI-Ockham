@@ -2,8 +2,12 @@
 
 The controlled proxy/history ranking benchmark merged in #267 and #274. This
 PR adds a synthetic, non-representative pilot of that protocol, run with the
-real scorer. It brings back the archived evidence and generator from the
-closed PR #279, and fixes the blocking review finding that stalled #279.
+real scorer. It brings back the generator from the closed PR #279 and fixes
+the blocking review finding that stalled #279. It also re-runs the pilot at
+this branch's code (`fad4e74`), replacing #279's two archives, and commits the
+raw search logs, so the curation can be re-run and checked byte for byte. Input
+generation and the manifest step's own time are now charged in
+`totalResearchMs`.
 `ranking_pilot manifest` read its inputs with no byte limit and followed task
 paths through symlinks. It now caps every read and digest, refuses symlinks
 and paths that escape the pilot directory, creates its outputs exclusively,
@@ -51,9 +55,12 @@ Part of #261.
 ### Undiscoverable Facts
 
 - PR #279 was closed by the worker's stall handling. Its CI was green, but the
-  file-bounds review finding was never addressed. The revisions `a27d638` and
-  `e02ef9f` named in the archive are reachable through
-  `git fetch origin pull/279/head`.
+  file-bounds review finding was never addressed. Its archives, made at
+  `a27d638` and `e02ef9f`, are not on this branch and are replaced here. The
+  run at `fad4e74` reproduced their paired results, coverage and verdict; only
+  the timings differ.
+- The scorer was rebuilt at the pinned revision on 18 November 2026. Its
+  executable digest matched the archived pin, `d057a334…`.
 - This host still has no representative NEAT-AI corpus, candidate history or
   parent (`docs/experiments/ranking-v1-availability.json`). The pilot's corpora
   are generated and homogeneous.
@@ -73,8 +80,21 @@ Part of #261.
   representative.
 - `ockham/examples/priority_ordering_bench/audit.rs`: `audit::ms` now rounds
   up (`ceil_ms`), so feature, fit, adaptation and ranking work under 1 ms is
-  charged rather than counted as 0. The `cost-recount/` outputs come from that
-  code.
+  charged rather than counted as 0.
+- The bench manifest gains an optional `preparationMs` (default 0, not
+  serialised when 0, so older manifests keep their identity). The report gains
+  `preparationCostMs`, which is added to `totalResearchMs`.
+  `ranking_pilot inputs` writes `inputs-ms`. `ranking_pilot manifest` requires
+  that file and writes `preparationMs` as its value plus the manifest step's own
+  time, excluding curation, which `acquisitionMs` already charges. In the run
+  this is 39 ms of 11,726 ms.
+- `docs/research/ranking-pilot-v1/` holds one archive from `fad4e74`: the
+  manifest, preflight, pilot, freeze, gzipped audit and results, plus
+  `inputs-ms`, `source-N/acquisition-ms` and the gzipped raw logs
+  `source-N/raw-candidates.jsonl.gz`. The old archive and `cost-recount/` were
+  removed, which is about 15,700 lines of superseded JSON. The README records a
+  maintenance decision with a predeclared removal rule for the pairwise and
+  transfer arms.
 - #261: Experiment: Compare cheap proxy ranking with transfer from sparse search histories.
 - #267 and #274: the merged PRs that delivered the benchmark.
 - #279: the closed PR whose pilot this restores.
@@ -102,12 +122,13 @@ flowchart LR
 - **met** — Separate parent lineages and corpus versions between fitting and
   testing — evidence: `docs/research/ranking-pilot-v1/manifest.json` (disjoint
   lineage and version per task) — reviewer: met
-- **partial** — Audit a randomly selected fully scored pool to measure true
+- **met** — Audit a randomly selected fully scored pool to measure true
   top-5% recall, false rejection and cold-start/negative-transfer behaviour —
-  evidence: `ockham/examples/priority_ordering_bench/audit.rs`,
-  `results.json` (16 complete pools, calibration-0 cold start,
-  `negativeTransferTasks`) — reviewer: partial — reason: only synthetic,
-  homogeneous pools were audited; no representative pool exists on this host.
+  evidence: `docs/research/ranking-pilot-v1/results.json` (16 seeded random
+  pools, 640 selected, 632 generated and fully scored, all complete; recall and
+  false rejection in all 360 trials; `negativeTransferTasks` validation-2 in the
+  primary cell and validation-1/-2 at calibration 0),
+  `ockham/tests/ranking_pilot_archive.rs` — reviewer: met
 - **met** — Count feature and training overhead before permitting rejection —
   evidence:
   `ockham/examples/priority_ordering_bench/tests.rs::cost_milliseconds_round_up_so_sub_millisecond_work_is_counted`
@@ -118,32 +139,37 @@ flowchart LR
 - **met** — Opt-in only; preserve ordinary behaviour, interfaces, immutable
   parents and full acceptance — evidence: `ockham/src/telemetry.rs` (additive
   `load_from_reader`) — reviewer: met
-- **partial** — Predeclare controls, seeds, sample size, limits and criteria;
+- **met** — Predeclare controls, seeds, sample size, limits and criteria;
   identify versions; separate calibration from validation; count all costs —
-  evidence: `docs/research/ranking-pilot-v1/manifest.json`, `frozen.json` —
-  reviewer: partial — reason: input generation and curation time (a few ms) is
-  described in the README but not included in the archived `totalResearchMs`.
+  evidence: `docs/research/ranking-pilot-v1/manifest.json` (control, seeds,
+  visits, compute limits, thresholds, code `fad4e74`, scorer and data digests),
+  `results.json` `preparationCostMs` 39 inside `totalResearchMs` 11,726,
+  `priority_ordering_bench/tests.rs::manifest_preparation_time_is_reported_and_added_to_the_research_total`,
+  `ranking_pilot.rs::pilot_without_inputs_ms_is_refused_naming_it` —
+  reviewer: met. The reviewer noted that the bench's preflight `check` stage is
+  not timed. The docs now say so instead of claiming that every stage is
+  counted. That cost is of the order of the 47 ms the pilot stage charges for
+  the same checks.
 - **met** — Deterministic positive/negative tests; normal quality checks;
   research runs separate from CI — evidence:
   `ockham/examples/ranking_pilot.rs` tests,
   `ockham/tests/ranking_pilot_archive.rs` — reviewer: met
-- **partial** — Deliver a reproducible command/manifest and machine-readable
+- **met** — Deliver a reproducible command/manifest and machine-readable
   results with paired distributions, uncertainty, failures and actual
   coverage. Fixtures alone do not demonstrate an optimisation benefit —
-  evidence: `results.json` (`paired`, `recallDeltaCi95`, `coverage[].failures`,
-  `historyCoverage`), `docs/research/ranking-pilot-v1/README.md` — reviewer:
-  partial — reason: no representative paired results exist; the archive was
-  produced at `a27d638`/`e02ef9f` (reachable only via `pull/279/head`), HEAD's
-  manifest step would not reproduce it byte for byte, the raw candidate logs
-  are not committed, and the pilot was not re-run after the input bounds.
+  evidence: archive re-run at `fad4e74` with committed raw logs,
+  `ranking_pilot.rs::committed_raw_logs_recurate_to_the_committed_histories`,
+  `results.json` (`trials`, `paired[].taskDeltas`, `recallDeltaCi95`,
+  `coverage[].failures`, `historyCoverage`), README `Reproduce`, verdict
+  `no-demonstrated-benefit` — reviewer: met
 - **partial** — Record negative findings and remove optional code that does
   not earn its maintenance cost. Do not claim success before representative
-  runs — evidence: README `Finding`, `docs/experiments/ranking-v1.md`
-  `Synthetic pilot` — reviewer: partial — reason: the negative finding is
-  recorded and no success is claimed, but the keep-or-remove decision on the
-  pairwise and transfer arms is deferred; the synthetic result is too
-  confounded (186 of 237 validation candidates are featureless synapse cuts,
-  3 validation groups) to justify removing them.
+  runs — evidence: README `Finding` and `Maintenance decision`,
+  `docs/experiments/ranking-v1.md` `Synthetic pilot`, the removed #279 archive
+  and `cost-recount/` — reviewer: partial — reason: the pairwise and transfer
+  arms did not earn their cost on the synthetic evidence but are kept. Their
+  removal waits on a predeclared rule tied to the representative run, which has
+  not happened.
 - **met** — Keep public implementation and fixtures application-agnostic —
   evidence: `ockham/examples/ranking_pilot.rs` (generic synthetic creatures and
   corpora) — reviewer: met
@@ -188,6 +214,19 @@ flowchart LR
   - `dangling_history_symlink_is_refused_and_its_target_not_created`
   - `dangling_manifest_symlink_is_refused_and_its_target_not_created`
   - `scorer_may_be_a_symlink`
+- Added for preparation cost and reproducibility:
+  - `ranking_pilot.rs`: `inputs_record_their_generation_time`,
+    `manifest_preparation_includes_the_recorded_inputs_time`,
+    `pilot_without_inputs_ms_is_refused_naming_it`,
+    `symlinked_inputs_ms_is_refused`, and
+    `committed_raw_logs_recurate_to_the_committed_histories`. The last one
+    re-runs the manifest step on the committed raw logs and checks that the
+    histories are byte-identical. Its negative control cuts the log to a
+    single unlabelled row, which is refused.
+  - `priority_ordering_bench/tests.rs::manifest_preparation_time_is_reported_and_added_to_the_research_total`,
+    plus `preparationCostMs` in the existing audit-time sum test.
+  - `ockham/tests/ranking_pilot_archive.rs` now also checks the research-cost
+    sum, `preparationCostMs`, the acquisition sum and the coverage totals.
 - Restored from #279: the other tests in `ockham/examples/ranking_pilot.rs`,
   `ockham/tests/ranking_pilot_archive.rs` (archive digests, verdict and
   coverage), and
@@ -196,21 +235,22 @@ flowchart LR
   no assertion was removed.
 - `telemetry::load` now delegates to `load_from_reader`. The existing
   telemetry tests cover its messages and pass unchanged.
-- `cargo test --locked -p neat_ai_ockham --example ranking_pilot`: 18 passed
-  on the final head. `./quality.sh < /dev/null` passed ("All quality checks
-  passed!") on the final head.
-- No existing test on `Develop` was edited, except that `audit.rs` and
-  `tests.rs` gained the `ceil_ms` hunk and its test.
+- With stdin from `/dev/null`: `--example ranking_pilot` 23 passed,
+  `--example priority_ordering_bench` 18 passed, `--test ranking_pilot_archive`
+  1 passed. Clippy with `-D warnings` and `cargo fmt --check` are clean. The
+  full `./quality.sh` is re-run by the worker on the final head.
+- No existing test on `Develop` was edited, except in `tests.rs`: the
+  `ceil_ms` test, and `preparationCostMs` added to the audit-time sum test.
 
 ## Not performed and remaining risk
 
 No representative pilot, frozen private manifest, validation scoring or
 paired representative benefit and cost assessment, because no private
-corpora, histories or representative parents exist on this host. The
-synthetic pilot was not re-run after the input boundaries were added; for
-valid inputs those boundaries do not change the output bytes, which the tests
-exercise on generated inputs. The archive was produced at `a27d638` and
-`e02ef9f`, not at this head, and its raw candidate logs are not committed, so
-it cannot be regenerated byte for byte from this branch. Its manifests carry
-absolute scratch paths from the generating host. A concurrent path swap is not guarded. macOS was
-not checked. CI and PR review have not been observed.
+corpora, histories or representative parents exist on this host. All evidence
+here is synthetic and does not demonstrate an optimisation benefit. The
+keep-or-remove decision on the pairwise and transfer arms waits on that run,
+under the rule predeclared in the README. The bench's preflight `check` stage
+is not timed. The run commit `fad4e74` is on this branch, but a squash merge
+would leave it reachable only through the PR head. The manifests carry absolute
+scratch paths from the generating host. A concurrent path swap is not guarded.
+macOS was not checked. CI and PR review have not been observed.

@@ -103,7 +103,7 @@ parent. These are search-only histories.
 
 ## All costs counted
 
-`totalResearchMs` is 11,726 ms. It sums every stage:
+`totalResearchMs` is 11,726 ms. It sums these stages:
 
 | Stage | ms |
 | --- | --- |
@@ -115,8 +115,12 @@ parent. These are search-only histories.
 | Evaluation | 357 |
 | Total | 11,726 |
 
-Building the binaries, and serialising and writing the final results, are
-outside these totals. The timings were taken on a shared host and are
+Three things are outside these totals: building the binaries, serialising and
+writing the final results, and the bench's preflight `check` stage. The
+preflight's wall time is neither recorded nor charged. It repeats the
+revision, clean-source and scorer-digest checks that the pilot stage charges
+as protocol preparation, which took 47 ms there. So the uncounted preflight
+cost is of that order, well under 1% of the total. The timings were taken on a shared host and are
 indicative only. This run's total is about three times the earlier #279 run's
 3,469 ms. The growth is in protocol setup and scoring time, which the trial
 ledgers share. The arms' own feature, fit, adaptation and ranking overhead is
