@@ -90,20 +90,70 @@ flowchart LR
 
 ## Acceptance Criteria
 
-- **missing** — Audit a randomly selected fully scored pool to measure true
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Extend or benchmark existing features, model and telemetry rather
+  than create another ranker; compare partial score alone, multiple cheap
+  proxies and a pairwise ranker adapted from history — evidence:
+  `docs/research/ranking-pilot-v1/results.json` (five arms) — reviewer: met
+- **met** — Candidate features only where inexpensive and available —
+  evidence: `results.json` `featureSchema` (17 existing features; no latency
+  or Fisher signal) — reviewer: met
+- **met** — Separate parent lineages and corpus versions between fitting and
+  testing — evidence: `docs/research/ranking-pilot-v1/manifest.json` (disjoint
+  lineage and version per task) — reviewer: met
+- **partial** — Audit a randomly selected fully scored pool to measure true
   top-5% recall, false rejection and cold-start/negative-transfer behaviour —
-  reason: done only on synthetic pools (16 pools, every one complete); no
-  representative pool exists on this host.
-- **missing** — Deliver a reproducible command/manifest and machine-readable
+  evidence: `ockham/examples/priority_ordering_bench/audit.rs`,
+  `results.json` (16 complete pools, calibration-0 cold start,
+  `negativeTransferTasks`) — reviewer: partial — reason: only synthetic,
+  homogeneous pools were audited; no representative pool exists on this host.
+- **met** — Count feature and training overhead before permitting rejection —
+  evidence:
+  `ockham/examples/priority_ordering_bench/tests.rs::cost_milliseconds_round_up_so_sub_millisecond_work_is_counted`
+  — reviewer: met
+- **met** — Inspect current code and reuse existing mechanisms — evidence:
+  `ockham/examples/ranking_pilot.rs` reuses `telemetry`, `corpus_info` and the
+  #267/#274 bench — reviewer: met
+- **met** — Opt-in only; preserve ordinary behaviour, interfaces, immutable
+  parents and full acceptance — evidence: `ockham/src/telemetry.rs` (additive
+  `load_from_reader`) — reviewer: met
+- **partial** — Predeclare controls, seeds, sample size, limits and criteria;
+  identify versions; separate calibration from validation; count all costs —
+  evidence: `docs/research/ranking-pilot-v1/manifest.json`, `frozen.json` —
+  reviewer: partial — reason: input generation and curation time (a few ms) is
+  described in the README but not included in the archived `totalResearchMs`.
+- **met** — Deterministic positive/negative tests; normal quality checks;
+  research runs separate from CI — evidence:
+  `ockham/examples/ranking_pilot.rs` tests,
+  `ockham/tests/ranking_pilot_archive.rs` — reviewer: met
+- **partial** — Deliver a reproducible command/manifest and machine-readable
   results with paired distributions, uncertainty, failures and actual
-  coverage. Fixtures alone do not demonstrate an optimisation benefit — reason:
-  the command, manifest and results are delivered for the synthetic pilot only;
-  representative paired results need private inputs.
-- **missing** — Record negative findings and remove optional code that does
+  coverage. Fixtures alone do not demonstrate an optimisation benefit —
+  evidence: `results.json` (`paired`, `recallDeltaCi95`, `coverage[].failures`,
+  `historyCoverage`), `docs/research/ranking-pilot-v1/README.md` — reviewer:
+  partial — reason: no representative paired results exist; the archive was
+  produced at `a27d638`/`e02ef9f` (reachable only via `pull/279/head`), HEAD's
+  manifest step would not reproduce it byte for byte, the raw candidate logs
+  are not committed, and the pilot was not re-run after the input bounds.
+- **partial** — Record negative findings and remove optional code that does
   not earn its maintenance cost. Do not claim success before representative
-  runs — reason: the negative synthetic finding is recorded and no success is
-  claimed, but whether the pairwise and transfer arms earn their maintenance
-  cost needs the representative run.
+  runs — evidence: README `Finding`, `docs/experiments/ranking-v1.md`
+  `Synthetic pilot` — reviewer: partial — reason: the negative finding is
+  recorded and no success is claimed, but the keep-or-remove decision on the
+  pairwise and transfer arms is deferred; the synthetic result is too
+  confounded (186 of 237 validation candidates are featureless synapse cuts,
+  3 validation groups) to justify removing them.
+- **met** — Keep public implementation and fixtures application-agnostic —
+  evidence: `ockham/examples/ranking_pilot.rs` (generic synthetic creatures and
+  corpora) — reviewer: met
+- **unrequested** — Input bounds, symlink and containment checks in
+  `ranking_pilot manifest` (`Limits`, `contained`, `read_bounded`,
+  `refuse_existing`) and their 11 tests — reviewer: unrequested — reason:
+  fixes the blocking #279 review finding on the pilot generator.
+- **unrequested** — Public `telemetry::load_from_reader` — reviewer:
+  unrequested — reason: lets the manifest step parse the capped raw-log bytes
+  in place; `telemetry::load` delegates to it.
 
 ## Standards Review
 
@@ -160,5 +210,8 @@ paired representative benefit and cost assessment, because no private
 corpora, histories or representative parents exist on this host. The
 synthetic pilot was not re-run after the input boundaries were added; for
 valid inputs those boundaries do not change the output bytes, which the tests
-exercise on generated inputs. A concurrent path swap is not guarded. macOS was
+exercise on generated inputs. The archive was produced at `a27d638` and
+`e02ef9f`, not at this head, and its raw candidate logs are not committed, so
+it cannot be regenerated byte for byte from this branch. Its manifests carry
+absolute scratch paths from the generating host. A concurrent path swap is not guarded. macOS was
 not checked. CI and PR review have not been observed.
