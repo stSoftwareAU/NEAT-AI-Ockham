@@ -82,4 +82,75 @@ fn archived_ranking_pilot_matches_its_digests_and_negative_finding() {
     for coverage in results["coverage"].as_array().unwrap() {
         assert_eq!(coverage["complete"], true, "{coverage}");
     }
+
+    // Preparation (input generation plus the manifest step) is charged to the total.
+    let preparation = uint(&results["preparationCostMs"]);
+    assert_eq!(preparation, uint(&manifest["preparationMs"]));
+    assert!(preparation > 0, "preparation cost is charged");
+    assert!(
+        uint(&manifest["preparationMs"]) >= recorded_ms("inputs-ms"),
+        "preparationMs includes the recorded input generation time"
+    );
+    let charged: u64 = [
+        "auditCostMs",
+        "pilotCostMs",
+        "freezingCostMs",
+        "historicalAcquisitionMs",
+        "preparationCostMs",
+        "evaluationCostMs",
+    ]
+    .iter()
+    .map(|key| uint(&results[*key]))
+    .sum();
+    assert_eq!(uint(&results["totalResearchMs"]), charged);
+
+    // Each source's acquisition is its recorded search time plus curation.
+    let mut acquisition = 0;
+    for task in manifest["tasks"].as_array().unwrap() {
+        if task["split"] != "source" {
+            continue;
+        }
+        let id = task["id"].as_str().unwrap();
+        let charged = uint(&task["history"]["acquisitionMs"]);
+        let recorded = recorded_ms(&format!("{id}/acquisition-ms"));
+        assert!(
+            charged >= recorded,
+            "{id} acquisitionMs {charged} includes the recorded {recorded} ms"
+        );
+        acquisition += charged;
+    }
+    assert_eq!(uint(&results["historicalAcquisitionMs"]), acquisition);
+
+    // Neither `frozen.json` nor `preflight.json` carries a code revision, so only
+    // the manifest's is checked.
+    let revision = manifest["codeRevision"].as_str().unwrap();
+    assert_eq!(revision.len(), 40, "codeRevision {revision}");
+    assert!(
+        revision
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "codeRevision {revision} is lowercase hex"
+    );
+
+    let coverage = results["coverage"].as_array().unwrap();
+    let total = |key: &str| -> u64 { coverage.iter().map(|cell| uint(&cell[key])).sum() };
+    assert_eq!(total("selected"), 640);
+    assert_eq!(total("generated"), 632);
+    assert_eq!(total("fullyScored"), 632);
+}
+
+/// A non-negative integer field of the archive.
+fn uint(value: &Value) -> u64 {
+    value
+        .as_u64()
+        .unwrap_or_else(|| panic!("{value} is not a u64"))
+}
+
+/// The integer recorded in the archived text file `path`.
+fn recorded_ms(path: &str) -> u64 {
+    String::from_utf8(bytes(path))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
 }

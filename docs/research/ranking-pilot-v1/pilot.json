@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
-  "manifestSha256": "588be5c86f13bf1bd55f3e116f3c8e9009f7cf107b0f3ff8849456254db7bf23",
+  "manifestSha256": "a1f6de004715a90b9a25999d1256bb28a1198bdfa42ce34aa52d4c93df399b17",
   "freezeSha256": null,
-  "executableSha256": "e02edb84f77af8326e82464e090f24bf225173b94efe41ae0c6fc4246b7fcbe5",
+  "executableSha256": "725aa37ee18ba3a240cad9cc95ccd1c6d82bd309a071df4eed441499512d8811",
   "phase": "pilot",
   "pools": [
     {
@@ -25,10 +25,10 @@
           "kind": "synapse",
           "candidateSha256": "50f1bbb28cc60f6e475b6825219f07080579921a0c7c1844d9ea4830b83ac605",
           "features": null,
-          "sampleDelta": -0.00013258504071333999,
-          "fullDelta": -0.00013112232552081604,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.00013258431285700922,
+          "fullDelta": -0.00013112233085821323,
+          "sampleMs": 7,
+          "fullMs": 8,
           "telemetry": null,
           "failure": null
         },
@@ -52,13 +52,13 @@
             "priorWins": 0,
             "priorFailures": 0
           },
-          "sampleDelta": 0.00011253445586467681,
-          "fullDelta": 0.00013154001543946858,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.00011253453252646484,
+          "fullDelta": 0.00013154011527682918,
+          "sampleMs": 5,
+          "fullMs": 7,
           "telemetry": {
             "version": 1,
-            "unixSecs": 1794797376,
+            "unixSecs": 1794970975,
             "host": "ordering-experiment",
             "corpusIdentity": "2d031cc2094ff58b",
             "creatureChecksum": "72a3f7609c08a7fcbff49653f3e03fef364d00e6371769d69ec3ab2f56beac7a",
@@ -83,8 +83,8 @@
               "priorFailures": 0.0,
               "priorWins": 0.0
             },
-            "sampleDelta": 0.00011253445586467681,
-            "fullDelta": 0.00013154001543946858,
+            "sampleDelta": 0.00011253453252646484,
+            "fullDelta": 0.00013154011527682918,
             "outcome": "rejected",
             "prune": {
               "transformClass": "approximate",
@@ -130,7 +130,7 @@
               ]
             },
             "growthUnitsRemoved": 0.0,
-            "scorerMs": 2
+            "scorerMs": 12
           },
           "failure": null
         },
@@ -139,10 +139,10 @@
           "kind": "synapse",
           "candidateSha256": "8a51c8651f17c5faf682e7db8eff354085c3978cbfe41e839ea3b0beaa1f37b5",
           "features": null,
-          "sampleDelta": -0.0001238212078773504,
-          "fullDelta": -0.00018706607035923195,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.00012382100699137588,
+          "fullDelta": -0.00018706604558693662,
+          "sampleMs": 8,
+          "fullMs": 3,
           "telemetry": null,
           "failure": null
         },
@@ -151,10 +151,10 @@
           "kind": "synapse",
           "candidateSha256": "a8bbc96f9ab2f955334f165e40844d878b534937928d4db17f847440a04ddbfa",
           "features": null,
-          "sampleDelta": 2.380629582354743e-6,
-          "fullDelta": 4.367100932878287e-6,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 2.380774045240841e-6,
+          "fullDelta": 4.367145903572123e-6,
+          "sampleMs": 4,
+          "fullMs": 3,
           "telemetry": null,
           "failure": null
         },
@@ -178,13 +178,13 @@
             "priorWins": 0,
             "priorFailures": 0
           },
-          "sampleDelta": 0.0003881936428231647,
-          "fullDelta": 0.0004914730773624143,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.0003881938892660308,
+          "fullDelta": 0.0004914730540765966,
+          "sampleMs": 3,
+          "fullMs": 3,
           "telemetry": {
             "version": 1,
-            "unixSecs": 1794797376,
+            "unixSecs": 1794970975,
             "host": "ordering-experiment",
             "corpusIdentity": "2d031cc2094ff58b",
             "creatureChecksum": "72a3f7609c08a7fcbff49653f3e03fef364d00e6371769d69ec3ab2f56beac7a",
@@ -209,8 +209,8 @@
               "priorFailures": 0.0,
               "priorWins": 0.0
             },
-            "sampleDelta": 0.0003881936428231647,
-            "fullDelta": 0.0004914730773624143,
+            "sampleDelta": 0.0003881938892660308,
+            "fullDelta": 0.0004914730540765966,
             "outcome": "rejected",
             "prune": {
               "transformClass": "approximate",
@@ -256,7 +256,7 @@
               ]
             },
             "growthUnitsRemoved": 0.0,
-            "scorerMs": 2
+            "scorerMs": 6
           },
           "failure": null
         },
@@ -265,10 +265,10 @@
           "kind": "synapse",
           "candidateSha256": "0a73b6525c99cefdf2a40104fbc393fb19a6f4a808e154d5bdfaa89c2c4402a7",
           "features": null,
-          "sampleDelta": -0.00011640292706238675,
-          "fullDelta": -0.00016825542941023564,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.00011640236976773188,
+          "fullDelta": -0.00016825549489063452,
+          "sampleMs": 4,
+          "fullMs": 4,
           "telemetry": null,
           "failure": null
         },
@@ -277,10 +277,10 @@
           "kind": "synapse",
           "candidateSha256": "df20da52bc0e104431ba3d2fb251ee995fee8892fff527da220de79cf2dedc76",
           "features": null,
-          "sampleDelta": -0.0005071170787465107,
-          "fullDelta": -0.0003850689945372743,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.0005071179601254805,
+          "fullDelta": -0.00038506897927692574,
+          "sampleMs": 6,
+          "fullMs": 3,
           "telemetry": null,
           "failure": null
         },
@@ -304,13 +304,13 @@
             "priorWins": 0,
             "priorFailures": 0
           },
-          "sampleDelta": -0.1036654332540825,
-          "fullDelta": -0.10138304055657388,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.10366542854475247,
+          "fullDelta": -0.10138304117276531,
+          "sampleMs": 4,
+          "fullMs": 4,
           "telemetry": {
             "version": 1,
-            "unixSecs": 1794797376,
+            "unixSecs": 1794970975,
             "host": "ordering-experiment",
             "corpusIdentity": "2d031cc2094ff58b",
             "creatureChecksum": "72a3f7609c08a7fcbff49653f3e03fef364d00e6371769d69ec3ab2f56beac7a",
@@ -335,8 +335,8 @@
               "priorFailures": 0.0,
               "priorWins": 0.0
             },
-            "sampleDelta": -0.1036654332540825,
-            "fullDelta": -0.10138304055657388,
+            "sampleDelta": -0.10366542854475247,
+            "fullDelta": -0.10138304117276531,
             "outcome": "rejected",
             "prune": {
               "transformClass": "approximate",
@@ -382,15 +382,15 @@
               ]
             },
             "growthUnitsRemoved": 0.0,
-            "scorerMs": 2
+            "scorerMs": 8
           },
           "failure": null
         }
       ],
-      "preparationMs": 0,
-      "featuresMs": 0,
-      "generationMs": 0,
-      "elapsedMs": 20
+      "preparationMs": 1,
+      "featuresMs": 1,
+      "generationMs": 1,
+      "elapsedMs": 88
     },
     {
       "task": "calibration-1",
@@ -412,10 +412,10 @@
           "kind": "synapse",
           "candidateSha256": "abdaec0ab013c895264dc922549df67448c50bcb2a5b63b33ff771bca7925010",
           "features": null,
-          "sampleDelta": -0.0024462617425704547,
-          "fullDelta": -0.001269705923848008,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.0024462637017617084,
+          "fullDelta": -0.0012697057403205925,
+          "sampleMs": 5,
+          "fullMs": 4,
           "telemetry": null,
           "failure": null
         },
@@ -424,10 +424,10 @@
           "kind": "synapse",
           "candidateSha256": "24243ca57985bebf86052f658ad7e599ec8fec576ddb972561f70fd722710b91",
           "features": null,
-          "sampleDelta": -0.0263702616418775,
-          "fullDelta": -0.020356534016950034,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.026370270086985115,
+          "fullDelta": -0.020356533246050024,
+          "sampleMs": 6,
+          "fullMs": 4,
           "telemetry": null,
           "failure": null
         },
@@ -436,10 +436,10 @@
           "kind": "synapse",
           "candidateSha256": "fb244ee5ce542fecf4e4fffcba01b4f058a43844cee166a6fc64cf5d3c95299e",
           "features": null,
-          "sampleDelta": -0.0000952030459250297,
-          "fullDelta": -0.00008783607940265892,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.0000952031650846008,
+          "fullDelta": -0.00008783605116491344,
+          "sampleMs": 5,
+          "fullMs": 7,
           "telemetry": null,
           "failure": null
         },
@@ -448,10 +448,10 @@
           "kind": "synapse",
           "candidateSha256": "1613d2106f94231d009bd57d3aac5e0f8ef7bd7508bc31124b0b279cc92c2067",
           "features": null,
-          "sampleDelta": -6.0552331148100436e-6,
-          "fullDelta": 0.000013456641507314515,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -6.055218318090638e-6,
+          "fullDelta": 0.000013456652544818759,
+          "sampleMs": 5,
+          "fullMs": 6,
           "telemetry": null,
           "failure": null
         },
@@ -460,10 +460,10 @@
           "kind": "synapse",
           "candidateSha256": "e449deb9d1f6bad82f18a339b94bde3c0210720125b32f5588c096c767d7ad4d",
           "features": null,
-          "sampleDelta": 0.00004706797835651866,
-          "fullDelta": 0.00014727982022832986,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.00004706762429662614,
+          "fullDelta": 0.0001472797957650096,
+          "sampleMs": 4,
+          "fullMs": 6,
           "telemetry": null,
           "failure": null
         },
@@ -472,10 +472,10 @@
           "kind": "synapse",
           "candidateSha256": "40fbe61b5bdcb24929c57bfd5a4564692765094d8a64b6711396c1c81b1a1b7a",
           "features": null,
-          "sampleDelta": -0.0012509035419761005,
-          "fullDelta": -0.0010151994212782567,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.0012509010706041046,
+          "fullDelta": -0.0010151995011933312,
+          "sampleMs": 4,
+          "fullMs": 3,
           "telemetry": null,
           "failure": null
         },
@@ -484,10 +484,10 @@
           "kind": "synapse",
           "candidateSha256": "b8cfe1608d120b0e408cc2f44e04bb7d33ea4d0681f87abd0e37d84bfb0ee230",
           "features": null,
-          "sampleDelta": 0.00003128398604290705,
-          "fullDelta": 0.00003748755170651652,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.0000312836405071959,
+          "fullDelta": 0.00003748750421428415,
+          "sampleMs": 3,
+          "fullMs": 3,
           "telemetry": null,
           "failure": null
         },
@@ -496,18 +496,18 @@
           "kind": "synapse",
           "candidateSha256": "e02840ecd780c2203960ce2162efb2e9da5d4b60f5047f3de98e3b8e651fd40b",
           "features": null,
-          "sampleDelta": -0.09563617931969393,
-          "fullDelta": -0.08900017604146282,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.09563618138966323,
+          "fullDelta": -0.08900017661502135,
+          "sampleMs": 4,
+          "fullMs": 4,
           "telemetry": null,
           "failure": null
         }
       ],
-      "preparationMs": 0,
-      "featuresMs": 0,
-      "generationMs": 0,
-      "elapsedMs": 20
+      "preparationMs": 1,
+      "featuresMs": 1,
+      "generationMs": 2,
+      "elapsedMs": 86
     },
     {
       "task": "calibration-2",
@@ -529,10 +529,10 @@
           "kind": "synapse",
           "candidateSha256": "f90bb4eddea68e94fd0515de32dd266a45752969f6fe053caac112e374f446aa",
           "features": null,
-          "sampleDelta": -0.00022115783121423593,
-          "fullDelta": -0.00028006555091220076,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.0002211579440923872,
+          "fullDelta": -0.00028006556522108816,
+          "sampleMs": 4,
+          "fullMs": 6,
           "telemetry": null,
           "failure": null
         },
@@ -556,13 +556,13 @@
             "priorWins": 0,
             "priorFailures": 0
           },
-          "sampleDelta": 0.000010108354658422414,
-          "fullDelta": -0.00005025153394910831,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.000010109048917961161,
+          "fullDelta": -0.000050251506832688086,
+          "sampleMs": 4,
+          "fullMs": 6,
           "telemetry": {
             "version": 1,
-            "unixSecs": 1794797376,
+            "unixSecs": 1794970975,
             "host": "ordering-experiment",
             "corpusIdentity": "768740b8c4544114",
             "creatureChecksum": "0f3dc286bbafb14df9019bb40086b0127cf9a5ca2152f54ead6908f9a9a5afb1",
@@ -587,8 +587,8 @@
               "priorFailures": 0.0,
               "priorWins": 0.0
             },
-            "sampleDelta": 0.000010108354658422414,
-            "fullDelta": -0.00005025153394910831,
+            "sampleDelta": 0.000010109048917961161,
+            "fullDelta": -0.000050251506832688086,
             "outcome": "rejected",
             "prune": {
               "transformClass": "approximate",
@@ -634,7 +634,7 @@
               ]
             },
             "growthUnitsRemoved": 0.0,
-            "scorerMs": 2
+            "scorerMs": 10
           },
           "failure": null
         },
@@ -643,10 +643,10 @@
           "kind": "synapse",
           "candidateSha256": "142e082e932e41c45a4470b77c1b4c6a27be741b88b2cc556632e4cd29877559",
           "features": null,
-          "sampleDelta": 0.00004494217274308987,
-          "fullDelta": 0.00004027014127316875,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.00004494224982198869,
+          "fullDelta": 0.00004027009760543265,
+          "sampleMs": 4,
+          "fullMs": 3,
           "telemetry": null,
           "failure": null
         },
@@ -655,10 +655,10 @@
           "kind": "synapse",
           "candidateSha256": "10fbcebe8dfd516f6b39976a74e8998c6b90ef2858262afb642fb380e20e830c",
           "features": null,
-          "sampleDelta": -0.00009643011120819,
-          "fullDelta": -0.00007938275888419444,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.00009643014006399664,
+          "fullDelta": -0.00007938276332419836,
+          "sampleMs": 5,
+          "fullMs": 4,
           "telemetry": null,
           "failure": null
         },
@@ -682,13 +682,13 @@
             "priorWins": 0,
             "priorFailures": 0
           },
-          "sampleDelta": -0.00020141871092804742,
-          "fullDelta": -0.0001513270289282831,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.00020141829364250796,
+          "fullDelta": -0.0001513270209724249,
+          "sampleMs": 7,
+          "fullMs": 8,
           "telemetry": {
             "version": 1,
-            "unixSecs": 1794797376,
+            "unixSecs": 1794970975,
             "host": "ordering-experiment",
             "corpusIdentity": "768740b8c4544114",
             "creatureChecksum": "0f3dc286bbafb14df9019bb40086b0127cf9a5ca2152f54ead6908f9a9a5afb1",
@@ -713,8 +713,8 @@
               "priorFailures": 0.0,
               "priorWins": 0.0
             },
-            "sampleDelta": -0.00020141871092804742,
-            "fullDelta": -0.0001513270289282831,
+            "sampleDelta": -0.00020141829364250796,
+            "fullDelta": -0.0001513270209724249,
             "outcome": "rejected",
             "prune": {
               "transformClass": "approximate",
@@ -760,7 +760,7 @@
               ]
             },
             "growthUnitsRemoved": 0.0,
-            "scorerMs": 2
+            "scorerMs": 15
           },
           "failure": null
         },
@@ -769,10 +769,10 @@
           "kind": "synapse",
           "candidateSha256": "b220707990f5edb36ef5fb9f90461b4066ba614ef4b9faad0771a1cfe7c5cd3a",
           "features": null,
-          "sampleDelta": 0.00012051398765955401,
-          "fullDelta": 0.00013237121558185017,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.00012051414896430135,
+          "fullDelta": 0.00013237117825537492,
+          "sampleMs": 7,
+          "fullMs": 7,
           "telemetry": null,
           "failure": null
         },
@@ -781,10 +781,10 @@
           "kind": "synapse",
           "candidateSha256": "2170daf2a5e4214e1da6a0de4e200ca7b7e154251df8c424d6c80992d3704e2f",
           "features": null,
-          "sampleDelta": -0.000018703490015758995,
-          "fullDelta": -0.00002269635252605262,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.000018702972859108158,
+          "fullDelta": -0.0000226963309287731,
+          "sampleMs": 9,
+          "fullMs": 3,
           "telemetry": null,
           "failure": null
         },
@@ -808,13 +808,13 @@
             "priorWins": 0,
             "priorFailures": 0
           },
-          "sampleDelta": -0.08983267358036673,
-          "fullDelta": -0.08753153163580452,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.0898326755072687,
+          "fullDelta": -0.0875315318329205,
+          "sampleMs": 11,
+          "fullMs": 8,
           "telemetry": {
             "version": 1,
-            "unixSecs": 1794797376,
+            "unixSecs": 1794970975,
             "host": "ordering-experiment",
             "corpusIdentity": "768740b8c4544114",
             "creatureChecksum": "0f3dc286bbafb14df9019bb40086b0127cf9a5ca2152f54ead6908f9a9a5afb1",
@@ -839,8 +839,8 @@
               "priorFailures": 0.0,
               "priorWins": 0.0
             },
-            "sampleDelta": -0.08983267358036673,
-            "fullDelta": -0.08753153163580452,
+            "sampleDelta": -0.0898326755072687,
+            "fullDelta": -0.0875315318329205,
             "outcome": "rejected",
             "prune": {
               "transformClass": "approximate",
@@ -886,15 +886,15 @@
               ]
             },
             "growthUnitsRemoved": 0.0,
-            "scorerMs": 2
+            "scorerMs": 19
           },
           "failure": null
         }
       ],
-      "preparationMs": 0,
-      "featuresMs": 0,
-      "generationMs": 0,
-      "elapsedMs": 23
+      "preparationMs": 1,
+      "featuresMs": 1,
+      "generationMs": 2,
+      "elapsedMs": 110
     },
     {
       "task": "calibration-2",
@@ -916,10 +916,10 @@
           "kind": "synapse",
           "candidateSha256": "757ab8a66e3fcc5291063d56c3c881e01d6fced8faf82ae20352ae0e95626656",
           "features": null,
-          "sampleDelta": -0.0012068143138762588,
-          "fullDelta": -0.002506624330775087,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.0012068166973170369,
+          "fullDelta": -0.0025066242186535526,
+          "sampleMs": 8,
+          "fullMs": 8,
           "telemetry": null,
           "failure": null
         },
@@ -928,10 +928,10 @@
           "kind": "synapse",
           "candidateSha256": "42613d07ab90bc174d7bb3d495d13f4cd8630a25619b29d67401c22804b9783f",
           "features": null,
-          "sampleDelta": -0.02271261750427722,
-          "fullDelta": -0.02462315808845461,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.022712612910675944,
+          "fullDelta": -0.024623157973271637,
+          "sampleMs": 7,
+          "fullMs": 3,
           "telemetry": null,
           "failure": null
         },
@@ -940,10 +940,10 @@
           "kind": "synapse",
           "candidateSha256": "c9ef30bc1ff90e7159649543990e5185cf1df773da057148731323b0bb1db3ee",
           "features": null,
-          "sampleDelta": 0.00016073956064355244,
-          "fullDelta": 0.00012350074374567477,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.00016073985616316122,
+          "fullDelta": 0.00012350073033273734,
+          "sampleMs": 8,
+          "fullMs": 13,
           "telemetry": null,
           "failure": null
         },
@@ -952,10 +952,10 @@
           "kind": "synapse",
           "candidateSha256": "8e05f944d7eb0d66fae1b1f8218810713b346aaf64fab39f4de1ee346da04c43",
           "features": null,
-          "sampleDelta": -0.00002983297224201653,
-          "fullDelta": -0.00008572293474107262,
-          "sampleMs": 1,
-          "fullMs": 2,
+          "sampleDelta": -0.000029833197438211556,
+          "fullDelta": -0.00008572295600550728,
+          "sampleMs": 8,
+          "fullMs": 7,
           "telemetry": null,
           "failure": null
         },
@@ -964,10 +964,10 @@
           "kind": "synapse",
           "candidateSha256": "b52d26fd70c0695b4765708898ec341b97df8078ddaff38895faa20b2619b688",
           "features": null,
-          "sampleDelta": 0.00034341953218886,
-          "fullDelta": 0.00018516585487038384,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.0003434198478127204,
+          "fullDelta": 0.00018516583631089656,
+          "sampleMs": 3,
+          "fullMs": 4,
           "telemetry": null,
           "failure": null
         },
@@ -976,10 +976,10 @@
           "kind": "synapse",
           "candidateSha256": "6ad7c54061605541dd8eb67193f32cda82ded389c771057e0077c1409695bc28",
           "features": null,
-          "sampleDelta": -0.006911941353645479,
-          "fullDelta": -0.00480917130259273,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.006911945019287935,
+          "fullDelta": -0.0048091712986344515,
+          "sampleMs": 10,
+          "fullMs": 4,
           "telemetry": null,
           "failure": null
         },
@@ -988,10 +988,10 @@
           "kind": "synapse",
           "candidateSha256": "51f0c682caa7604ae57c6f73a666db256ef59fdc3fa09b7f7e0fe4a246d6b519",
           "features": null,
-          "sampleDelta": 0.0002679496032815809,
-          "fullDelta": 0.0001599349364284075,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.00026795015956704304,
+          "fullDelta": 0.00015993495002697422,
+          "sampleMs": 7,
+          "fullMs": 6,
           "telemetry": null,
           "failure": null
         },
@@ -1000,18 +1000,18 @@
           "kind": "synapse",
           "candidateSha256": "9e759afaa25b530903ea7cf99a0da4919974b027fd2be9cc06af0bfd2e52fbf5",
           "features": null,
-          "sampleDelta": -0.09848258620479655,
-          "fullDelta": -0.08860677889243351,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.09848258603320426,
+          "fullDelta": -0.0886067788743895,
+          "sampleMs": 4,
+          "fullMs": 4,
           "telemetry": null,
           "failure": null
         }
       ],
-      "preparationMs": 0,
-      "featuresMs": 0,
-      "generationMs": 0,
-      "elapsedMs": 30
+      "preparationMs": 1,
+      "featuresMs": 1,
+      "generationMs": 2,
+      "elapsedMs": 115
     },
     {
       "task": "calibration-3",
@@ -1033,10 +1033,10 @@
           "kind": "synapse",
           "candidateSha256": "4a368c0db0d1a8e6b4445787bc9567332fc827c1ab26bbdac29493413f72d81b",
           "features": null,
-          "sampleDelta": 5.603668880027612e-7,
-          "fullDelta": 2.194310166014901e-6,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 5.603444460655638e-7,
+          "fullDelta": 2.1942983610134803e-6,
+          "sampleMs": 8,
+          "fullMs": 5,
           "telemetry": null,
           "failure": null
         },
@@ -1060,13 +1060,13 @@
             "priorWins": 0,
             "priorFailures": 0
           },
-          "sampleDelta": 0.000046552526829723995,
-          "fullDelta": 0.0001067336198731228,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.00004655265666853037,
+          "fullDelta": 0.00010673361810353832,
+          "sampleMs": 3,
+          "fullMs": 4,
           "telemetry": {
             "version": 1,
-            "unixSecs": 1794797376,
+            "unixSecs": 1794970975,
             "host": "ordering-experiment",
             "corpusIdentity": "076a7132550d01a9",
             "creatureChecksum": "0af268fecb75bb3cdf17a997a1de611baae69676fc1b13850c4c2785be98e6bf",
@@ -1091,8 +1091,8 @@
               "priorFailures": 0.0,
               "priorWins": 0.0
             },
-            "sampleDelta": 0.000046552526829723995,
-            "fullDelta": 0.0001067336198731228,
+            "sampleDelta": 0.00004655265666853037,
+            "fullDelta": 0.00010673361810353832,
             "outcome": "rejected",
             "prune": {
               "transformClass": "approximate",
@@ -1138,7 +1138,7 @@
               ]
             },
             "growthUnitsRemoved": 0.0,
-            "scorerMs": 2
+            "scorerMs": 7
           },
           "failure": null
         },
@@ -1147,10 +1147,10 @@
           "kind": "synapse",
           "candidateSha256": "1ccbf603d796f6693b91c801f3548e04979d7bd7ab3385c4833d61a3e3fccdcb",
           "features": null,
-          "sampleDelta": -0.00005415934662855726,
-          "fullDelta": 0.000056927827333908,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.00005415857575585825,
+          "fullDelta": 0.000056927808754436704,
+          "sampleMs": 2,
+          "fullMs": 3,
           "telemetry": null,
           "failure": null
         },
@@ -1159,10 +1159,10 @@
           "kind": "synapse",
           "candidateSha256": "b89f79804846c7d6973e97653dfa73d95191f6b63335fcf2a591ec7ef1c98316",
           "features": null,
-          "sampleDelta": 1.557332407253753e-6,
-          "fullDelta": 0.000038621799749116725,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 1.5575452311233917e-6,
+          "fullDelta": 0.000038621795349080834,
+          "sampleMs": 12,
+          "fullMs": 4,
           "telemetry": null,
           "failure": null
         },
@@ -1186,13 +1186,13 @@
             "priorWins": 0,
             "priorFailures": 0
           },
-          "sampleDelta": -0.000022496753384948498,
-          "fullDelta": -0.000021335251145893075,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.000022496994222409583,
+          "fullDelta": -0.00002133525262981717,
+          "sampleMs": 6,
+          "fullMs": 11,
           "telemetry": {
             "version": 1,
-            "unixSecs": 1794797376,
+            "unixSecs": 1794970975,
             "host": "ordering-experiment",
             "corpusIdentity": "076a7132550d01a9",
             "creatureChecksum": "0af268fecb75bb3cdf17a997a1de611baae69676fc1b13850c4c2785be98e6bf",
@@ -1217,8 +1217,8 @@
               "priorFailures": 0.0,
               "priorWins": 0.0
             },
-            "sampleDelta": -0.000022496753384948498,
-            "fullDelta": -0.000021335251145893075,
+            "sampleDelta": -0.000022496994222409583,
+            "fullDelta": -0.00002133525262981717,
             "outcome": "rejected",
             "prune": {
               "transformClass": "approximate",
@@ -1264,7 +1264,7 @@
               ]
             },
             "growthUnitsRemoved": 0.0,
-            "scorerMs": 2
+            "scorerMs": 17
           },
           "failure": null
         },
@@ -1273,10 +1273,10 @@
           "kind": "synapse",
           "candidateSha256": "f369a66a72aa6fcfa3f162d14221c4c35fa8044d732b684ee625e0f342d3a3ba",
           "features": null,
-          "sampleDelta": 0.000021848895865983486,
-          "fullDelta": 9.444995974439152e-6,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.000021848310665428805,
+          "fullDelta": 9.444998921526171e-6,
+          "sampleMs": 13,
+          "fullMs": 8,
           "telemetry": null,
           "failure": null
         },
@@ -1285,9 +1285,9 @@
           "kind": "synapse",
           "candidateSha256": "1490675ede324c371563970c7e61266cb66ff11490c4a1e17bfb0f9d7c5c38d6",
           "features": null,
-          "sampleDelta": -0.00003633592663287999,
-          "fullDelta": -0.00014415202707540598,
-          "sampleMs": 1,
+          "sampleDelta": -0.00003633581886841597,
+          "fullDelta": -0.0001441520163020238,
+          "sampleMs": 2,
           "fullMs": 1,
           "telemetry": null,
           "failure": null
@@ -1312,13 +1312,13 @@
             "priorWins": 0,
             "priorFailures": 0
           },
-          "sampleDelta": -0.10950458844643973,
-          "fullDelta": -0.09827028268458926,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.10950457929263735,
+          "fullDelta": -0.09827028255728432,
+          "sampleMs": 5,
+          "fullMs": 13,
           "telemetry": {
             "version": 1,
-            "unixSecs": 1794797376,
+            "unixSecs": 1794970975,
             "host": "ordering-experiment",
             "corpusIdentity": "076a7132550d01a9",
             "creatureChecksum": "0af268fecb75bb3cdf17a997a1de611baae69676fc1b13850c4c2785be98e6bf",
@@ -1343,8 +1343,8 @@
               "priorFailures": 0.0,
               "priorWins": 0.0
             },
-            "sampleDelta": -0.10950458844643973,
-            "fullDelta": -0.09827028268458926,
+            "sampleDelta": -0.10950457929263735,
+            "fullDelta": -0.09827028255728432,
             "outcome": "rejected",
             "prune": {
               "transformClass": "approximate",
@@ -1390,15 +1390,15 @@
               ]
             },
             "growthUnitsRemoved": 0.0,
-            "scorerMs": 2
+            "scorerMs": 18
           },
           "failure": null
         }
       ],
-      "preparationMs": 0,
-      "featuresMs": 0,
-      "generationMs": 0,
-      "elapsedMs": 27
+      "preparationMs": 1,
+      "featuresMs": 1,
+      "generationMs": 2,
+      "elapsedMs": 111
     },
     {
       "task": "calibration-3",
@@ -1420,10 +1420,10 @@
           "kind": "synapse",
           "candidateSha256": "9ee1df099c98ec3316ce6fc51bddebce7bd3a19353a621a175194d51684eaf13",
           "features": null,
-          "sampleDelta": -0.002129554400310041,
-          "fullDelta": -0.0020460691566962508,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.0021295556675549054,
+          "fullDelta": -0.002046069119879812,
+          "sampleMs": 8,
+          "fullMs": 8,
           "telemetry": null,
           "failure": null
         },
@@ -1432,10 +1432,10 @@
           "kind": "synapse",
           "candidateSha256": "9ad7793503048d34502a2f330abbd47867f8fd1d6bd36edfa205295360f3e938",
           "features": null,
-          "sampleDelta": -0.011181915102266071,
-          "fullDelta": -0.01407431548334015,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.011181913381107855,
+          "fullDelta": -0.014074315559045592,
+          "sampleMs": 4,
+          "fullMs": 5,
           "telemetry": null,
           "failure": null
         },
@@ -1444,10 +1444,10 @@
           "kind": "synapse",
           "candidateSha256": "c8284e8e4e5e8db88f3fe1776de641a154f8789fd1dcb1cc575bd1e17c1a2e51",
           "features": null,
-          "sampleDelta": 0.00048091153383666985,
-          "fullDelta": 0.0003673213246420115,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.0004809116147194148,
+          "fullDelta": 0.0003673213304120626,
+          "sampleMs": 8,
+          "fullMs": 2,
           "telemetry": null,
           "failure": null
         },
@@ -1456,10 +1456,10 @@
           "kind": "synapse",
           "candidateSha256": "4fbda9197906f5918bb0425d9f6fd41c718bb1b85150e2118cad9f30bfcd0525",
           "features": null,
-          "sampleDelta": -5.763840264960685e-6,
-          "fullDelta": 7.019799790342063e-7,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -5.763324722352081e-6,
+          "fullDelta": 7.019813647035633e-7,
+          "sampleMs": 2,
+          "fullMs": 2,
           "telemetry": null,
           "failure": null
         },
@@ -1468,10 +1468,10 @@
           "kind": "synapse",
           "candidateSha256": "681d2d01a7f6778d94fea5cd362f9776367b07294d603c92a589b7c555f2aa29",
           "features": null,
-          "sampleDelta": 0.000036114428023426015,
-          "fullDelta": 0.00009424473386321353,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": 0.00003611413367254901,
+          "fullDelta": 0.00009424472770902526,
+          "sampleMs": 3,
+          "fullMs": 2,
           "telemetry": null,
           "failure": null
         },
@@ -1480,10 +1480,10 @@
           "kind": "synapse",
           "candidateSha256": "76361ed140a4582d9a2ca65242bed5ae31de98b31f1a4de3df39e52c89a93a07",
           "features": null,
-          "sampleDelta": -0.0008882678280807133,
-          "fullDelta": -0.0007905462495162441,
-          "sampleMs": 1,
-          "fullMs": 1,
+          "sampleDelta": -0.0008882682742609171,
+          "fullDelta": -0.0007905461931931868,
+          "sampleMs": 6,
+          "fullMs": 5,
           "telemetry": null,
           "failure": null
         },
@@ -1492,9 +1492,9 @@
           "kind": "synapse",
           "candidateSha256": "3f20dc585c39d026fb7f444f0490032ee88aca6d01fcf2e8f305217f2be349b6",
           "features": null,
-          "sampleDelta": 0.00011232435772834393,
-          "fullDelta": 0.00005350478711230178,
-          "sampleMs": 1,
+          "sampleDelta": 0.00011232486697976274,
+          "fullDelta": 0.000053504778575019785,
+          "sampleMs": 2,
           "fullMs": 1,
           "telemetry": null,
           "failure": null
@@ -1504,24 +1504,24 @@
           "kind": "synapse",
           "candidateSha256": "13dbd99e83954d5540885eec59aa2074b2e4e9ec58b7bcc52c94ecaf6418f424",
           "features": null,
-          "sampleDelta": -0.07693862061792345,
-          "fullDelta": -0.10197506779415211,
-          "sampleMs": 1,
-          "fullMs": 0,
+          "sampleDelta": -0.07693863177193849,
+          "fullDelta": -0.10197506801736211,
+          "sampleMs": 9,
+          "fullMs": 11,
           "telemetry": null,
           "failure": null
         }
       ],
-      "preparationMs": 0,
-      "featuresMs": 0,
-      "generationMs": 0,
-      "elapsedMs": 26
+      "preparationMs": 1,
+      "featuresMs": 1,
+      "generationMs": 1,
+      "elapsedMs": 88
     }
   ],
   "histories": [],
-  "protocolPreparationMs": 17,
+  "protocolPreparationMs": 47,
   "pilotCostMs": 0,
   "freezingCostMs": 0,
   "failures": [],
-  "elapsedMs": 169
+  "elapsedMs": 660
 }

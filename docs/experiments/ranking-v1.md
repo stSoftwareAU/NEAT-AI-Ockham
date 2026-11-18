@@ -241,8 +241,12 @@ Timings on this shared host are indicative, never correctness assertions.
 
 ## Synthetic pilot
 
-A synthetic, non-representative pilot of this protocol was run on 16 November
-2026 with the real scorer (NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`).
+A synthetic, non-representative pilot of this protocol was run on 18 November
+2026 at code revision `fad4e742000261a02a530ea63b465ca6227ec639`, with the real
+scorer (NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`). It replaces
+an earlier run from the closed PR #279, whose revisions are not on this branch
+and whose raw logs were never committed. This run reproduced the earlier run's
+paired results, coverage and verdict.
 Its inputs come from the generator `ockham/examples/ranking_pilot.rs`.
 `ranking_pilot inputs <dir>` writes 8 tasks (2 source, 3 calibration and
 3 validation), each with its own parent, lineage, corpus version and
@@ -254,16 +258,15 @@ Source histories are real ordinary `neat_ai_ockham` searches run with
 and every row names the immutable parent. Curation keeps one observation per
 candidate, preferring a fully scored one, and drops rows naming another
 incumbent. Each source history has 12 candidates, 3 of them fully scored.
-The manifest step adds the measured curation wall time, rounded up to whole
-milliseconds, to each source's recorded search time in `acquisitionMs`.
+The raw logs are committed, so the curation can be re-run and checked byte for
+byte. The manifest step adds the measured curation wall time, rounded up to
+whole milliseconds, to each source's recorded search time in `acquisitionMs`.
 `inputs` writes its generation wall time, rounded up to whole milliseconds, to
 `<dir>/inputs-ms`; the manifest step refuses a pilot directory without that
 file. It writes `preparationMs` as that time plus its own wall time up to its
 first write, less the curation already charged to `acquisitionMs`, so
-`totalResearchMs` counts all preparation. The archived pilot predates these
-changes. Measured afterwards, curation took 2 ms
-per source and input generation took 4 to 5 ms, together under 0.3% of the
-archived 3469 ms research total.
+`totalResearchMs` counts all preparation. In the archived run that is 39 ms of
+an 11,726 ms total.
 
 The manifest step refuses symlinks among the pilot-owned inputs and any path
 resolving outside the pilot directory, creates `history.jsonl` and
@@ -271,23 +274,23 @@ resolving outside the pilot directory, creates `history.jsonl` and
 the manifest's `maxCorpusBytes`. See the
 [input boundaries](../research/ranking-pilot-v1/README.md#manifest-step-input-boundaries).
 
-The bench's `audit::ms` now rounds elapsed time up. Before this, the archived
-run charged sub-millisecond feature, fit, adaptation and ranking work as 0 ms in
-every trial. A recount at `e02ef9f` used the same scorer and inputs. It
-reproduced identical recall, false rejection, paired intervals, coverage and
-verdict, and charged each overhead at no more than about 1 ms per trial. Its
-outputs are in [cost-recount](../research/ranking-pilot-v1/cost-recount/).
+The bench's `audit::ms` rounds elapsed time up, so sub-millisecond feature,
+fit, adaptation and ranking work is charged at least 1 ms rather than 0.
 
 The record is [the synthetic pilot report](../research/ranking-pilot-v1/README.md).
 In the primary cell (full history, calibration 8, evaluation 5; 3 validation
 groups), partial-score ordering alone recovered the full true top set in all
 6 trials (+0.833 recall versus random, 95% interval [0.75, 1.0]). Transfer-pairwise
 recall minus partial was −0.694 [−0.75, −0.583], and minus target-only it was
-−0.083 [−0.25, 0.0], with negative transfer on one task. Transfer cost about
-four times partial's strategy cost. The verdict is `no-demonstrated-benefit`.
-186 of 237 validation candidates were synapse cuts with no neuron feature
-vector, which the composite and pairwise arms tie at zero. This is a negative
-synthetic finding, not a representative result.
+−0.083 [−0.25, 0.0], with negative transfer on one task. At cold start
+(calibration 0), transfer minus target-only was −0.167 [−0.25, 0.0], negative on
+two tasks. Transfer cost about three times partial's strategy cost. The verdict
+is `no-demonstrated-benefit`. 186 of 237 validation candidates were synapse cuts
+with no neuron feature vector, which the composite and pairwise arms tie at
+zero. This is a negative synthetic finding, not a representative result. The
+report's maintenance decision keeps the pairwise and transfer arms research-only
+until the representative run. It also predeclares that they are removed if that
+run also shows no benefit over partial ordering.
 
 ## Current finding
 

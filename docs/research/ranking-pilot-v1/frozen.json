@@ -1,9 +1,9 @@
 {
   "formatVersion": 1,
-  "manifestSha256": "588be5c86f13bf1bd55f3e116f3c8e9009f7cf107b0f3ff8849456254db7bf23",
-  "pilotSha256": "de3897de42a88368aef756baaa63932b8a65a500fb4160b120ebba0a79aa5f41",
-  "executableSha256": "e02edb84f77af8326e82464e090f24bf225173b94efe41ae0c6fc4246b7fcbe5",
+  "manifestSha256": "a1f6de004715a90b9a25999d1256bb28a1198bdfa42ce34aa52d4c93df399b17",
+  "pilotSha256": "e3c7cac9a88ea249d1676ec0d56f8a165832a869cdcad45a2a536e8c0d54cb7e",
+  "executableSha256": "725aa37ee18ba3a240cad9cc95ccd1c6d82bd309a071df4eed441499512d8811",
   "auditVisits": 40,
-  "pilotCostMs": 169,
-  "freezingCostMs": 34
+  "pilotCostMs": 660,
+  "freezingCostMs": 71
 }

@@ -1345,6 +1345,115 @@ mod tests {
         }
     }
 
+    /// The committed #261 synthetic pilot archive.
+    fn committed_archive() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/research/ranking-pilot-v1")
+    }
+
+    /// The decompressed bytes of a committed `.gz` file.
+    fn gunzip(path: &Path) -> Vec<u8> {
+        let output = std::process::Command::new("gzip")
+            .arg("-dc")
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "gzip -dc {}", path.display());
+        output.stdout
+    }
+
+    /// A fresh pilot carrying the committed raw logs, `acquisition-ms` and `inputs-ms`,
+    /// with the first source's raw log replaced by `source_1_raw` when given.
+    fn committed_raw_pilot(source_1_raw: Option<&[u8]>) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let committed = committed_archive();
+        let (tmp, dir, scorer) = pilot();
+        for id in ["source-1", "source-2"] {
+            let raw = gunzip(&committed.join(id).join("raw-candidates.jsonl.gz"));
+            let raw = match source_1_raw {
+                Some(replacement) if id == "source-1" => replacement.to_vec(),
+                _ => raw,
+            };
+            std::fs::write(dir.join(id).join("raw-candidates.jsonl"), raw).unwrap();
+            std::fs::copy(
+                committed.join(id).join("acquisition-ms"),
+                dir.join(id).join("acquisition-ms"),
+            )
+            .unwrap();
+        }
+        std::fs::copy(committed.join("inputs-ms"), dir.join("inputs-ms")).unwrap();
+        (tmp, dir, scorer)
+    }
+
+    fn recorded_value(path: &Path) -> u64 {
+        String::from_utf8(read(path).unwrap())
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    #[test]
+    fn committed_raw_logs_recurate_to_the_committed_histories() {
+        let committed = committed_archive();
+        let archived: serde_json::Value =
+            serde_json::from_slice(&read(&committed.join("manifest.json")).unwrap()).unwrap();
+        let revision = archived["codeRevision"].as_str().unwrap();
+        let cutoff = archived["historicalCutoffUnix"].as_u64().unwrap();
+
+        let (_tmp, dir, scorer) = committed_raw_pilot(None);
+        write_manifest(&dir, &scorer, revision, cutoff, &Limits::DEFAULT).unwrap();
+        let regenerated: serde_json::Value =
+            serde_json::from_slice(&read(&dir.join("manifest.json")).unwrap()).unwrap();
+
+        let archived_tasks = archived["tasks"].as_array().unwrap();
+        let regenerated_tasks = regenerated["tasks"].as_array().unwrap();
+        assert_eq!(archived_tasks.len(), regenerated_tasks.len(), "task count");
+        for (kept, fresh) in archived_tasks.iter().zip(regenerated_tasks) {
+            let id = kept["id"].as_str().unwrap();
+            assert_eq!(fresh["id"], kept["id"], "task order");
+            assert_eq!(
+                fresh["parentSha256"], kept["parentSha256"],
+                "parent digest of {id}"
+            );
+            if kept["split"] != "source" {
+                assert!(fresh["history"].is_null(), "{id} carries no history");
+                continue;
+            }
+            assert_eq!(
+                read(&dir.join(id).join("history.jsonl")).unwrap(),
+                read(&committed.join(id).join("history.jsonl")).unwrap(),
+                "regenerated history of {id} is byte-identical to the committed one"
+            );
+            assert_eq!(
+                fresh["history"]["sha256"], kept["history"]["sha256"],
+                "history digest of {id}"
+            );
+            let recorded = recorded_value(&committed.join(id).join("acquisition-ms"));
+            let charged = fresh["history"]["acquisitionMs"].as_u64().unwrap();
+            assert!(
+                charged >= recorded,
+                "{id} acquisitionMs {charged} must include the recorded {recorded} ms"
+            );
+        }
+
+        // Negative control: the committed raw log's first row is a screen with no
+        // full-corpus delta, so a log truncated to it leaves nothing fully scored
+        // and the manifest step refuses it, writing no history and no manifest.
+        let raw = gunzip(&committed.join("source-1/raw-candidates.jsonl.gz"));
+        let first_row_end = raw.iter().position(|&byte| byte == b'\n').unwrap() + 1;
+        let (_tmp, dir, scorer) = committed_raw_pilot(Some(&raw[..first_row_end]));
+        let err = write_manifest(&dir, &scorer, revision, cutoff, &Limits::DEFAULT)
+            .expect_err("a raw log truncated to its first row must be refused");
+        assert!(
+            err.starts_with("source-1: no fully scored row"),
+            "refusal should name source-1 and the cause: {err}"
+        );
+        assert!(!dir.join("manifest.json").exists());
+        for id in ["source-1", "source-2"] {
+            assert!(!dir.join(id).join("history.jsonl").exists(), "{id} history");
+        }
+    }
+
     /// Inputs per record in a synthetic corpus; the target follows them.
     const INPUTS: usize = 4;
 
