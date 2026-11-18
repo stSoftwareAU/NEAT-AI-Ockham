@@ -59,7 +59,11 @@ unlabelled, never losses. Future records are counted and excluded using the
 strict `unixSecs < historicalCutoffUnix` boundary. Duplicate observations of one
 candidate are refused; curate one pre-target observation per candidate.
 `acquisitionMs` records the measured historical scoring/preparation cost; zero
-means no recorded charge, not proof that acquisition was free.
+means no recorded charge, not proof that acquisition was free. The optional
+top-level `preparationMs` records, in milliseconds, the operator-measured wall
+time of preparation that no other field charges, such as fixture or input
+generation and manifest construction. It is reported as `preparationCostMs`
+and added to `totalResearchMs`. Absent or zero means no recorded charge.
 
 Audit rows with neuron features embed ordinary `CandidateRecord` telemetry. Its
 `corpusIdentity` uses the manifest's corpus cache identity, so those records can
@@ -211,8 +215,9 @@ positive verdict. Other grid cells diagnose cold starts and sparsity, not pick
 a favourable result after validation. An inconclusive or unsupported result
 never enables deployment or real rejection.
 
-Cost reporting retains pilot, freeze, historical acquisition, audit and
-evaluation totals, including protocol identity checks. It separates the actual
+Cost reporting retains pilot, freeze, historical acquisition, manifest
+preparation (`preparationCostMs`), audit and evaluation totals, including
+protocol identity checks; `totalResearchMs` is their sum. It separates the actual
 audit wall time from counterfactual
 strategy ledgers: preparation/generation, feature extraction, historical
 acquisition/loading, calibration acquisition, partial scoring, fit, adaptation,
@@ -250,8 +255,13 @@ and every row names the immutable parent. Curation keeps one observation per
 candidate, preferring a fully scored one, and drops rows naming another
 incumbent. Each source history has 12 candidates, 3 of them fully scored.
 The manifest step adds the measured curation wall time, rounded up to whole
-milliseconds, to each source's recorded search time in `acquisitionMs`. The
-archived pilot predates this change. Measured afterwards, curation took 2 ms
+milliseconds, to each source's recorded search time in `acquisitionMs`.
+`inputs` writes its generation wall time, rounded up to whole milliseconds, to
+`<dir>/inputs-ms`; the manifest step refuses a pilot directory without that
+file. It writes `preparationMs` as that time plus its own wall time up to its
+first write, less the curation already charged to `acquisitionMs`, so
+`totalResearchMs` counts all preparation. The archived pilot predates these
+changes. Measured afterwards, curation took 2 ms
 per source and input generation took 4 to 5 ms, together under 0.3% of the
 archived 3469 ms research total.
 

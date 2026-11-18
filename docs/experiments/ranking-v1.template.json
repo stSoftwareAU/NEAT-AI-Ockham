@@ -52,6 +52,7 @@
   "maximumFalseRejection": 0.1,
   "maximumCostRatio": 1.0,
   "minimumImprovement": 1e-06,
+  "preparationMs": 0,
   "tasks": [
     {
       "id": "source-1",

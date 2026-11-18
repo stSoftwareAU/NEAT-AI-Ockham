@@ -172,6 +172,11 @@ pub struct Report {
     pilot_cost_ms: u64,
     freezing_cost_ms: u64,
     historical_acquisition_ms: u64,
+    /// The manifest's `preparationMs`: operator-recorded preparation (input
+    /// generation, manifest construction) that no other field charges.
+    preparation_cost_ms: u64,
+    /// Audit, pilot, freeze, historical acquisition, preparation and evaluation
+    /// costs.
     total_research_ms: u64,
     evaluation_cost_ms: u64,
     history_coverage: Vec<serde_json::Value>,
@@ -402,6 +407,7 @@ pub fn evaluate(
         pilot_cost_ms: audit.pilot_cost_ms,
         freezing_cost_ms: audit.freezing_cost_ms,
         historical_acquisition_ms: audit.histories.iter().map(|h| h.acquisition_ms).sum(),
+        preparation_cost_ms: m.preparation_ms,
         total_research_ms: 0,
         evaluation_cost_ms: 0,
         history_coverage,
@@ -885,6 +891,7 @@ pub fn evaluate(
         + report.pilot_cost_ms
         + report.freezing_cost_ms
         + report.historical_acquisition_ms
+        + report.preparation_cost_ms
         + report.evaluation_cost_ms;
     Ok(report)
 }

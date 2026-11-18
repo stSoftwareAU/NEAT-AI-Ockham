@@ -69,7 +69,17 @@ pub struct Manifest {
     pub maximum_false_rejection: f64,
     pub maximum_cost_ratio: f64,
     pub minimum_improvement: f64,
+    /// Operator-recorded wall time, in milliseconds, of preparation that no other
+    /// field charges (fixture/input generation, manifest construction). Optional;
+    /// a manifest without it records no such charge. Omitted from serialisation
+    /// when zero so manifests written before this field keep their identity.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub preparation_ms: u64,
     pub tasks: Vec<Task>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 fn digest(value: &str, length: usize) -> bool {

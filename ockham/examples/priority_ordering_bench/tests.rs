@@ -831,11 +831,16 @@ fn comparison_reports_audit_time_outside_every_pool_ledger() {
     assert_eq!(output["unpooledAuditMs"], 2_500);
     assert_eq!(output["auditCostMs"], 506_683);
     assert_eq!(
+        output["preparationCostMs"], 0,
+        "a manifest without preparationMs records no preparation charge"
+    );
+    assert_eq!(
         output["totalResearchMs"].as_u64().unwrap() - output["evaluationCostMs"].as_u64().unwrap(),
         output["auditCostMs"].as_u64().unwrap()
             + output["pilotCostMs"].as_u64().unwrap()
             + output["freezingCostMs"].as_u64().unwrap()
-            + output["historicalAcquisitionMs"].as_u64().unwrap(),
+            + output["historicalAcquisitionMs"].as_u64().unwrap()
+            + output["preparationCostMs"].as_u64().unwrap(),
         "unpooled audit time is already inside auditCostMs and must not be added twice"
     );
     assert!(
@@ -851,6 +856,45 @@ fn comparison_reports_audit_time_outside_every_pool_ledger() {
     let output =
         serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
     assert_eq!(output["unpooledAuditMs"], 0);
+}
+
+#[test]
+fn manifest_preparation_time_is_reported_and_added_to_the_research_total() {
+    let cost = |m: &Manifest| {
+        let output = serde_json::to_value(
+            evaluation::evaluate(m, &artificial_audit(m), "c".repeat(64), 0).unwrap(),
+        )
+        .unwrap();
+        let get = |key: &str| output[key].as_u64().unwrap();
+        let others = get("auditCostMs")
+            + get("pilotCostMs")
+            + get("freezingCostMs")
+            + get("historicalAcquisitionMs")
+            + get("evaluationCostMs");
+        (get("preparationCostMs"), get("totalResearchMs"), others)
+    };
+
+    let absent = manifest();
+    assert_eq!(absent.preparation_ms, 0, "the field is optional");
+    let (preparation, total, others) = cost(&absent);
+    assert_eq!(preparation, 0);
+    assert_eq!(total, others);
+    assert!(
+        serde_json::to_value(&absent)
+            .unwrap()
+            .get("preparationMs")
+            .is_none(),
+        "a zero preparation time keeps the identity of manifests without the field"
+    );
+
+    let mut value = serde_json::to_value(manifest()).unwrap();
+    value["preparationMs"] = json!(1_234_567);
+    let present: Manifest = serde_json::from_value(value).unwrap();
+    present.validate().unwrap();
+    let (preparation, total, others) = cost(&present);
+    assert_eq!(preparation, 1_234_567);
+    assert!(total >= 1_234_567, "total {total} must include preparation");
+    assert_eq!(total, others + 1_234_567);
 }
 
 fn git(dir: &std::path::Path, args: &[&str]) {

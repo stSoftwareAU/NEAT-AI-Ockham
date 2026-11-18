@@ -9,7 +9,11 @@
 //! The manifest charges each source's `acquisitionMs` as that recorded time plus the
 //! measured wall time of loading and curating its raw log, rounded up to whole
 //! milliseconds, so curation is counted as a preparation cost of the history.
-//! `inputs` reports its own generation time on stderr.
+//! `inputs` also writes `<dir>/inputs-ms`, its own generation wall time rounded up to
+//! whole milliseconds, and reports it on stderr. The manifest refuses without that file
+//! and writes `preparationMs` as that time plus its own wall time up to its first write,
+//! less the curation already charged to `acquisitionMs`, so the bench's
+//! `totalResearchMs` counts all preparation.
 //!
 //! `manifest` treats the pilot directory as untrusted input. It resolves the directory once
 //! and refuses any task path that is a symlink or whose resolved path leaves it. It also
@@ -159,7 +163,8 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// Parent 16 MiB; raw log 64 MiB (the bench's history cap); acquisition time 64 bytes;
+    /// Parent 16 MiB; raw log 64 MiB (the bench's history cap); acquisition and
+    /// input-generation times (`acquisition-ms`, `inputs-ms`) 64 bytes;
     /// corpus 100 MB (also written to the manifest as `maxCorpusBytes`); scorer 1 GiB.
     const DEFAULT: Limits = Limits {
         parent_bytes: 16 * 1024 * 1024,
@@ -288,11 +293,16 @@ fn absolute(path: &Path) -> Result<String, String> {
 
 /// Write the synthetic inputs for every task into the new directory `dir`.
 ///
+/// Also writes `<dir>/inputs-ms`: the generation wall time, rounded up to whole
+/// milliseconds, which `manifest` charges as part of `preparationMs`. Returns
+/// that time.
+///
 /// # Errors
 ///
 /// Refuses an existing `dir` (nothing inside it is touched), and reports any
 /// I/O or creature failure with the path at fault.
-pub fn write_inputs(dir: &Path) -> Result<(), String> {
+pub fn write_inputs(dir: &Path) -> Result<u64, String> {
+    let started = Instant::now();
     make_dir(dir).map_err(|e| format!("new pilot directory: {e}"))?;
     for (task, (id, ..)) in TASKS.iter().enumerate() {
         let task_dir = dir.join(id);
@@ -315,7 +325,9 @@ pub fn write_inputs(dir: &Path) -> Result<(), String> {
         write_bin_file(&bin, &rows)
             .map_err(|e| format!("cannot write '{}': {e}", bin.display()))?;
     }
-    Ok(())
+    let elapsed_ms = ceil_ms(started.elapsed());
+    write_new_file(&dir.join("inputs-ms"), format!("{elapsed_ms}\n").as_bytes())?;
+    Ok(elapsed_ms)
 }
 
 /// Rows kept for one source task, with how many were dropped for each reason.
@@ -408,24 +420,32 @@ fn corpus_sha256(corpus: &Path, max_bytes: u64) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// The operator-recorded wall time of the ordinary run, in milliseconds.
+/// A recorded wall time in whole milliseconds, read from the contained file `path`.
 ///
-/// The file is required: a missing `acquisition-ms` is an error, so an unrecorded
+/// The file is required: a missing file is an error naming it, so an unrecorded
 /// cost never silently becomes 0.
-fn acquisition_ms(root: &Path, task_dir: &Path, cap: u64) -> Result<u64, String> {
-    let path = task_dir.join("acquisition-ms");
-    let bytes = read_bounded(root, &path, cap)?;
+fn recorded_ms(root: &Path, path: &Path, cap: u64) -> Result<u64, String> {
+    let bytes = read_bounded(root, path, cap)?;
     let text = String::from_utf8(bytes).map_err(|e| format!("'{}': {e}", path.display()))?;
     text.trim()
         .parse::<u64>()
         .map_err(|e| format!("'{}': {e}", path.display()))
 }
 
+/// The operator-recorded wall time of the ordinary run, from `<task>/acquisition-ms`.
+fn acquisition_ms(root: &Path, task_dir: &Path, cap: u64) -> Result<u64, String> {
+    recorded_ms(root, &task_dir.join("acquisition-ms"), cap)
+}
+
+/// `duration` in whole milliseconds, rounded up so non-zero work is never 0 ms.
+fn ceil_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos().div_ceil(1_000_000)).unwrap_or(u64::MAX)
+}
+
 /// The acquisition cost charged to a source history: the recorded ordinary-run
 /// time plus the curation wall time, rounded up so non-zero work is never 0 ms.
 fn charged_acquisition_ms(recorded_ms: u64, curation: Duration) -> u64 {
-    let curation_ms = u64::try_from(curation.as_nanos().div_ceil(1_000_000)).unwrap_or(u64::MAX);
-    recorded_ms.saturating_add(curation_ms)
+    recorded_ms.saturating_add(ceil_ms(curation))
 }
 
 /// Everything known about one task before any output is written.
@@ -439,18 +459,25 @@ struct Prepared {
 
 /// Curate each source history, then write `<dir>/manifest.json` naming every task.
 ///
+/// The manifest's `preparationMs` is the generation time recorded in `<dir>/inputs-ms`
+/// plus this step's own wall time from entry up to just before its first write, less
+/// the curation time already charged to the sources' `acquisitionMs`, rounded up to
+/// whole milliseconds (saturating).
+///
 /// # Errors
 ///
 /// Refuses, naming the path (and the task id for task files):
 /// - an existing `manifest.json` or `history.jsonl`, including a dangling symlink;
-/// - a symlinked task path, corpus entry or raw log, and any task path whose
-///   resolved location leaves the pilot directory;
+/// - a symlinked task path, corpus entry, raw log or `inputs-ms`, and any pilot
+///   path whose resolved location leaves the pilot directory;
 /// - a `parent.json` over 16 MiB, a `raw-candidates.jsonl` over 64 MiB, an
-///   `acquisition-ms` over 64 bytes, a corpus over `limits.corpus_bytes` in total
-///   (or with no `.bin` file), and a scorer over `limits.scorer_bytes` or that is not a
-///   regular file (the scorer may itself be a symlink);
+///   `acquisition-ms` or `inputs-ms` over 64 bytes, a corpus over
+///   `limits.corpus_bytes` in total (or with no `.bin` file), and a scorer over
+///   `limits.scorer_bytes` or that is not a regular file (the scorer may itself be
+///   a symlink);
 /// - a source task with no fully scored row (full and sampled delta) for its parent,
-///   and a source task with no `acquisition-ms` file.
+///   a source task with no `acquisition-ms` file, and a pilot directory with no
+///   `inputs-ms` file.
 ///
 /// Every read, check and digest for all tasks finishes before the first write, so a
 /// refusal writes no history and no manifest.
@@ -461,14 +488,18 @@ pub fn write_manifest(
     cutoff_unix: u64,
     limits: &Limits,
 ) -> Result<(), String> {
+    let started = Instant::now();
     let root = dir
         .canonicalize()
         .map_err(|e| format!("cannot resolve '{}': {e}", dir.display()))?;
     let manifest_path = dir.join("manifest.json");
     refuse_existing(&manifest_path)?;
+    let inputs_ms = recorded_ms(&root, &dir.join("inputs-ms"), limits.acquisition_bytes)?;
     let scorer_sha = scorer_sha256(scorer, limits.scorer_bytes)?;
 
     let mut prepared = Vec::new();
+    // Curation time already charged to the sources' `acquisitionMs`.
+    let mut curation_total = Duration::ZERO;
     for (id, split, ..) in TASKS {
         let task_dir = dir.join(id);
         contained(&root, &task_dir).map_err(|e| format!("{id}: {e}"))?;
@@ -505,6 +536,7 @@ pub fn write_manifest(
                 buffer.push('\n');
             }
             let curation = curation_started.elapsed();
+            curation_total = curation_total.saturating_add(curation);
             let recorded = acquisition_ms(&root, &task_dir, limits.acquisition_bytes)
                 .map_err(|e| format!("{id}: {e}"))?;
             let charged = charged_acquisition_ms(recorded, curation);
@@ -526,6 +558,15 @@ pub fn write_manifest(
             history,
         });
     }
+
+    // This step's own work up to the first write, less the curation already charged.
+    let manifest_step_ms = ceil_ms(started.elapsed().saturating_sub(curation_total));
+    let preparation_ms = inputs_ms.saturating_add(manifest_step_ms);
+    eprintln!(
+        "preparationMs {preparation_ms} = inputs {inputs_ms} + manifest step {manifest_step_ms} ms \
+         (excluding {} ms of curation charged to sources)",
+        ceil_ms(curation_total)
+    );
 
     let mut tasks = Vec::new();
     for ((id, split, family, lineage, version), task) in TASKS.into_iter().zip(&prepared) {
@@ -590,6 +631,7 @@ pub fn write_manifest(
         "maximumFalseRejection": 0.1,
         "maximumCostRatio": 1.0,
         "minimumImprovement": 1e-6,
+        "preparationMs": preparation_ms,
         "tasks": tasks,
     });
     let text = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
@@ -652,15 +694,9 @@ fn main() {
         }
     };
     let result = match command {
-        Command::Inputs(dir) => {
-            let started = Instant::now();
-            write_inputs(&dir).inspect(|()| {
-                eprintln!(
-                    "inputs: generated in {} ms",
-                    started.elapsed().as_nanos().div_ceil(1_000_000)
-                );
-            })
-        }
+        Command::Inputs(dir) => write_inputs(&dir).map(|elapsed_ms| {
+            eprintln!("inputs: generated in {elapsed_ms} ms");
+        }),
         Command::Manifest(dir, scorer, revision, cutoff) => {
             write_manifest(&dir, &scorer, &revision, cutoff, &Limits::DEFAULT)
         }
@@ -1002,6 +1038,66 @@ mod tests {
 
     fn file_len(path: &Path) -> u64 {
         std::fs::metadata(path).unwrap().len()
+    }
+
+    #[test]
+    fn inputs_record_their_generation_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pilot");
+        let returned = write_inputs(&dir).unwrap();
+        let text = String::from_utf8(read(&dir.join("inputs-ms")).unwrap()).unwrap();
+        let recorded: u64 = text.trim().parse().unwrap();
+        assert!(recorded > 0, "generation work rounds up to at least 1 ms");
+        assert_eq!(recorded, returned);
+    }
+
+    #[test]
+    fn manifest_preparation_includes_the_recorded_inputs_time() {
+        let (_tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        std::fs::write(dir.join("inputs-ms"), "7").unwrap();
+        assert_accepted(&dir, &scorer, &Limits::DEFAULT);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&read(&dir.join("manifest.json")).unwrap()).unwrap();
+        let preparation = manifest["preparationMs"].as_u64().unwrap();
+        assert!(
+            preparation >= 7,
+            "preparationMs {preparation} must include the recorded 7 ms"
+        );
+        assert!(
+            preparation > 7,
+            "preparationMs {preparation} must also charge the manifest step's own work"
+        );
+    }
+
+    #[test]
+    fn pilot_without_inputs_ms_is_refused_naming_it() {
+        let (_tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        std::fs::remove_file(dir.join("inputs-ms")).unwrap();
+        assert_refused(&dir, &scorer, &Limits::DEFAULT, "inputs-ms");
+
+        // Positive control: the same fixture, with only the missing file added, is accepted.
+        std::fs::write(dir.join("inputs-ms"), "3").unwrap();
+        assert_accepted(&dir, &scorer, &Limits::DEFAULT);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_inputs_ms_is_refused() {
+        use std::os::unix::fs::symlink;
+        let (tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        let recorded = dir.join("inputs-ms");
+        let outside = tmp.path().join("outside-inputs-ms");
+        std::fs::rename(&recorded, &outside).unwrap();
+        symlink(&outside, &recorded).unwrap();
+        assert_refused(&dir, &scorer, &Limits::DEFAULT, "symlink");
+        assert_refused(&dir, &scorer, &Limits::DEFAULT, "inputs-ms");
+
+        std::fs::remove_file(&recorded).unwrap();
+        std::fs::copy(&outside, &recorded).unwrap();
+        assert_accepted(&dir, &scorer, &Limits::DEFAULT);
     }
 
     #[test]
