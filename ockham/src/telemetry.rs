@@ -218,18 +218,22 @@ pub fn append(path: &Path, records: &[CandidateRecord]) -> Result<(), String> {
 /// quietly: it errors, naming the file and the line.
 pub fn load(path: &Path) -> Result<Vec<CandidateRecord>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    load_from_reader(BufReader::new(file), &path.display().to_string())
+}
+
+/// [`load`] over an already-opened reader; `label` names the source in errors.
+pub fn load_from_reader(reader: impl BufRead, label: &str) -> Result<Vec<CandidateRecord>, String> {
     let mut records = Vec::new();
-    for (i, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.map_err(|e| format!("{}:{}: {e}", path.display(), i + 1))?;
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.map_err(|e| format!("{label}:{}: {e}", i + 1))?;
         if line.trim().is_empty() {
             continue;
         }
-        let record: CandidateRecord = serde_json::from_str(&line)
-            .map_err(|e| format!("{}:{}: {e}", path.display(), i + 1))?;
+        let record: CandidateRecord =
+            serde_json::from_str(&line).map_err(|e| format!("{label}:{}: {e}", i + 1))?;
         if record.version != CANDIDATE_LOG_FORMAT_VERSION {
             return Err(format!(
-                "{}:{}: candidate-log format version {} is not {CANDIDATE_LOG_FORMAT_VERSION}",
-                path.display(),
+                "{label}:{}: candidate-log format version {} is not {CANDIDATE_LOG_FORMAT_VERSION}",
                 i + 1,
                 record.version
             ));

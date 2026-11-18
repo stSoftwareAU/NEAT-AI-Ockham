@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use neat_ai_ockham::clock::{Clock, SystemClock};
 use neat_ai_ockham::features::{self, CandidateFeatures, PriorEvidence};
@@ -83,8 +83,21 @@ pub struct Audit {
     pub elapsed_ms: u64,
 }
 
+/// Wall time since `start` in whole milliseconds, rounded up (issue #261).
+///
+/// Rounding down charged sub-millisecond feature, fit and ranking work as 0 ms,
+/// so their overhead was not counted before a rejection could be permitted.
 pub fn ms(start: Instant) -> u64 {
-    start.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
+    ceil_ms(start.elapsed())
+}
+
+/// `elapsed` in whole milliseconds, rounded up so any non-zero work costs at least 1 ms.
+pub fn ceil_ms(elapsed: Duration) -> u64 {
+    elapsed
+        .as_nanos()
+        .div_ceil(1_000_000)
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 // Hash every corpus byte; the ordinary fast head/tail cache identity is not a

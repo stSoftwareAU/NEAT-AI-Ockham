@@ -234,6 +234,51 @@ added to the total a second time.
 Final result serialisation/writing and build time are outside these runtime totals.
 Timings on this shared host are indicative, never correctness assertions.
 
+## Synthetic pilot
+
+A synthetic, non-representative pilot of this protocol was run on 16 November
+2026 with the real scorer (NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`).
+Its inputs come from the generator `ockham/examples/ranking_pilot.rs`.
+`ranking_pilot inputs <dir>` writes 8 tasks (2 source, 3 calibration and
+3 validation), each with its own parent, lineage, corpus version and
+256-record corpus. `ranking_pilot manifest <dir> --scorer <path> --code-revision <sha>`
+curates the source histories and writes the manifest with every digest.
+
+Source histories are real ordinary `neat_ai_ockham` searches run with
+`--candidate-log` and an unreachable `--min-improvement`, so no cut is accepted
+and every row names the immutable parent. Curation keeps one observation per
+candidate, preferring a fully scored one, and drops rows naming another
+incumbent. Each source history has 12 candidates, 3 of them fully scored.
+The manifest step adds the measured curation wall time, rounded up to whole
+milliseconds, to each source's recorded search time in `acquisitionMs`. The
+archived pilot predates this change. Measured afterwards, curation took 2 ms
+per source and input generation took 4 to 5 ms, together under 0.3% of the
+archived 3469 ms research total.
+
+The manifest step refuses symlinks among the pilot-owned inputs and any path
+resolving outside the pilot directory, creates `history.jsonl` and
+`manifest.json` exclusively, and caps input sizes, with the corpus cap matching
+the manifest's `maxCorpusBytes`. See the
+[input boundaries](../research/ranking-pilot-v1/README.md#manifest-step-input-boundaries).
+
+The bench's `audit::ms` now rounds elapsed time up. Before this, the archived
+run charged sub-millisecond feature, fit, adaptation and ranking work as 0 ms in
+every trial. A recount at `e02ef9f` used the same scorer and inputs. It
+reproduced identical recall, false rejection, paired intervals, coverage and
+verdict, and charged each overhead at no more than about 1 ms per trial. Its
+outputs are in [cost-recount](../research/ranking-pilot-v1/cost-recount/).
+
+The record is [the synthetic pilot report](../research/ranking-pilot-v1/README.md).
+In the primary cell (full history, calibration 8, evaluation 5; 3 validation
+groups), partial-score ordering alone recovered the full true top set in all
+6 trials (+0.833 recall versus random, 95% interval [0.75, 1.0]). Transfer-pairwise
+recall minus partial was −0.694 [−0.75, −0.583], and minus target-only it was
+−0.083 [−0.25, 0.0], with negative transfer on one task. Transfer cost about
+four times partial's strategy cost. The verdict is `no-demonstrated-benefit`.
+186 of 237 validation candidates were synapse cuts with no neuron feature
+vector, which the composite and pairwise arms tie at zero. This is a negative
+synthetic finding, not a representative result.
+
 ## Current finding
 
 [The availability record](ranking-v1-availability.json) records an inconclusive
@@ -253,7 +298,11 @@ these observations do not measure representative ranking performance.
 
 Preflight with the built scorer and illustrative template task paths exited 1,
 reporting 14 unavailable parent/corpus tasks. No representative feasibility
-pilot, frozen validation manifest or validation comparison has been run.
-Deterministic fixtures validate implementation contracts only; they do not
-demonstrate an optimisation benefit. The private research run remains
+pilot, frozen validation manifest or validation comparison has been run. The
+synthetic pilot above has been run, but its data are generated and not
+representative. Deterministic fixtures validate implementation contracts only;
+they do not demonstrate an optimisation benefit. The optional pairwise and
+transfer arms stay research-only in the example bench. Whether they earn their
+maintenance cost needs the representative run, so they are neither promoted nor
+removed on synthetic evidence alone. The private research run remains
 outstanding under the same issue. Operational rejection remains disabled.
