@@ -239,7 +239,7 @@ flowchart LR
   `--example priority_ordering_bench` 18 passed, `--test ranking_pilot_archive`
   1 passed. Clippy with `-D warnings` and `cargo fmt --check` are clean.
   `./quality.sh < /dev/null` passed (exit 0) on `4108066`, the last code
-  commit; only this summary line changed after it.
+  commit, and again on `15c5aab`; only this summary line changed after it.
 - No existing test on `Develop` was edited, except in `tests.rs`: the
   `ceil_ms` test, and `preparationCostMs` added to the audit-time sum test.
 
