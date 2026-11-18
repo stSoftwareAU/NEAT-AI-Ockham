@@ -1119,6 +1119,54 @@ mod tests {
             "source-2 history must not be written"
         );
         assert!(!dir.join("manifest.json").exists());
+
+        std::fs::remove_file(dir.join("source-1").join("history.jsonl")).unwrap();
+        assert_accepted(&dir, &scorer, &Limits::DEFAULT);
+        assert!(!target.exists(), "the outside target must still not exist");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_task_directory_is_refused() {
+        use std::os::unix::fs::symlink;
+        let (tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        let task = dir.join("validation-2");
+        let outside = tmp.path().join("outside-task");
+        std::fs::rename(&task, &outside).unwrap();
+        symlink(&outside, &task).unwrap();
+        let err = try_manifest(&dir, &scorer, &Limits::DEFAULT).expect_err("must be refused");
+        assert!(err.contains("symlink"), "{err}");
+        assert!(err.contains("validation-2"), "{err}");
+        assert_refused(&dir, &scorer, &Limits::DEFAULT, "symlink");
+
+        std::fs::remove_file(&task).unwrap();
+        std::fs::rename(&outside, &task).unwrap();
+        assert_accepted(&dir, &scorer, &Limits::DEFAULT);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_manifest_symlink_is_refused_and_its_target_not_created() {
+        use std::os::unix::fs::symlink;
+        let (tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        let target = tmp.path().join("outside-manifest.json");
+        symlink(&target, dir.join("manifest.json")).unwrap();
+        let err = try_manifest(&dir, &scorer, &Limits::DEFAULT).expect_err("must be refused");
+        assert!(err.contains("already exists"), "{err}");
+        assert!(!target.exists(), "the outside target must not be created");
+        assert!(std::fs::symlink_metadata(&target).is_err());
+        for id in ["source-1", "source-2"] {
+            assert!(
+                std::fs::symlink_metadata(dir.join(id).join("history.jsonl")).is_err(),
+                "{id} history must not be written"
+            );
+        }
+
+        std::fs::remove_file(dir.join("manifest.json")).unwrap();
+        assert_accepted(&dir, &scorer, &Limits::DEFAULT);
+        assert!(!target.exists(), "the outside target must still not exist");
     }
 
     #[cfg(unix)]
