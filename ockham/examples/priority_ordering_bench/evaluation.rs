@@ -175,8 +175,11 @@ pub struct Report {
     /// The manifest's `preparationMs`: operator-recorded preparation (input
     /// generation, manifest construction) that no other field charges.
     preparation_cost_ms: u64,
-    /// Audit, pilot, freeze, historical acquisition, preparation and evaluation
-    /// costs.
+    /// The preflight `check` phase's wall time (`checkMs` in the preflight
+    /// result), which no other field charges.
+    preflight_cost_ms: u64,
+    /// Audit, pilot, freeze, historical acquisition, preparation, preflight and
+    /// evaluation costs.
     total_research_ms: u64,
     evaluation_cost_ms: u64,
     history_coverage: Vec<serde_json::Value>,
@@ -369,6 +372,7 @@ pub fn evaluate(
     m: &Manifest,
     audit: &Audit,
     audit_sha256: String,
+    preflight_ms: u64,
     setup_ms: u64,
 ) -> Result<Report, String> {
     m.validate()?;
@@ -408,6 +412,7 @@ pub fn evaluate(
         freezing_cost_ms: audit.freezing_cost_ms,
         historical_acquisition_ms: audit.histories.iter().map(|h| h.acquisition_ms).sum(),
         preparation_cost_ms: m.preparation_ms,
+        preflight_cost_ms: preflight_ms,
         total_research_ms: 0,
         evaluation_cost_ms: 0,
         history_coverage,
@@ -892,6 +897,7 @@ pub fn evaluate(
         + report.freezing_cost_ms
         + report.historical_acquisition_ms
         + report.preparation_cost_ms
+        + report.preflight_cost_ms
         + report.evaluation_cost_ms;
     Ok(report)
 }
