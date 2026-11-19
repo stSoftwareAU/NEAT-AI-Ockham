@@ -228,6 +228,51 @@ fn audit_scores_sampled_losers_individually_and_preserves_parent() {
             );
         }
     }
+    // Every featured row carries the all-paths sensitivity from the same parent,
+    // and a featureless (skipped) row carries none (#261, protocol v2).
+    let index = neat_ai_ockham::sensitivity::SensitivityIndex::new(&creature);
+    let (mut neuron_checked, mut synapse_checked) = (false, false);
+    for row in &pool.rows {
+        let Some(f) = row.features else {
+            assert_eq!(row.path_sensitivity, None, "{:?}", row.visit);
+            continue;
+        };
+        let p = row
+            .path_sensitivity
+            .unwrap_or_else(|| panic!("{:?} has no path sensitivity", row.visit));
+        assert!(p.is_finite() && p >= 0.0, "{:?}: {p}", row.visit);
+        if row.kind.as_deref() == Some("synapse") {
+            let s = creature
+                .synapses
+                .iter()
+                .find(|s| neat_ai_ockham::sweep::synapse_key(&s.from_uuid, &s.to_uuid) == row.visit)
+                .unwrap();
+            let expected = f.mean_abs * s.weight.abs() * index.importance(&s.to_uuid).unwrap();
+            assert!(
+                (p - expected).abs() < 1e-12,
+                "{:?}: {p} != {expected}",
+                row.visit
+            );
+            synapse_checked = true;
+        } else {
+            let expected = f.mean_abs * index.importance(&row.visit).unwrap();
+            assert!(
+                (p - expected).abs() < 1e-12,
+                "{:?}: {p} != {expected}",
+                row.visit
+            );
+            neuron_checked = true;
+        }
+    }
+    assert!(neuron_checked && synapse_checked);
+    let serialised = serde_json::to_value(&pool).unwrap();
+    let json_rows = serialised["rows"].as_array().unwrap();
+    for (row, json) in pool.rows.iter().zip(json_rows) {
+        match row.path_sensitivity {
+            Some(p) => assert_eq!(json["pathSensitivity"].as_f64(), Some(p)),
+            None => assert!(json.get("pathSensitivity").is_none()),
+        }
+    }
     let scored: Vec<_> = pool.rows.iter().filter(|r| r.kind.is_some()).collect();
     assert!(!scored.is_empty());
     for row in scored {
@@ -1588,4 +1633,187 @@ fn freeze_refuses_a_version_one_pilot_and_accepts_version_two() {
     );
     pilot.format_version = 2;
     assert!(freeze(&m, &pilot, "d".repeat(64)).is_ok());
+}
+
+#[test]
+fn results_write_time_is_recorded_in_a_sidecar_the_results_cannot_hold() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("results.json");
+    let now = std::time::Instant::now;
+    let charged = write_timed(&out, b"{\"totalResearchMs\":1}", now()).unwrap();
+    assert!(charged >= 1, "measured work is rounded up to at least 1 ms");
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "{\"totalResearchMs\":1}\n",
+        "the results file itself is unchanged"
+    );
+    let sidecar = tmp.path().join("results.json.write-ms");
+    assert_eq!(read_ms(&sidecar).unwrap(), charged);
+    // Both files are created exclusively: a second write refuses rather than overwrites.
+    assert!(write_timed(&out, b"{}", now()).is_err());
+    let other = tmp.path().join("other.json");
+    std::fs::write(tmp.path().join("other.json.write-ms"), "7").unwrap();
+    assert!(write_timed(&other, b"{}", now()).is_err());
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("other.json.write-ms")).unwrap(),
+        "7",
+        "an existing sidecar is not overwritten"
+    );
+    assert!(
+        !other.exists(),
+        "an existing sidecar is refused before the results file is written"
+    );
+    // A phase file's sidecar covers its serialisation and its write.
+    let phase = tmp.path().join("frozen.json");
+    write(&phase, &json!({"phase": "freeze"})).unwrap();
+    assert!(read_ms(&write_ms_path(&phase)).unwrap() >= 1);
+}
+
+#[test]
+fn read_ms_refuses_a_missing_malformed_oversized_or_symlinked_sidecar() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("x.write-ms");
+    assert!(read_ms(&path).is_err(), "missing");
+    std::fs::write(&path, "twelve").unwrap();
+    assert!(read_ms(&path).is_err(), "not a number");
+    std::fs::write(&path, "1".repeat(65)).unwrap();
+    assert!(
+        read_ms(&path)
+            .unwrap_err()
+            .contains("not a small regular file")
+    );
+    std::fs::write(&path, "12\n").unwrap();
+    assert_eq!(read_ms(&path).unwrap(), 12);
+    let link = tmp.path().join("link.write-ms");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    assert!(
+        read_ms(&link)
+            .unwrap_err()
+            .contains("not a small regular file")
+    );
+    let dangling = tmp.path().join("dangling.write-ms");
+    std::os::unix::fs::symlink(tmp.path().join("nowhere"), &dangling).unwrap();
+    assert!(read_ms(&dangling).is_err());
+}
+
+#[test]
+fn earlier_phase_write_times_are_summed_and_the_manifest_tail_is_optional() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = |name: &str| tmp.path().join(name);
+    let (manifest, preflight, frozen, audit) = (
+        file("manifest.json"),
+        file("preflight.json"),
+        file("frozen.json"),
+        file("audit.json"),
+    );
+    std::fs::write(file("preflight.json.write-ms"), "3").unwrap();
+    std::fs::write(file("frozen.json.write-ms"), "5").unwrap();
+    assert!(
+        recorded_write_ms(&manifest, &preflight, &frozen, &audit).is_err(),
+        "a phase file the bench wrote must have its sidecar"
+    );
+    std::fs::write(file("audit.json.write-ms"), "7").unwrap();
+    assert_eq!(
+        recorded_write_ms(&manifest, &preflight, &frozen, &audit).unwrap(),
+        15,
+        "no manifest-tail-ms (a manifest the generator did not write) charges 0"
+    );
+    std::fs::write(file("manifest-tail-ms"), "11\n").unwrap();
+    assert_eq!(
+        recorded_write_ms(&manifest, &preflight, &frozen, &audit).unwrap(),
+        26
+    );
+}
+
+#[test]
+fn recorded_write_cost_is_reported_and_added_to_the_research_total_once() {
+    let m = manifest();
+    let report = evaluation::evaluate(&m, &artificial_audit(&m), "c".repeat(64), 0, 0).unwrap();
+    let before = serde_json::to_value(&report).unwrap();
+    assert_eq!(
+        before["recordedWriteCostMs"], 0,
+        "evaluate leaves it uncharged"
+    );
+    let after = serde_json::to_value(evaluation::charge_recorded_writes(report, 4_321)).unwrap();
+    assert_eq!(after["recordedWriteCostMs"], 4_321);
+    assert_eq!(
+        after["totalResearchMs"].as_u64().unwrap(),
+        before["totalResearchMs"].as_u64().unwrap() + 4_321
+    );
+    let mut rest = after.clone();
+    rest["recordedWriteCostMs"] = json!(0);
+    rest["totalResearchMs"] = before["totalResearchMs"].clone();
+    assert_eq!(rest, before, "only the two cost fields change");
+}
+
+#[test]
+fn freezing_a_pilot_file_charges_its_recorded_write_time() {
+    let m = manifest();
+    let mut pilot = artificial_audit(&m);
+    pilot.phase = "pilot".into();
+    pilot.freeze_sha256 = None;
+    pilot.histories.clear();
+    pilot.pools.retain(|p| p.task == "cal");
+    for pool in &mut pilot.pools {
+        pool.selected.truncate(m.pilot_visits);
+        pool.rows.truncate(m.pilot_visits);
+        pool.elapsed_ms = 10;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("pilot.json");
+    std::fs::write(&path, serde_json::to_vec(&pilot).unwrap()).unwrap();
+    assert!(
+        freeze_file(&m, &path).is_err(),
+        "a pilot without its write-time sidecar is refused"
+    );
+    std::fs::write(tmp.path().join("pilot.json.write-ms"), "250").unwrap();
+    let frozen = freeze_file(&m, &path).unwrap();
+    let direct = freeze(&m, &pilot, hash_file(&path).unwrap()).unwrap();
+    assert_eq!(frozen.pilot_cost_ms, direct.pilot_cost_ms + 250);
+}
+
+#[test]
+fn path_sensitivities_refuse_a_non_finite_value_and_take_the_first_duplicate_edge() {
+    use neat_ai_ockham::fixtures::{creature, neuron, synapse};
+    use neat_ai_ockham::sweep::synapse_key;
+    // h1 → output-0 listed twice, first with weight 2 and then with weight 5.
+    let c = creature(
+        1,
+        1,
+        vec![
+            neuron("hidden", "h1", 0.0, Some("TANH")),
+            neuron("output", "output-0", 0.0, Some("IDENTITY")),
+        ],
+        vec![
+            synapse("input-0", "h1", 1.0),
+            synapse("h1", "output-0", 2.0),
+            synapse("h1", "output-0", 5.0),
+        ],
+    );
+    let feature = |mean_abs: f64| neat_ai_ockham::CandidateFeatures {
+        measured: true,
+        mean_abs,
+        ..Default::default()
+    };
+    let edge = synapse_key("h1", "output-0");
+    let mut features = std::collections::HashMap::new();
+    features.insert(edge.clone(), feature(0.5));
+    let got = audit::path_sensitivities(&c, &features).unwrap();
+    let reach = neat_ai_ockham::sensitivity::SensitivityIndex::new(&c)
+        .importance("output-0")
+        .unwrap();
+    assert_eq!(
+        got[&edge],
+        0.5 * 2.0 * reach,
+        "the first listed edge supplies the weight"
+    );
+    for bad in [f64::NAN, f64::INFINITY, -1.0] {
+        let mut features = std::collections::HashMap::new();
+        features.insert("h1".to_string(), feature(bad));
+        assert_eq!(
+            audit::path_sensitivities(&c, &features).unwrap_err(),
+            "non-finite or negative path sensitivity",
+            "refused: {bad}"
+        );
+    }
 }

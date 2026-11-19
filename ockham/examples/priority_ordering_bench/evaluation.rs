@@ -190,10 +190,14 @@ pub struct Report {
     /// scorer executables.
     build_cost_ms: u64,
     /// Measured time to serialise this report, charged by `serialise_charged`.
-    /// The file write that follows is not charged.
+    /// The file write that follows goes to the results file's `.write-ms` sidecar.
     serialisation_cost_ms: u64,
+    /// Recorded write times of the earlier phase files (the preflight, freeze and
+    /// audit `.write-ms` sidecars, and the generator's `manifest-tail-ms` when
+    /// present), which those files cannot hold. Charged by `charge_recorded_writes`.
+    recorded_write_cost_ms: u64,
     /// Audit, pilot, freeze, historical acquisition, preparation, preflight,
-    /// build, evaluation and serialisation costs.
+    /// build, evaluation, recorded write and serialisation costs.
     total_research_ms: u64,
     evaluation_cost_ms: u64,
     history_coverage: Vec<serde_json::Value>,
@@ -431,6 +435,7 @@ pub fn evaluate(
         preflight_cost_ms: preflight_ms,
         build_cost_ms: m.build_ms,
         serialisation_cost_ms: 0,
+        recorded_write_cost_ms: 0,
         total_research_ms: 0,
         evaluation_cost_ms: 0,
         history_coverage,
@@ -919,6 +924,14 @@ pub fn evaluate(
         + report.build_cost_ms
         + report.evaluation_cost_ms;
     Ok(report)
+}
+
+/// Charges `write_ms`, the recorded write times of earlier phase files, to the
+/// report as `recordedWriteCostMs` and adds it to `totalResearchMs` once.
+pub fn charge_recorded_writes(mut report: Report, write_ms: u64) -> Report {
+    report.recorded_write_cost_ms = write_ms;
+    report.total_research_ms = report.total_research_ms.saturating_add(write_ms);
+    report
 }
 
 /// Serialises `report` for writing, charging the serialisation to the totals.

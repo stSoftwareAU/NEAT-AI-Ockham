@@ -6,6 +6,13 @@
 //! `neat_ai_ockham <parent> <corpus> --candidate-log ...`) into `history.jsonl`,
 //! then writes `manifest.json`. Each source task also needs a `<task>/acquisition-ms`
 //! file holding that ordinary run's wall time in milliseconds; the manifest refuses without it.
+//! `search <dir> <source-task> -- <program> [args...]` runs that ordinary search and
+//! writes its measured wall time, rounded up to whole milliseconds, as that file, so
+//! the search time is measured rather than taken by hand. After its first write the
+//! manifest step times the rest of itself (writing the histories and the manifest)
+//! into `<dir>/manifest-tail-ms`, since the manifest cannot hold its own write time.
+//! `time <new-record-file> -- <program> [args...]` does the same for any command,
+//! such as the build behind `<dir>/build-ms` or a private manifest's search.
 //! The manifest charges each source's `acquisitionMs` as that recorded time plus the
 //! measured wall time of loading and curating its raw log, rounded up to whole
 //! milliseconds, so curation is counted as a preparation cost of the history.
@@ -52,7 +59,7 @@ const RECORDS: usize = 256;
 /// Hidden-to-output synapses weaker than this are zeroed in the teacher.
 const TEACHER_CUT: f64 = 0.06;
 
-const USAGE: &str = "usage:\n  ranking_pilot inputs <new-directory>\n  ranking_pilot manifest <directory> --scorer <path> --code-revision <40-hex> [--cutoff-unix <u64>]";
+const USAGE: &str = "usage:\n  ranking_pilot inputs <new-directory>\n  ranking_pilot search <directory> <source-task> -- <program> [args...]\n  ranking_pilot time <new-record-file> -- <program> [args...]\n  ranking_pilot manifest <directory> --scorer <path> --code-revision <40-hex> [--cutoff-unix <u64>]";
 
 /// `(id, split, family, lineage, corpus version)`. A task's index seeds its draws.
 #[rustfmt::skip]
@@ -478,7 +485,8 @@ struct Prepared {
 /// # Errors
 ///
 /// Refuses, naming the path (and the task id for task files):
-/// - an existing `manifest.json` or `history.jsonl`, including a dangling symlink;
+/// - an existing `manifest.json`, `manifest-tail-ms` or `history.jsonl`, including
+///   a dangling symlink;
 /// - a symlinked task path, corpus entry, raw log or `inputs-ms`, and any pilot
 ///   path whose resolved location leaves the pilot directory;
 /// - a `parent.json` over 16 MiB, a `raw-candidates.jsonl` over 64 MiB, an
@@ -491,7 +499,9 @@ struct Prepared {
 ///   `inputs-ms` file.
 ///
 /// Every read, check and digest for all tasks finishes before the first write, so a
-/// refusal writes no history and no manifest.
+/// refusal writes no history and no manifest. After the manifest, the step writes
+/// `<dir>/manifest-tail-ms`: its own wall time from the first write to the end,
+/// rounded up to whole milliseconds, which the manifest cannot hold.
 pub fn write_manifest(
     dir: &Path,
     scorer: &Path,
@@ -505,6 +515,8 @@ pub fn write_manifest(
         .map_err(|e| format!("cannot resolve '{}': {e}", dir.display()))?;
     let manifest_path = dir.join("manifest.json");
     refuse_existing(&manifest_path)?;
+    let tail_path = dir.join("manifest-tail-ms");
+    refuse_existing(&tail_path)?;
     let inputs_ms = recorded_ms(&root, &dir.join("inputs-ms"), limits.acquisition_bytes)?;
     // Optional operator-recorded build time of the bench and scorer binaries.
     let build_path = dir.join("build-ms");
@@ -586,6 +598,8 @@ pub fn write_manifest(
         ceil_ms(curation_total)
     );
 
+    // Everything from the first write on is charged to `<dir>/manifest-tail-ms` (see below).
+    let tail_started = Instant::now();
     let mut tasks = Vec::new();
     for ((id, split, family, lineage, version), task) in TASKS.into_iter().zip(&prepared) {
         let task_dir = dir.join(id);
@@ -654,19 +668,92 @@ pub fn write_manifest(
         "tasks": tasks,
     });
     let text = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
-    write_new_file(&manifest_path, format!("{text}\n").as_bytes())
+    write_new_file(&manifest_path, format!("{text}\n").as_bytes())?;
+    // The manifest cannot hold the time of writing itself, so the step's work from
+    // its first write to the end goes to a sidecar, rounded up to whole milliseconds.
+    let tail_ms = ceil_ms(tail_started.elapsed());
+    eprintln!("manifest-tail-ms {tail_ms} (histories and manifest writes)");
+    write_new_file(&tail_path, format!("{tail_ms}\n").as_bytes())
 }
 
-/// A parsed subcommand. `Manifest` holds `(dir, scorer, code revision, cutoff)`.
+/// Runs one ordinary source search and records its wall time as `<dir>/<task>/acquisition-ms`.
+///
+/// `task` must be a source task of [`TASKS`] whose directory `inputs` wrote. The
+/// program runs with stdin from `/dev/null` and inherited stdout and stderr. Its
+/// wall time, rounded up to whole milliseconds, is written only when it exits
+/// successfully, and the file is created exclusively, so an existing record is
+/// refused rather than overwritten. Returns the recorded milliseconds.
+fn run_search(dir: &Path, task: &str, program: &str, args: &[String]) -> Result<u64, String> {
+    if !TASKS
+        .iter()
+        .any(|(id, split, ..)| *id == task && *split == "source")
+    {
+        return Err(format!("'{task}' is not a source task"));
+    }
+    let task_dir = dir.join(task);
+    let meta = std::fs::symlink_metadata(&task_dir)
+        .map_err(|e| format!("'{}': {e}", task_dir.display()))?;
+    if !meta.is_dir() {
+        return Err(format!("'{}' is not a directory", task_dir.display()));
+    }
+    run_timed(&task_dir.join("acquisition-ms"), program, args)
+}
+
+/// Runs `program` and records its wall time as the new file `record`.
+///
+/// The program runs with stdin from `/dev/null` and inherited stdout and stderr.
+/// Its wall time, rounded up to whole milliseconds, is written only when it exits
+/// successfully, and `record` is created exclusively, so an existing file (or
+/// dangling symlink) is refused before the program runs. This is how an operator
+/// measures a build (`<dir>/build-ms`) or a private search's `acquisitionMs`
+/// instead of timing it by hand. Returns the recorded milliseconds.
+fn run_timed(record: &Path, program: &str, args: &[String]) -> Result<u64, String> {
+    if std::fs::symlink_metadata(record).is_ok() {
+        return Err(format!("'{}' already exists", record.display()));
+    }
+    // Refuse an unusable destination before a long build or search, not after it.
+    let parent = match record.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    if !parent.is_dir() {
+        return Err(format!("'{}' is not a directory", parent.display()));
+    }
+    let started = Instant::now();
+    let status = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("cannot run '{program}': {e}"))?;
+    let elapsed_ms = ceil_ms(started.elapsed());
+    if !status.success() {
+        return Err(format!("'{program}' failed: {status}"));
+    }
+    write_new_file(record, format!("{elapsed_ms}\n").as_bytes())
+        .map_err(|e| format!("{e} (the program took {elapsed_ms} ms)"))?;
+    Ok(elapsed_ms)
+}
+
+/// A parsed subcommand. `Manifest` holds `(dir, scorer, code revision, cutoff)`;
+/// `Search` holds `(dir, task, program, program arguments)`; `Time` holds
+/// `(record file, program, program arguments)`.
 enum Command {
     Inputs(PathBuf),
     Manifest(PathBuf, PathBuf, String, u64),
+    Search(PathBuf, String, String, Vec<String>),
+    Time(PathBuf, String, Vec<String>),
 }
 
 fn parse(args: &[String]) -> Result<Command, String> {
     let (command, rest) = args.split_first().ok_or("missing subcommand")?;
     match (command.as_str(), rest) {
         ("inputs", [dir]) => Ok(Command::Inputs(PathBuf::from(dir))),
+        ("search", [dir, task, separator, program, args @ ..]) if separator == "--" => Ok(
+            Command::Search(PathBuf::from(dir), task.clone(), program.clone(), args.to_vec()),
+        ),
+        ("time", [record, separator, program, args @ ..]) if separator == "--" => Ok(
+            Command::Time(PathBuf::from(record), program.clone(), args.to_vec()),
+        ),
         ("manifest", [dir, flags @ ..]) => {
             let (mut scorer, mut revision, mut cutoff) = (None, None, None);
             for pair in flags.chunks(2) {
@@ -699,7 +786,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 cutoff,
             ))
         }
-        _ => Err("expected `inputs <dir>` or `manifest <dir> ...`".into()),
+        _ => Err("expected `inputs <dir>`, `search <dir> <task> -- <program> ...`, `time <file> -- <program> ...` or `manifest <dir> ...`".into()),
     }
 }
 
@@ -719,6 +806,10 @@ fn main() {
         Command::Manifest(dir, scorer, revision, cutoff) => {
             write_manifest(&dir, &scorer, &revision, cutoff, &Limits::DEFAULT)
         }
+        Command::Search(dir, task, program, args) => run_search(&dir, &task, &program, &args)
+            .map(|elapsed_ms| eprintln!("{task}: search took {elapsed_ms} ms")),
+        Command::Time(record, program, args) => run_timed(&record, &program, &args)
+            .map(|elapsed_ms| eprintln!("'{program}' took {elapsed_ms} ms")),
     };
     if let Err(message) = result {
         eprintln!("error: {message}");
@@ -1109,6 +1200,149 @@ mod tests {
         let written: serde_json::Value =
             serde_json::from_slice(&read(&dir.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(written["buildMs"], 43_210);
+    }
+
+    #[test]
+    fn manifest_step_records_its_tail_after_the_first_write() {
+        let (_tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        write_manifest(&dir, &scorer, &"a".repeat(40), CUTOFF, &Limits::DEFAULT).unwrap();
+        let tail: u64 = String::from_utf8(read(&dir.join("manifest-tail-ms")).unwrap())
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(tail >= 1, "measured work is rounded up to at least 1 ms");
+        assert!(tail < 600_000, "only this step's own writes are charged");
+        // The tail record is created exclusively: an existing one makes the step refuse.
+        let (_tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        std::fs::write(dir.join("manifest-tail-ms"), "7").unwrap();
+        let error =
+            write_manifest(&dir, &scorer, &"a".repeat(40), CUTOFF, &Limits::DEFAULT).unwrap_err();
+        assert!(error.contains("manifest-tail-ms"), "{error}");
+        assert_eq!(read(&dir.join("manifest-tail-ms")).unwrap(), b"7");
+        assert!(
+            !dir.join("manifest.json").exists()
+                && !dir.join("source-1").join("history.jsonl").exists(),
+            "the refusal comes before the first write"
+        );
+    }
+
+    #[test]
+    fn search_times_the_ordinary_run_into_acquisition_ms() {
+        let (_tmp, dir, _scorer) = pilot();
+        let shell = |script: &str| vec!["-c".to_string(), script.to_string()];
+        let recorded = run_search(&dir, "source-1", "sh", &shell("sleep 0.05")).unwrap();
+        assert!(
+            recorded >= 50,
+            "the program's own wall time is measured: {recorded}"
+        );
+        let written: u64 =
+            String::from_utf8(read(&dir.join("source-1").join("acquisition-ms")).unwrap())
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+        assert_eq!(written, recorded);
+        // The manifest step reads the measured record as it read a hand-written one.
+        assert_eq!(
+            acquisition_ms(&dir, &dir.join("source-1"), 64).unwrap(),
+            recorded
+        );
+
+        let refused = run_search(&dir, "source-1", "sh", &shell("true")).unwrap_err();
+        assert!(refused.contains("already exists"), "{refused}");
+        assert_eq!(
+            read(&dir.join("source-1").join("acquisition-ms")).unwrap(),
+            format!("{recorded}\n").into_bytes(),
+            "an existing record is not overwritten"
+        );
+
+        let failed = run_search(&dir, "source-2", "sh", &shell("exit 3")).unwrap_err();
+        assert!(failed.contains("failed"), "{failed}");
+        assert!(
+            !dir.join("source-2").join("acquisition-ms").exists(),
+            "a failed search records no time"
+        );
+
+        let not_source = run_search(&dir, "calibration-1", "sh", &shell("true")).unwrap_err();
+        assert!(not_source.contains("not a source task"), "{not_source}");
+        assert!(!dir.join("calibration-1").join("acquisition-ms").exists());
+    }
+
+    #[test]
+    fn time_records_any_successful_command_into_a_new_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let record = tmp.path().join("build-ms");
+        let shell = |script: &str| vec!["-c".to_string(), script.to_string()];
+        let recorded = run_timed(&record, "sh", &shell("sleep 0.05")).unwrap();
+        assert!(recorded >= 50, "{recorded}");
+        assert_eq!(read(&record).unwrap(), format!("{recorded}\n").into_bytes());
+        // A marker the program would create shows the refusal comes before it runs.
+        let marker = tmp.path().join("ran");
+        let script = format!("touch '{}'", marker.display());
+        assert!(
+            run_timed(&record, "sh", &shell(&script))
+                .unwrap_err()
+                .contains("already exists")
+        );
+        assert!(
+            !marker.exists(),
+            "an existing record is refused before the program runs"
+        );
+        let failed = tmp.path().join("failed-ms");
+        assert!(run_timed(&failed, "sh", &shell("exit 1")).is_err());
+        assert!(!failed.exists(), "a failed command records nothing");
+        assert!(run_timed(&failed, "/nonexistent/program", &[]).is_err());
+        assert!(!failed.exists());
+        let homeless = tmp.path().join("missing-dir").join("build-ms");
+        assert!(
+            run_timed(&homeless, "sh", &shell(&script))
+                .unwrap_err()
+                .contains("is not a directory")
+        );
+        assert!(
+            !marker.exists(),
+            "a missing destination is refused before the program runs"
+        );
+        // The generator's manifest step reads the measured build time as `buildMs`.
+        let (_tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        let build = run_timed(&dir.join("build-ms"), "sh", &shell("true")).unwrap();
+        write_manifest(&dir, &scorer, &"a".repeat(40), CUTOFF, &Limits::DEFAULT).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_slice(&read(&dir.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(written["buildMs"], build);
+    }
+
+    #[test]
+    fn search_subcommand_parses_the_program_after_a_separator() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        match parse(&args(&[
+            "search", "d", "source-1", "--", "prog", "--flag", "x",
+        ]))
+        .unwrap()
+        {
+            Command::Search(dir, task, program, rest) => {
+                assert_eq!(dir, PathBuf::from("d"));
+                assert_eq!(task, "source-1");
+                assert_eq!(program, "prog");
+                assert_eq!(rest, args(&["--flag", "x"]));
+            }
+            _ => panic!("expected a search command"),
+        }
+        assert!(parse(&args(&["search", "d", "source-1", "prog"])).is_err());
+        assert!(parse(&args(&["search", "d", "source-1", "--"])).is_err());
+        match parse(&args(&["time", "f", "--", "cargo", "build"])).unwrap() {
+            Command::Time(record, program, rest) => {
+                assert_eq!(record, PathBuf::from("f"));
+                assert_eq!(program, "cargo");
+                assert_eq!(rest, args(&["build"]));
+            }
+            _ => panic!("expected a time command"),
+        }
+        assert!(parse(&args(&["time", "f", "cargo"])).is_err());
     }
 
     #[test]

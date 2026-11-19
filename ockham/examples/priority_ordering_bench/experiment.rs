@@ -85,11 +85,11 @@ fn read<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     serde_json::from_reader(std::fs::File::open(path).map_err(|e| e.to_string())?)
         .map_err(|e| format!("{}: {e}", path.display()))
 }
+/// Serialises and writes a phase file, recording the time of both in `<path>.write-ms`.
 fn write(path: &Path, value: &impl Serialize) -> Result<(), String> {
-    write_bytes(
-        path,
-        &serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?,
-    )
+    let start = std::time::Instant::now();
+    let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    write_timed(path, &bytes, start).map(drop)
 }
 fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new()
@@ -100,6 +100,63 @@ fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     file.write_all(bytes)
         .and_then(|()| file.write_all(b"\n"))
         .map_err(|e| e.to_string())
+}
+/// The sidecar beside `path` that records the time of writing it.
+fn write_ms_path(path: &Path) -> std::path::PathBuf {
+    let mut sidecar = path.as_os_str().to_owned();
+    sidecar.push(".write-ms");
+    sidecar.into()
+}
+/// Writes `bytes` to `out` and records the time since `start` (covering any
+/// serialisation the caller timed, and the write), which the file cannot hold
+/// itself, rounded up to whole milliseconds, as the sidecar `<out>.write-ms`.
+/// Both are created exclusively, and an existing sidecar is refused before `out`
+/// is written. Returns the recorded milliseconds.
+fn write_timed(out: &Path, bytes: &[u8], start: std::time::Instant) -> Result<u64, String> {
+    let sidecar = write_ms_path(out);
+    if std::fs::symlink_metadata(&sidecar).is_ok() {
+        return Err(format!("{}: already exists", sidecar.display()));
+    }
+    write_bytes(out, bytes)?;
+    let write_ms = audit::ms(start);
+    write_bytes(&sidecar, write_ms.to_string().as_bytes())?;
+    Ok(write_ms)
+}
+/// The milliseconds recorded in the sidecar `path`. Refuses a missing or
+/// malformed one, one over 64 bytes, and anything that is not a regular file
+/// (including a symlink).
+fn read_ms(path: &Path) -> Result<u64, String> {
+    let meta = std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_file() || meta.len() > 64 {
+        return Err(format!("{}: not a small regular file", path.display()));
+    }
+    std::fs::read_to_string(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .trim()
+        .parse::<u64>()
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+/// The recorded write times that `evaluate` charges: the preflight, freeze and
+/// audit files' sidecars (required, since the bench always writes them) and the
+/// generator's `manifest-tail-ms` beside the manifest (optional; absent is 0).
+fn recorded_write_ms(
+    manifest: &Path,
+    preflight: &Path,
+    freeze: &Path,
+    audit: &Path,
+) -> Result<u64, String> {
+    let mut total: u64 = 0;
+    for phase in [preflight, freeze, audit] {
+        total = total.saturating_add(read_ms(&write_ms_path(phase))?);
+    }
+    let tail = manifest
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("manifest-tail-ms");
+    if std::fs::symlink_metadata(&tail).is_ok() {
+        total = total.saturating_add(read_ms(&tail)?);
+    }
+    Ok(total)
 }
 fn hash_file(path: &Path) -> Result<String, String> {
     Ok(sha256_hex(
@@ -201,6 +258,16 @@ fn runtime(m: &Manifest) -> Result<BoundedScorer, String> {
         bounding: bounding.into(),
         seconds: m.scorer_timeout_secs,
     })
+}
+
+/// Freezes the pilot file at `pilot`, adding its recorded write time (its
+/// `.write-ms` sidecar, which the file cannot hold) to the pilot cost.
+fn freeze_file(m: &Manifest, pilot: &Path) -> Result<Freeze, String> {
+    let mut result = freeze(m, &read(pilot)?, hash_file(pilot)?)?;
+    result.pilot_cost_ms = result
+        .pilot_cost_ms
+        .saturating_add(read_ms(&write_ms_path(pilot))?);
+    Ok(result)
 }
 
 fn freeze(m: &Manifest, pilot: &audit::Audit, pilot_sha256: String) -> Result<Freeze, String> {
@@ -350,7 +417,7 @@ pub fn main() -> Result<(), String> {
             let m: Manifest = read(&manifest)?;
             m.validate()?;
             runtime(&m)?;
-            let mut result = freeze(&m, &read(&pilot)?, hash_file(&pilot)?)?;
+            let mut result = freeze_file(&m, &pilot)?;
             result.freezing_cost_ms = audit::ms(phase_start);
             write(&out, &result)?;
         }
@@ -410,7 +477,13 @@ pub fn main() -> Result<(), String> {
                 check_ms,
                 audit::ms(phase_start),
             )?;
-            write_bytes(&out, &evaluation::serialise_charged(result)?)?;
+            let written = recorded_write_ms(&manifest, &preflight, &freeze, &audit)?;
+            let result = evaluation::charge_recorded_writes(result, written);
+            write_timed(
+                &out,
+                &evaluation::serialise_charged(result)?,
+                std::time::Instant::now(),
+            )?;
         }
     }
     Ok(())
