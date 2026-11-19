@@ -23,7 +23,11 @@
 //! `totalResearchMs` counts this generator's preparation. The bench's preflight
 //! `check` stage is charged separately, as `preflightCostMs`. An optional
 //! `<dir>/build-ms`, the operator-measured wall time of building the bench and
-//! scorer binaries, is written as `buildMs` (zero when the file is absent).
+//! scorer binaries, is written as `buildMs` (zero when the file is absent). An optional
+//! `<dir>/bootstrap-build-ms` is the wall time of building this generator itself, which
+//! `time` cannot measure because it only exists once that build has finished; the
+//! operator times that first build externally (the shell's own clock, rounded up to whole
+//! milliseconds) and the manifest adds it to `buildMs` exactly once.
 //!
 //! `manifest` treats the pilot directory as untrusted input. It resolves the directory once
 //! and refuses any task path that is a symlink or whose resolved path leaves it. It also
@@ -477,6 +481,10 @@ struct Prepared {
 
 /// Curate each source history, then write `<dir>/manifest.json` naming every task.
 ///
+/// The manifest's `buildMs` is the optional `<dir>/build-ms` plus the optional
+/// `<dir>/bootstrap-build-ms` (the generator's own first build, timed externally),
+/// each zero when absent.
+///
 /// The manifest's `preparationMs` is the generation time recorded in `<dir>/inputs-ms`
 /// plus this step's own wall time from entry up to just before its first write, less
 /// the curation time already charged to the sources' `acquisitionMs`, rounded up to
@@ -519,12 +527,17 @@ pub fn write_manifest(
     refuse_existing(&tail_path)?;
     let inputs_ms = recorded_ms(&root, &dir.join("inputs-ms"), limits.acquisition_bytes)?;
     // Optional operator-recorded build time of the bench and scorer binaries.
-    let build_path = dir.join("build-ms");
-    let build_ms = if build_path.symlink_metadata().is_ok() {
-        recorded_ms(&root, &build_path, limits.acquisition_bytes)?
-    } else {
-        0
+    // `build-ms` (timed by `time`) and `bootstrap-build-ms` (the generator's own first
+    // build, timed externally) are distinct builds, so `buildMs` is their sum.
+    let optional_ms = |name: &str| -> Result<u64, String> {
+        let path = dir.join(name);
+        if path.symlink_metadata().is_ok() {
+            recorded_ms(&root, &path, limits.acquisition_bytes)
+        } else {
+            Ok(0)
+        }
     };
+    let build_ms = optional_ms("build-ms")?.saturating_add(optional_ms("bootstrap-build-ms")?);
     let scorer_sha = scorer_sha256(scorer, limits.scorer_bytes)?;
 
     let mut prepared = Vec::new();
@@ -1200,6 +1213,45 @@ mod tests {
         let written: serde_json::Value =
             serde_json::from_slice(&read(&dir.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(written["buildMs"], 43_210);
+    }
+
+    #[test]
+    fn the_generators_own_first_build_is_added_to_build_ms_exactly_once() {
+        let build_ms = |build: Option<&str>, bootstrap: Option<&str>| {
+            let (_tmp, dir, scorer) = pilot();
+            write_labelled_sources(&dir);
+            for (name, value) in [("build-ms", build), ("bootstrap-build-ms", bootstrap)] {
+                if let Some(value) = value {
+                    std::fs::write(dir.join(name), value).unwrap();
+                }
+            }
+            write_manifest(&dir, &scorer, &"a".repeat(40), CUTOFF, &Limits::DEFAULT).unwrap();
+            let written: serde_json::Value =
+                serde_json::from_slice(&read(&dir.join("manifest.json")).unwrap()).unwrap();
+            // The initial build is never folded into the preparation charge as well.
+            assert!(written["preparationMs"].as_u64().unwrap() < 600_000);
+            written["buildMs"].as_u64().unwrap()
+        };
+        assert_eq!(build_ms(None, Some("77000\n")), 77_000, "bootstrap alone");
+        assert_eq!(build_ms(Some("43210\n"), None), 43_210, "build alone");
+        assert_eq!(
+            build_ms(Some("43210\n"), Some("77000\n")),
+            120_210,
+            "distinct builds are summed"
+        );
+    }
+
+    #[test]
+    fn a_malformed_bootstrap_build_record_is_refused() {
+        let (_tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        std::fs::write(dir.join("bootstrap-build-ms"), "not a number\n").unwrap();
+        assert_refused(
+            &dir,
+            &scorer,
+            &Limits::DEFAULT,
+            "bootstrap-build-ms': invalid digit",
+        );
     }
 
     #[test]

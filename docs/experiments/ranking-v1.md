@@ -75,8 +75,9 @@ time of preparation that no other field charges, such as fixture or input
 generation and manifest construction. It is reported as `preparationCostMs`
 and added to `totalResearchMs`. Absent or zero means no recorded charge.
 The optional top-level `buildMs` likewise records the measured wall time of
-building the bench and scorer executables the run uses (see `ranking_pilot time`
-below). It is reported
+building the bench and scorer executables the run uses, including the first
+build of the `ranking_pilot` generator (see `ranking_pilot time` and
+`bootstrap-build-ms` below). It is reported
 as `buildCostMs` and added to `totalResearchMs`; absent or zero means no
 recorded charge.
 
@@ -317,8 +318,9 @@ still untimed:
   pass stands in for;
 - one progress line between the manifest step's two timers.
 
-Building `ranking_pilot` itself, before `time` can measure the other builds, is
-not timed either. It separates the actual
+Building `ranking_pilot` itself is not timed by `time`, which only exists once
+that build has finished. It is recorded externally instead (see the
+reproduction procedure below) and charged once, inside `buildCostMs`. It separates the actual
 audit wall time from counterfactual
 strategy ledgers: preparation/generation, feature extraction, historical
 acquisition/loading, calibration acquisition, partial scoring, fit, adaptation,
@@ -387,7 +389,18 @@ succeeds and only if no record exists. The manifest step's work after its first
 write goes to `<dir>/manifest-tail-ms`, and the results file's write time to
 `results.json.write-ms` (see the cost reporting paragraph above). The manifest
 step writes an optional `<dir>/build-ms` as `buildMs`; measure it with
-`ranking_pilot time <dir>/build-ms -- cargo build ...`. The `time <new-file> --
+`ranking_pilot time <dir>/build-ms -- cargo build ...`. `time` cannot measure
+the first build of `ranking_pilot` itself, which must finish before `time`
+exists and can compile shared dependencies that make later builds cheaper. Time
+that build with the shell's own clock, around the command that builds the
+generator, and write the whole milliseconds, rounded up, to the optional
+`<dir>/bootstrap-build-ms` (for example
+`start=$(date +%s%N); cargo build --example ranking_pilot; end=$(date +%s%N);
+echo $(( (end - start + 999999) / 1000000 )) > <dir>/bootstrap-build-ms`).
+The manifest step adds it to `build-ms`, so `buildMs` is their sum and
+`totalResearchMs` charges the initial build exactly once; do not also put it
+in `build-ms`. A run that omits the file charges nothing for that build. The
+`time <new-file> --
 <program> [args...]` subcommand runs any command the same way `search` does and
 records its wall time only on success, and only into a new file. Use it for a
 private manifest's `acquisitionMs` too, so no search or build is timed by hand.

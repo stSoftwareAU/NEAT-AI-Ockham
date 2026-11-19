@@ -130,6 +130,16 @@ Backend and research CLI only; there is no UI change.
   is refused before the program runs (its marker file is never created). A
   failing or missing program records nothing, and the manifest step writes a
   measured `build-ms` as `buildMs`.
+- The first build of `ranking_pilot` itself cannot be timed by `time`, which only
+  exists after it. The operator times it externally into an optional
+  `<dir>/bootstrap-build-ms`, which the manifest step adds to `build-ms` as
+  `buildMs` (and so to `buildCostMs` and `totalResearchMs`) exactly once. The
+  `ranking-v1.md` reproduction procedure shows the command.
+  `the_generators_own_first_build_is_added_to_build_ms_exactly_once` covers the
+  bootstrap alone, `build-ms` alone and the two summed, and
+  `a_malformed_bootstrap_build_record_is_refused` refuses a bad record naming it.
+  The existing `manifest_build_time_is_reported_and_added_to_the_research_total`
+  carries `buildMs` into `totalResearchMs`.
 - The refusal of negative or non-finite path values and the `freeze`
   version check have the tests listed in the Test Plan.
 
@@ -150,7 +160,9 @@ sensitivity.
 - **met** — count all preparation/search costs — evidence:
   `ockham/examples/ranking_pilot.rs::search_times_the_ordinary_run_into_acquisition_ms`,
   `::time_records_any_successful_command_into_a_new_file`,
+  `::the_generators_own_first_build_is_added_to_build_ms_exactly_once`,
   `::manifest_step_records_its_tail_after_the_first_write`,
+  `ockham/examples/priority_ordering_bench/tests.rs::manifest_build_time_is_reported_and_added_to_the_research_total`,
   `ockham/examples/priority_ordering_bench/tests.rs::earlier_phase_write_times_are_summed_and_the_manifest_tail_is_optional`,
   `::recorded_write_cost_is_reported_and_added_to_the_research_total_once`,
   `::freezing_a_pilot_file_charges_its_recorded_write_time` — reviewer: met
@@ -202,12 +214,13 @@ sensitivity.
   path tests first failed to compile against the unchanged bench, because the
   field and the helper did not exist yet.
 - `cargo test --example priority_ordering_bench < /dev/null`: 37 passed.
-- `cargo test --example ranking_pilot < /dev/null`: 30 passed.
+- `cargo test --example ranking_pilot < /dev/null`: 32 passed.
 - `cargo test --test ranking_pilot_archive < /dev/null`: 1 passed.
 - `markdownlint-cli2` and `codespell` on `docs/experiments/ranking-v1.md` and
   `docs/research/ranking-pilot-v1/README.md`: no findings.
-- `./quality.sh < /dev/null` on the final code: exit 0, "All quality checks
-  passed!".
+- `cargo fmt --check` and `cargo clippy --example ranking_pilot --tests -- -D
+  warnings` on the final head: no findings. `./quality.sh` was not re-run after
+  the last review round (the budget did not cover it).
 - Not checked: CI, macOS, and a v2 pilot with the real scorer.
 - Spec and standards reviewer sub-agents ran over the diff. Their findings are
   in the two blocks above, and every standards finding is fixed here.
