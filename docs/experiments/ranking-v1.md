@@ -1,9 +1,16 @@
-# Controlled pruning-order experiment, protocol v1
+# Controlled pruning-order experiment, protocol v2
 
 This is research infrastructure for issue #261, not evidence that a proxy or
 transfer model improves pruning. Ordinary CLI defaults, the pointwise
 `train-ordering` command and authoritative full-score acceptance are unchanged.
 The research command never applies a cut or writes a population candidate.
+
+Protocol v2 changes v1 in two ways. The bench's pairwise inputs gain two columns
+after the 15 library columns, `pathSensitivityAvailable` and
+`logPathSensitivity`, computed from the all-paths sensitivity described in the
+Functional paths item below. The protocol string is now `ockham-ranking-v2`, and
+the audit and pilot JSON `formatVersion` is 2; `freeze` and `evaluate` refuse
+version 1 files. The file keeps its v1 name so existing links hold.
 
 ## Verified methods and adaptations
 
@@ -67,8 +74,10 @@ top-level `preparationMs` records, in milliseconds, the operator-measured wall
 time of preparation that no other field charges, such as fixture or input
 generation and manifest construction. It is reported as `preparationCostMs`
 and added to `totalResearchMs`. Absent or zero means no recorded charge.
-The optional top-level `buildMs` likewise records the operator-measured wall
-time of building the bench and scorer executables the run uses. It is reported
+The optional top-level `buildMs` likewise records the measured wall time of
+building the bench and scorer executables the run uses, including the first
+build of the `ranking_pilot` generator (see `ranking_pilot time` and
+`bootstrap-build-ms` below). It is reported
 as `buildCostMs` and added to `totalResearchMs`; absent or zero means no
 recorded charge.
 
@@ -85,7 +94,7 @@ cache identity. Other ordering names do not receive this compatibility conversio
 the log digest, parent checksum and remaining provenance checks still apply.
 
 Calibration uses different lineages **and** corpus/task versions from validation,
-within a declared target family. Thus this v1 adaptation uses an earlier or
+within a declared target family. Thus this adaptation uses an earlier or
 related target version, not labels from the untouched validation task itself.
 The calibration budget is family-wide, sampled across its calibration pools.
 Normalisation is fitted only on the permitted source subset and calibration
@@ -119,13 +128,19 @@ their coverage is explicitly zero. The library's feature extraction covers
 hidden neurons only, so the audit derives a synapse candidate's vector in the
 bench (`audit::synapse_features`) in the same columns: the source neuron's
 activation statistics, `|weight|` as outgoing weight, one outgoing edge, one
-synapse's growth units and the source's depth. The library sweep and schema
-are unchanged. The audit ledger keeps a feature-availability flag; pairwise
-inputs zero-fill the columns only behind that flag, and the composite control
-ties any featureless candidate at zero.
+synapse's growth units and the source's depth. The library sweep, its 15-column
+`FEATURE_NAMES` and `CandidateFeatures` are unchanged; the bench appends the two
+path columns to the pairwise inputs only (see Functional paths below). The audit
+ledger keeps a feature-availability flag; pairwise inputs zero-fill the 15
+library columns only behind that flag, and the composite control ties any
+featureless candidate at zero.
 Activation variance is not output variance; sensitivity here is the existing
-activation-times-outgoing-weight estimate, not a gradient. The candidate
-features the issue names that the v1 vector lacks are assessed as follows.
+activation-times-weight estimate, one hop or summed over paths, not a gradient.
+The candidate features the issue names are assessed as follows. Sample error is
+in the inputs as `partialDelta`, the 5% sampled score delta. Connections are in
+the inputs as `logFanIn`, `logFanOut` and `logOutgoingWeight`. The next three
+items remain absent from the pairwise inputs, and functional paths is included
+in protocol v2.
 
 - Output variance: the variance of the creature's outputs with the cut applied
   needs a forward pass of each child over sampled records. That is at least the
@@ -144,16 +159,28 @@ features the issue names that the v1 vector lacks are assessed as follows.
 - Gradient/Fisher signal: the exported creatures carry no gradients, and
   computing one needs a backward pass per record. That is not inexpensive, so
   it is not added.
-- Functional paths: available and cheap. `SensitivityIndex`
-  (`ockham/src/sensitivity.rs`, Issue #105) sums absolute weight products over
-  downstream paths in `O(neurons + synapses)` work per creature; cyclic
-  components are relaxed conservatively rather than summed exactly. The
-  sensitivity orderings (`LowOutputSensitivity` and `LowEstimatedEffect` in
-  `ockham/src/ordering.rs`) already use it. The v1 vector does not include it:
-  `logDownstreamSensitivity` is the one-hop `mean_abs × Σ|outgoing weight|`
-  (`CandidateFeatures::downstream_sensitivity` in `ockham/src/features.rs`).
-  Adding the path sum changes the 15-column feature schema, so it needs a new
-  protocol version and a new pilot; the archived v1 pilot does not test it.
+- Functional paths: available and cheap, and included in protocol v2.
+  `SensitivityIndex` (`ockham/src/sensitivity.rs`, Issue #105) sums absolute
+  weight products over downstream paths in `O(neurons + synapses)` work per
+  creature; cyclic components are relaxed conservatively rather than summed
+  exactly. The sensitivity orderings (`LowOutputSensitivity` and
+  `LowEstimatedEffect` in `ockham/src/ordering.rs`) already use it. The audit
+  builds it once per parent creature in its feature stage, charged to
+  `features_ms`. A neuron visit's `pathSensitivity` is
+  `mean_abs × importance(uuid)`; a synapse visit's is the source's
+  `mean_abs × |weight| × importance(target)`. It is the all-paths counterpart
+  of the one-hop `logDownstreamSensitivity` (`mean_abs × Σ|outgoing weight|`,
+  `CandidateFeatures::downstream_sensitivity` in `ockham/src/features.rs`).
+  The audit row records it as `pathSensitivity`. Pairwise inputs gain two
+  columns after the 15 library columns: `pathSensitivityAvailable` (1 when
+  present) and `logPathSensitivity` = ln(1 + value); when absent, both are 0.
+  Source histories carry no path signal, so source rows get both columns 0,
+  and the transfer arm can learn their weight only from target calibration
+  rows. The composite fusion control is unchanged (fixed weights, no path
+  column), and the partial and random arms are unchanged. The library's
+  `FEATURE_NAMES`, `CandidateFeatures` and candidate telemetry are unchanged.
+  No v2 pilot has been run, because this host has no `rust_scorer` binary.
+  The archived synthetic pilot ran protocol v1 and does not test these columns.
 
 ## Pilot, freeze and commands
 
@@ -165,6 +192,9 @@ milliseconds per generated candidate, constrained by per-pool and total limits.
 It refuses fewer than `minimumCompletePool` visits. No validation scores tune
 these limits. The freeze binds the manifest, pilot file and running executable
 SHA-256. Rebuilding a different executable requires another pilot and freeze.
+Pilot and audit JSON carry `formatVersion` 2: `freeze` refuses a version 1 pilot
+and `evaluate` refuses a version 1 audit, so a v1 audit is never evaluated with
+the v2 vector.
 
 Run from the committed source revision with Rust and `timeout` (Linux) or
 `gtimeout` (macOS). Keep manifest, parents, logs and result directories private.
@@ -263,7 +293,34 @@ Cost reporting retains preflight (`preflightCostMs`, the preflight's
 `checkMs`), pilot, freeze, historical acquisition, manifest preparation
 (`preparationCostMs`), build (`buildCostMs`), audit, evaluation and result
 serialisation (`serialisationCostMs`) totals, including protocol identity
-checks; `totalResearchMs` is their sum. It separates the actual
+checks, plus recorded writes (`recordedWriteCostMs`); `totalResearchMs` is
+their sum. A file cannot hold the time of writing itself, so every phase file the
+bench writes (preflight, pilot, frozen, audit and results JSON) gets a sidecar
+`<file>.write-ms`. The sidecar holds the measured time of serialising and writing
+that file, rounded up to whole milliseconds. Each sidecar is created exclusively,
+and an existing one is refused before the file is written. `freeze` adds the
+pilot file's sidecar to `pilotCostMs`. `evaluate` refuses a missing preflight,
+freeze or audit sidecar and charges their sum as `recordedWriteCostMs`. It also
+charges the generator's `<dir>/manifest-tail-ms` beside the manifest when that
+file exists. A manifest not written by the generator has none, which counts as 0.
+The results file's own write is in `results.json.write-ms`, outside
+`totalResearchMs`. The whole measured cost of a run is therefore
+`totalResearchMs` plus that one sidecar. No digest binds the sidecars or
+`manifest-tail-ms`, unlike the manifest, pilot, freeze and audit files. They are
+cost records, not evidence inputs, so an edit to one changes only the reported
+cost. Keep them with the run's private results. Some sub-millisecond work is
+still untimed:
+- writing the sidecars' few bytes;
+- process start-up and argument parsing before each phase's timer starts;
+- reading and summing the sidecars in `evaluate`, after its evaluation time is
+  taken;
+- the second serialisation pass in `serialise_charged`, which the timed first
+  pass stands in for;
+- one progress line between the manifest step's two timers.
+
+Building `ranking_pilot` itself is not timed by `time`, which only exists once
+that build has finished. It is recorded externally instead (see the
+reproduction procedure below) and charged once, inside `buildCostMs`. It separates the actual
 audit wall time from counterfactual
 strategy ledgers: preparation/generation, feature extraction, historical
 acquisition/loading, calibration acquisition, partial scoring, fit, adaptation,
@@ -290,9 +347,13 @@ Timings on this shared host are indicative, never correctness assertions.
 
 ## Synthetic pilot
 
-A synthetic, non-representative pilot of this protocol was run on 18 November
+A synthetic, non-representative pilot of protocol v1 was run on 18 November
 2026 at code revision `aa41403530c8cb3a28aaf79ebfc43e6386c75fc5`, with the real
-scorer (NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`). It was
+scorer (NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`). It ran
+without the path columns that v2 adds, so it does not test them. Reproduce it
+at a protocol-v1 revision, `aa41403` up to and including `a4f0d274` (PR #288),
+as its README's Reproduce section says; later revisions run protocol v2 and do
+not reproduce it. It was
 reproduced from the committed inputs, raw search logs and timings of an
 earlier run at `fad4e74`, which left synapse candidates without features and
 did not charge the preflight. That run reproduced the paired results, coverage
@@ -319,10 +380,32 @@ first write, less the curation already charged to `acquisitionMs`, so
 is 25 ms of a 4,049 ms total. The preflight `check` stage records `checkMs`,
 and `evaluate` requires `--preflight` and charges it as `preflightCostMs`
 (19 ms). That run predates `buildMs` and `serialisationCostMs`, so it did not
-charge building the binaries or serialising the results. Still uncounted at the
-head: writing the final results file, the manifest step after its first write,
-and the source searches' own timing, which the operator takes by hand. The
-manifest step writes an optional `<dir>/build-ms` as `buildMs`.
+charge building the binaries or serialising the results, and its operator
+timed the source searches by hand. At the head the remaining costs are measured
+too. `ranking_pilot search <dir> <source-task> -- <program> [args...]` runs a
+source search with stdin from `/dev/null`, times it and writes the rounded-up
+milliseconds to `<dir>/<source-task>/acquisition-ms`, only when the search
+succeeds and only if no record exists. The manifest step's work after its first
+write goes to `<dir>/manifest-tail-ms`, and the results file's write time to
+`results.json.write-ms` (see the cost reporting paragraph above). The manifest
+step writes `buildMs` as the sum of an optional `<dir>/build-ms` and an
+optional `<dir>/bootstrap-build-ms` (below); measure `build-ms` with
+`ranking_pilot time <dir>/build-ms -- cargo build ...`. `time` cannot measure
+the first build of `ranking_pilot` itself, which must finish before `time`
+exists and can compile shared dependencies that make later builds cheaper. Time
+that build with the shell's own clock, around the command that builds the
+generator, and write the whole milliseconds, rounded up, to the optional
+`<dir>/bootstrap-build-ms` (for example
+`start=$(date +%s%N); cargo build --example ranking_pilot; end=$(date +%s%N);
+echo $(( (end - start + 999999) / 1000000 )) > <dir>/bootstrap-build-ms`).
+The manifest step adds it to `build-ms`, so `buildMs` is their sum and
+`totalResearchMs` charges the initial build exactly once; do not also put it
+in `build-ms`. A run that omits the file charges nothing for that build. The
+`time <new-file> --
+<program> [args...]` subcommand runs any command the same way `search` does and
+records its wall time only on success, and only into a new file. Use it for a
+private manifest's `acquisitionMs` too, so no search or later build is timed by
+hand; only the generator's first build uses the shell clock.
 
 The manifest step refuses symlinks among the pilot-owned inputs and any path
 resolving outside the pilot directory, creates `history.jsonl` and
@@ -349,7 +432,12 @@ the learned arms' deficit. This is a negative synthetic finding, not a
 representative result. The
 report's maintenance decision keeps the pairwise and transfer arms research-only
 until the representative run. It also predeclares that they are removed if that
-run also shows no benefit over partial ordering.
+run also shows no benefit over partial ordering. Protocol v2's two path columns
+feed only those arms, so the same rule covers them. If the representative v2 run
+returns `no-demonstrated-benefit` for both pairwise arms against `partial`, the
+path columns and `audit::path_sensitivities` are removed with the arms. The
+cost-measurement code (`search`, `time` and the `.write-ms` sidecars) is not
+optional: the issue requires every cost to be counted, so it stays.
 
 ## Current finding
 

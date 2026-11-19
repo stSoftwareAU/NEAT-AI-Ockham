@@ -316,9 +316,13 @@ cargo build --release --locked -p rust_scorer
 ```
 
 Build the Ockham binaries at a clean checkout of revision
-`aa41403530c8cb3a28aaf79ebfc43e6386c75fc5` or a later revision of this
-code. The bench refuses a manifest whose `codeRevision` is not the checkout's
-HEAD, so pass that HEAD to the manifest step below.
+`aa41403530c8cb3a28aaf79ebfc43e6386c75fc5` or a later protocol-v1 revision,
+up to and including `a4f0d274ccb84e37f5fa2b97ce3396daf0286aaa` on Develop
+(PR #288). Later revisions run protocol v2 (`ockham-ranking-v2`, audit and
+pilot `formatVersion` 2, two extra pairwise path columns): they refuse this
+archive's v1 pilot and audit files and do not reproduce it. The bench refuses a
+manifest whose `codeRevision` is not the checkout's HEAD, so pass that HEAD to
+the manifest step below.
 
 There are two levels of reproduction:
 

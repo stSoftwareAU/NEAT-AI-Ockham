@@ -14,6 +14,7 @@ pub fn feature_names() -> Vec<String> {
     ["partialDelta", "neuronFeaturesAvailable"]
         .into_iter()
         .chain(FEATURE_NAMES.iter().copied())
+        .chain(["pathSensitivityAvailable", "logPathSensitivity"])
         .map(str::to_string)
         .collect()
 }
@@ -28,6 +29,13 @@ fn vector(row: &AuditRow) -> Result<Vec<f64>, String> {
         row.features
             .map_or_else(|| vec![0.0; FEATURE_NAMES.len()], |f| f.vector()),
     );
+    // Availability flag and ln(1 + p); both zero where the row has no path signal.
+    let (available, log_path) = match row.path_sensitivity {
+        Some(p) if p.is_finite() && p >= 0.0 => (1.0, (1.0 + p).ln()),
+        Some(_) => return Err("non-finite or negative path sensitivity".into()),
+        None => (0.0, 0.0),
+    };
+    out.extend([available, log_path]);
     if out.iter().any(|v| !v.is_finite()) {
         return Err("non-finite experimental feature".into());
     }
@@ -182,10 +190,14 @@ pub struct Report {
     /// scorer executables.
     build_cost_ms: u64,
     /// Measured time to serialise this report, charged by `serialise_charged`.
-    /// The file write that follows is not charged.
+    /// The file write that follows goes to the results file's `.write-ms` sidecar.
     serialisation_cost_ms: u64,
+    /// Recorded write times of the earlier phase files (the preflight, freeze and
+    /// audit `.write-ms` sidecars, and the generator's `manifest-tail-ms` when
+    /// present), which those files cannot hold. Charged by `charge_recorded_writes`.
+    recorded_write_cost_ms: u64,
     /// Audit, pilot, freeze, historical acquisition, preparation, preflight,
-    /// build, evaluation and serialisation costs.
+    /// build, evaluation, recorded write and serialisation costs.
     total_research_ms: u64,
     evaluation_cost_ms: u64,
     history_coverage: Vec<serde_json::Value>,
@@ -347,6 +359,8 @@ fn historical_rows(
             raw[13] = 0.0;
             raw[14] = 0.0;
             features.extend(raw);
+            // Source telemetry carries no path signal, so both path columns are zero.
+            features.extend([0.0, 0.0]);
             let score = r.full_delta.ok_or("missing historical full score")?;
             if !score.is_finite() || features.iter().any(|v| !v.is_finite()) {
                 return Err("non-finite historical row".into());
@@ -382,7 +396,7 @@ pub fn evaluate(
     setup_ms: u64,
 ) -> Result<Report, String> {
     m.validate()?;
-    if audit.format_version != 1
+    if audit.format_version != 2
         || audit.phase != "audit"
         || audit.manifest_sha256 != m.identity()?
         || audit.freeze_sha256.is_none()
@@ -421,6 +435,7 @@ pub fn evaluate(
         preflight_cost_ms: preflight_ms,
         build_cost_ms: m.build_ms,
         serialisation_cost_ms: 0,
+        recorded_write_cost_ms: 0,
         total_research_ms: 0,
         evaluation_cost_ms: 0,
         history_coverage,
@@ -909,6 +924,14 @@ pub fn evaluate(
         + report.build_cost_ms
         + report.evaluation_cost_ms;
     Ok(report)
+}
+
+/// Charges `write_ms`, the recorded write times of earlier phase files, to the
+/// report as `recordedWriteCostMs` and adds it to `totalResearchMs` once.
+pub fn charge_recorded_writes(mut report: Report, write_ms: u64) -> Report {
+    report.recorded_write_cost_ms = write_ms;
+    report.total_research_ms = report.total_research_ms.saturating_add(write_ms);
+    report
 }
 
 /// Serialises `report` for writing, charging the serialisation to the totals.

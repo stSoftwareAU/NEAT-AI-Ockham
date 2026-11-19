@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "protocol": "ockham-ranking-v1",
+  "protocol": "ockham-ranking-v2",
   "codeRevision": "0000000000000000000000000000000000000000",
   "scorer": "/private/ordering/rust_scorer",
   "scorerSha256": "0000000000000000000000000000000000000000000000000000000000000000",

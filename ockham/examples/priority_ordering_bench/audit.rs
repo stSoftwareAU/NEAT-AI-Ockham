@@ -8,6 +8,7 @@ use neat_ai_ockham::clock::{Clock, SystemClock};
 use neat_ai_ockham::features::{self, CandidateFeatures, PriorEvidence};
 use neat_ai_ockham::incumbent::{load_incumbent, sha256_hex};
 use neat_ai_ockham::scorer::{DirectoryScorer, ScorerMode};
+use neat_ai_ockham::sensitivity::SensitivityIndex;
 use neat_ai_ockham::stats::{ActivationStats, SampleSpec, compute_activation_stats};
 use neat_ai_ockham::sweep::{Sweep, present_visits, synapse_key};
 use neat_ai_ockham::telemetry::{CandidateOutcome, CandidateRecord, RunStamp};
@@ -25,6 +26,9 @@ pub struct AuditRow {
     pub kind: Option<String>,
     pub candidate_sha256: Option<String>,
     pub features: Option<CandidateFeatures>,
+    /// All-paths output sensitivity from [`path_sensitivities`]; `None` where the row has no features.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_sensitivity: Option<f64>,
     pub sample_delta: Option<f64>,
     pub full_delta: Option<f64>,
     pub sample_ms: u64,
@@ -206,6 +210,57 @@ pub(super) fn audit_features(
     Ok(all)
 }
 
+/// All-paths output sensitivity for every visit in `features` that the creature
+/// names, keyed as `features` is.
+///
+/// **Experiment-only derivation.** The all-paths counterpart of the one-hop
+/// [`CandidateFeatures::downstream_sensitivity`]. A hidden neuron scores its
+/// `mean_abs` times its [`SensitivityIndex`] importance, which sums every path
+/// to an output. A synapse scores its source's `mean_abs` (as
+/// [`synapse_features`] stores it) times `|weight|` times the importance of its
+/// target. A visit the index does not cover scores zero. When a creature lists
+/// an ordered pair more than once the first listed edge supplies the weight.
+///
+/// The index is built once per creature. A non-finite or negative value is refused.
+pub(super) fn path_sensitivities(
+    creature: &CreatureExport,
+    features: &HashMap<String, CandidateFeatures>,
+) -> Result<HashMap<String, f64>, String> {
+    let index = SensitivityIndex::new(creature);
+    let mut out = HashMap::new();
+    for neuron in creature
+        .neurons
+        .iter()
+        .filter(|n| n.neuron_type == "hidden")
+    {
+        if let Some(f) = features.get(&neuron.uuid) {
+            let reach = index.importance(&neuron.uuid).unwrap_or(0.0);
+            out.insert(neuron.uuid.clone(), checked_path(f.mean_abs * reach)?);
+        }
+    }
+    for synapse in &creature.synapses {
+        let key = synapse_key(&synapse.from_uuid, &synapse.to_uuid);
+        let Some(f) = features.get(&key) else {
+            continue;
+        };
+        if out.contains_key(&key) {
+            continue;
+        }
+        let reach = index.importance(&synapse.to_uuid).unwrap_or(0.0);
+        let value = f.mean_abs * synapse.weight.abs() * reach;
+        out.insert(key, checked_path(value)?);
+    }
+    Ok(out)
+}
+
+fn checked_path(value: f64) -> Result<f64, String> {
+    if value.is_finite() && value >= 0.0 {
+        Ok(value)
+    } else {
+        Err("non-finite or negative path sensitivity".into())
+    }
+}
+
 pub(super) fn check_features(f: &CandidateFeatures) -> Result<(), String> {
     if [
         f.variance,
@@ -297,6 +352,7 @@ pub fn collect_pool(
     let feature_start = Instant::now();
     // Hidden-neuron and synapse vectors, charged to `features_ms` together.
     let features = audit_features(&parent.creature, &stats)?;
+    let path = path_sensitivities(&parent.creature, &features)?;
     let features_ms = ms(feature_start);
     let generation_start = Instant::now();
     let mut sweep = Sweep::new(&parent.creature, seed);
@@ -313,6 +369,7 @@ pub fn collect_pool(
                 kind: None,
                 candidate_sha256: None,
                 features: None,
+                path_sensitivity: None,
                 sample_delta: None,
                 full_delta: None,
                 sample_ms: 0,
@@ -341,6 +398,8 @@ pub fn collect_pool(
             kind: Some(kind.clone()),
             candidate_sha256: Some(sha256_hex(text.as_bytes())),
             features: features.get(&candidate.uuid).copied(),
+            // Path keys are a subset of the feature keys, so a featureless visit has none.
+            path_sensitivity: path.get(&candidate.uuid).copied(),
             sample_delta: None,
             full_delta: None,
             sample_ms: 0,
@@ -443,7 +502,7 @@ pub fn collect(
 ) -> Result<Audit, String> {
     let start = Instant::now();
     let mut audit = Audit {
-        format_version: 1,
+        format_version: 2,
         manifest_sha256: m.identity()?,
         freeze_sha256,
         executable_sha256: super::hash_file(&std::env::current_exe().map_err(|e| e.to_string())?)?,
