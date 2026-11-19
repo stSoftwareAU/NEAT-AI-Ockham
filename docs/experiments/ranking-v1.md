@@ -179,8 +179,9 @@ in protocol v2.
   rows. The composite fusion control is unchanged (fixed weights, no path
   column), and the partial and random arms are unchanged. The library's
   `FEATURE_NAMES`, `CandidateFeatures` and candidate telemetry are unchanged.
-  No v2 pilot has been run, because this host has no `rust_scorer` binary.
-  The archived synthetic pilot ran protocol v1 and does not test these columns.
+  The synthetic v2 pilot ran the real scorer and tests these columns. Its
+  path-column finding is in the [v2 archive](../research/ranking-pilot-v2/README.md)
+  and in the pilot section below.
 
 ## Pilot, freeze and commands
 
@@ -439,6 +440,21 @@ path columns and `audit::path_sensitivities` are removed with the arms. The
 cost-measurement code (`search`, `time` and the `.write-ms` sidecars) is not
 optional: the issue requires every cost to be counted, so it stays.
 
+A synthetic, non-representative pilot of protocol v2 was run on 19 November
+2026 at code revision `7cdabe6b89b65ee22a24151c7618b88c598136d9`, with the same
+scorer. Its design matches v1's and it adds the two path columns. The record is
+[the v2 synthetic pilot](../research/ranking-pilot-v2/README.md). In the primary
+cell, transfer-pairwise minus partial was −0.611 [−0.75, −0.333] and partial
+minus random was +0.833 [0.75, 1.0]. The verdict is
+`no-demonstrated-benefit`. 16 of the 120 paired cells differ from v1, all at
+evaluation budget 2 and calibration budget 8, and every evaluation-budget-5
+cell is identical. At history fraction 0, where the path columns are the only
+changed input, target-pairwise minus random fell from 0.0 to −0.083
+[−0.25, 0.25]. The path columns did not help on this pilot. Transfer minus
+target-only at cold start was −0.167 [−0.25, 0.0]. The removal rule above is
+unaffected. A synthetic run neither triggers that rule nor replaces the
+representative v2 run it names.
+
 ## Current finding
 
 [The availability record](ranking-v1-availability.json) records an inconclusive
@@ -459,7 +475,7 @@ these observations do not measure representative ranking performance.
 Preflight with the built scorer and illustrative template task paths exited 1,
 reporting 14 unavailable parent/corpus tasks. No representative feasibility
 pilot, frozen validation manifest or validation comparison has been run. The
-synthetic pilot above has been run, but its data are generated and not
+synthetic pilots above (protocols v1 and v2) have been run, but their data are generated and not
 representative. Deterministic fixtures validate implementation contracts only;
 they do not demonstrate an optimisation benefit. The optional pairwise and
 transfer arms stay research-only in the example bench. Whether they earn their
