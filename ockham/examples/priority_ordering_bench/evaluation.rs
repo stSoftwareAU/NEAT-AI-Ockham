@@ -14,6 +14,7 @@ pub fn feature_names() -> Vec<String> {
     ["partialDelta", "neuronFeaturesAvailable"]
         .into_iter()
         .chain(FEATURE_NAMES.iter().copied())
+        .chain(["pathSensitivityAvailable", "logPathSensitivity"])
         .map(str::to_string)
         .collect()
 }
@@ -28,6 +29,13 @@ fn vector(row: &AuditRow) -> Result<Vec<f64>, String> {
         row.features
             .map_or_else(|| vec![0.0; FEATURE_NAMES.len()], |f| f.vector()),
     );
+    // Availability flag and ln(1 + p); both zero where the row has no path signal.
+    let (available, log_path) = match row.path_sensitivity {
+        Some(p) if p.is_finite() && p >= 0.0 => (1.0, (1.0 + p).ln()),
+        Some(_) => return Err("non-finite or negative path sensitivity".into()),
+        None => (0.0, 0.0),
+    };
+    out.extend([available, log_path]);
     if out.iter().any(|v| !v.is_finite()) {
         return Err("non-finite experimental feature".into());
     }
@@ -347,6 +355,8 @@ fn historical_rows(
             raw[13] = 0.0;
             raw[14] = 0.0;
             features.extend(raw);
+            // Source telemetry carries no path signal, so both path columns are zero.
+            features.extend([0.0, 0.0]);
             let score = r.full_delta.ok_or("missing historical full score")?;
             if !score.is_finite() || features.iter().any(|v| !v.is_finite()) {
                 return Err("non-finite historical row".into());
@@ -382,7 +392,7 @@ pub fn evaluate(
     setup_ms: u64,
 ) -> Result<Report, String> {
     m.validate()?;
-    if audit.format_version != 1
+    if audit.format_version != 2
         || audit.phase != "audit"
         || audit.manifest_sha256 != m.identity()?
         || audit.freeze_sha256.is_none()

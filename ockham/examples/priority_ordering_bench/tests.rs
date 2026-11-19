@@ -9,7 +9,7 @@ fn manifest() -> Manifest {
       {"id":"val", "family":"family", "lineage":"l3", "corpusVersion":"v3", "split":"validation", "parent":"p3", "parentSha256":"3".repeat(64), "corpus":"c3", "corpusSha256":"6".repeat(64), "corpusIdentity":"c3", "history":null}
     ]);
     serde_json::from_value(json!({
-        "formatVersion": 1, "protocol": "ockham-ranking-v1", "codeRevision": "a".repeat(40),
+        "formatVersion": 1, "protocol": "ockham-ranking-v2", "codeRevision": "a".repeat(40),
         "scorer": "/private/rust_scorer", "scorerSha256": "b".repeat(64), "scorerArgs": ["--gpu", "off"],
         "historicalCutoffUnix": 100, "seeds": [7,19], "pilotVisits": 4,
         "auditVisitsCeiling": 40, "minimumCompletePool": 20, "minimumIndependentGroups": 3,
@@ -100,6 +100,7 @@ fn missing_scores_are_unlabelled_and_cold_calibration_is_empty() {
         candidate_sha256: None,
         sample_ms: 1,
         full_ms: 1,
+        path_sensitivity: None,
     }];
     assert_eq!(evaluation::labelled(&rows).unwrap().len(), 0);
     let mut scored = rows.clone();
@@ -430,6 +431,7 @@ fn artificial_pool(task: &manifest::Task, seed: u64) -> audit::Pool {
                 full_ms: 10,
                 telemetry: None,
                 failure: None,
+                path_sensitivity: None,
             }
         })
         .collect();
@@ -478,7 +480,7 @@ fn artificial_audit(m: &Manifest) -> audit::Audit {
         })
         .collect();
     audit::Audit {
-        format_version: 1,
+        format_version: 2,
         manifest_sha256: m.identity().unwrap(),
         freeze_sha256: Some("b".repeat(64)),
         executable_sha256: hash_file(&std::env::current_exe().unwrap()).unwrap(),
@@ -1447,4 +1449,143 @@ fn cost_milliseconds_round_up_so_sub_millisecond_work_is_counted() {
         u64::MAX,
         "saturates instead of overflowing"
     );
+}
+
+#[test]
+fn path_sensitivity_sums_every_downstream_path_not_just_one_hop() {
+    use neat_ai_ockham::fixtures::{creature, neuron, synapse};
+    use neat_ai_ockham::sweep::synapse_key;
+    // input-0 → h1 →(2) h2 →(3) output-0, plus h3 fed by the input and reaching no output.
+    let c = creature(
+        1,
+        1,
+        vec![
+            neuron("hidden", "h1", 0.0, Some("TANH")),
+            neuron("hidden", "h2", 0.0, Some("TANH")),
+            neuron("hidden", "h3", 0.0, Some("TANH")),
+            neuron("output", "output-0", 0.0, Some("IDENTITY")),
+        ],
+        vec![
+            synapse("input-0", "h1", 1.0),
+            synapse("h1", "h2", 2.0),
+            synapse("h2", "output-0", 3.0),
+            synapse("input-0", "h3", 1.0),
+        ],
+    );
+    let feature = |mean_abs: f64, outgoing_weight: f64| neat_ai_ockham::CandidateFeatures {
+        measured: true,
+        mean_abs,
+        outgoing_weight,
+        ..Default::default()
+    };
+    let mut features = std::collections::HashMap::new();
+    features.insert("h1".to_string(), feature(0.5, 2.0));
+    features.insert("h2".to_string(), feature(0.25, 3.0));
+    features.insert("h3".to_string(), feature(0.75, 1.0));
+    features.insert(synapse_key("input-0", "h1"), feature(0.1, 1.0));
+    features.insert(synapse_key("h1", "h2"), feature(0.5, 2.0));
+    features.insert(synapse_key("h2", "output-0"), feature(0.25, 3.0));
+    features.insert(synapse_key("input-0", "h3"), feature(0.1, 1.0));
+    let got = audit::path_sensitivities(&c, &features).unwrap();
+    assert_eq!(got["h1"], 0.5 * 6.0, "h1 reaches the output through 2 × 3");
+    assert_eq!(got["h2"], 0.25 * 3.0);
+    assert_eq!(got[&synapse_key("h1", "h2")], 0.5 * 2.0 * 3.0);
+    assert_eq!(got["h3"], 0.0, "a neuron reaching no output scores zero");
+    assert_ne!(
+        got["h1"],
+        features["h1"].downstream_sensitivity(),
+        "the all-paths value is not the one-hop value"
+    );
+}
+
+#[test]
+fn path_sensitivity_columns_are_appended_and_match_their_names() {
+    let row = |path: Option<f64>| audit::AuditRow {
+        visit: "v".into(),
+        kind: Some("ablation".into()),
+        candidate_sha256: None,
+        features: None,
+        sample_delta: Some(0.2),
+        full_delta: Some(0.3),
+        sample_ms: 1,
+        full_ms: 1,
+        telemetry: None,
+        failure: None,
+        path_sensitivity: path,
+    };
+    let names = evaluation::feature_names();
+    let n = names.len();
+    assert_eq!(names[n - 2], "pathSensitivityAvailable");
+    assert_eq!(names[n - 1], "logPathSensitivity");
+    let with = evaluation::labelled(&[row(Some(std::f64::consts::E - 1.0))]).unwrap();
+    let without = evaluation::labelled(&[row(None)]).unwrap();
+    assert_eq!(with[0].features.len(), n);
+    assert_eq!(without[0].features.len(), n);
+    assert!((with[0].features[n - 2] - 1.0).abs() < 1e-12);
+    assert!((with[0].features[n - 1] - 1.0).abs() < 1e-12);
+    assert_eq!(&without[0].features[n - 2..], &[0.0, 0.0]);
+}
+
+#[test]
+fn evaluation_refuses_a_version_one_audit_and_accepts_version_two() {
+    let m = manifest();
+    let mut a = artificial_audit(&m);
+    assert_eq!(a.format_version, 2);
+    a.format_version = 1;
+    assert_eq!(
+        evaluation::evaluate(&m, &a, "c".repeat(64), 0, 0).unwrap_err(),
+        "audit protocol/manifest/freeze mismatch"
+    );
+    a.format_version = 2;
+    assert!(evaluation::evaluate(&m, &a, "c".repeat(64), 0, 0).is_ok());
+}
+
+#[test]
+fn labelled_refuses_a_non_finite_or_negative_path_sensitivity() {
+    let row = |path: Option<f64>| audit::AuditRow {
+        visit: "v".into(),
+        kind: Some("ablation".into()),
+        candidate_sha256: None,
+        features: None,
+        sample_delta: Some(0.2),
+        full_delta: Some(0.3),
+        sample_ms: 1,
+        full_ms: 1,
+        telemetry: None,
+        failure: None,
+        path_sensitivity: path,
+    };
+    for bad in [-1.0, f64::NAN] {
+        assert_eq!(
+            evaluation::labelled(&[row(Some(bad))]).err().as_deref(),
+            Some("non-finite or negative path sensitivity"),
+            "refused: {bad}"
+        );
+    }
+    assert!(
+        evaluation::labelled(&[row(Some(0.0))]).is_ok(),
+        "zero is an accepted control"
+    );
+}
+
+#[test]
+fn freeze_refuses_a_version_one_pilot_and_accepts_version_two() {
+    let m = manifest();
+    let mut pilot = artificial_audit(&m);
+    pilot.phase = "pilot".into();
+    pilot.freeze_sha256 = None;
+    pilot.histories.clear();
+    pilot.pools.retain(|p| p.task == "cal");
+    for pool in &mut pilot.pools {
+        pool.selected.truncate(m.pilot_visits);
+        pool.rows.truncate(m.pilot_visits);
+        pool.elapsed_ms = 10;
+    }
+    pilot.format_version = 1;
+    assert_eq!(
+        freeze(&m, &pilot, "d".repeat(64)).err().as_deref(),
+        Some("pilot incomplete or manifest mismatch")
+    );
+    pilot.format_version = 2;
+    assert!(freeze(&m, &pilot, "d".repeat(64)).is_ok());
 }

@@ -1,9 +1,16 @@
-# Controlled pruning-order experiment, protocol v1
+# Controlled pruning-order experiment, protocol v2
 
 This is research infrastructure for issue #261, not evidence that a proxy or
 transfer model improves pruning. Ordinary CLI defaults, the pointwise
 `train-ordering` command and authoritative full-score acceptance are unchanged.
 The research command never applies a cut or writes a population candidate.
+
+Protocol v2 changes v1 in two ways. The bench's pairwise inputs gain two columns
+after the 15 library columns, `pathSensitivityAvailable` and
+`logPathSensitivity`, computed from the all-paths sensitivity described in the
+Functional paths item below. The protocol string is now `ockham-ranking-v2`, and
+the audit and pilot JSON `formatVersion` is 2; `freeze` and `evaluate` refuse
+version 1 files. The file keeps its v1 name so existing links hold.
 
 ## Verified methods and adaptations
 
@@ -85,7 +92,7 @@ cache identity. Other ordering names do not receive this compatibility conversio
 the log digest, parent checksum and remaining provenance checks still apply.
 
 Calibration uses different lineages **and** corpus/task versions from validation,
-within a declared target family. Thus this v1 adaptation uses an earlier or
+within a declared target family. Thus this adaptation uses an earlier or
 related target version, not labels from the untouched validation task itself.
 The calibration budget is family-wide, sampled across its calibration pools.
 Normalisation is fitted only on the permitted source subset and calibration
@@ -119,13 +126,17 @@ their coverage is explicitly zero. The library's feature extraction covers
 hidden neurons only, so the audit derives a synapse candidate's vector in the
 bench (`audit::synapse_features`) in the same columns: the source neuron's
 activation statistics, `|weight|` as outgoing weight, one outgoing edge, one
-synapse's growth units and the source's depth. The library sweep and schema
-are unchanged. The audit ledger keeps a feature-availability flag; pairwise
-inputs zero-fill the columns only behind that flag, and the composite control
-ties any featureless candidate at zero.
+synapse's growth units and the source's depth. The library sweep, its 15-column
+`FEATURE_NAMES` and `CandidateFeatures` are unchanged; the bench appends the two
+path columns to the pairwise inputs only (see Functional paths below). The audit
+ledger keeps a feature-availability flag; pairwise inputs zero-fill the 15
+library columns only behind that flag, and the composite control ties any
+featureless candidate at zero.
 Activation variance is not output variance; sensitivity here is the existing
-activation-times-outgoing-weight estimate, not a gradient. The candidate
-features the issue names that the v1 vector lacks are assessed as follows.
+activation-times-weight estimate, one hop or summed over paths, not a gradient.
+The candidate features the issue names are assessed as follows. The first three
+remain absent from the pairwise inputs; functional paths is included in
+protocol v2.
 
 - Output variance: the variance of the creature's outputs with the cut applied
   needs a forward pass of each child over sampled records. That is at least the
@@ -144,16 +155,28 @@ features the issue names that the v1 vector lacks are assessed as follows.
 - Gradient/Fisher signal: the exported creatures carry no gradients, and
   computing one needs a backward pass per record. That is not inexpensive, so
   it is not added.
-- Functional paths: available and cheap. `SensitivityIndex`
-  (`ockham/src/sensitivity.rs`, Issue #105) sums absolute weight products over
-  downstream paths in `O(neurons + synapses)` work per creature; cyclic
-  components are relaxed conservatively rather than summed exactly. The
-  sensitivity orderings (`LowOutputSensitivity` and `LowEstimatedEffect` in
-  `ockham/src/ordering.rs`) already use it. The v1 vector does not include it:
-  `logDownstreamSensitivity` is the one-hop `mean_abs × Σ|outgoing weight|`
-  (`CandidateFeatures::downstream_sensitivity` in `ockham/src/features.rs`).
-  Adding the path sum changes the 15-column feature schema, so it needs a new
-  protocol version and a new pilot; the archived v1 pilot does not test it.
+- Functional paths: available and cheap, and included in protocol v2.
+  `SensitivityIndex` (`ockham/src/sensitivity.rs`, Issue #105) sums absolute
+  weight products over downstream paths in `O(neurons + synapses)` work per
+  creature; cyclic components are relaxed conservatively rather than summed
+  exactly. The sensitivity orderings (`LowOutputSensitivity` and
+  `LowEstimatedEffect` in `ockham/src/ordering.rs`) already use it. The audit
+  builds it once per parent creature in its feature stage, charged to
+  `features_ms`. A neuron visit's `pathSensitivity` is
+  `mean_abs × importance(uuid)`; a synapse visit's is the source's
+  `mean_abs × |weight| × importance(target)`. It is the all-paths counterpart
+  of the one-hop `logDownstreamSensitivity` (`mean_abs × Σ|outgoing weight|`,
+  `CandidateFeatures::downstream_sensitivity` in `ockham/src/features.rs`).
+  The audit row records it as `pathSensitivity`. Pairwise inputs gain two
+  columns after the 15 library columns: `pathSensitivityAvailable` (1 when
+  present) and `logPathSensitivity` = ln(1 + value); when absent, both are 0.
+  Source histories carry no path signal, so source rows get both columns 0,
+  and the transfer arm can learn their weight only from target calibration
+  rows. The composite fusion control is unchanged (fixed weights, no path
+  column), and the partial and random arms are unchanged. The library's
+  `FEATURE_NAMES`, `CandidateFeatures` and candidate telemetry are unchanged.
+  No v2 pilot has been run, because this host has no `rust_scorer` binary.
+  The archived synthetic pilot ran protocol v1 and does not test these columns.
 
 ## Pilot, freeze and commands
 
@@ -165,6 +188,9 @@ milliseconds per generated candidate, constrained by per-pool and total limits.
 It refuses fewer than `minimumCompletePool` visits. No validation scores tune
 these limits. The freeze binds the manifest, pilot file and running executable
 SHA-256. Rebuilding a different executable requires another pilot and freeze.
+Pilot and audit JSON carry `formatVersion` 2: `freeze` refuses a version 1 pilot
+and `evaluate` refuses a version 1 audit, so a v1 audit is never evaluated with
+the v2 vector.
 
 Run from the committed source revision with Rust and `timeout` (Linux) or
 `gtimeout` (macOS). Keep manifest, parents, logs and result directories private.
@@ -290,9 +316,10 @@ Timings on this shared host are indicative, never correctness assertions.
 
 ## Synthetic pilot
 
-A synthetic, non-representative pilot of this protocol was run on 18 November
+A synthetic, non-representative pilot of protocol v1 was run on 18 November
 2026 at code revision `aa41403530c8cb3a28aaf79ebfc43e6386c75fc5`, with the real
-scorer (NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`). It was
+scorer (NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`). It ran
+without the path columns that v2 adds, so it does not test them. It was
 reproduced from the committed inputs, raw search logs and timings of an
 earlier run at `fad4e74`, which left synapse candidates without features and
 did not charge the preflight. That run reproduced the paired results, coverage

@@ -1,120 +1,91 @@
 ## Summary
 
-The controlled ranking benchmark (#267, #274) and its synthetic pilot (#286)
-are on Develop. #286 left the candidate-feature criterion partial because no
-availability or cost case was made for the features the v1 vector lacks. This
-PR adds that case to `docs/experiments/ranking-v1.md`, one item per feature,
-each checked against the code it cites. Output variance, compiled latency and
-gradient/Fisher signal are not cheap proxies here, so they stay out. The
-functional-path sum is cheap and available but is not in the v1 schema, and
-the archived pilot does not test it. The PR also charges two costs that were
-uncounted before. One is an operator-recorded `buildMs`, reported as
-`buildCostMs`. The other is the measured serialisation of the evaluation
-report, `serialisationCostMs`. Both are added to `totalResearchMs`.
-Part of #261.
+The ranking benchmark (#267, #274), its synthetic pilot (#286) and the
+feature-availability case plus the build and serialisation costs (#288) are on
+Develop. #288 found the functional-path signal cheap and available but left it
+out of the comparison. This PR adds it to the opt-in bench as protocol v2.
+
+`audit::path_sensitivities` computes an all-paths output sensitivity for each
+neuron and synapse visit from the existing `SensitivityIndex` (Issue #105). It
+runs once per parent in the audit's feature stage, so `features_ms` charges it.
+The audit row records it as `pathSensitivity`. The pairwise arms read it as two
+appended columns, `pathSensitivityAvailable` and `logPathSensitivity`. The
+library's 15-column schema, telemetry and every ordinary code path are
+unchanged.
+
+No v2 pilot has been run, the remaining cost gaps are still open, and the
+removal decision still waits for a representative run. Part of #261.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The issue names six candidate features; v1 uses sample error
-  (`partialDelta`) and connections (`logFanIn`/`logFanOut`). For the rest, the
-  doc now says why each is in or out, instead of the one-line "not added
-  without an availability/cost case".
+- The issue asks for functional paths "only if inexpensive/available". The
+  index is `O(neurons + synapses)` per creature and already used by two
+  library orderings, so the bench reuses it rather than adding a new signal.
 
 ### Essential Design Decisions
 
-- The 15-column feature schema and the archived pilot are unchanged. Adding the
-  path sum would change the schema, so it needs a new protocol version and a new
-  pilot run with the real scorer.
-- `buildMs` follows the `preparationMs` pattern. It is optional, defaults to
-  zero and is left out of the serialised output when zero, so existing manifest
-  identities hold. `ranking_pilot manifest` reads it from an optional
-  `<dir>/build-ms` through the same contained, size-capped `recorded_ms` reader
-  as `inputs-ms`.
-- `evaluation::serialise_charged` times one serialisation, rounded up to at
-  least 1 ms. It then writes a second serialisation carrying that charge, so the
-  measured pass stands in for the written one. The disk write is not charged.
+- The path columns go only into the pairwise inputs, after the 15 library
+  columns. The composite control keeps its fixed, untuned weights, and the
+  partial and random arms are unchanged.
+- Source telemetry has no path value, so historical rows get both columns as
+  zero. The transfer arm can therefore learn the column's weight only from
+  target calibration rows. Computing it for sources would mean loading each
+  source parent at evaluation time.
+- Persisted shape: the audit and pilot `formatVersion` goes from 1 to 2.
+  `freeze` refuses a version 1 pilot and `evaluate` refuses a version 1 audit,
+  so a v1 file is never read with the v2 vector. The manifest protocol is now
+  `ockham-ranking-v2` in the bench, in `ranking_pilot` and in the template.
+- The protocol doc keeps its `ranking-v1.md` file name so that existing links
+  still work.
 
 ### Undiscoverable Facts
 
-- This host has no `rust_scorer` binary (`which rust_scorer` finds nothing), so
-  the pilot could not be re-run with an extra feature in this run.
+- This host has no `rust_scorer` binary (`which rust_scorer` finds nothing),
+  so no v2 pilot could be run.
 
 ## Evidence
 
-- `buildMs` → `buildCostMs`: `ockham/examples/priority_ordering_bench/manifest.rs`
-  and `evaluation.rs`. Tested by
-  `manifest_build_time_is_reported_and_added_to_the_research_total`.
-- `serialisationCostMs`: `evaluation::serialise_charged`, called from the
-  `evaluate` arm of `experiment.rs`. Tested by
-  `result_serialisation_is_charged_to_the_research_total`.
-- Red-check: removing each addend from the total made exactly its own test
-  fail (24 passed, 2 failed); restoring it made them pass.
-- `ranking_pilot`: tested by
-  `recorded_build_time_is_written_as_build_ms_and_absent_is_zero`. The template
-  gains `"buildMs": 0`, so `manifest_keys_match_the_template` still holds.
+Backend and research CLI only; there is no UI change.
 
-The feature-availability claims in the docs were checked against the head code:
-
-- `wall_clock_probe` (`ockham/src/strata/bench.rs:161`) calls
-  `compile_creature` inside the `LATENCY_REPETITIONS = 3` loop, so each
-  candidate costs three compiles and three timed passes.
-- `SensitivityIndex` (`ockham/src/sensitivity.rs`) is `O(neurons + synapses)`,
-  relaxes cycles conservatively, and is used by `LowOutputSensitivity` and
-  `LowEstimatedEffect` in `ockham/src/ordering.rs`.
-- `CandidateFeatures::downstream_sensitivity` (`ockham/src/features.rs:90`) is
-  the one-hop `mean_abs × outgoing_weight`.
-- `partialDelta` is the first pairwise column
-  (`ockham/examples/priority_ordering_bench/evaluation.rs:14`).
+- `path_sensitivity_sums_every_downstream_path_not_just_one_hop`: on the chain
+  input → h1 →(2) h2 →(3) output, h1 scores `0.5 × 6` and the h1→h2 synapse
+  scores `0.5 × 2 × 3`. A neuron that reaches no output scores 0. h1's value
+  differs from its one-hop `downstream_sensitivity`.
+- `path_sensitivity_columns_are_appended_and_match_their_names`: a present
+  value gives `[1, ln(1 + p)]`, an absent one gives `[0, 0]`, and the vector
+  length equals `feature_names()`.
+- `evaluation_refuses_a_version_one_audit_and_accepts_version_two`: the same
+  audit is refused as version 1 and evaluated as version 2.
+- The refusal of negative or non-finite path values and the `freeze`
+  version check have the tests listed in the Test Plan.
 
 Issue numbers cited: #105: Rank pruning candidates by downstream output
 sensitivity.
 
 ## Acceptance Criteria
 
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **partial** — Candidate features: sample error, output variance, functional
+- **missing** — Candidate features: sample error, output variance, functional
   paths, connections, compiled latency and gradient/Fisher signal only if
-  inexpensive/available — evidence: `docs/experiments/ranking-v1.md` (feature
-  assessment) — reviewer: partial — reason: every named feature now has an
-  availability/cost case, but functional paths are cheap and available and are
-  still not in the v1 vector or the comparison. Adding them needs a v2 schema
-  and a real-scorer pilot.
-- **partial** — count all preparation/search costs — evidence:
-  `ockham/examples/priority_ordering_bench/tests.rs::manifest_build_time_is_reported_and_added_to_the_research_total`,
-  `ockham/examples/priority_ordering_bench/tests.rs::result_serialisation_is_charged_to_the_research_total`,
-  `ockham/examples/ranking_pilot.rs::recorded_build_time_is_written_as_build_ms_and_absent_is_zero`
-  — reviewer: partial — reason: build time and result serialisation are now
-  charged, but `buildMs` is hand-recorded. The final file write, the manifest
-  step after its first write and the source searches' hand-taken timing are
-  still uncounted, and the archived pilot predates both new fields.
-- **partial** — Record negative findings and remove optional code that does
-  not earn its maintenance cost — evidence: `docs/experiments/ranking-v1.md`
-  (Synthetic pilot) — reviewer: partial — reason: the synthetic negative finding
-  and a predeclared removal rule are recorded, but no code is removed. The
-  pairwise and transfer arms wait for the representative run, which needs
-  private data not available on this host.
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **violation** — commit-message prefix (`CONTRIBUTING.md`, "Commit
-  messages": Ockham uses 🪒) — evidence: commits `5996989`, `c90de36`,
-  `d22c058` — reason: the earlier commit subjects lack the prefix and are not
-  rewritten. This summary commit uses it. The repository has no
-  CODING-STANDARDS.md, so `CONTRIBUTING.md` was the standard checked.
-- **clean** — rustfmt, clippy with the gate's lints, codespell, markdownlint,
-  template JSON validity, rustdoc on new public items, no version bump needed
-  for example-only changes, and manifest identity preserved for zero `buildMs`.
+  inexpensive/available — reason: functional paths are now in the v2 pairwise
+  inputs (`ockham/examples/priority_ordering_bench/audit.rs`,
+  `evaluation.rs`), but no v2 pilot has run them, because this host has no
+  scorer binary. Source histories carry no path value.
+- **missing** — count all preparation/search costs — reason: three costs
+  are still not charged: writing the final results file, the manifest step
+  after its first write, and the source searches' timing, which the operator
+  records by hand.
+- **missing** — Record negative findings and remove optional code that does
+  not earn its maintenance cost — reason: the predeclared rule removes the
+  pairwise and transfer arms only if the representative run, which needs
+  private data, also shows no benefit.
 
 ## Test Plan
 
-- `cargo test --example priority_ordering_bench < /dev/null`: 26 passed.
-- `cargo test --example ranking_pilot < /dev/null`: 26 passed.
-- Red-check of the two cost tests: described under Evidence.
-- `markdownlint-cli2 docs/experiments/ranking-v1.md`: 0 issues.
-- `codespell` on the changed files: no findings.
-- `./quality.sh < /dev/null` on commit `d22c058`: exit 0, "All quality checks passed!".
+- Added in `ockham/examples/priority_ordering_bench/tests.rs`: the three tests
+  under Evidence, plus the refusal tests listed below.
+- Fixture updates in the same file (no assertion removed or weakened): the
+  manifest fixture protocol is now `ockham-ranking-v2`, `artificial_audit` is
+  `format_version: 2`, and the two `AuditRow` literals gain
+  `path_sensitivity: None`.

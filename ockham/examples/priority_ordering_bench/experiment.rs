@@ -204,7 +204,7 @@ fn runtime(m: &Manifest) -> Result<BoundedScorer, String> {
 }
 
 fn freeze(m: &Manifest, pilot: &audit::Audit, pilot_sha256: String) -> Result<Freeze, String> {
-    if pilot.format_version != 1
+    if pilot.format_version != 2
         || pilot.phase != "pilot"
         || pilot.manifest_sha256 != m.identity()?
         || pilot.executable_sha256

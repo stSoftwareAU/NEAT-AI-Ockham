@@ -5,7 +5,7 @@ use neat_ai_ockham::incumbent::sha256_hex;
 use neat_ai_ockham::model::pairwise::FitConfig;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL: &str = "ockham-ranking-v1";
+pub const PROTOCOL: &str = "ockham-ranking-v2";
 pub const SAMPLE_RATE: f64 = 0.05;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-//! Writes application-agnostic synthetic inputs for a ranking-v1 pilot (issue #261). See docs/experiments/ranking-v1.md.
+//! Writes application-agnostic synthetic inputs for a ranking-v1 pilot under protocol v2 (issue #261). See docs/experiments/ranking-v1.md.
 //!
 //! `inputs <dir>` writes eight tasks, each with its own parent and corpus.
 //! `manifest <dir> --scorer <path> --code-revision <40-hex> [--cutoff-unix <u64>]`
@@ -44,7 +44,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 /// Protocol name the bench's manifest must carry.
-const PROTOCOL: &str = "ockham-ranking-v1";
+const PROTOCOL: &str = "ockham-ranking-v2";
 
 /// Records per synthetic corpus.
 const RECORDS: usize = 256;
