@@ -388,7 +388,8 @@ milliseconds to `<dir>/<source-task>/acquisition-ms`, only when the search
 succeeds and only if no record exists. The manifest step's work after its first
 write goes to `<dir>/manifest-tail-ms`, and the results file's write time to
 `results.json.write-ms` (see the cost reporting paragraph above). The manifest
-step writes an optional `<dir>/build-ms` as `buildMs`; measure it with
+step writes `buildMs` as the sum of an optional `<dir>/build-ms` and an
+optional `<dir>/bootstrap-build-ms` (below); measure `build-ms` with
 `ranking_pilot time <dir>/build-ms -- cargo build ...`. `time` cannot measure
 the first build of `ranking_pilot` itself, which must finish before `time`
 exists and can compile shared dependencies that make later builds cheaper. Time
@@ -403,7 +404,8 @@ in `build-ms`. A run that omits the file charges nothing for that build. The
 `time <new-file> --
 <program> [args...]` subcommand runs any command the same way `search` does and
 records its wall time only on success, and only into a new file. Use it for a
-private manifest's `acquisitionMs` too, so no search or build is timed by hand.
+private manifest's `acquisitionMs` too, so no search or later build is timed by
+hand; only the generator's first build uses the shell clock.
 
 The manifest step refuses symlinks among the pilot-owned inputs and any path
 resolving outside the pilot directory, creates `history.jsonl` and

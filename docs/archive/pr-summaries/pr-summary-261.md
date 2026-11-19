@@ -157,7 +157,7 @@ sensitivity.
   `::path_sensitivity_columns_are_appended_and_match_their_names`,
   `::audit_scores_sampled_losers_individually_and_preserves_parent`,
   `docs/experiments/ranking-v1.md` (feature assessment) — reviewer: met
-- **met** — count all preparation/search costs — evidence:
+- **met** — count preparation/search costs, each recorded by `ranking_pilot` except the generator's own first build, which is timed with the shell clock into `bootstrap-build-ms` — evidence:
   `ockham/examples/ranking_pilot.rs::search_times_the_ordinary_run_into_acquisition_ms`,
   `::time_records_any_successful_command_into_a_new_file`,
   `::the_generators_own_first_build_is_added_to_build_ms_exactly_once`,
