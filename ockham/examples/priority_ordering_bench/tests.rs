@@ -213,6 +213,20 @@ fn audit_scores_sampled_losers_individually_and_preserves_parent() {
             .iter()
             .any(|r| r.kind.as_deref() == Some("synapse"))
     );
+    // Synapse candidates carry a vector too, not a missing-feature tie (#261).
+    for row in pool.rows.iter().filter(|r| r.kind.is_some()) {
+        let features = row
+            .features
+            .unwrap_or_else(|| panic!("{:?} has no features", row.visit));
+        if row.kind.as_deref() == Some("synapse") {
+            assert_eq!(
+                (features.fan_in, features.fan_out),
+                (0, 1),
+                "{:?}",
+                row.visit
+            );
+        }
+    }
     let scored: Vec<_> = pool.rows.iter().filter(|r| r.kind.is_some()).collect();
     assert!(!scored.is_empty());
     for row in scored {
@@ -498,7 +512,7 @@ fn comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted(
     m.seeds = vec![7, 43];
     let a = artificial_audit(&m);
     let output =
-        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
+        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0, 0).unwrap()).unwrap();
     assert_eq!(
         output["verdict"], "inconclusive",
         "one lineage group cannot establish a benefit"
@@ -562,7 +576,7 @@ fn comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted(
         }
     }
     let altered =
-        serde_json::to_value(evaluation::evaluate(&m, &changed, "d".repeat(64), 0).unwrap())
+        serde_json::to_value(evaluation::evaluate(&m, &changed, "d".repeat(64), 0, 0).unwrap())
             .unwrap();
     let signature = |value: &serde_json::Value| {
         value["trials"]
@@ -582,7 +596,7 @@ fn comparison_reports_cold_start_negative_transfer_and_validation_is_not_fitted(
         altered["trials"][1]["metrics"]
     );
     let repeated =
-        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
+        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0, 0).unwrap()).unwrap();
     assert_eq!(signature(&output), signature(&repeated));
     assert_eq!(output["paired"], repeated["paired"]);
 }
@@ -718,7 +732,7 @@ fn historical_loader_normalises_legacy_audit_identity_and_rejects_other_corpora(
             let mut a = artificial_audit(&m);
             a.histories = vec![history];
             let output =
-                serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap())
+                serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0, 0).unwrap())
                     .unwrap();
             assert!(
                 output["trials"]
@@ -800,7 +814,7 @@ fn comparison_charges_incomplete_calibration_and_unitemised_preparation() {
     // outside the named feature/scoring stages.
     validation.elapsed_ms = 5_000;
     let output =
-        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
+        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0, 0).unwrap()).unwrap();
     let trials = output["trials"].as_array().unwrap();
     let trial = |strategy: &str, cal: usize| {
         trials
@@ -856,16 +870,25 @@ fn comparison_reports_audit_time_outside_every_pool_ledger() {
     // Five pools at 100_000 ms, one charged 483 ms, setup 700 ms, history
     // loading 3_000 ms, plus 2_500 ms unpooled.
     a.elapsed_ms = 502_983 + 700 + 3_000;
+    // A distinct preflight time makes its place in the total observable.
     let output =
-        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
+        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 9_000, 0).unwrap())
+            .unwrap();
     assert_eq!(output["unpooledAuditMs"], 2_500);
     assert_eq!(output["auditCostMs"], 506_683);
+    assert_eq!(
+        output["preparationCostMs"], 0,
+        "a manifest without preparationMs records no preparation charge"
+    );
+    assert_eq!(output["preflightCostMs"], 9_000);
     assert_eq!(
         output["totalResearchMs"].as_u64().unwrap() - output["evaluationCostMs"].as_u64().unwrap(),
         output["auditCostMs"].as_u64().unwrap()
             + output["pilotCostMs"].as_u64().unwrap()
             + output["freezingCostMs"].as_u64().unwrap()
-            + output["historicalAcquisitionMs"].as_u64().unwrap(),
+            + output["historicalAcquisitionMs"].as_u64().unwrap()
+            + output["preparationCostMs"].as_u64().unwrap()
+            + output["preflightCostMs"].as_u64().unwrap(),
         "unpooled audit time is already inside auditCostMs and must not be added twice"
     );
     assert!(
@@ -879,8 +902,233 @@ fn comparison_reports_audit_time_outside_every_pool_ledger() {
     // Measured audit time below the pool sum must saturate at zero, not wrap.
     a.elapsed_ms = 1_000;
     let output =
-        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0).unwrap()).unwrap();
+        serde_json::to_value(evaluation::evaluate(&m, &a, "c".repeat(64), 0, 0).unwrap()).unwrap();
     assert_eq!(output["unpooledAuditMs"], 0);
+}
+
+#[test]
+fn manifest_preparation_time_is_reported_and_added_to_the_research_total() {
+    let cost = |m: &Manifest| {
+        let output = serde_json::to_value(
+            evaluation::evaluate(m, &artificial_audit(m), "c".repeat(64), 0, 0).unwrap(),
+        )
+        .unwrap();
+        let get = |key: &str| output[key].as_u64().unwrap();
+        let others = get("auditCostMs")
+            + get("pilotCostMs")
+            + get("freezingCostMs")
+            + get("historicalAcquisitionMs")
+            + get("preflightCostMs")
+            + get("evaluationCostMs");
+        (get("preparationCostMs"), get("totalResearchMs"), others)
+    };
+
+    let absent = manifest();
+    assert_eq!(absent.preparation_ms, 0, "the field is optional");
+    let (preparation, total, others) = cost(&absent);
+    assert_eq!(preparation, 0);
+    assert_eq!(total, others);
+    assert!(
+        serde_json::to_value(&absent)
+            .unwrap()
+            .get("preparationMs")
+            .is_none(),
+        "a zero preparation time keeps the identity of manifests without the field"
+    );
+
+    let mut value = serde_json::to_value(manifest()).unwrap();
+    value["preparationMs"] = json!(1_234_567);
+    let present: Manifest = serde_json::from_value(value).unwrap();
+    present.validate().unwrap();
+    let (preparation, total, others) = cost(&present);
+    assert_eq!(preparation, 1_234_567);
+    assert!(total >= 1_234_567, "total {total} must include preparation");
+    assert_eq!(total, others + 1_234_567);
+}
+
+#[test]
+fn preflight_check_time_is_reported_and_added_to_the_research_total() {
+    let m = manifest();
+    let a = artificial_audit(&m);
+    // Evaluation wall time is measured, so compare totals net of it.
+    let charged = |preflight_ms: u64| {
+        let output = serde_json::to_value(
+            evaluation::evaluate(&m, &a, "c".repeat(64), preflight_ms, 0).unwrap(),
+        )
+        .unwrap();
+        let get = |key: &str| output[key].as_u64().unwrap();
+        (
+            get("preflightCostMs"),
+            get("totalResearchMs") - get("evaluationCostMs"),
+        )
+    };
+    let (without, base) = charged(0);
+    let (with, total) = charged(1_234);
+    assert_eq!(without, 0);
+    assert_eq!(with, 1_234);
+    assert_eq!(total - base, 1_234);
+}
+
+#[test]
+fn preflight_validation_refuses_mismatched_identity_and_missing_check_time() {
+    let identity = "a".repeat(64);
+    let valid = json!({
+        "formatVersion": 1,
+        "phase": "preflight",
+        "manifestSha256": identity,
+        "status": "available",
+        "failures": [],
+        "representativeBenefitDemonstrated": false,
+        "checkMs": 4_321,
+    });
+    assert_eq!(preflight_check_ms(&valid, &identity), Ok(4_321));
+
+    let mut mismatched = valid.clone();
+    mismatched["manifestSha256"] = json!("b".repeat(64));
+    assert!(
+        preflight_check_ms(&mismatched, &identity)
+            .unwrap_err()
+            .contains("manifest mismatch")
+    );
+
+    let mut missing = valid.clone();
+    missing.as_object_mut().unwrap().remove("checkMs");
+    assert!(
+        preflight_check_ms(&missing, &identity)
+            .unwrap_err()
+            .contains("checkMs")
+    );
+    for bad in [json!(-1), json!(1.5), json!("12")] {
+        let mut wrong = valid.clone();
+        wrong["checkMs"] = bad;
+        assert!(
+            preflight_check_ms(&wrong, &identity)
+                .unwrap_err()
+                .contains("checkMs missing or not a u64"),
+            "{wrong}"
+        );
+    }
+
+    let mut inconclusive = valid.clone();
+    inconclusive["status"] = json!("inconclusive");
+    assert!(
+        preflight_check_ms(&inconclusive, &identity)
+            .unwrap_err()
+            .contains("phase/status/manifest mismatch")
+    );
+    let mut other_phase = valid;
+    other_phase["phase"] = json!("pilot");
+    assert!(
+        preflight_check_ms(&other_phase, &identity)
+            .unwrap_err()
+            .contains("phase/status/manifest mismatch")
+    );
+}
+
+fn synapse_stats() -> neat_ai_ockham::stats::ActivationStats {
+    use neat_ai_ockham::stats::{ActivationStats, NeuronStats};
+    let stat = |uuid: &str, variance: f64, mean_abs: f64, min: f64, max: f64| NeuronStats {
+        uuid: uuid.into(),
+        neuron_index: 0,
+        count: 10,
+        mean: 0.0,
+        variance,
+        std_dev: variance.sqrt(),
+        mean_abs,
+        min,
+        max,
+    };
+    // Hidden `a` and wire `input-0` measured; hidden `b` deliberately not.
+    ActivationStats {
+        inputs: vec![stat("input-0", 0.09, 0.5, 0.0, 1.0)],
+        neurons: vec![stat("a", 0.25, 0.4, -1.0, 2.0)],
+        ..ActivationStats::empty()
+    }
+}
+
+#[test]
+fn every_synapse_visit_gets_a_source_signal_feature_vector() {
+    use neat_ai_ockham::ablation::growth_units;
+    use neat_ai_ockham::sweep::{parse_synapse_key, present_visits, synapse_key};
+    let mut creature = neat_ai_ockham::fixtures::shortcut_edge_creature();
+    let shortcut = creature
+        .synapses
+        .iter_mut()
+        .find(|edge| edge.from_uuid == "a" && edge.to_uuid == "output-0")
+        .unwrap();
+    shortcut.weight = -0.3;
+    let stats = synapse_stats();
+    let got = audit::audit_features(&creature, &stats).unwrap();
+    let neurons = neat_ai_ockham::features::extract(
+        &creature,
+        &stats,
+        &neat_ai_ockham::features::PriorEvidence::new(),
+    );
+    let edges: Vec<_> = present_visits(&creature)
+        .into_iter()
+        .filter(|v| parse_synapse_key(v).is_some())
+        .collect();
+    assert_eq!(edges.len(), creature.synapses.len());
+    for synapse in &creature.synapses {
+        let f = got[&synapse_key(&synapse.from_uuid, &synapse.to_uuid)];
+        assert_eq!(f.outgoing_weight, synapse.weight.abs());
+        assert_eq!((f.fan_in, f.fan_out), (0, 1));
+        assert_eq!(f.direct_growth_units, growth_units(0, 1));
+        assert_eq!(f.cascade_growth_units, growth_units(0, 1));
+        assert!(!f.identity && !f.blocked);
+        assert_eq!((f.prior_wins, f.prior_failures), (0, 0));
+    }
+    let edge = |from: &str, to: &str| got[&synapse_key(from, to)];
+    // Hidden source: its own stats and its own depth.
+    let a_b = edge("a", "b");
+    assert!(a_b.measured);
+    assert_eq!((a_b.variance, a_b.mean_abs, a_b.range), (0.25, 0.4, 3.0));
+    assert_eq!(a_b.depth_fraction, neurons["a"].depth_fraction);
+    assert_eq!(edge("a", "output-0").mean_abs, 0.4);
+    assert_eq!(edge("a", "output-0").outgoing_weight, 0.3);
+    // Input source: the wire's stats, depth zero.
+    let in_a = edge("input-0", "a");
+    assert!(in_a.measured);
+    assert_eq!((in_a.variance, in_a.mean_abs, in_a.range), (0.09, 0.5, 1.0));
+    assert_eq!(in_a.depth_fraction, 0.0);
+    // Unmeasured source: flagged, zero signal, structure still present.
+    let b_out = edge("b", "output-0");
+    assert!(!b_out.measured);
+    assert_eq!(
+        (b_out.variance, b_out.mean_abs, b_out.range),
+        (0.0, 0.0, 0.0)
+    );
+    assert_eq!(b_out.outgoing_weight, 1.0);
+    assert_eq!(b_out.depth_fraction, neurons["b"].depth_fraction);
+}
+
+#[test]
+fn synapse_features_leave_neuron_vectors_untouched_and_unknown_keys_absent() {
+    use neat_ai_ockham::sweep::synapse_key;
+    let creature = neat_ai_ockham::fixtures::shortcut_edge_creature();
+    let stats = synapse_stats();
+    let neurons = neat_ai_ockham::features::extract(
+        &creature,
+        &stats,
+        &neat_ai_ockham::features::PriorEvidence::new(),
+    );
+    let got = audit::audit_features(&creature, &stats).unwrap();
+    assert_eq!(got.len(), neurons.len() + creature.synapses.len());
+    for (uuid, features) in &neurons {
+        assert_eq!(got[uuid], *features, "{uuid} changed by the merge");
+    }
+    // The synapse vector differs from its source neuron's.
+    assert_ne!(got[&synapse_key("a", "b")], neurons["a"]);
+    assert_eq!(got[&synapse_key("a", "b")].fan_out, 1);
+    assert_eq!(neurons["a"].fan_out, 2);
+    for unknown in [
+        synapse_key("b", "a"),
+        synapse_key("input-0", "b"),
+        "output-0".to_string(),
+        "missing".to_string(),
+    ] {
+        assert!(!got.contains_key(&unknown), "{unknown:?}");
+    }
 }
 
 fn git(dir: &std::path::Path, args: &[&str]) {
@@ -1047,7 +1295,7 @@ fn verdict_audit(m: &Manifest) -> audit::Audit {
 
 fn verdict(m: &Manifest) -> (String, Vec<String>) {
     let report = serde_json::to_value(
-        evaluation::evaluate(m, &verdict_audit(m), "c".repeat(64), 0).unwrap(),
+        evaluation::evaluate(m, &verdict_audit(m), "c".repeat(64), 0, 0).unwrap(),
     )
     .unwrap();
     let reasons = report["reasons"]
@@ -1103,5 +1351,36 @@ fn verdict_is_inconclusive_when_fewer_than_three_groups_validate() {
         reasons
             .iter()
             .any(|r| r.contains("independent validation groups"))
+    );
+}
+
+#[test]
+fn cost_milliseconds_round_up_so_sub_millisecond_work_is_counted() {
+    use std::time::Duration;
+    assert_eq!(audit::ceil_ms(Duration::ZERO), 0, "no work costs nothing");
+    assert_eq!(
+        audit::ceil_ms(Duration::from_nanos(1)),
+        1,
+        "sub-millisecond feature or fit work is charged, not rounded to 0"
+    );
+    assert_eq!(
+        audit::ceil_ms(Duration::from_micros(999)),
+        1,
+        "just under 1 ms"
+    );
+    assert_eq!(
+        audit::ceil_ms(Duration::from_millis(3)),
+        3,
+        "whole milliseconds"
+    );
+    assert_eq!(
+        audit::ceil_ms(Duration::from_micros(3_001)),
+        4,
+        "partial ms rounds up"
+    );
+    assert_eq!(
+        audit::ceil_ms(Duration::from_secs(u64::MAX)),
+        u64::MAX,
+        "saturates instead of overflowing"
     );
 }
