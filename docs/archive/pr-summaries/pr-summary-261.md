@@ -10,8 +10,8 @@ functional-path sum is cheap and available but is not in the v1 schema, and
 the archived pilot does not test it. The PR also charges two costs that were
 uncounted before. One is an operator-recorded `buildMs`, reported as
 `buildCostMs`. The other is the measured serialisation of the evaluation
-report, `serialisationCostMs`. Both are added to `totalResearchMs`. Part of
-#261.
+report, `serialisationCostMs`. Both are added to `totalResearchMs`.
+Part of #261.
 
 ## Spec
 
