@@ -1,0 +1,9 @@
+{
+  "formatVersion": 1,
+  "manifestSha256": "767bfd5f57f610c78b57c7a4bd748926ea2fd5bc9f76b800dca49c045850a17c",
+  "pilotSha256": "7952391ce3b77cb74a290701568dc4d52c4d5f50ce9a7f74ef20cb06dcef504d",
+  "executableSha256": "517bc85290700fa8d6048099efdf07859139e6d5fa99f2ff6afeb546cd5dcf8b",
+  "auditVisits": 40,
+  "pilotCostMs": 158,
+  "freezingCostMs": 48
+}

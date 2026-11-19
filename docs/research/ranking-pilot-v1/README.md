@@ -266,7 +266,10 @@ No success is claimed. The representative run remains outstanding.
 - Predeclared removal rule: if the representative run also returns
   `no-demonstrated-benefit` for `target-pairwise` and `transfer-pairwise`
   against `partial` in its primary cell, remove both arms and their fit code
-  from the bench. Keep `partial` and `multiple-proxies`.
+  from the bench. Keep `partial` and `multiple-proxies`. The synthetic v2
+  pilot, which repeats this design with the path columns, is archived in
+  [`ranking-pilot-v2`](../ranking-pilot-v2/README.md) and does not trigger this
+  rule.
 - Kept: `ranking_pilot`. It is the reproducible generator for this archive and
   the tests that check the archive.
 

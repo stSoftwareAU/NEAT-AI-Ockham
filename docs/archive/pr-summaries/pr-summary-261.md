@@ -1,230 +1,131 @@
 ## Summary
 
-The ranking benchmark (#267, #274), its synthetic pilot (#286) and the
-feature-availability case plus the build and serialisation costs (#288) are on
-Develop. #288 found the functional-path signal cheap and available but left it
-out of the comparison. This PR adds it to the opt-in bench as protocol v2.
+Protocol v2 of the opt-in ranking bench (#288, #289) adds the functional-path
+columns and measures every cost, but no v2 pilot had been run. This PR runs one:
+a synthetic, non-representative pilot with the real scorer at code revision
+`7cdabe6` (Develop after #289). It archives the run as
+`docs/research/ranking-pilot-v2/` and adds a test that checks the archive
+against its own digests and costs.
 
-`audit::path_sensitivities` computes an all-paths output sensitivity for each
-neuron and synapse visit from the existing `SensitivityIndex` (Issue #105). It
-runs once per parent in the audit's feature stage, so `features_ms` charges it.
-The audit row records it as `pathSensitivity`. The pairwise arms read it as two
-appended columns, `pathSensitivityAvailable` and `logPathSensitivity`. The
-library's 15-column schema, telemetry and every ordinary code path are
-unchanged.
+The verdict is `no-demonstrated-benefit`. In the primary cell,
+transfer-pairwise minus partial was −0.611 [−0.75, −0.333]. The audit pools are
+identical to v1's, so at history fraction 0 the path columns are the only
+changed input. There they changed no evaluation-budget-5 cell, and at budget 2
+target-pairwise minus random fell from 0.0 to −0.083. The path columns did not
+help on this pilot. Under the predeclared rule, removal waits for the
+representative v2 run, which needs private data. Part of #261.
 
-The costs #288 left uncharged are now measured:
-
-- Searches and builds: `ranking_pilot search <dir> <source-task> --
-  <program> [args...]` times a source search into `acquisition-ms`, which the
-  operator used to time by hand. `ranking_pilot time <new-file> -- <program>
-  [args...]` times any other command the same way, such as the build behind
-  `build-ms` or a private manifest's search.
-- Phase files: each one the bench writes (preflight, pilot, frozen, audit,
-  results) gets a `.write-ms` sidecar, because a file cannot hold the time of
-  writing itself. The sidecar records the time of serialising and writing it.
-- The manifest step's work after its first write goes to
-  `<dir>/manifest-tail-ms`.
-- Charging: `freeze` adds the pilot's sidecar to `pilotCostMs`. `evaluate`
-  charges the preflight, freeze and audit sidecars, plus the manifest tail when
-  present, as the new `recordedWriteCostMs` inside `totalResearchMs`. Only the
-  results file's own write stays outside, in `results.json.write-ms`.
-
-The archived v1 pilot's Reproduce section is now pinned to protocol-v1 revisions,
-`aa41403` up to and including `a4f0d274` (PR #288).
-
-No v2 pilot has been run, and the removal decision still waits for a
-representative run. Part of #261.
+No production code changes. The diff is the archive, the test and three docs.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The issue asks for functional paths "only if inexpensive/available". The
-  index is `O(neurons + synapses)` per creature and already used by two
-  library orderings, so the bench reuses it rather than adding a new signal.
+- The bench, the path columns and the cost accounting are already on Develop.
+  The gap left was evidence: no v2 run existed. Running it with the documented
+  v2 commands (`ranking_pilot search` and `time`) also exercises those commands
+  end to end.
+- The v2 archive reuses v1's design, inputs and scorer, so the only intended
+  change between the two runs is the protocol.
 
 ### Essential Design Decisions
 
-- The path columns go only into the pairwise inputs, after the 15 library
-  columns. The composite control keeps its fixed, untuned weights, and the
-  partial and random arms are unchanged.
-- Source telemetry has no path value, so historical rows get both columns as
-  zero. The transfer arm can therefore learn the column's weight only from
-  target calibration rows. Computing it for sources would mean loading each
-  source parent at evaluation time.
-- Write times go into sidecars, and the next stage that reads a file charges
-  that file's sidecar, so all but the last write land in `totalResearchMs`. A
-  run's whole measured cost is `totalResearchMs` plus `results.json.write-ms`.
-  Only the writes of the sidecars' few bytes themselves are untimed.
-- `evaluate` refuses a missing preflight, freeze or audit sidecar, because the
-  bench always writes one. `manifest-tail-ms` is optional, because a private
-  manifest the generator did not write has none.
-- Every sidecar and timing record is created exclusively. An existing one is
-  refused before the file it times is written, or before the timed program
-  runs. The manifest step therefore still writes no history and no manifest
-  when it refuses. `search` and `time` record nothing when the program fails.
-- Persisted shape: the audit and pilot `formatVersion` goes from 1 to 2.
-  `freeze` refuses a version 1 pilot and `evaluate` refuses a version 1 audit,
-  so a v1 file is never read with the v2 vector. The manifest protocol is now
-  `ockham-ranking-v2` in the bench, in `ranking_pilot` and in the template.
-- The protocol doc keeps its `ranking-v1.md` file name so that existing links
-  still work.
+- The corpora are not recommitted. They are byte-identical to the v1 archive's
+  `records.bin`, and the test asserts each manifest `corpusSha256` against
+  those committed files.
+- The v1 archive test is unchanged. Its helpers now delegate to generic
+  helpers that take the archive name.
+- The removal rule predeclared in `docs/experiments/ranking-v1.md` is not
+  changed after the fact. A synthetic run does not trigger it, so the pairwise
+  arms and path columns stay research-only.
 
 ### Undiscoverable Facts
 
-- This host has no `rust_scorer` binary (`which rust_scorer` finds nothing),
-  so no v2 pilot could be run.
+- Run on 19 November 2026 on aarch64 with rustc 1.99.1. NEAT-AI-scorer
+  `742c5df` built to the same executable digest as v1 (`d057a334…`).
+- The cargo target directory already held earlier build output, so the
+  47,570 ms build charge is partly incremental. The scorer's own build (about
+  95 s) is not charged, as in v1.
+- The source searches were re-run, so the histories differ from v1's. The raw
+  row counts are the same (365 and 383).
 
 ## Evidence
 
-Backend and research CLI only; there is no UI change.
+Backend and research-archive change only, so no screenshot is needed.
 
-- `path_sensitivity_sums_every_downstream_path_not_just_one_hop`: on the chain
-  input → h1 →(2) h2 →(3) output, h1 scores `0.5 × 6` and the h1→h2 synapse
-  scores `0.5 × 2 × 3`. A neuron that reaches no output scores 0. h1's value
-  differs from its one-hop `downstream_sensitivity`.
-- `path_sensitivity_columns_are_appended_and_match_their_names`: a present
-  value gives `[1, ln(1 + p)]`, an absent one gives `[0, 0]`, and the vector
-  length equals `feature_names()`.
-- `evaluation_refuses_a_version_one_audit_and_accepts_version_two`: the same
-  audit is refused as version 1 and evaluated as version 2.
-- `audit_scores_sampled_losers_individually_and_preserves_parent` (extended)
-  runs `collect_pool` on `shortcut_edge_creature`. Every featured row carries a
-  finite, non-negative `pathSensitivity`, and a featureless row carries none.
-  Each hidden-neuron row equals `mean_abs × importance(uuid)` and each synapse
-  row equals `mean_abs × |weight| × importance(target)`, both from a
-  `SensitivityIndex` on the same parent. The serialised pool's JSON rows carry
-  `pathSensitivity` exactly when the row has one. Red check: with `collect_pool`
-  recording `None` instead, the test fails with "has no path sensitivity".
-- `search_times_the_ordinary_run_into_acquisition_ms`: `sh -c "sleep 0.05"`
-  records at least 50 ms, and the manifest step's reader returns that value. A
-  second run is refused ("already exists") and leaves the record unchanged. A
-  failing program (`exit 3`) records nothing, and so does a non-source task.
-- `manifest_step_records_its_tail_after_the_first_write`: the step writes a
-  `manifest-tail-ms` of at least 1 ms. An existing one is refused before
-  `manifest.json` or any `history.jsonl` is written, and is left unchanged.
-- `results_write_time_is_recorded_in_a_sidecar_the_results_cannot_hold`:
-  `write_timed` leaves the results bytes unchanged. It records the returned
-  milliseconds (at least 1) in `results.json.write-ms` and refuses an existing
-  results file. An existing sidecar is refused before the results file is
-  created. A phase file written through `write` gets a sidecar of at least 1 ms.
-- `read_ms_refuses_a_missing_malformed_oversized_or_symlinked_sidecar`:
-  missing, non-numeric, 65-byte, symlinked and dangling sidecars are refused,
-  and `12` reads as 12.
-- `path_sensitivities_refuse_a_non_finite_value_and_take_the_first_duplicate_edge`:
-  NaN, infinite and negative `mean_abs` are refused with "non-finite or
-  negative path sensitivity". A twice-listed edge takes its first weight (2,
-  not 5).
-- `earlier_phase_write_times_are_summed_and_the_manifest_tail_is_optional`:
-  `evaluate`'s reader refuses a missing audit sidecar. It sums 3 + 5 + 7 = 15
-  with no manifest tail, and 26 once `manifest-tail-ms` holds 11.
-- `recorded_write_cost_is_reported_and_added_to_the_research_total_once`:
-  charging 4,321 ms sets `recordedWriteCostMs` and raises `totalResearchMs` by
-  exactly 4,321. No other field changes.
-- `freezing_a_pilot_file_charges_its_recorded_write_time`: `freeze_file` refuses
-  a pilot with no sidecar. With a 250 ms sidecar, its `pilotCostMs` is the
-  direct freeze's plus 250.
-- `time_records_any_successful_command_into_a_new_file`: a 50 ms command records
-  at least 50 ms. An existing record, or a record whose directory is missing,
-  is refused before the program runs (its marker file is never created). A
-  failing or missing program records nothing, and the manifest step writes a
-  measured `build-ms` as `buildMs`.
-- The first build of `ranking_pilot` itself cannot be timed by `time`, which only
-  exists after it. The operator times it externally into an optional
-  `<dir>/bootstrap-build-ms`, which the manifest step adds to `build-ms` as
-  `buildMs` (and so to `buildCostMs` and `totalResearchMs`) exactly once. The
-  `ranking-v1.md` reproduction procedure shows the command.
-  `the_generators_own_first_build_is_added_to_build_ms_exactly_once` covers the
-  bootstrap alone, `build-ms` alone and the two summed, and
-  `a_malformed_bootstrap_build_record_is_refused` refuses a bad record naming it.
-  The existing `manifest_build_time_is_reported_and_added_to_the_research_total`
-  carries `buildMs` into `totalResearchMs`.
-- The refusal of negative or non-finite path values and the `freeze`
-  version check have the tests listed in the Test Plan.
+```mermaid
+flowchart LR
+    B[bootstrap build<br/>shell clock] --> I[ranking_pilot inputs]
+    I --> T[ranking_pilot time<br/>build-ms]
+    T --> S[ranking_pilot search<br/>source-1, source-2]
+    S --> M[ranking_pilot manifest]
+    M --> C[check] --> P[pilot] --> F[freeze] --> A[audit] --> E[evaluate]
+    E --> R[results.json<br/>no-demonstrated-benefit]
+```
 
-Issue numbers cited: #105: Rank pruning candidates by downstream output
-sensitivity.
+- `ockham/tests/ranking_pilot_archive.rs::archived_v2_ranking_pilot_matches_its_digests_costs_and_path_signal`
+  checks:
+  - the protocol, verdict and manifest identity across results, freeze and
+    preflight;
+  - the audit, pilot and history digests;
+  - each corpus digest against the v1 files, and `formatVersion` 2;
+  - that all 632 featured audit rows carry a finite, non-negative
+    `pathSensitivity` and the 8 failure rows carry none;
+  - the primary-cell sign, coverage (640 selected, 632 fully scored, 0 missing
+    features), and that the ten charged stages sum to 50,574 ms;
+  - `buildCostMs` = `build-ms` + `bootstrap-build-ms` = 47,570, and the
+    recorded writes total 6 ms.
+- Path-column attribution: a row-by-row comparison of the decompressed v1 and
+  v2 audits found the same candidate digests, kinds, full and sampled deltas
+  and feature vectors in all 640 rows. 104 of the 120 paired cells match v1
+  exactly. The 16 that differ are all at evaluation budget 2 and calibration
+  budget 8.
+- `docs/research/ranking-pilot-v2/README.md` records the pins, costs, results,
+  path-column effect, maintenance decision, checksums and the exact commands.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Candidate features: sample error, output variance, functional
-  paths, connections, compiled latency and gradient/Fisher signal only if
-  inexpensive/available — evidence:
-  `ockham/examples/priority_ordering_bench/tests.rs::path_sensitivity_sums_every_downstream_path_not_just_one_hop`,
-  `::path_sensitivity_columns_are_appended_and_match_their_names`,
-  `::audit_scores_sampled_losers_individually_and_preserves_parent`,
-  `docs/experiments/ranking-v1.md` (feature assessment) — reviewer: met
-- **met** — count preparation/search costs, each recorded by `ranking_pilot` except the generator's own first build, which is timed with the shell clock into `bootstrap-build-ms` — evidence:
-  `ockham/examples/ranking_pilot.rs::search_times_the_ordinary_run_into_acquisition_ms`,
-  `::time_records_any_successful_command_into_a_new_file`,
-  `::the_generators_own_first_build_is_added_to_build_ms_exactly_once`,
-  `::manifest_step_records_its_tail_after_the_first_write`,
-  `ockham/examples/priority_ordering_bench/tests.rs::manifest_build_time_is_reported_and_added_to_the_research_total`,
-  `ockham/examples/priority_ordering_bench/tests.rs::earlier_phase_write_times_are_summed_and_the_manifest_tail_is_optional`,
-  `::recorded_write_cost_is_reported_and_added_to_the_research_total_once`,
-  `::freezing_a_pilot_file_charges_its_recorded_write_time` — reviewer: met
 - **partial** — Record negative findings and remove optional code that does
-  not earn its maintenance cost — evidence: `docs/experiments/ranking-v1.md`
-  (synthetic negative finding, predeclared removal rule now covering the path
-  columns), `docs/research/ranking-pilot-v1/README.md` (maintenance decision)
-  — reviewer: partial — reason: whether the pairwise and transfer arms and the
-  new path columns earn their cost needs the representative v2 run, which needs
-  private data and a scorer that this host does not have.
+  not earn its maintenance cost. — evidence:
+  `docs/research/ranking-pilot-v2/README.md`,
+  `docs/research/ranking-pilot-v1/README.md`, `docs/experiments/ranking-v1.md`,
+  `ockham/tests/ranking_pilot_archive.rs::archived_v2_ranking_pilot_matches_its_digests_costs_and_path_signal`
+  — reviewer: partial — reason: the v1 and v2 negative synthetic findings are
+  recorded, but nothing is removed yet. Under the predeclared rule, the
+  pairwise arms, the path columns and `audit::path_sensitivities` are removed
+  only if the representative v2 run also shows no benefit over `partial`. That
+  run needs private corpora and creatures this host does not have, and
+  removing the code first would make the run impossible.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — `write_manifest`'s `# Errors` doc omitted the
-  `manifest-tail-ms` refusal — evidence: `ockham/examples/ranking_pilot.rs`
-  (`write_manifest` doc) — reason: fixed in this diff
-- **violation** — results file written before its sidecar was checked, leaving
-  a results file with no write-time record — evidence:
-  `ockham/examples/priority_ordering_bench/experiment.rs` (`write_timed`) —
-  reason: fixed in this diff
-- **violation** — `time` ran the program before checking that the record's
-  directory exists — evidence: `ockham/examples/ranking_pilot.rs` (`run_timed`)
-  — reason: fixed in this diff
-- **violation** — sidecars charged without a digest, and the doc did not say so
-  — evidence: `docs/experiments/ranking-v1.md` (cost reporting) — reason: fixed
-  in this diff
-- **violation** — no test for `path_sensitivities`' own refusal and
-  duplicate-edge rule, or for a symlinked sidecar — evidence:
-  `ockham/examples/priority_ordering_bench/tests.rs` — reason: fixed in this diff
-- **violation** — test name and `read_ms` doc did not match the function —
-  evidence: `ockham/examples/priority_ordering_bench/tests.rs`, `experiment.rs`
-  — reason: fixed in this diff
-- **clean** — exclusive creation, refusal before first write, error strings
-  naming paths, doc comments, version gates, test determinism (loose timing
-  bounds only), docs against code, contribution rules
+- **clean** — reviewed against `CONTRIBUTING.md`, because the repository has
+  no `CODING-STANDARDS.md`. Checked: no version bump is needed (only a test and
+  docs change), the new test only reads the archive and leaves the production
+  path alone, no changelog entry was added, and `rustfmt`, `clippy -D warnings`,
+  the `ranking_pilot_archive` tests (2 passed), `codespell` and
+  `markdownlint-cli2` all pass.
 
 ## Test Plan
 
-- Added in `ockham/examples/priority_ordering_bench/tests.rs` and
-  `ockham/examples/ranking_pilot.rs`: the tests under Evidence, plus
-  `search_subcommand_parses_the_program_after_a_separator` (`search` and `time`
-  need the `--` separator and a program), plus
-  `labelled_refuses_a_non_finite_or_negative_path_sensitivity` (`-1` and NaN
-  are refused with "non-finite or negative path sensitivity", and `0` is
-  accepted) and `freeze_refuses_a_version_one_pilot_and_accepts_version_two`
-  (the same pilot is refused at version 1 and accepted at version 2). The
-  path tests first failed to compile against the unchanged bench, because the
-  field and the helper did not exist yet.
-- `cargo test --example priority_ordering_bench < /dev/null`: 37 passed.
-- `cargo test --example ranking_pilot < /dev/null`: 32 passed.
-- `cargo test --test ranking_pilot_archive < /dev/null`: 1 passed.
-- `markdownlint-cli2` and `codespell` on `docs/experiments/ranking-v1.md` and
-  `docs/research/ranking-pilot-v1/README.md`: no findings.
-- `cargo fmt --check` and `cargo clippy --example ranking_pilot --tests -- -D
-  warnings` on the final head: no findings. `./quality.sh` was not re-run after
-  the last review round (the budget did not cover it).
-- Not checked: CI, macOS, and a v2 pilot with the real scorer.
-- Spec and standards reviewer sub-agents ran over the diff. Their findings are
-  in the two blocks above, and every standards finding is fixed here.
-- Fixture updates in the same file (no assertion removed or weakened): the
-  manifest fixture protocol is now `ockham-ranking-v2`, `artificial_audit` is
-  `format_version: 2`, and the two `AuditRow` literals gain
-  `path_sensitivity: None`.
+- Added `archived_v2_ranking_pilot_matches_its_digests_costs_and_path_signal`
+  in `ockham/tests/ranking_pilot_archive.rs`. The v1 test
+  `archived_ranking_pilot_matches_its_digests_and_negative_finding` is
+  byte-identical to its text on Develop. Only its helpers delegate to the new
+  generic helpers, and no assertion is removed.
+- `cargo test --locked --test ranking_pilot_archive < /dev/null`: 2 passed.
+- `cargo clippy --locked --all-targets -- -D warnings` and `cargo fmt --check`:
+  no findings.
+- `markdownlint-cli2` and `scripts/spell-check.sh` on
+  `docs/experiments/ranking-v1.md`, `docs/research/ranking-pilot-v1/README.md`
+  and `docs/research/ranking-pilot-v2/README.md`: no findings.
+- Docs read for text this run makes false: the functional-paths bullet and the
+  pilot and "Current finding" sections of `docs/experiments/ranking-v1.md`, and
+  the v1 README's maintenance decision. All three now name the v2 pilot. A grep
+  of `README.md` and `docs/` (excluding `docs/archive/`) for "v2 pilot" and
+  "ranking-pilot-v1" found nothing else stale.
+- Not checked: CI, macOS, and a representative v2 run.
