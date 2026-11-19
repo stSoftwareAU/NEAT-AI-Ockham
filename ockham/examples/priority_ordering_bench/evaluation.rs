@@ -178,8 +178,14 @@ pub struct Report {
     /// The preflight `check` phase's wall time (`checkMs` in the preflight
     /// result), which no other field charges.
     preflight_cost_ms: u64,
-    /// Audit, pilot, freeze, historical acquisition, preparation, preflight and
-    /// evaluation costs.
+    /// The manifest's `buildMs`: operator-recorded time to build the bench and
+    /// scorer executables.
+    build_cost_ms: u64,
+    /// Measured time to serialise this report, charged by `serialise_charged`.
+    /// The file write that follows is not charged.
+    serialisation_cost_ms: u64,
+    /// Audit, pilot, freeze, historical acquisition, preparation, preflight,
+    /// build, evaluation and serialisation costs.
     total_research_ms: u64,
     evaluation_cost_ms: u64,
     history_coverage: Vec<serde_json::Value>,
@@ -413,6 +419,8 @@ pub fn evaluate(
         historical_acquisition_ms: audit.histories.iter().map(|h| h.acquisition_ms).sum(),
         preparation_cost_ms: m.preparation_ms,
         preflight_cost_ms: preflight_ms,
+        build_cost_ms: m.build_ms,
+        serialisation_cost_ms: 0,
         total_research_ms: 0,
         evaluation_cost_ms: 0,
         history_coverage,
@@ -898,6 +906,21 @@ pub fn evaluate(
         + report.historical_acquisition_ms
         + report.preparation_cost_ms
         + report.preflight_cost_ms
+        + report.build_cost_ms
         + report.evaluation_cost_ms;
     Ok(report)
+}
+
+/// Serialises `report` for writing, charging the serialisation to the totals.
+///
+/// A first pass is timed (rounded up to whole milliseconds, so at least 1 ms)
+/// and recorded as `serialisationCostMs`; the returned bytes come from a second
+/// pass of the same report with that charge in place, so the measured pass
+/// stands in for the written one. Writing the bytes to disk is not charged.
+pub fn serialise_charged(mut report: Report) -> Result<Vec<u8>, String> {
+    let start = Instant::now();
+    serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?;
+    report.serialisation_cost_ms = ms(start);
+    report.total_research_ms += report.serialisation_cost_ms;
+    serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())
 }

@@ -67,6 +67,10 @@ top-level `preparationMs` records, in milliseconds, the operator-measured wall
 time of preparation that no other field charges, such as fixture or input
 generation and manifest construction. It is reported as `preparationCostMs`
 and added to `totalResearchMs`. Absent or zero means no recorded charge.
+The optional top-level `buildMs` likewise records the operator-measured wall
+time of building the bench and scorer executables the run uses. It is reported
+as `buildCostMs` and added to `totalResearchMs`; absent or zero means no
+recorded charge.
 
 Audit rows with features embed ordinary `CandidateRecord` telemetry. Its
 `corpusIdentity` uses the manifest's corpus cache identity, so those records can
@@ -197,8 +201,9 @@ a running preparation stage or scorer call can overrun the remaining wall
 allowance. The corpus byte cap, statistics-record cap, pair/epoch caps and
 per-call timeout bound that work. An external run supervisor should impose the
 site's hard process deadline. Pilot timings are feasibility estimates from a
-shared host, not performance guarantees. Build time is outside reported research
-runtime and is not hidden as a strategy speed-up.
+shared host, not performance guarantees. Build time is charged only through the
+manifest's operator-recorded `buildMs`, to the research total and not to any
+strategy, so it is not hidden as a strategy speed-up.
 
 ```mermaid
 flowchart LR
@@ -256,8 +261,9 @@ never enables deployment or real rejection.
 
 Cost reporting retains preflight (`preflightCostMs`, the preflight's
 `checkMs`), pilot, freeze, historical acquisition, manifest preparation
-(`preparationCostMs`), audit and evaluation totals, including protocol
-identity checks; `totalResearchMs` is their sum. It separates the actual
+(`preparationCostMs`), build (`buildCostMs`), audit, evaluation and result
+serialisation (`serialisationCostMs`) totals, including protocol identity
+checks; `totalResearchMs` is their sum. It separates the actual
 audit wall time from counterfactual
 strategy ledgers: preparation/generation, feature extraction, historical
 acquisition/loading, calibration acquisition, partial scoring, fit, adaptation,
@@ -276,7 +282,10 @@ pool's charged cost, minus protocol setup (charged to every trial as
 `preparationMs`) and history loading (charged to transfer trials in
 `historicalScoringMs`), floored at zero. It is part of `auditCostMs` and is not
 added to the total a second time.
-Final result serialisation/writing and build time are outside these runtime totals.
+`evaluate` times one serialisation of the finished report, rounded up to whole
+milliseconds, and writes a second serialisation carrying that charge; the
+measured pass stands in for the written one. Writing the file to disk is
+outside these runtime totals.
 Timings on this shared host are indicative, never correctness assertions.
 
 ## Synthetic pilot
@@ -309,9 +318,11 @@ first write, less the curation already charged to `acquisitionMs`, so
 `totalResearchMs` counts the generator's preparation. In the archived run that
 is 25 ms of a 4,049 ms total. The preflight `check` stage records `checkMs`,
 and `evaluate` requires `--preflight` and charges it as `preflightCostMs`
-(19 ms). Still uncounted: building the binaries, writing the final results,
-the manifest step after its first write, and the source searches' own timing,
-which the operator takes by hand.
+(19 ms). That run predates `buildMs` and `serialisationCostMs`, so it did not
+charge building the binaries or serialising the results. Still uncounted at the
+head: writing the final results file, the manifest step after its first write,
+and the source searches' own timing, which the operator takes by hand. The
+manifest step writes an optional `<dir>/build-ms` as `buildMs`.
 
 The manifest step refuses symlinks among the pilot-owned inputs and any path
 resolving outside the pilot directory, creates `history.jsonl` and

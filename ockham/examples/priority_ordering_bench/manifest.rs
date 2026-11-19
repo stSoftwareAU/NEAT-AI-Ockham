@@ -75,6 +75,11 @@ pub struct Manifest {
     /// when zero so manifests written before this field keep their identity.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub preparation_ms: u64,
+    /// Operator-recorded wall time, in milliseconds, of building the bench and
+    /// scorer executables this run uses. Optional and omitted when zero, like
+    /// `preparation_ms`; a manifest without it records no build charge.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub build_ms: u64,
     pub tasks: Vec<Task>,
 }
 

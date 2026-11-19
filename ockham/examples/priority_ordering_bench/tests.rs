@@ -947,6 +947,70 @@ fn manifest_preparation_time_is_reported_and_added_to_the_research_total() {
 }
 
 #[test]
+fn manifest_build_time_is_reported_and_added_to_the_research_total() {
+    let net = |m: &Manifest| {
+        let output = serde_json::to_value(
+            evaluation::evaluate(m, &artificial_audit(m), "c".repeat(64), 0, 0).unwrap(),
+        )
+        .unwrap();
+        let get = |key: &str| output[key].as_u64().unwrap();
+        (
+            get("buildCostMs"),
+            get("totalResearchMs") - get("evaluationCostMs"),
+        )
+    };
+
+    let absent = manifest();
+    assert_eq!(absent.build_ms, 0, "the field is optional");
+    assert!(
+        serde_json::to_value(&absent)
+            .unwrap()
+            .get("buildMs")
+            .is_none(),
+        "a zero build time keeps the identity of manifests without the field"
+    );
+    let (build, base) = net(&absent);
+    assert_eq!(build, 0);
+
+    let mut value = serde_json::to_value(manifest()).unwrap();
+    value["buildMs"] = json!(87_654);
+    let present: Manifest = serde_json::from_value(value).unwrap();
+    present.validate().unwrap();
+    let (build, total) = net(&present);
+    assert_eq!(build, 87_654);
+    assert_eq!(
+        total,
+        base + 87_654,
+        "the build charge is added exactly once"
+    );
+}
+
+#[test]
+fn result_serialisation_is_charged_to_the_research_total() {
+    let m = manifest();
+    let report = evaluation::evaluate(&m, &artificial_audit(&m), "c".repeat(64), 0, 0).unwrap();
+    let before = serde_json::to_value(&report).unwrap();
+    assert_eq!(
+        before["serialisationCostMs"], 0,
+        "evaluate leaves it uncharged"
+    );
+
+    let written: serde_json::Value =
+        serde_json::from_slice(&evaluation::serialise_charged(report).unwrap()).unwrap();
+    let charge = written["serialisationCostMs"].as_u64().unwrap();
+    assert!(charge >= 1, "measured work is rounded up to at least 1 ms");
+    assert_eq!(
+        written["totalResearchMs"].as_u64().unwrap(),
+        before["totalResearchMs"].as_u64().unwrap() + charge,
+        "the serialisation charge is added to the total exactly once"
+    );
+    let mut rest = written.clone();
+    rest["serialisationCostMs"] = json!(0);
+    rest["totalResearchMs"] = before["totalResearchMs"].clone();
+    assert_eq!(rest, before, "only the two cost fields change");
+}
+
+#[test]
 fn preflight_check_time_is_reported_and_added_to_the_research_total() {
     let m = manifest();
     let a = artificial_audit(&m);
