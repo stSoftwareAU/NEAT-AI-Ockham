@@ -52,14 +52,17 @@ from a creature JSON file. Several validation tasks sharing a lineage, target fa
 are one connected uncertainty group, including transitive overlaps.
 
 Source tasks require digested existing candidate logs with their original
-parent checksum and corpus identity. Logs are bounded to 64 MiB and 4,096 rows
-per task. Only individual full-score deltas with partial scores and the current
+parent checksum and corpus identity. Each log is opened once: a file larger
+than 64 MiB is refused before it is read, and one that grows while it is
+read is refused after at most 64 MiB plus one byte. Its digest is checked
+over exactly the bytes that are parsed, and it is limited to 4,096 rows per
+task. Only individual full-score deltas with partial scores and the current
 named feature schema are eligible for fitting. Missing full scores are
 unlabelled, never losses. Future records are counted and excluded using the
-strict `unixSecs < historicalCutoffUnix` boundary. Duplicate observations of one
-candidate are refused; curate one pre-target observation per candidate.
-`acquisitionMs` records the measured historical scoring/preparation cost; zero
-means no recorded charge, not proof that acquisition was free.
+strict `unixSecs < historicalCutoffUnix` boundary. Duplicate observations
+of one candidate are refused; curate one pre-target observation per
+candidate. `acquisitionMs` records the measured historical scoring/preparation
+cost; zero means no recorded charge, not proof that acquisition was free.
 
 Audit rows with neuron features embed ordinary `CandidateRecord` telemetry. Its
 `corpusIdentity` uses the manifest's corpus cache identity, so those records can
