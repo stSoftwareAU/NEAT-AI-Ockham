@@ -59,11 +59,19 @@ unlabelled, never losses. Future records are counted and excluded using the
 strict `unixSecs < historicalCutoffUnix` boundary. Duplicate observations of one
 candidate are refused; curate one pre-target observation per candidate.
 `acquisitionMs` records the measured historical scoring/preparation cost; zero
-means no recorded charge, not proof that acquisition was free.
+means no recorded charge, not proof that acquisition was free. The optional
+top-level `preparationMs` records, in milliseconds, the operator-measured wall
+time of preparation that no other field charges, such as fixture or input
+generation and manifest construction. It is reported as `preparationCostMs`
+and added to `totalResearchMs`. Absent or zero means no recorded charge.
 
-Audit rows with neuron features embed ordinary `CandidateRecord` telemetry. Its
+Audit rows with features embed ordinary `CandidateRecord` telemetry. Its
 `corpusIdentity` uses the manifest's corpus cache identity, so those records can
 be exported as source history for a later, independently partitioned experiment.
+Rows of kind `synapse` carry the bench's derived synapse vector, not a
+library-extracted neuron vector; the committed synthetic source histories,
+from ordinary searches, hold only ablation rows. An exporter should
+keep or drop them by `kind` deliberately.
 The historical loader also reads earlier v1 `random-audit` records that used the
 manifest's full corpus SHA-256 in that field, normalising them in memory to the
 cache identity. Other ordering names do not receive this compatibility conversion;
@@ -100,10 +108,14 @@ are reported separately.
 
 The ordinary proposal ladder can produce identity, ablation, constant and
 synapse candidates. Group and merge proposals are not enabled in this protocol;
-their coverage is explicitly zero. Existing neuron telemetry cannot represent
-synapse feature vectors. The audit ledger retains those candidates with a
-feature-availability flag; pairwise inputs zero-fill the neuron columns only
-behind that flag. The composite control ties featureless candidates at zero.
+their coverage is explicitly zero. The library's feature extraction covers
+hidden neurons only, so the audit derives a synapse candidate's vector in the
+bench (`audit::synapse_features`) in the same columns: the source neuron's
+activation statistics, `|weight|` as outgoing weight, one outgoing edge, one
+synapse's growth units and the source's depth. The library sweep and schema
+are unchanged. The audit ledger keeps a feature-availability flag; pairwise
+inputs zero-fill the columns only behind that flag, and the composite control
+ties any featureless candidate at zero.
 Activation variance is not output variance; sensitivity here is the existing
 activation-times-outgoing-weight estimate, not a gradient. Functional-path,
 compiled-latency and gradient/Fisher measurements are not added without an
@@ -145,6 +157,7 @@ cargo run --example priority_ordering_bench -- --experiment evaluate \
   --manifest /private/ordering/manifest.json \
   --freeze /private/ordering/frozen.json \
   --audit /private/ordering/audit/audit.json \
+  --preflight /private/ordering/preflight.json \
   --out /private/ordering/results.json < /dev/null
 ```
 
@@ -211,8 +224,10 @@ positive verdict. Other grid cells diagnose cold starts and sparsity, not pick
 a favourable result after validation. An inconclusive or unsupported result
 never enables deployment or real rejection.
 
-Cost reporting retains pilot, freeze, historical acquisition, audit and
-evaluation totals, including protocol identity checks. It separates the actual
+Cost reporting retains preflight (`preflightCostMs`, the preflight's
+`checkMs`), pilot, freeze, historical acquisition, manifest preparation
+(`preparationCostMs`), audit and evaluation totals, including protocol
+identity checks; `totalResearchMs` is their sum. It separates the actual
 audit wall time from counterfactual
 strategy ledgers: preparation/generation, feature extraction, historical
 acquisition/loading, calibration acquisition, partial scoring, fit, adaptation,
@@ -234,6 +249,67 @@ added to the total a second time.
 Final result serialisation/writing and build time are outside these runtime totals.
 Timings on this shared host are indicative, never correctness assertions.
 
+## Synthetic pilot
+
+A synthetic, non-representative pilot of this protocol was run on 18 November
+2026 at code revision `aa41403530c8cb3a28aaf79ebfc43e6386c75fc5`, with the real
+scorer (NEAT-AI-scorer `742c5df30fc98ece3afe784be1aca18f925b47b3`). It was
+reproduced from the committed inputs, raw search logs and timings of an
+earlier run at `fad4e74`, which left synapse candidates without features and
+did not charge the preflight. That run reproduced the paired results, coverage
+and verdict of the closed PR #279's run.
+Its inputs come from the generator `ockham/examples/ranking_pilot.rs`.
+`ranking_pilot inputs <dir>` writes 8 tasks (2 source, 3 calibration and
+3 validation), each with its own parent, lineage, corpus version and
+256-record corpus. `ranking_pilot manifest <dir> --scorer <path> --code-revision <sha>`
+curates the source histories and writes the manifest with every digest.
+
+Source histories are real ordinary `neat_ai_ockham` searches run with
+`--candidate-log` and an unreachable `--min-improvement`, so no cut is accepted
+and every row names the immutable parent. Curation keeps one observation per
+candidate, preferring a fully scored one, and drops rows naming another
+incumbent. Each source history has 12 candidates, 3 of them fully scored.
+The raw logs are committed, so the curation can be re-run and checked byte for
+byte. The manifest step adds the measured curation wall time, rounded up to
+whole milliseconds, to each source's recorded search time in `acquisitionMs`.
+`inputs` writes its generation wall time, rounded up to whole milliseconds, to
+`<dir>/inputs-ms`; the manifest step refuses a pilot directory without that
+file. It writes `preparationMs` as that time plus its own wall time up to its
+first write, less the curation already charged to `acquisitionMs`, so
+`totalResearchMs` counts the generator's preparation. In the archived run that
+is 25 ms of a 4,049 ms total. The preflight `check` stage records `checkMs`,
+and `evaluate` requires `--preflight` and charges it as `preflightCostMs`
+(19 ms). Still uncounted: building the binaries, writing the final results,
+the manifest step after its first write, and the source searches' own timing,
+which the operator takes by hand.
+
+The manifest step refuses symlinks among the pilot-owned inputs and any path
+resolving outside the pilot directory, creates `history.jsonl` and
+`manifest.json` exclusively, and caps input sizes, with the corpus cap matching
+the manifest's `maxCorpusBytes`. See the
+[input boundaries](../research/ranking-pilot-v1/README.md#manifest-step-input-boundaries).
+
+The bench's `audit::ms` rounds elapsed time up, so sub-millisecond feature,
+fit, adaptation and ranking work is charged at least 1 ms rather than 0.
+
+The record is [the synthetic pilot report](../research/ranking-pilot-v1/README.md).
+In the primary cell (full history, calibration 8, evaluation 5; 3 validation
+groups), partial-score ordering alone recovered the full true top set in all
+6 trials (+0.833 recall versus random, 95% interval [0.75, 1.0]). Every audited
+candidate, including the 186 validation synapse cuts, carried a feature vector.
+The composite minus partial was −0.389 [−0.5, −0.25]. Transfer-pairwise recall
+minus partial was −0.611 [−0.75, −0.333], and minus target-only it was 0.0
+[0.0, 0.0], a tie on every task. At cold start (calibration 0), transfer minus
+target-only was −0.167 [−0.25, 0.0], negative on two tasks. Transfer cost about
+eight times partial's strategy cost. The verdict is `no-demonstrated-benefit`.
+Without synapse features (the `fad4e74` run) transfer minus partial was −0.694
+and transfer minus target-only −0.083, so the missing features do not explain
+the learned arms' deficit. This is a negative synthetic finding, not a
+representative result. The
+report's maintenance decision keeps the pairwise and transfer arms research-only
+until the representative run. It also predeclares that they are removed if that
+run also shows no benefit over partial ordering.
+
 ## Current finding
 
 [The availability record](ranking-v1-availability.json) records an inconclusive
@@ -253,7 +329,11 @@ these observations do not measure representative ranking performance.
 
 Preflight with the built scorer and illustrative template task paths exited 1,
 reporting 14 unavailable parent/corpus tasks. No representative feasibility
-pilot, frozen validation manifest or validation comparison has been run.
-Deterministic fixtures validate implementation contracts only; they do not
-demonstrate an optimisation benefit. The private research run remains
+pilot, frozen validation manifest or validation comparison has been run. The
+synthetic pilot above has been run, but its data are generated and not
+representative. Deterministic fixtures validate implementation contracts only;
+they do not demonstrate an optimisation benefit. The optional pairwise and
+transfer arms stay research-only in the example bench. Whether they earn their
+maintenance cost needs the representative run, so they are neither promoted nor
+removed on synthetic evidence alone. The private research run remains
 outstanding under the same issue. Operational rejection remains disabled.

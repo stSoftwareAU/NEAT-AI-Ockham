@@ -69,6 +69,9 @@ enum Phase {
         freeze: PathBuf,
         #[arg(long)]
         audit: PathBuf,
+        /// The `check` phase's preflight result; its `checkMs` is charged.
+        #[arg(long)]
+        preflight: PathBuf,
         #[arg(long)]
         out: PathBuf,
     },
@@ -261,6 +264,20 @@ fn freeze(m: &Manifest, pilot: &audit::Audit, pilot_sha256: String) -> Result<Fr
     })
 }
 
+/// The preflight `checkMs` to charge, refusing any preflight that is not an
+/// available result for this manifest identity.
+fn preflight_check_ms(value: &serde_json::Value, identity: &str) -> Result<u64, String> {
+    if value["phase"] != "preflight"
+        || value["status"] != "available"
+        || value["manifestSha256"] != identity
+    {
+        return Err("preflight phase/status/manifest mismatch".into());
+    }
+    value["checkMs"]
+        .as_u64()
+        .ok_or_else(|| "preflight checkMs missing or not a u64".into())
+}
+
 fn check_freeze(m: &Manifest, frozen: &Freeze) -> Result<(), String> {
     if frozen.executable_sha256 != hash_file(&std::env::current_exe().map_err(|e| e.to_string())?)?
         || frozen.format_version != 1
@@ -296,9 +313,11 @@ pub fn main() -> Result<(), String> {
                     failures.push(format!("{}: parent/corpus unavailable", t.id));
                 }
             }
+            let identity = m.identity()?;
+            let check_ms = audit::ms(phase_start);
             write(
                 &out,
-                &serde_json::json!({"formatVersion":1,"phase":"preflight","manifestSha256":m.identity()?,"status":if failures.is_empty(){"available"}else{"inconclusive"},"failures":failures,"representativeBenefitDemonstrated":false}),
+                &serde_json::json!({"formatVersion":1,"phase":"preflight","manifestSha256":identity,"status":if failures.is_empty(){"available"}else{"inconclusive"},"failures":failures,"representativeBenefitDemonstrated":false,"checkMs":check_ms}),
             )?;
             if !failures.is_empty() {
                 return Err("preflight unavailable; see result file".into());
@@ -363,6 +382,7 @@ pub fn main() -> Result<(), String> {
             manifest,
             freeze,
             audit,
+            preflight,
             out,
         } => {
             let m: Manifest = read(&manifest)?;
@@ -370,6 +390,7 @@ pub fn main() -> Result<(), String> {
             runtime(&m)?;
             let frozen: Freeze = read(&freeze)?;
             check_freeze(&m, &frozen)?;
+            let check_ms = preflight_check_ms(&read(&preflight)?, &m.identity()?)?;
             let collected: audit::Audit = read(&audit)?;
             if collected.executable_sha256 != frozen.executable_sha256 {
                 return Err("audit executable mismatch".into());
@@ -377,8 +398,13 @@ pub fn main() -> Result<(), String> {
             if collected.freeze_sha256.as_deref() != Some(hash_file(&freeze)?.as_str()) {
                 return Err("audit/freeze digest mismatch".into());
             }
-            let result =
-                evaluation::evaluate(&m, &collected, hash_file(&audit)?, audit::ms(phase_start))?;
+            let result = evaluation::evaluate(
+                &m,
+                &collected,
+                hash_file(&audit)?,
+                check_ms,
+                audit::ms(phase_start),
+            )?;
             write(&out, &result)?;
         }
     }

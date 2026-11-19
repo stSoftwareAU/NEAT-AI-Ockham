@@ -1,0 +1,9 @@
+{
+  "checkMs": 19,
+  "failures": [],
+  "formatVersion": 1,
+  "manifestSha256": "f808b7a15182c4bbf8d2c925e65c09b4a6b9eb7ab818d5dc276ee14a62d30e2c",
+  "phase": "preflight",
+  "representativeBenefitDemonstrated": false,
+  "status": "available"
+}

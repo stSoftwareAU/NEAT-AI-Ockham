@@ -1,15 +1,17 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use neat_ai_ockham::ablation::growth_units;
 use neat_ai_ockham::clock::{Clock, SystemClock};
 use neat_ai_ockham::features::{self, CandidateFeatures, PriorEvidence};
 use neat_ai_ockham::incumbent::{load_incumbent, sha256_hex};
 use neat_ai_ockham::scorer::{DirectoryScorer, ScorerMode};
-use neat_ai_ockham::stats::{SampleSpec, compute_activation_stats};
-use neat_ai_ockham::sweep::{Sweep, present_visits};
+use neat_ai_ockham::stats::{ActivationStats, SampleSpec, compute_activation_stats};
+use neat_ai_ockham::sweep::{Sweep, present_visits, synapse_key};
 use neat_ai_ockham::telemetry::{CandidateOutcome, CandidateRecord, RunStamp};
+use neat_core::CreatureExport;
 use neat_core::training_data::TrainingDataConfig;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -83,8 +85,21 @@ pub struct Audit {
     pub elapsed_ms: u64,
 }
 
+/// Wall time since `start` in whole milliseconds, rounded up (issue #261).
+///
+/// Rounding down charged sub-millisecond feature, fit and ranking work as 0 ms,
+/// so their overhead was not counted before a rejection could be permitted.
 pub fn ms(start: Instant) -> u64 {
-    start.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
+    ceil_ms(start.elapsed())
+}
+
+/// `elapsed` in whole milliseconds, rounded up so any non-zero work costs at least 1 ms.
+pub fn ceil_ms(elapsed: Duration) -> u64 {
+    elapsed
+        .as_nanos()
+        .div_ceil(1_000_000)
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 // Hash every corpus byte; the ordinary fast head/tail cache identity is not a
@@ -113,6 +128,82 @@ pub fn corpus_digest(dir: &Path, max_bytes: u64) -> Result<String, String> {
         }
     }
     Ok(format!("{:x}", hash.finalize()))
+}
+
+/// Feature vector for every synapse visit on `creature`, keyed by
+/// [`synapse_key`].
+///
+/// **Experiment-only derivation.** The library's [`features::extract`] covers
+/// hidden neurons only, so without this every synapse candidate in the audit
+/// carries no features and ties at zero in the composite and pairwise arms.
+/// The library sweep, its feature schema and [`features::FEATURE_NAMES`] are
+/// unchanged; this fills the same fifteen columns with what one edge cut means:
+///
+/// - activation (`measured`, `variance`, `mean_abs`, `range`) is the
+///   **source** neuron's — the signal the synapse carries — read from the
+///   hidden-neuron stats, or the input-wire stats when the source is an input,
+///   and zero with `measured = false` when neither covers it;
+/// - `outgoing_weight` is `|weight|`, `fan_in = 0`, `fan_out = 1` (the edge is
+///   one outgoing edge of the cut and brings no incoming ones);
+/// - direct and cascade growth units are both `growth_units(0, 1)`: one synapse
+///   and no cascade;
+/// - `identity` and `blocked` are false, priors are zero (no learnings are read);
+/// - `depth_fraction` is the hidden source's own depth from `neuron_features`,
+///   and `0.0` for any other source (the implicit inputs).
+///
+/// When a creature lists an ordered pair more than once the first listed edge
+/// supplies the weight — the edge whose role the edge cut requests.
+pub(super) fn synapse_features(
+    creature: &CreatureExport,
+    stats: &ActivationStats,
+    neuron_features: &HashMap<String, CandidateFeatures>,
+) -> HashMap<String, CandidateFeatures> {
+    let units = growth_units(0, 1);
+    let mut out = HashMap::new();
+    for synapse in &creature.synapses {
+        let from = synapse.from_uuid.as_str();
+        let source = stats.by_uuid(from).or_else(|| stats.input_by_uuid(from));
+        out.entry(synapse_key(from, &synapse.to_uuid))
+            .or_insert_with(|| CandidateFeatures {
+                measured: source.is_some(),
+                variance: source.map_or(0.0, |s| s.variance),
+                mean_abs: source.map_or(0.0, |s| s.mean_abs),
+                range: source.map_or(0.0, |s| s.max - s.min),
+                outgoing_weight: synapse.weight.abs(),
+                fan_in: 0,
+                fan_out: 1,
+                direct_growth_units: units,
+                cascade_growth_units: units,
+                identity: false,
+                blocked: false,
+                depth_fraction: neuron_features.get(from).map_or(0.0, |f| f.depth_fraction),
+                prior_wins: 0,
+                prior_failures: 0,
+            });
+    }
+    out
+}
+
+/// The library's hidden-neuron vectors plus [`synapse_features`] for every
+/// edge visit, validated by [`check_features`].
+///
+/// No learnings cache is read: temporal evidence cannot leak through priors.
+/// A synapse key colliding with a neuron uuid is refused rather than letting
+/// one silently overwrite the other.
+pub(super) fn audit_features(
+    creature: &CreatureExport,
+    stats: &ActivationStats,
+) -> Result<HashMap<String, CandidateFeatures>, String> {
+    let mut all = features::extract(creature, stats, &PriorEvidence::new());
+    for (key, value) in synapse_features(creature, stats, &all) {
+        if all.insert(key, value).is_some() {
+            return Err("synapse feature key collides with a neuron uuid".into());
+        }
+    }
+    for f in all.values() {
+        check_features(f)?;
+    }
+    Ok(all)
 }
 
 pub(super) fn check_features(f: &CandidateFeatures) -> Result<(), String> {
@@ -204,11 +295,8 @@ pub fn collect_pool(
     )?;
     let preparation_ms = ms(prep_start);
     let feature_start = Instant::now();
-    // No learnings cache is read: temporal evidence cannot leak through priors.
-    let features = features::extract(&parent.creature, &stats, &PriorEvidence::new());
-    for f in features.values() {
-        check_features(f)?;
-    }
+    // Hidden-neuron and synapse vectors, charged to `features_ms` together.
+    let features = audit_features(&parent.creature, &stats)?;
     let features_ms = ms(feature_start);
     let generation_start = Instant::now();
     let mut sweep = Sweep::new(&parent.creature, seed);
