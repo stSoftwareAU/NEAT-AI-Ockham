@@ -120,9 +120,36 @@ are unchanged. The audit ledger keeps a feature-availability flag; pairwise
 inputs zero-fill the columns only behind that flag, and the composite control
 ties any featureless candidate at zero.
 Activation variance is not output variance; sensitivity here is the existing
-activation-times-outgoing-weight estimate, not a gradient. Functional-path,
-compiled-latency and gradient/Fisher measurements are not added without an
-availability/cost case.
+activation-times-outgoing-weight estimate, not a gradient. The candidate
+features the issue names that the v1 vector lacks are assessed as follows.
+
+- Output variance: the variance of the creature's outputs with the cut applied
+  needs a forward pass of each child over sampled records. That is at least the
+  per-candidate work of the partial score, which the `partial` arm already pays
+  for, and whose `partialDelta` column the pairwise arms already read
+  (`ockham/examples/priority_ordering_bench/evaluation.rs`). It is therefore not
+  a cheap proxy here and is not added.
+- Compiled latency: the existing probe, `wall_clock_probe` in
+  `ockham/src/strata/bench.rs`, compiles the creature and times a pass over
+  `latency_records` records in each of three repetitions. Each candidate thus
+  costs three compiles and three timed passes. Its wall-clock figures differ
+  between runs on a shared host, so a ranking built from them could not be
+  reproduced from the manifest. The deterministic structural cost of a cut is
+  already in the vector as `directGrowthUnits` and `cascadeGrowthUnits`. Not
+  added.
+- Gradient/Fisher signal: the exported creatures carry no gradients, and
+  computing one needs a backward pass per record. That is not inexpensive, so
+  it is not added.
+- Functional paths: available and cheap. `SensitivityIndex`
+  (`ockham/src/sensitivity.rs`, Issue #105) sums absolute weight products over
+  downstream paths in `O(neurons + synapses)` work per creature; cyclic
+  components are relaxed conservatively rather than summed exactly. The
+  sensitivity orderings (`LowOutputSensitivity` and `LowEstimatedEffect` in
+  `ockham/src/ordering.rs`) already use it. The v1 vector does not include it:
+  `logDownstreamSensitivity` is the one-hop `mean_abs × Σ|outgoing weight|`
+  (`CandidateFeatures::downstream_sensitivity` in `ockham/src/features.rs`).
+  Adding the path sum changes the 15-column feature schema, so it needs a new
+  protocol version and a new pilot; the archived v1 pilot does not test it.
 
 ## Pilot, freeze and commands
 
