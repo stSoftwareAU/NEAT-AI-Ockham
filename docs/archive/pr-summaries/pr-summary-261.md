@@ -85,13 +85,30 @@ flowchart LR
 
 ## Acceptance Criteria
 
-- **missing** — "Record negative findings and remove optional code that does
-  not earn its maintenance cost." — reason: the negative synthetic findings
-  for v1 and v2 are recorded. The predeclared rule removes the pairwise arms,
-  the path columns and `audit::path_sensitivities` only if the representative
-  v2 run also shows no benefit over `partial`. That run needs private corpora
-  and creatures, which this host does not have and which the issue keeps
-  private.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — Record negative findings and remove optional code that does
+  not earn its maintenance cost. — evidence:
+  `docs/research/ranking-pilot-v2/README.md`,
+  `docs/research/ranking-pilot-v1/README.md`, `docs/experiments/ranking-v1.md`,
+  `ockham/tests/ranking_pilot_archive.rs::archived_v2_ranking_pilot_matches_its_digests_costs_and_path_signal`
+  — reviewer: partial — reason: the v1 and v2 negative synthetic findings are
+  recorded, but nothing is removed yet. Under the predeclared rule, the
+  pairwise arms, the path columns and `audit::path_sensitivities` are removed
+  only if the representative v2 run also shows no benefit over `partial`. That
+  run needs private corpora and creatures this host does not have, and
+  removing the code first would make the run impossible.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — reviewed against `CONTRIBUTING.md`, because the repository has
+  no `CODING-STANDARDS.md`. Checked: no version bump is needed (only a test and
+  docs change), the new test only reads the archive and leaves the production
+  path alone, no changelog entry was added, and `rustfmt`, `clippy -D warnings`,
+  the `ranking_pilot_archive` tests (2 passed), `codespell` and
+  `markdownlint-cli2` all pass.
 
 ## Test Plan
 
