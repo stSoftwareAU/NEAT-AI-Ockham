@@ -672,6 +672,36 @@ fn historical_loader_never_labels_unscored_or_future_records() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn history_stream_longer_than_its_reported_length_is_cut_at_the_cap() {
+    // /dev/zero reports length 0 but never ends, so only a bounded read returns.
+    let mut m = manifest();
+    m.tasks[0].history.as_mut().unwrap().path = "/dev/zero".into();
+    let err = audit::load_history(&m, &m.tasks[0]).unwrap_err();
+    assert!(err.contains("exceeds 67108864 bytes"), "{err}");
+}
+
+#[test]
+fn history_one_byte_over_the_cap_is_refused_and_at_the_cap_is_accepted() {
+    let mut m = manifest();
+    let a = artificial_audit(&m);
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("history.jsonl");
+    neat_ai_ockham::telemetry::append(&path, &a.histories[0].records).unwrap();
+    let spec = m.tasks[0].history.as_mut().unwrap();
+    spec.path = path.clone();
+    spec.sha256 = hash_file(&path).unwrap();
+    let len = std::fs::metadata(&path).unwrap().len();
+    let err = audit::load_history_capped(&m, &m.tasks[0], len - 1).unwrap_err();
+    assert!(err.contains(&format!("exceeds {} bytes", len - 1)), "{err}");
+    let history = audit::load_history_capped(&m, &m.tasks[0], len).unwrap();
+    assert_eq!(history.records.len(), 40);
+    m.tasks[0].history.as_mut().unwrap().sha256 = "0".repeat(64);
+    let err = audit::load_history_capped(&m, &m.tasks[0], len).unwrap_err();
+    assert!(err.contains("digest mismatch"), "{err}");
+}
+
 #[test]
 fn historical_loader_normalises_legacy_audit_identity_and_rejects_other_corpora() {
     let mut m = manifest();

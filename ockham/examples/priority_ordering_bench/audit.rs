@@ -506,20 +506,37 @@ pub fn collect(
     Ok(audit)
 }
 
+/// Largest historical log the loader will read, in bytes.
+pub const MAX_HISTORY_BYTES: u64 = 64 * 1024 * 1024;
+
 pub fn load_history(m: &Manifest, task: &Task) -> Result<History, String> {
+    load_history_capped(m, task, MAX_HISTORY_BYTES)
+}
+
+pub fn load_history_capped(m: &Manifest, task: &Task, cap: u64) -> Result<History, String> {
     let start = Instant::now();
     let spec = task.history.as_ref().ok_or("missing historical log")?;
-    let bytes = std::fs::read(&spec.path).map_err(|e| e.to_string())?;
-    if bytes.len() > 64 * 1024 * 1024 || sha256_hex(&bytes) != spec.sha256 {
-        return Err("historical log size/digest mismatch".into());
+    let file = std::fs::File::open(&spec.path).map_err(|e| e.to_string())?;
+    if file.metadata().map_err(|e| e.to_string())?.len() > cap {
+        return Err(format!("historical log exceeds {cap} bytes"));
     }
-    let records = neat_ai_ockham::telemetry::load(&spec.path)?;
+    let mut bytes = Vec::new();
+    (&file)
+        .take(cap + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > cap {
+        return Err(format!("historical log exceeds {cap} bytes"));
+    }
+    if sha256_hex(&bytes) != spec.sha256 {
+        return Err("historical log digest mismatch".into());
+    }
+    let records =
+        neat_ai_ockham::telemetry::load_from_reader(&bytes[..], &spec.path.display().to_string())?;
     if records.len() > 4096 {
         return Err("historical log exceeds 4096 records per source task".into());
     }
-    if sha256_hex(&std::fs::read(&spec.path).map_err(|e| e.to_string())?) != spec.sha256 {
-        return Err("historical log changed while loading".into());
-    }
+    // The parsed bytes are the hashed bytes, so the file cannot have changed between the two.
     let mut history = History {
         task: task.id.clone(),
         records: Vec::new(),
