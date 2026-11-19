@@ -14,7 +14,9 @@
 //! and writes `preparationMs` as that time plus its own wall time up to its first write,
 //! less the curation already charged to `acquisitionMs`, so the bench's
 //! `totalResearchMs` counts this generator's preparation. The bench's preflight
-//! `check` stage is charged separately, as `preflightCostMs`.
+//! `check` stage is charged separately, as `preflightCostMs`. An optional
+//! `<dir>/build-ms`, the operator-measured wall time of building the bench and
+//! scorer binaries, is written as `buildMs` (zero when the file is absent).
 //!
 //! `manifest` treats the pilot directory as untrusted input. It resolves the directory once
 //! and refuses any task path that is a symlink or whose resolved path leaves it. It also
@@ -504,6 +506,13 @@ pub fn write_manifest(
     let manifest_path = dir.join("manifest.json");
     refuse_existing(&manifest_path)?;
     let inputs_ms = recorded_ms(&root, &dir.join("inputs-ms"), limits.acquisition_bytes)?;
+    // Optional operator-recorded build time of the bench and scorer binaries.
+    let build_path = dir.join("build-ms");
+    let build_ms = if build_path.symlink_metadata().is_ok() {
+        recorded_ms(&root, &build_path, limits.acquisition_bytes)?
+    } else {
+        0
+    };
     let scorer_sha = scorer_sha256(scorer, limits.scorer_bytes)?;
 
     let mut prepared = Vec::new();
@@ -641,6 +650,7 @@ pub fn write_manifest(
         "maximumCostRatio": 1.0,
         "minimumImprovement": 1e-6,
         "preparationMs": preparation_ms,
+        "buildMs": build_ms,
         "tasks": tasks,
     });
     let text = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
@@ -1081,6 +1091,24 @@ mod tests {
             "preparationMs {preparation} must charge the recorded {RECORDED} ms once, \
              plus only the manifest step's own time"
         );
+    }
+
+    #[test]
+    fn recorded_build_time_is_written_as_build_ms_and_absent_is_zero() {
+        let (_tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        write_manifest(&dir, &scorer, &"a".repeat(40), CUTOFF, &Limits::DEFAULT).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_slice(&read(&dir.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(written["buildMs"], 0, "no build-ms file records no charge");
+
+        let (_tmp, dir, scorer) = pilot();
+        write_labelled_sources(&dir);
+        std::fs::write(dir.join("build-ms"), "43210\n").unwrap();
+        write_manifest(&dir, &scorer, &"a".repeat(40), CUTOFF, &Limits::DEFAULT).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_slice(&read(&dir.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(written["buildMs"], 43_210);
     }
 
     #[test]

@@ -67,6 +67,10 @@ top-level `preparationMs` records, in milliseconds, the operator-measured wall
 time of preparation that no other field charges, such as fixture or input
 generation and manifest construction. It is reported as `preparationCostMs`
 and added to `totalResearchMs`. Absent or zero means no recorded charge.
+The optional top-level `buildMs` likewise records the operator-measured wall
+time of building the bench and scorer executables the run uses. It is reported
+as `buildCostMs` and added to `totalResearchMs`; absent or zero means no
+recorded charge.
 
 Audit rows with features embed ordinary `CandidateRecord` telemetry. Its
 `corpusIdentity` uses the manifest's corpus cache identity, so those records can
@@ -120,9 +124,36 @@ are unchanged. The audit ledger keeps a feature-availability flag; pairwise
 inputs zero-fill the columns only behind that flag, and the composite control
 ties any featureless candidate at zero.
 Activation variance is not output variance; sensitivity here is the existing
-activation-times-outgoing-weight estimate, not a gradient. Functional-path,
-compiled-latency and gradient/Fisher measurements are not added without an
-availability/cost case.
+activation-times-outgoing-weight estimate, not a gradient. The candidate
+features the issue names that the v1 vector lacks are assessed as follows.
+
+- Output variance: the variance of the creature's outputs with the cut applied
+  needs a forward pass of each child over sampled records. That is at least the
+  per-candidate work of the partial score, which the `partial` arm already pays
+  for, and whose `partialDelta` column the pairwise arms already read
+  (`ockham/examples/priority_ordering_bench/evaluation.rs`). It is therefore not
+  a cheap proxy here and is not added.
+- Compiled latency: the existing probe, `wall_clock_probe` in
+  `ockham/src/strata/bench.rs`, compiles the creature and times a pass over
+  `latency_records` records in each of three repetitions. Each candidate thus
+  costs three compiles and three timed passes. Its wall-clock figures differ
+  between runs on a shared host, so a ranking built from them could not be
+  reproduced from the manifest. The deterministic structural cost of a cut is
+  already in the vector as `directGrowthUnits` and `cascadeGrowthUnits`. Not
+  added.
+- Gradient/Fisher signal: the exported creatures carry no gradients, and
+  computing one needs a backward pass per record. That is not inexpensive, so
+  it is not added.
+- Functional paths: available and cheap. `SensitivityIndex`
+  (`ockham/src/sensitivity.rs`, Issue #105) sums absolute weight products over
+  downstream paths in `O(neurons + synapses)` work per creature; cyclic
+  components are relaxed conservatively rather than summed exactly. The
+  sensitivity orderings (`LowOutputSensitivity` and `LowEstimatedEffect` in
+  `ockham/src/ordering.rs`) already use it. The v1 vector does not include it:
+  `logDownstreamSensitivity` is the one-hop `mean_abs × Σ|outgoing weight|`
+  (`CandidateFeatures::downstream_sensitivity` in `ockham/src/features.rs`).
+  Adding the path sum changes the 15-column feature schema, so it needs a new
+  protocol version and a new pilot; the archived v1 pilot does not test it.
 
 ## Pilot, freeze and commands
 
@@ -170,8 +201,9 @@ a running preparation stage or scorer call can overrun the remaining wall
 allowance. The corpus byte cap, statistics-record cap, pair/epoch caps and
 per-call timeout bound that work. An external run supervisor should impose the
 site's hard process deadline. Pilot timings are feasibility estimates from a
-shared host, not performance guarantees. Build time is outside reported research
-runtime and is not hidden as a strategy speed-up.
+shared host, not performance guarantees. Build time is charged only through the
+manifest's operator-recorded `buildMs`, to the research total and not to any
+strategy, so it is not hidden as a strategy speed-up.
 
 ```mermaid
 flowchart LR
@@ -229,8 +261,9 @@ never enables deployment or real rejection.
 
 Cost reporting retains preflight (`preflightCostMs`, the preflight's
 `checkMs`), pilot, freeze, historical acquisition, manifest preparation
-(`preparationCostMs`), audit and evaluation totals, including protocol
-identity checks; `totalResearchMs` is their sum. It separates the actual
+(`preparationCostMs`), build (`buildCostMs`), audit, evaluation and result
+serialisation (`serialisationCostMs`) totals, including protocol identity
+checks; `totalResearchMs` is their sum. It separates the actual
 audit wall time from counterfactual
 strategy ledgers: preparation/generation, feature extraction, historical
 acquisition/loading, calibration acquisition, partial scoring, fit, adaptation,
@@ -249,7 +282,10 @@ pool's charged cost, minus protocol setup (charged to every trial as
 `preparationMs`) and history loading (charged to transfer trials in
 `historicalScoringMs`), floored at zero. It is part of `auditCostMs` and is not
 added to the total a second time.
-Final result serialisation/writing and build time are outside these runtime totals.
+`evaluate` times one serialisation of the finished report, rounded up to whole
+milliseconds, and writes a second serialisation carrying that charge; the
+measured pass stands in for the written one. Writing the file to disk is
+outside these runtime totals.
 Timings on this shared host are indicative, never correctness assertions.
 
 ## Synthetic pilot
@@ -282,9 +318,11 @@ first write, less the curation already charged to `acquisitionMs`, so
 `totalResearchMs` counts the generator's preparation. In the archived run that
 is 25 ms of a 4,049 ms total. The preflight `check` stage records `checkMs`,
 and `evaluate` requires `--preflight` and charges it as `preflightCostMs`
-(19 ms). Still uncounted: building the binaries, writing the final results,
-the manifest step after its first write, and the source searches' own timing,
-which the operator takes by hand.
+(19 ms). That run predates `buildMs` and `serialisationCostMs`, so it did not
+charge building the binaries or serialising the results. Still uncounted at the
+head: writing the final results file, the manifest step after its first write,
+and the source searches' own timing, which the operator takes by hand. The
+manifest step writes an optional `<dir>/build-ms` as `buildMs`.
 
 The manifest step refuses symlinks among the pilot-owned inputs and any path
 resolving outside the pilot directory, creates `history.jsonl` and

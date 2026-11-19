@@ -86,13 +86,18 @@ fn read<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 fn write(path: &Path, value: &impl Serialize) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    write_bytes(
+        path,
+        &serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?,
+    )
+}
+fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    file.write_all(&bytes)
+    file.write_all(bytes)
         .and_then(|()| file.write_all(b"\n"))
         .map_err(|e| e.to_string())
 }
@@ -405,7 +410,7 @@ pub fn main() -> Result<(), String> {
                 check_ms,
                 audit::ms(phase_start),
             )?;
-            write(&out, &result)?;
+            write_bytes(&out, &evaluation::serialise_charged(result)?)?;
         }
     }
     Ok(())
