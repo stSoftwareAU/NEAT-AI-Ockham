@@ -14,8 +14,10 @@ file once, refuses a file over the cap before reading it, reads through
 - The cap must hold before allocation, so it is checked on the opened file's
   length and enforced again by the bounded read, which also catches a file
   that grows or a stream whose reported length is 0.
-- Parsing goes through the new `telemetry::load_from_reader` over the hashed
-  bytes, so the digest covers exactly what is parsed.
+- Parsing goes through the existing `telemetry::load_from_reader`
+  (`ockham/src/telemetry.rs:225`, already on Develop from #261/#286) over the
+  hashed bytes, so the digest covers exactly what is parsed. This PR does not
+  touch `ockham/src/telemetry.rs`.
 
 ### Essential Design Decisions
 
@@ -32,16 +34,19 @@ file once, refuses a file over the cap before reading it, reads through
 
 ### Undiscoverable Facts
 
-- `telemetry::load_from_reader` has the same signature and body as the copy on
-  the unmerged #261 branch (`issue-261-experiment-compare-cheap-proxy-ranking-with-transf`),
-  so the two branches agree when both land.
+- The branch first added its own `telemetry::load_from_reader`; after the
+  #261 experiment merged to Develop as #286 with an identical function, the
+  merge from Develop left the Develop copy as the only one, so the diff
+  against Develop no longer touches `ockham/src/telemetry.rs`.
 
 ## Evidence
 
 Backend-only change. In the red run, the new `/dev/zero` test was built
 against the unfixed code and run under `ulimit -v 3000000`. It panicked with
 `out of memory` at `ockham/examples/priority_ordering_bench/tests.rs:668` and
-exited 101. After the fix it passes, refusing with `historical log exceeds
+exited 101. That evidence was gathered on commit `cc813f8`, before the merge
+from Develop; at the head the same `load_history` call is
+`tests.rs:681`. After the fix it passes, refusing with `historical log exceeds
 67108864 bytes`.
 
 ```mermaid
