@@ -1020,7 +1020,13 @@ fn synapse_stats() -> neat_ai_ockham::stats::ActivationStats {
 fn every_synapse_visit_gets_a_source_signal_feature_vector() {
     use neat_ai_ockham::ablation::growth_units;
     use neat_ai_ockham::sweep::{parse_synapse_key, present_visits, synapse_key};
-    let creature = neat_ai_ockham::fixtures::shortcut_edge_creature();
+    let mut creature = neat_ai_ockham::fixtures::shortcut_edge_creature();
+    let shortcut = creature
+        .synapses
+        .iter_mut()
+        .find(|edge| edge.from_uuid == "a" && edge.to_uuid == "output-0")
+        .unwrap();
+    shortcut.weight = -0.3;
     let stats = synapse_stats();
     let got = audit::audit_features(&creature, &stats).unwrap();
     let neurons = neat_ai_ockham::features::extract(

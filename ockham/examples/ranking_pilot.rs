@@ -222,14 +222,23 @@ fn over_limit(path: &Path, cap: u64) -> String {
     )
 }
 
+/// Inspect the path before opening it: opening a FIFO can wait for a writer.
+fn open_regular(path: &Path) -> Result<std::fs::File, String> {
+    let meta =
+        std::fs::metadata(path).map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("'{}' is not a regular file", path.display()));
+    }
+    std::fs::File::open(path).map_err(|e| format!("cannot read '{}': {e}", path.display()))
+}
+
 /// Read a contained regular file of at most `cap` bytes.
 ///
 /// The opened file's length is checked before reading; the read itself is capped
 /// at `cap + 1` bytes, so a file that grows after the check is also refused.
 fn read_bounded(root: &Path, path: &Path, cap: u64) -> Result<Vec<u8>, String> {
     let resolved = contained(root, path)?;
-    let file = std::fs::File::open(&resolved)
-        .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
+    let file = open_regular(&resolved)?;
     let meta = file
         .metadata()
         .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
@@ -251,8 +260,7 @@ fn read_bounded(root: &Path, path: &Path, cap: u64) -> Result<Vec<u8>, String> {
 
 /// Stream the file at `path` into `hasher` in 64 KiB chunks, adding to `total` and refusing past `cap`.
 fn hash_capped(path: &Path, hasher: &mut Sha256, total: &mut u64, cap: u64) -> Result<(), String> {
-    let mut file =
-        std::fs::File::open(path).map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
+    let mut file = open_regular(path)?;
     let meta = file
         .metadata()
         .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
@@ -1103,6 +1111,64 @@ mod tests {
         std::fs::remove_file(&recorded).unwrap();
         std::fs::copy(&outside, &recorded).unwrap();
         assert_accepted(&dir, &scorer, &Limits::DEFAULT);
+    }
+
+    fn check_non_regular_inputs(make_special: impl Fn(&Path)) {
+        for target in ["inputs-ms", "source-1/corpus/records.bin", "scorer"] {
+            let (_tmp, dir, scorer) = pilot();
+            write_labelled_sources(&dir);
+            let path = if target == "scorer" {
+                scorer.clone()
+            } else {
+                dir.join(target)
+            };
+            let saved = path.with_extension("saved");
+            std::fs::rename(&path, &saved).unwrap();
+            make_special(&path);
+
+            // Bound the wait so a regression opening a FIFO fails the test promptly.
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (pilot_dir, scorer_path) = (dir.clone(), scorer.clone());
+            let worker = std::thread::spawn(move || {
+                assert_refused(
+                    &pilot_dir,
+                    &scorer_path,
+                    &Limits::DEFAULT,
+                    "is not a regular file",
+                );
+                tx.send(()).unwrap();
+            });
+            rx.recv_timeout(Duration::from_secs(10))
+                .expect("manifest must refuse the input promptly");
+            worker.join().unwrap();
+
+            if path.is_dir() {
+                std::fs::remove_dir(&path).unwrap();
+            } else {
+                std::fs::remove_file(&path).unwrap();
+            }
+            std::fs::rename(saved, path).unwrap();
+            assert_accepted(&dir, &scorer, &Limits::DEFAULT);
+        }
+    }
+
+    #[test]
+    fn manifest_refuses_directory_inputs() {
+        check_non_regular_inputs(|path| std::fs::create_dir(path).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_refuses_fifo_inputs() {
+        check_non_regular_inputs(|path| {
+            assert!(
+                std::process::Command::new("mkfifo")
+                    .arg(path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        });
     }
 
     #[test]

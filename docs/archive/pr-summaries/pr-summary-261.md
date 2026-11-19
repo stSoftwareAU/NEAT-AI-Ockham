@@ -204,16 +204,15 @@ flowchart LR
 - **met** — Separate calibration from untouched validation — evidence: pilot
   and freeze open calibration tasks only; validation is touched only by audit
   and evaluate — reviewer: met
-- **met** — Count all preparation/search costs — evidence: `results.json`
+- **partial** — Count all preparation/search costs — evidence: `results.json`
   `preparationCostMs` 25, `preflightCostMs` 19 (the preflight's `checkMs`),
   `historicalAcquisitionMs` 1,881, stage sum equal to `totalResearchMs` 4,049;
   `priority_ordering_bench/tests.rs::preflight_check_time_is_reported_and_added_to_the_research_total`,
   `::preflight_validation_refuses_mismatched_identity_and_missing_check_time`,
   `ranking_pilot.rs::manifest_preparation_includes_the_recorded_inputs_time`,
-  `ockham/tests/ranking_pilot_archive.rs` — reviewer: met. The remaining
-  uncounted items are disclosed: building the binaries, the final results
-  write and the manifest step's own writes. The reviewer judged them
-  self-referential, one-off or negligible.
+  `ockham/tests/ranking_pilot_archive.rs`. The archived total excludes binary builds,
+  manifest work after its timing cutoff, and final result serialisation and
+  writing. Source search timings were recorded by hand.
 - **met** — Provide deterministic positive/negative correctness tests for new
   behaviour and pass the repository's normal quality checks. Research runs are
   separate from routine feature CI — evidence: the synapse-feature and
@@ -308,6 +307,8 @@ flowchart LR
   `write_manifest`. Each refusal test starts from a valid fixture, asserts the
   specific cause, asserts that no history and no manifest were written, and
   then has a positive control:
+  - `manifest_refuses_directory_inputs` and `manifest_refuses_fifo_inputs`
+    cover the timing file, corpus data and scorer
   - `oversized_raw_log_is_refused_at_the_boundary`
   - `oversized_corpus_is_refused_at_the_boundary`, which also asserts that
     `maxCorpusBytes` equals the limit
@@ -341,7 +342,8 @@ flowchart LR
 - Added for synapse features and the preflight cost
   (`priority_ordering_bench/tests.rs`):
   `every_synapse_visit_gets_a_source_signal_feature_vector` (values for a
-  hidden, an input and an unmeasured source),
+  hidden, an input and an unmeasured source, including a −0.3 shortcut
+  whose outgoing weight magnitude must be 0.3),
   `synapse_features_leave_neuron_vectors_untouched_and_unknown_keys_absent`,
   `preflight_check_time_is_reported_and_added_to_the_research_total` (1,234 ms
   raises the total by exactly 1,234) and

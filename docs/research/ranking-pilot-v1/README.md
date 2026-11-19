@@ -110,7 +110,7 @@ parent. These are search-only histories.
   the charged `acquisitionMs` values are 924 and 957. They are charged without
   amortisation.
 
-## All costs counted
+## Measured costs and exclusions
 
 `totalResearchMs` is 4,049 ms. It sums these stages:
 
