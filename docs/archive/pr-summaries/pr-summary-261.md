@@ -84,7 +84,21 @@ sensitivity.
 ## Test Plan
 
 - Added in `ockham/examples/priority_ordering_bench/tests.rs`: the three tests
-  under Evidence, plus the refusal tests listed below.
+  under Evidence, plus
+  `labelled_refuses_a_non_finite_or_negative_path_sensitivity` (`-1` and NaN
+  are refused with "non-finite or negative path sensitivity", and `0` is
+  accepted) and `freeze_refuses_a_version_one_pilot_and_accepts_version_two`
+  (the same pilot is refused at version 1 and accepted at version 2). The new
+  tests first failed to compile against the unchanged bench, because the field
+  and the helper did not exist yet.
+- `cargo test --example priority_ordering_bench < /dev/null`: 31 passed.
+- `cargo test --example ranking_pilot < /dev/null`: 26 passed.
+- `cargo test --test ranking_pilot_archive < /dev/null`: 1 passed.
+- `markdownlint-cli2` and `codespell` on `docs/experiments/ranking-v1.md`: no
+  findings.
+- `./quality.sh < /dev/null` on the final code: exit 0, "All quality checks
+  passed!".
+- Not checked: CI, macOS, and a v2 pilot with the real scorer.
 - Fixture updates in the same file (no assertion removed or weakened): the
   manifest fixture protocol is now `ockham-ranking-v2`, `artificial_audit` is
   `format_version: 2`, and the two `AuditRow` literals gain
