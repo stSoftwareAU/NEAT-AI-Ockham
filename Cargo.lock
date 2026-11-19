@@ -239,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "neat_ai_ockham"
-version = "0.1.105"
+version = "0.1.106"
 dependencies = [
  "clap",
  "neat-core",
