@@ -2266,12 +2266,17 @@ every strategy still visits every eligible neuron eventually.
 
 ### Controlled proxy/history comparison
 
-The existing benchmark also has an opt-in research mode for randomly
-selected, individually full-scored audit pools, isolated source/calibration/
-validation groups and paired ranking comparisons. It reads private manifests
-and never applies a candidate. See [the versioned research protocol](docs/experiments/ranking-v1.md)
-for the calibration pilot, freeze, reproducible commands, cost accounting and
-current availability finding. The simulated benchmark below remains separate
+The opt-in research mode for randomly selected, individually full-scored audit
+pools, isolated source/calibration/validation groups and paired ranking
+comparisons was retired after two synthetic pilots, both
+`no-demonstrated-benefit`. The retirement was a maintenance decision, not
+evidence that the method fails on representative data, and no representative
+data has been available. The mode is replayable from the pinned commit
+`39d44a43e92ed9bcb9ffa7d6d5124240292e3274`. See [the versioned research
+protocol](docs/experiments/ranking-v1.md) for the calibration pilot, freeze,
+reproducible commands, cost accounting and availability finding, and [the
+retirement record](docs/experiments/ranking-retirement-v1.json) for what was
+removed and how to replay it. The simulated benchmark below remains separate
 from representative evidence.
 
 ### Benchmark

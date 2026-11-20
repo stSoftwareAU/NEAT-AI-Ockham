@@ -138,28 +138,6 @@ impl ExternalScorer {
         }
     }
 
-    /// Run through an explicitly selected `timeout`/`gtimeout` executable.
-    /// Argument order and output validation are shared with ordinary scoring.
-    pub fn score_directory_bounded(
-        &self,
-        creature_dir: &Path,
-        training_dir: &Path,
-        mode: ScorerMode,
-        bounding_command: &Path,
-        seconds: u64,
-    ) -> Result<BTreeMap<String, ScoreResult>, ScorerError> {
-        if seconds == 0 {
-            return Err(ScorerError::Malformed(
-                "scorer timeout must be positive".into(),
-            ));
-        }
-        let mut command = Command::new(bounding_command);
-        command
-            .args(["--signal=KILL", &seconds.to_string()])
-            .arg(&self.binary);
-        self.score_command(command, creature_dir, training_dir, mode)
-    }
-
     fn score_command(
         &self,
         mut cmd: Command,

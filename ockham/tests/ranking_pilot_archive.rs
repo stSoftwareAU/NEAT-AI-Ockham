@@ -361,3 +361,40 @@ fn recorded_ms_in(name: &str, path: &str) -> u64 {
         .parse()
         .unwrap()
 }
+
+/// The file at `path`, relative to the repository root.
+fn repo_bytes(path: &str) -> Vec<u8> {
+    std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(path)).unwrap()
+}
+
+#[test]
+fn ranking_retirement_record_matches_the_archived_evidence() {
+    let record: Value =
+        serde_json::from_slice(&repo_bytes("docs/experiments/ranking-retirement-v1.json")).unwrap();
+    assert_eq!(
+        record["maintenanceDecision"],
+        "remove-optional-research-harness"
+    );
+    assert_eq!(record["representativeTasks"], 0);
+    assert_eq!(
+        record["experimentSourceCommit"],
+        "39d44a43e92ed9bcb9ffa7d6d5124240292e3274"
+    );
+    for pilot in record["pilots"].as_array().unwrap() {
+        let path = pilot["path"].as_str().unwrap();
+        let results: Value = serde_json::from_slice(&repo_bytes(path)).unwrap();
+        assert_eq!(pilot["verdict"], results["verdict"], "verdict of {path}");
+        assert_eq!(
+            results["verdict"], "no-demonstrated-benefit",
+            "verdict of {path}"
+        );
+    }
+    for item in record["evidence"].as_array().unwrap() {
+        let path = item["path"].as_str().unwrap();
+        assert_eq!(
+            item["sha256"],
+            sha256_hex(&repo_bytes(path)).as_str(),
+            "digest of {path}"
+        );
+    }
+}

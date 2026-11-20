@@ -1,5 +1,15 @@
 # Controlled pruning-order experiment, protocol v2
 
+**Status: the harness was retired.** The opt-in research harness described in
+this document (`priority_ordering_bench --experiment`, the `ranking_pilot`
+generator, `model::pairwise` and `ExternalScorer::score_directory_bounded`) was
+removed from head after two synthetic pilots, both `no-demonstrated-benefit`.
+The record is [the retirement record](ranking-retirement-v1.json). The commands
+in this document run from a worktree of the pinned commit
+`39d44a43e92ed9bcb9ffa7d6d5124240292e3274`, and the protocol text below is kept
+as the historical record. The removal departs from the predeclared rule further
+down, which tied removal to a representative v2 run.
+
 This is research infrastructure for issue #261, not evidence that a proxy or
 transfer model improves pruning. Ordinary CLI defaults, the pointwise
 `train-ordering` command and authoritative full-score acceptance are unchanged.
@@ -431,14 +441,19 @@ Without synapse features (the `fad4e74` run) transfer minus partial was −0.694
 and transfer minus target-only −0.083, so the missing features do not explain
 the learned arms' deficit. This is a negative synthetic finding, not a
 representative result. The
-report's maintenance decision keeps the pairwise and transfer arms research-only
-until the representative run. It also predeclares that they are removed if that
+report's maintenance decision kept the pairwise and transfer arms research-only
+until the representative run. It also predeclared that they are removed if that
 run also shows no benefit over partial ordering. Protocol v2's two path columns
 feed only those arms, so the same rule covers them. If the representative v2 run
-returns `no-demonstrated-benefit` for both pairwise arms against `partial`, the
-path columns and `audit::path_sensitivities` are removed with the arms. The
-cost-measurement code (`search`, `time` and the `.write-ms` sidecars) is not
-optional: the issue requires every cost to be counted, so it stays.
+returned `no-demonstrated-benefit` for both pairwise arms against `partial`, the
+path columns and `audit::path_sensitivities` were to be removed with the arms.
+That predeclared rule is departed from in [the retirement record](ranking-retirement-v1.json).
+The representative run has never been possible, the code was kept for it across
+two synthetic pilots, and the harness was removed as a maintenance decision. The
+removal is not evidence that the method fails on representative data. The
+cost-measurement code (`search`, `time` and the `.write-ms` sidecars) was part of
+the harness and is removed with it. The issue's requirement that every cost be
+counted still applies to any replay of the archive.
 
 A synthetic, non-representative pilot of protocol v2 was run on 19 November
 2026 at code revision `7cdabe6b89b65ee22a24151c7618b88c598136d9`, with the same
@@ -451,9 +466,10 @@ evaluation budget 2 and calibration budget 8, and every evaluation-budget-5
 cell is identical. At history fraction 0, where the path columns are the only
 changed input, target-pairwise minus random fell from 0.0 to −0.083
 [−0.25, 0.25]. The path columns did not help on this pilot. Transfer minus
-target-only at cold start was −0.167 [−0.25, 0.0]. The removal rule above is
-unaffected. A synthetic run neither triggers that rule nor replaces the
-representative v2 run it names.
+target-only at cold start was −0.167 [−0.25, 0.0]. This synthetic run did not
+trigger the removal rule above. It also does not replace the representative v2
+run that the rule names, which has not been possible, so the rule was departed
+from as recorded in [the retirement record](ranking-retirement-v1.json).
 
 ## Current finding
 
@@ -478,7 +494,9 @@ pilot, frozen validation manifest or validation comparison has been run. The
 synthetic pilots above (protocols v1 and v2) have been run, but their data are generated and not
 representative. Deterministic fixtures validate implementation contracts only;
 they do not demonstrate an optimisation benefit. The optional pairwise and
-transfer arms stay research-only in the example bench. Whether they earn their
-maintenance cost needs the representative run, so they are neither promoted nor
-removed on synthetic evidence alone. The private research run remains
-outstanding under the same issue. Operational rejection remains disabled.
+transfer arms were removed from head with the rest of the research harness, as a
+maintenance decision recorded in [the retirement record](ranking-retirement-v1.json).
+Representative evidence never settled whether they earned their maintenance cost,
+so the removal is not a finding that they fail on representative data. The
+representative private run has not been performed; its comparison can be replayed
+from the pinned commit. Operational rejection remains disabled.

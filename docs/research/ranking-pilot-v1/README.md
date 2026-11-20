@@ -254,24 +254,35 @@ No success is claimed. The representative run remains outstanding.
 
 ## Maintenance decision
 
+- Harness removed as a maintenance decision: the `--experiment` mode of
+  `priority_ordering_bench`, `ranking_pilot`, `model::pairwise` and
+  `ExternalScorer::score_directory_bounded` are no longer at head. The
+  [retirement record](../../experiments/ranking-retirement-v1.json) records the
+  decision and the departure from the predeclared rule below. Reproduce from a
+  worktree of the pinned commit `39d44a43e92ed9bcb9ffa7d6d5124240292e3274`
+  (see Reproduce).
 - Removed: the superseded #279 archive and its `cost-recount/` directory (see
   above). This run replaces them and can be reproduced from this branch.
-- Kept, research-only: the pairwise and transfer arms of the example bench.
+- Removed with the harness: the pairwise and transfer arms of the example bench.
   They did not earn their cost on this synthetic pilot, even with every
   candidate carrying features. But the pilot cannot separate method from
   fixture: the corpora are synthetic and homogeneous, and there are three
-  validation groups and three labelled history rows per source. The arms are the subject of the representative run
-  that this issue still owes. Nothing calls them outside the opt-in example
-  bench, and operational rejection stays disabled.
+  validation groups and three labelled history rows per source. The representative run that would have
+  decided them has never been possible, so they were removed as a maintenance
+  decision, not on evidence that the method fails. Operational rejection stays
+  disabled.
 - Predeclared removal rule: if the representative run also returns
   `no-demonstrated-benefit` for `target-pairwise` and `transfer-pairwise`
   against `partial` in its primary cell, remove both arms and their fit code
   from the bench. Keep `partial` and `multiple-proxies`. The synthetic v2
   pilot, which repeats this design with the path columns, is archived in
   [`ranking-pilot-v2`](../ranking-pilot-v2/README.md) and does not trigger this
-  rule.
-- Kept: `ranking_pilot`. It is the reproducible generator for this archive and
-  the tests that check the archive.
+  rule. The harness was removed without that run, as a maintenance decision
+  recorded in the [retirement record](../../experiments/ranking-retirement-v1.json).
+- Removed from head: `ranking_pilot`. It is the reproducible generator for this
+  archive and the tests that check the archive. It exists at the pinned commit
+  `39d44a43e92ed9bcb9ffa7d6d5124240292e3274` (protocol-v1 revision
+  `a4f0d274ccb84e37f5fa2b97ce3396daf0286aaa`), not at head.
 
 ## Input checksums
 
@@ -306,10 +317,24 @@ Tests check the archive:
   `preflightCostMs` equals the preflight's `checkMs`, and that no audited
   candidate lacks a feature vector.
 - `ockham/examples/ranking_pilot.rs::committed_raw_logs_recurate_to_the_committed_histories`
-  re-runs the manifest step on the committed raw logs and timings. It checks
+  exists at the pinned commit `39d44a43e92ed9bcb9ffa7d6d5124240292e3274`, not at
+  head. It re-runs the manifest step on the committed raw logs and timings. It checks
   that the curated histories are byte-identical to the committed ones.
 
 ## Reproduce
+
+The harness was removed from head. Run the Ockham commands below from a worktree
+of the pinned commit, with `< /dev/null` where a command runs:
+
+```sh
+git worktree add --detach /tmp/ranking-replay-source 39d44a43e92ed9bcb9ffa7d6d5124240292e3274 < /dev/null
+cd /tmp/ranking-replay-source
+```
+
+This archive is protocol v1, and the pinned commit refuses its pilot and audit
+files (`formatVersion` 1). Use the protocol-v1 revision
+`a4f0d274ccb84e37f5fa2b97ce3396daf0286aaa` in that command instead, as the
+Versions and pins section describes.
 
 Build the scorer at the pinned revision, in a NEAT-AI-scorer checkout:
 
@@ -335,7 +360,8 @@ There are two levels of reproduction:
   `<dir>/source-N/raw-candidates.jsonl`, and copy the committed
   `source-N/acquisition-ms`. Then run the manifest step below. The curated
   histories are byte-identical to the committed ones. The test
-  `committed_raw_logs_recurate_to_the_committed_histories` does exactly this.
+  `committed_raw_logs_recurate_to_the_committed_histories`, at the pinned commit,
+  does exactly this.
   The charged `acquisitionMs` and `preparationMs` add this run's own curation
   and manifest-step time.
 - The whole pilot from scratch, with the steps below. The searches' rows and

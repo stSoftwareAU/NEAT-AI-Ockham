@@ -157,14 +157,17 @@ outstanding.
 
 ## Maintenance decision
 
-- The removal rule is unchanged. It is predeclared in the
+- The harness was removed from head as a maintenance decision, recorded in the
+  [retirement record](../../experiments/ranking-retirement-v1.json). Reproduce
+  from a worktree of the pinned commit (see Reproduce).
+- The removal rule is predeclared in the
   [ranking-v1 experiment](../../experiments/ranking-v1.md). The pairwise arms,
-  the path columns and `audit::path_sensitivities` are removed only if the
-  representative v2 run also returns `no-demonstrated-benefit` against
-  `partial`. This synthetic run does not trigger it.
-- The pairwise arms, path columns and `audit::path_sensitivities` stay
-  research-only in the opt-in example bench. Operational rejection stays
-  disabled.
+  the path columns and `audit::path_sensitivities` were to be removed only if
+  the representative v2 run also returned `no-demonstrated-benefit` against
+  `partial`. This synthetic run did not trigger it, and that run has never been
+  possible. The removal was therefore a departure from the rule, not its outcome.
+- The pairwise arms, path columns and `audit::path_sensitivities` were removed
+  with the harness. Operational rejection stays disabled.
 
 ## Test
 
@@ -203,6 +206,17 @@ they are byte-exact with the run's files. The other archived files are
 byte-exact copies of the run's outputs.
 
 ## Reproduce
+
+The harness was removed from head. Run the Ockham commands below from a worktree
+of the pinned commit, with `< /dev/null` where a command runs:
+
+```sh
+git worktree add --detach /tmp/ranking-replay-source 39d44a43e92ed9bcb9ffa7d6d5124240292e3274 < /dev/null
+cd /tmp/ranking-replay-source
+```
+
+The pinned commit is a later protocol-v2 revision than `7cdabe6`, so it accepts
+this archive's protocol-v2 files.
 
 Build the scorer at the pinned revision, in a NEAT-AI-scorer checkout:
 
