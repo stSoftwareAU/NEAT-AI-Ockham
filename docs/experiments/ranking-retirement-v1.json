@@ -1,0 +1,62 @@
+{
+  "formatVersion": 1,
+  "issue": 261,
+  "experimentSourceCommit": "39d44a43e92ed9bcb9ffa7d6d5124240292e3274",
+  "scientificVerdict": "no-demonstrated-benefit-synthetic-only",
+  "maintenanceDecision": "remove-optional-research-harness",
+  "maintenanceReason": "The opt-in ranking research harness (priority_ordering_bench --experiment, the ranking_pilot generator, model::pairwise and ExternalScorer::score_directory_bounded) has not earned ongoing maintenance. Two synthetic pilots both returned no-demonstrated-benefit, and no representative corpus, creature or search history was available on any checked host. The predeclared rule in ranking-v1.md tied removal to a representative v2 run. That run has never been possible, so this record departs from the rule. The code was kept for it across two pilots. Replay at the pinned commit keeps the representative comparison runnable without maintaining the code. The removal is a maintenance decision, not evidence that the method fails on representative data.",
+  "representativeTasks": 0,
+  "pilots": [
+    {
+      "path": "docs/research/ranking-pilot-v1/results.json",
+      "verdict": "no-demonstrated-benefit"
+    },
+    {
+      "path": "docs/research/ranking-pilot-v2/results.json",
+      "verdict": "no-demonstrated-benefit"
+    }
+  ],
+  "negativeFindings": [
+    "v1 primary cell (transfer-pairwise versus partial, calibration budget 8, full history, evaluation budget 5): transfer-pairwise minus partial was −0.611 [−0.75, −0.333].",
+    "v1 composite minus partial was −0.389 [−0.5, −0.25].",
+    "v2 primary cell: transfer-pairwise minus partial was −0.611 [−0.75, −0.333]. The two path columns changed no evaluation-budget-5 cell relative to v1.",
+    "No representative corpus, creature or search history was available on any checked host. The availability record is docs/experiments/ranking-v1-availability.json (13 November 2026). A host-wide search for candidates*.jsonl, experiments.jsonl and creature files on 20 November 2026 found none. Synthetic fixtures cannot establish optimisation benefit."
+  ],
+  "removed": [
+    "ockham/examples/priority_ordering_bench/ modules audit, evaluation, experiment, manifest and tests, and the --experiment mode of priority_ordering_bench",
+    "ockham/examples/ranking_pilot.rs",
+    "ockham/src/model/pairwise.rs",
+    "ExternalScorer::score_directory_bounded",
+    "ockham/tests/bounded_scorer.rs"
+  ],
+  "retained": [
+    "The simulated priority_ordering_bench (cargo run --release --example priority_ordering_bench, without --experiment)",
+    "The archives docs/research/ranking-pilot-v1 and docs/research/ranking-pilot-v2, with their tests, including ockham/tests/ranking_pilot_archive.rs",
+    "The ranking-v1 protocol record and the availability record in docs/experiments",
+    "The telemetry and pointwise model code"
+  ],
+  "replayCommand": "git worktree add --detach /tmp/ranking-replay-source 39d44a43e92ed9bcb9ffa7d6d5124240292e3274 < /dev/null, then run the Reproduce commands of docs/research/ranking-pilot-v1/README.md and docs/research/ranking-pilot-v2/README.md from /tmp/ranking-replay-source, each with < /dev/null. The pinned commit refuses protocol v1 files, so the v1 archive replays at a4f0d274ccb84e37f5fa2b97ce3396daf0286aaa, as its README states; the v2 archive replays at the pinned commit.",
+  "outstanding": "Representative controlled comparison remains unperformed. This removal is a maintenance decision, not evidence that the method fails on representative data.",
+  "evidence": [
+    {
+      "path": "docs/research/ranking-pilot-v1/results.json",
+      "sha256": "80ddbdd2ee79883d7a081bfac8bcc26f1e8c7a0402c16399aa3b9f303183c3ec"
+    },
+    {
+      "path": "docs/research/ranking-pilot-v1/manifest.json",
+      "sha256": "8a426f721a143c3a160177ae6d323388287fd902165641c45d6fa90d5337489f"
+    },
+    {
+      "path": "docs/research/ranking-pilot-v2/results.json",
+      "sha256": "dfc935e1e40dccf2feeaf9e1c9876cc16ef5e9fad5f7090bc8ddff11a3bd931e"
+    },
+    {
+      "path": "docs/research/ranking-pilot-v2/manifest.json",
+      "sha256": "3a3784a7de8cfa256bfa7d5375305c2c198b802c2fc84bea0f3a96e1c6e52112"
+    },
+    {
+      "path": "docs/experiments/ranking-v1-availability.json",
+      "sha256": "907b4a63225a8187c197bc8fcb5da97639b369ce2a66a861501b401fc2b38271"
+    }
+  ]
+}
