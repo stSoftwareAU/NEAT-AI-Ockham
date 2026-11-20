@@ -14,7 +14,10 @@ Removed: `ockham/examples/priority_ordering_bench/` (the `--experiment` mode),
 `ockham/examples/ranking_pilot.rs`, `ockham/src/model/pairwise.rs`,
 `ExternalScorer::score_directory_bounded` and `ockham/tests/bounded_scorer.rs`.
 After the examples go, nothing else calls the pairwise module or the bounded
-scorer.
+scorer. The part of `bounded_scorer.rs` that tested the retained ordinary
+scorer now lives in the new `ockham/tests/scorer_invocation.rs`. That part
+checks sample flags, extra arguments, directories and loud failure on a
+rejected argument.
 
 ## Spec
 
@@ -81,9 +84,24 @@ flowchart LR
 - Added `ranking_retirement_record_matches_the_archived_evidence`. It failed
   before the record existed (`No such file or directory` at
   `ockham/tests/ranking_pilot_archive.rs:367`) and passes after it was written.
+- Added `ockham/tests/scorer_invocation.rs`, which addresses the PR #291
+  review. Its first test is
+  `full_and_sampled_scoring_pass_sample_flags_extra_arguments_and_directories`.
+  It drives `ExternalScorer::score_directory` against an executable fixture and
+  asserts the full and sampled results (0.8 over 32 records, then 0.7 over 2
+  records at phase 7). Its second test is
+  `a_scorer_that_rejects_its_arguments_fails_loud_with_its_exit_status`. It
+  asserts `ScorerError::Failed` with the fixture's exit status for wrong extra
+  arguments (42), a wrong sample phase (41) and a missing training directory
+  (43), alongside an allowed control. Neither test needs a real `rust_scorer`
+  or `timeout`. `cargo test --locked -p neat_ai_ockham --test scorer_invocation`:
+  2 passed.
 - Removed tests, together with the functionality they covered (no callers are
   left at head):
-  - `ockham/tests/bounded_scorer.rs`;
+  - `ockham/tests/bounded_scorer.rs`. Its timeout-wrapper checks went with
+    `score_directory_bounded`. Its checks of the ordinary scorer's
+    sample-flag, extra-argument and exit-status contract moved to
+    `ockham/tests/scorer_invocation.rs` (above);
   - the bounded-versus-ordinary block at the end of
     `ockham/tests/real_scorer.rs::real_scorer_scores_the_incumbent_baseline`.
     Its ordinary-scoring assertions are unchanged;
@@ -103,6 +121,6 @@ flowchart LR
   historical record, under the status note that they run from the pinned
   commit. The `priority_ordering_bench` doc comments in `ockham/src/priority.rs`
   name the retained simulated bench and are still true.
-- `./quality.sh < /dev/null` on the final tree: exit 0 ("All quality checks passed!").
+- `./quality.sh < /dev/null` on the final head (including `scorer_invocation`): exit 0 ("All quality checks passed!").
 - Not checked: CI, macOS, and a replay from the pinned commit in a fresh
   worktree.
