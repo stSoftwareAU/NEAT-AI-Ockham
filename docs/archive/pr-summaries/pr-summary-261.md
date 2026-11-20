@@ -112,7 +112,7 @@ flowchart LR
   `cargo test --locked --examples` (25 passed).
 - `cargo clippy --locked --all-targets -- -D warnings` and `cargo fmt --check`:
   no findings. `markdownlint-cli2` and `scripts/spell-check.sh`: no findings.
-- Docs swept: I grepped `README.md` and `docs/` (excluding `docs/archive/`) for
+- Docs swept: I grepped `README.md`, `CONTRIBUTING.md` and `docs/` (excluding `docs/archive/`) for
   `--experiment`, `ranking_pilot`, `model::pairwise`, `score_directory_bounded`
   and `research-only`. Updated: the README section "Controlled proxy/history
   comparison", plus the status, maintenance and "Current finding" text of
@@ -120,7 +120,11 @@ flowchart LR
   and Reproduce. The protocol command blocks in `ranking-v1.md` stay as the
   historical record, under the status note that they run from the pinned
   commit. The `priority_ordering_bench` doc comments in `ockham/src/priority.rs`
-  name the retained simulated bench and are still true.
+  name the retained simulated bench and are still true. In `CONTRIBUTING.md`
+  the `timeout` prerequisite named the deleted bounded-scorer test and ordering
+  research runner; it now names the only remaining user, the opt-in
+  connection-budget experiment runner
+  (`ockham/examples/connection_budget/measurement.rs`).
 - `./quality.sh < /dev/null` on the final head (including `scorer_invocation`): exit 0 ("All quality checks passed!").
 - Not checked: CI, macOS, and a replay from the pinned commit in a fresh
   worktree.
