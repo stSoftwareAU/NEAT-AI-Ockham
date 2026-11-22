@@ -165,7 +165,7 @@ flowchart LR
     `malformed_digest_is_refused`.
 - **Results:**
   - `./quality.sh < /dev/null` passed on `7f08ecf` with "All quality checks
-    passed!". It was re-run on the final head after the review fixes; that
-    result is below.
+    passed!", and passed again on the final head `dd3ddd5`, after the review
+    fixes.
   - `cargo test --test strata_archive --test readme_contract` passed: 4 and 10
     tests.
