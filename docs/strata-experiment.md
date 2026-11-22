@@ -1,4 +1,4 @@
-# Stratum-guided pruning experiment (opt-in)
+# Stratum-guided pruning experiment (retired)
 
 **Status: the harness was retired.** The opt-in research harness described in
 this document (the `bench-strata` subcommand, the `ockham/src/strata` module and
@@ -402,9 +402,9 @@ inconclusive, and that report gives the results and their limits.
 The harness was retired on 2026-11-22. The
 [retirement record](experiments/strata-retirement-v1.json) lists what was
 removed: the `bench-strata` subcommand, the `ockham/src/strata` module,
-`ockham/examples/strata_pilot.rs` and `ockham/tests/strata_bench.rs`. The last
-two existed at the pinned commit `29781c784dc35cf6fc23ab404ee928c8fce49171`,
-where the commands in this document replay.
+`ockham/examples/strata_pilot.rs` and `ockham/tests/strata_bench.rs`. All four
+existed at the pinned commit `29781c784dc35cf6fc23ab404ee928c8fce49171`, where
+the commands in this document replay.
 
 The retirement departs from the predeclared rule. That rule tied removal to a
 representative run, and no representative run has ever been possible. The

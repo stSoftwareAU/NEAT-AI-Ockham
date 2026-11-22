@@ -1,17 +1,20 @@
 # Stratum-guided pruning pilot v1: inconclusive
 
-**Retired harness.** `bench-strata` and the `strata_pilot` example were retired
-on 2026-11-22. See [the retirement record](../../experiments/strata-retirement-v1.json).
-The Reproduce commands below run from a worktree of the pinned commit
-`29781c784dc35cf6fc23ab404ee928c8fce49171`, not from head.
+**Retired harness.** This report is the historical record of the `bench-strata`
+harness and the `strata_pilot` example, which were retired on 2026-11-22. See
+[the retirement record](../../experiments/strata-retirement-v1.json). Its paths,
+commands and versions are as they were at the pinned commit
+`29781c784dc35cf6fc23ab404ee928c8fce49171`, not head. The Reproduce commands run
+from a worktree of that commit.
 
 This is a synthetic pilot run with the real scorer, not evidence of a benefit
 on evolved creatures. The fixture is application-agnostic and deliberately
 simple, and no representative creature or corpus was available. It claims no
 benefit, and it claims no representative negative result.
 
-The [frozen manifest](manifest.json) and [parent creature](parent.json) are the
-inputs. The [raw report](report.json) is the unedited output of
+The [manifest](manifest.json) and [parent creature](parent.json) are the
+inputs. The manifest was committed with its results and was not frozen, as the
+[protocol's status section](../../strata-experiment.md#status) records. The [raw report](report.json) is the unedited output of
 `bench-strata`. The method and its controls are described in
 [the experiment protocol](../../strata-experiment.md).
 
@@ -19,9 +22,11 @@ inputs. The [raw report](report.json) is the unedited output of
 
 - Ockham crate 0.1.93, built from commit
   `a112bc1db107dc4fb17feeec1865c4732b2b7017`. The example that generates the
-  inputs, `ockham/examples/strata_pilot.rs`, is added on the issue #263
-  branch after that commit. The `bench-strata` source is unchanged since
-  `a112bc1`.
+  inputs, `ockham/examples/strata_pilot.rs`, was added on the issue #263
+  branch after that commit and existed at the pinned commit
+  `29781c784dc35cf6fc23ab404ee928c8fce49171` until #263 retired it. The
+  `bench-strata` source was recorded as unchanged since `a112bc1` when the pilot
+  ran. That commit is not in this clone, so the claim was not re-checked here.
 - `rust_scorer` built with `cargo build --release --locked -p rust_scorer` from
   NEAT-AI-scorer revision `742c5df30fc98ece3afe784be1aca18f925b47b3`, with
   sha256 `d057a3349da1c28e1319d7e235491597517581b17fda21ea1cf8f0dd55ffbbf7`.

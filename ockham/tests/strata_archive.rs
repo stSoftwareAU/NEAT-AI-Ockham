@@ -116,6 +116,7 @@ fn retired_command_is_absent_from_the_installed_binary() {
 fn replay_names_the_pinned_commit_and_the_retired_command_is_gone_from_head() {
     let decision = record();
     let commit = decision["experimentSourceCommit"].as_str().unwrap();
+    assert_eq!(commit, "29781c784dc35cf6fc23ab404ee928c8fce49171");
     assert_eq!(commit.len(), 40);
     assert!(
         commit
