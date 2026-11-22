@@ -128,8 +128,12 @@ flowchart LR
   - that no workflow changed;
   - that no dangling `strata` references remain;
   - that the record's digests match the pilot's checksum table.
-  - The `readme_contract.rs` `SUBCOMMANDS` change is forced by the removal,
-    and the absence of `bench-strata` is guarded by
+  - The `readme_contract.rs` `SUBCOMMANDS` change was not forced by the
+    removal. The entry was dropped because the subcommand is gone and its
+    flags are no longer part of the README contract. Left in, the test would
+    still pass: at head, `neat_ai_ockham bench-strata --help` exits 0 and
+    prints the top-level help, because clap takes `bench-strata` as the
+    positional CREATURE. The absence of `bench-strata` is guarded only by
     `strata_archive.rs::retired_command_is_absent_from_the_installed_binary`.
 
 ## Test Plan
@@ -150,10 +154,15 @@ flowchart LR
     `bench-strata`, and that `ockham/src/strata` is absent.
 - **Edited** `ockham/tests/readme_contract.rs`: dropped `bench-strata` from
   `SUBCOMMANDS`.
-  - Obsolete: the subcommand no longer exists, so its `--help` would fail.
+  - Why: the subcommand no longer exists, so its flags are no longer part of
+    the README contract. Keeping the entry would not have failed the test:
+    `bench-strata --help` exits 0 at head and prints output byte-identical to
+    the top-level `--help`, because clap takes `bench-strata` as the
+    positional CREATURE. With the entry temporarily put back at head,
+    `cargo test --test readme_contract` passed 10 of 10.
   - Still protected: the flag-contract tests still cover the top-level command
     and the three remaining subcommands. The retired command's absence is
-    covered by `strata_archive.rs` as above.
+    covered only by `strata_archive.rs` as above.
 - **Removed with the code:** `ockham/tests/strata_bench.rs` and the
   `strata_pilot` example tests.
   - Evidence that the behaviour and its callers are gone: no
