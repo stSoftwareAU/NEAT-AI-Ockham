@@ -2,179 +2,179 @@
 
 ## Summary
 
-`bench-strata` can now freeze its manifest. The operator records the
-manifest's SHA-256 before a representative run and passes it as
-`--manifest-sha256 <digest>`. If the manifest bytes differ, the run is refused
-before any scoring, scratch directory or report. The report records
-`versions.manifestFrozen`, so a later reader can see that the run's controls,
-seeds, limits and success rule were fixed when the digest was recorded. This
-closes the predeclaration gap that the #272 review left open: there, the
-synthetic pilot's manifest was committed in the same commit as its results.
+Retires the opt-in `bench-strata` research harness. This is the outcome #263
+provides for in "Record negative findings and remove optional code that does
+not earn its maintenance cost", and it follows the #261 and #262 retirements.
 
-The paper's full text still cannot be fetched, and this host still has no
-representative corpora and no `rust_scorer`. The method stays unpinned, no
-representative run has been made, and no benefit is claimed. Part of #263.
+- **Removed:** the `bench-strata` subcommand, the `ockham/src/strata/` module,
+  the `strata_pilot` example and `ockham/tests/strata_bench.rs`.
+- **Why:**
+  - The only run, a synthetic real-scorer pilot, was `inconclusive`. The
+    aggregate, worst-stratum and pareto arms selected the same bundle
+    `{d0, d1, d2, d3}` on all ten seeds, and every difference against
+    aggregate was 0, with interval `[0, 0]`. Neither treatment met its
+    criterion.
+  - Since #268, #272 and #275, the source paper's full text has never been
+    retrievable, and no representative corpus or scorer has been available on
+    any checked host.
+- **Recorded:** `docs/experiments/strata-retirement-v1.json` holds the
+  decision, the negative findings, the 2026-11-22 availability check and the
+  replay command. It also pins SHA-256 digests for the 11 archived pilot inputs
+  and outputs, and `ockham/tests/strata_archive.rs` checks them.
+- **Replay:** the harness stays replayable at commit
+  `29781c784dc35cf6fc23ab404ee928c8fce49171`.
+- **Not claimed:** no success, and no representative negative result.
+
+Closes #263.
 
 ## Spec
 
 ### Intent and Rationale
 
-- #268 (bench) and #272 (synthetic real-scorer pilot) are merged. Their
-  remaining gaps are an unpinned method, no representative run, and
-  predeclaration that cannot be shown. Only the last can be closed on this
-  host.
-- A digest check is the smallest way to show predeclaration. It reuses the
-  `sha256` that `strata::manifest::load` already computes, and leaves the
-  manifest schema unchanged.
+- After three merged PRs, nothing left in #263 can be advanced on any host.
+  The paper is unreachable, and representative strata would be private under
+  the issue's own rule. Keeping roughly 4,500 lines of opt-in code for a run
+  that cannot happen costs maintenance and earns nothing.
+- Retirement mirrors the #261 (`ranking-retirement-v1.json`) and #262
+  (`soft-gate-retirement-v1.json`) shape. The record, the digest-pinned
+  evidence and a replay commit keep the comparison runnable without
+  maintaining it.
 
 ### Essential Design Decisions
 
-- `run_bench` takes a required `frozen_manifest_sha256: Option<&str>`. `None`
-  keeps the previous behaviour, and no caller can omit the argument without
-  the compiler saying so.
-- `refuse_unless_frozen` (public in `ockham/src/incumbent.rs`, beside
-  `sha256_hex`) is the one implementation of the freeze check. It is shared
-  with `audit-preservation` (#276), whose private copy in
-  `ockham/src/preservation.rs` was moved here; `bench-strata` adds no second
-  copy. It runs in `run_bench` straight after the manifest is loaded and
-  validated, and also on the CLI's first read, which builds the latency probe,
-  so every manifest read that a frozen run uses is checked. A digest is 64 hex
-  digits in either case. A malformed value is echoed in the error, cut to 80
-  characters. A later change to the digest rule or message now applies to both
-  commands.
-- `versions.manifestFrozen` is an added field in output-only JSON (`Versions`
-  derives only `Serialize`), so the schema stays `ockham-strata-bench/1`. The
-  committed pilot `report.json` predates the field and was not regenerated. The
-  docs say that the pilot was not frozen.
-- A freeze proves that the bytes did not change after the digest was recorded,
-  not when it was recorded. The recording time comes from the operator's own
-  record, such as a commit.
+- **Predeclared rule:** the protocol said removal waits on a representative
+  run. That run has never been possible, so this PR departs from the rule. The
+  departure is written out in the record's `maintenanceReason`, in the banner
+  of `docs/strata-experiment.md` and in its Status section. It is a
+  maintenance decision, not evidence against the method.
+- **Closes rather than Part of:** this is the reviewer departure. The
+  independent Spec reviewer rated the representative comparison `partial` and
+  "Read and pin the full method" `missing`. This PR still closes #263, as #261
+  did. Pinning the method is a precondition of reproducing it, and the
+  reproduction is now retired. A representative run's corpora and results
+  would stay private under the issue's own rule. The record's `outstanding`
+  field names the unperformed representative comparison.
+- **Shared code kept:** `refuse_unless_frozen` stays in
+  `ockham/src/incumbent.rs`, used by `audit-preservation`, with its tests in
+  `ockham/src/preservation.rs`. `preservation.rs` now takes the identical
+  1 MiB `MAX_MANIFEST_BYTES` from `additivity::manifest` instead of adding a
+  copy.
+- **Docs kept as history:** `docs/strata-experiment.md` and the pilot report
+  stay as historical records, each with a retirement banner, so existing links
+  still resolve.
 
 ### Undiscoverable Facts
 
-- **Paper:** on 2026-11-15, `curl` to `arxiv.org/{abs,pdf}/2610.27812`,
-  `export.arxiv.org` and the Semantic Scholar API could not connect
-  (`000`). WebFetch of `arxiv.org/abs/2610.27812` and
-  `arxiv.org/html/2610.27812v1` got "proxy refused the connection".
-  `github.com/AMD-AGI/SliMOO` returned 404. Web search still gives only the
-  abstract-level description (SliMOO: task-layer probing, a
-  task-layer prior, NSGA-II), with no hyper-parameters.
-- **Inputs:** `rust_scorer` is not on `PATH`, and no representative corpus is
-  available on this host.
-- **Re-check after the completion gate (same day):** curl to
-  `arxiv.org/abs`, `export.arxiv.org` and the Semantic Scholar API still got
-  `000`, and `github.com/AMD-AGI/SliMOO` still returned 404. WebFetch of
-  `arxiv.org/html/2610.27812v1` and of the paperswithcode mirror got "proxy
-  refused the connection". A web search still turned up no hyper-parameters.
-  A filesystem-wide `find` found no `rust_scorer` binary. The five `partial`
-  criteria below each need the paper's full text or a representative corpus
-  and scorer, so they stay `partial`. A representative manifest or result was
-  not invented to fill the gap.
+- **Availability on 2026-11-22:**
+  - `curl` to `arxiv.org/abs/2610.27812`, `export.arxiv.org/abs/2610.27812`,
+    `arxiv.org/pdf/2610.27812v1` and the Semantic Scholar API returned `000`.
+  - WebFetch of `arxiv.org/html/2610.27812v1`,
+    `openreview.net/forum?id=KkPVejhpML` and `paperswithcode.co/paper/129664`
+    got "proxy refused the connection".
+  - `gh api repos/AMD-AGI/SliMOO` returned 404.
+  - A filesystem-wide `find` found no `rust_scorer`.
+  - Web search still returns only the abstract-level description.
+- **Prior attempts:** the issue was deferred on 2026-11-15 for these same
+  missing inputs, and none of them has appeared since.
 
 ## Evidence
 
-This is a backend/CLI change to an opt-in bench, with no UI files.
+This is a backend and docs change, with no UI files.
 
 ```mermaid
 flowchart LR
-    R[Operator records sha256 of manifest, e.g. in a commit] --> C[bench-strata --manifest-sha256]
-    C --> L[load + validate manifest]
-    L --> F{refuse_unless_frozen}
-    F -- differs or malformed --> X[refused: no scratch dir, no scoring, no report]
-    F -- matches --> B[bench runs]
-    B --> O[report: versions.manifestSha256, versions.manifestFrozen = true]
+    P[Synthetic pilot v1: arms tied, criteria not met] --> D{Representative data or paper available?}
+    D -- no, checked 2026-11-22 --> R[Retire bench-strata]
+    R --> J[strata-retirement-v1.json: findings, availability, sha256 evidence]
+    R --> C[Replay at 29781c7]
+    J --> T[ockham/tests/strata_archive.rs pins digests and absence]
 ```
 
-- #268: Experiment: Compare worst-stratum ablation guidance and Pareto pruning
-  (Issue #263), the merged bench.
-- #272: Experiment: Compare worst-stratum ablation guidance and Pareto pruning
-  (Issue #263), the merged synthetic pilot.
-- Docs updated: `docs/strata-experiment.md` (a new "Freezing the manifest"
-  section, the `versions` bullet in "Report", and a "Status" bullet) and the
-  `README.md` section "Stratum-guided pruning experiment (opt-in)".
-
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **partial** — Estimate per-neuron removal cost on 3–5 representative calibration strata. Compare aggregate-only pruning with probabilities proportional to exp(-max_t I[t,i]/temperature) and a bounded Pareto archive over stratum error, connections and measured latency. Fit scales/temperature without final-holdout access. Measure minority-stratum regressions, full fitness, removals and wins per hour. Canonically build and score combined cuts — evidence: `ockham/src/strata/bench.rs` (merged in #268), `docs/research/strata-pilot-v1/report.json` — reviewer: partial — reason: no representative strata are available on this host; only fixtures and the synthetic pilot have run
-- **partial** — Read and pin the full method before reproducing it — evidence: `docs/strata-experiment.md` "Source paper (full text unread)" — reviewer: partial — reason: the full text is still unfetchable (curl `000`, proxy refusal, and the code repository returns 404 on 2026-11-15), so the method is not pinned
-- **met** — First inspect current code, merged work and repository instructions. Reuse existing mechanisms; if functionality already exists, this issue still owns the missing controlled comparison rather than a second implementation — evidence: `ockham/src/incumbent.rs::refuse_unless_frozen`, the single helper moved out of `preservation.rs` and shared by `audit-preservation` and `bench-strata`, compares against `loaded.sha256` from `strata::manifest::load` — reviewer: met
-- **met** — Opt-in experiment only; preserve ordinary behaviour, interfaces, immutable parents and full authoritative acceptance. No automatic deployment or default change — evidence: optional flag; `None` keeps prior behaviour in every existing `ockham/tests/strata_bench.rs` call — reviewer: met
-- **partial** — Predeclare controls, seeds, sample size, compute limits and success/failure criteria. Identify code/model/data versions; separate calibration from untouched validation and count all preparation/search costs — evidence: `ockham/tests/strata_bench.rs::mismatched_digest_is_refused_before_any_work_and_the_correct_digest_is_accepted`, `versions.manifestFrozen` — reviewer: partial — reason: the freeze mechanism now exists, but no representative manifest has been frozen with it
-- **met** — Provide deterministic positive/negative correctness tests for new behaviour and pass the repository's normal quality checks. Research runs are separate from routine feature CI — evidence: `ockham/tests/strata_bench.rs::frozen_run_with_the_predeclared_digest_records_that_it_was_checked` (positive), `malformed_digest_is_refused_before_any_work` and `bench_strata_refuses_a_wrong_manifest_sha256_before_the_scorer_runs` (negative); `./quality.sh < /dev/null` passed — reviewer: met — reason: the reviewer could not run the gate; it was run here on the head and passed
-- **partial** — Deliver a reproducible command/manifest and machine-readable results with paired distributions, uncertainty, failures and actual coverage. Fixtures alone do not demonstrate an optimisation benefit — evidence: `docs/strata-experiment.md` "Freezing the manifest" and "Report"; `docs/research/strata-pilot-v1/report.json` — reviewer: partial — reason: only synthetic results exist; no representative run is possible here
-- **partial** — Record negative findings and remove optional code that does not earn its maintenance cost. Do not claim success before representative runs — evidence: `docs/strata-experiment.md` "Status" — reviewer: met — reason: no success is claimed and the findings are recorded, but the removal decision still needs a representative run, so this stays partial
-- **met** — Keep public implementation and fixtures application-agnostic; private corpora/results and operational integration remain private — evidence: the new code, docs and tests use no private names or paths — reviewer: met
-- **met** — Leave unassigned until an implementer actively starts. `work-on` authorises the investigation, not skipping prerequisite verification — evidence: this run assigned nothing, and merged work, the paper and host inputs were checked before coding — reviewer: missing — reason: the reviewer said it is "not assessable" from a diff; assignment is issue state, not code
+- `docs/experiments/strata-retirement-v1.json` is the new decision record.
+- These docs were updated after reading every passage that names the harness:
+  - the `README.md` section "Stratum-guided pruning experiment (retired)", and
+    its layout tree;
+  - the `docs/strata-experiment.md` banner, title and "Status";
+  - the `docs/research/strata-pilot-v1/report.md` banner, "Versions and pins",
+    the checksum and reproduce notes, and the manifest link;
+  - the `docs/experiments/ranking-v1.md` compiled-latency bullet, now in the
+    past tense;
+  - the doc comments in `ockham/src/incumbent.rs`, `ockham/src/output_guard.rs`
+    and `ockham/src/lib.rs`.
+- No `strata` reference remains in `ockham/src`, `ockham/examples`,
+  `quality.sh`, `scripts/` or `.github`. The only exception is the unrelated
+  `strata_records` in `connection_budget`, which is not about this harness.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean** — The repository has no `CODING-STANDARDS.md`, so the reviewer used `CONTRIBUTING.md`, `README.md` and `docs/strata-experiment.md`. It found no rule enforced by review only. It checked:
-  - the eight CONTRIBUTING principles (the parent is never written, scorer acceptance is unchanged, no TypeScript);
-  - that the docs match the code;
+- **violation** — A doc in the diff described removed code as present at head
+  ("is added on the issue #263 branch", "The `bench-strata` source is
+  unchanged") — evidence: `docs/research/strata-pilot-v1/report.md:28` —
+  reason: fixed in this diff
+- **violation** — A changed sentence called the retired probe "the existing
+  probe … compiles" — evidence: `docs/experiments/ranking-v1.md:161` — reason:
+  fixed in this diff
+- **clean** — The repository has no `CODING-STANDARDS.md`, so the reviewer
+  used `CONTRIBUTING.md` and `README.md`. It found no rule enforced by review
+  only. It checked:
+  - principles 1–8: the ordinary pruning path, acceptance and the scorer are
+    untouched, and the version bump is left to CI;
+  - the README contract: the layout tree matches `ockham/src`, and no new
+    flags were added;
   - that no named test is missing;
-  - that no new stub stands in for another binary;
+  - that no permissive stub was added;
   - that no workflow changed;
-  - that `sha2` is already a dependency;
-  - that both edited existing tests (the end-to-end `manifestFrozen == false` assertion, and `--help` listing `--manifest-sha256`) fail without the code they test.
-
-  Its optional notes on the CLI's unchecked first manifest read, the "before any work" wording and a truncation assertion that applied to every input were fixed in `48604d5`.
+  - that no dangling `strata` references remain;
+  - that the record's digests match the pilot's checksum table.
+  - The `readme_contract.rs` `SUBCOMMANDS` change was not forced by the
+    removal. The entry was dropped because the subcommand is gone and its
+    flags are no longer part of the README contract. Left in, the test would
+    still pass: at head, `neat_ai_ockham bench-strata --help` exits 0 and
+    prints the top-level help, because clap takes `bench-strata` as the
+    positional CREATURE. The absence of `bench-strata` is guarded only by
+    `strata_archive.rs::retired_command_is_absent_from_the_installed_binary`.
 
 ## Test Plan
 
-- Added to `ockham/tests/strata_bench.rs`:
-  - `frozen_run_with_the_predeclared_digest_records_that_it_was_checked`: the
-    digest, computed independently with `sha2` and passed in upper case, is
-    accepted. The in-memory and on-disk report have `manifestFrozen == true`
-    and `manifestSha256` equal to the lowercase digest.
-  - `mismatched_digest_is_refused_before_any_work_and_the_correct_digest_is_accepted`:
-    a digest that differs by one character is refused. The error names both
-    digests and "predeclared", there is no report and no `report.json.work`,
-    and the scorer gets zero calls. A positive control on the same fixture,
-    with the correct digest, is accepted and writes its report.
-  - `malformed_digest_is_refused_before_any_work`: 63 hex digits, 64 characters
-    with one non-hex, and 200 characters are each refused with "64 hex digits".
-    Nothing is written or scored, and only the 200-character case is checked
-    for truncation to 80 characters.
-  - `bench_strata_refuses_a_wrong_manifest_sha256_before_the_scorer_runs`
-    (CLI): exits non-zero with "predeclared" on stderr, never reaches
-    `--scorer /nonexistent`, and writes no report.
-- Edited existing tests (no assertion removed):
-  - the end-to-end test also asserts `versions.manifestFrozen == false`;
-  - `bench_strata_help_lists_its_flags` also expects `--manifest-sha256`;
-  - four existing `run_bench` calls gain `None`.
-- TDD: the new tests were written first and failed to compile against the
-  unchanged `run_bench` (`E0061: this function takes 4 arguments but 5
-  arguments were supplied`).
-- Callers of `run_bench` checked: `ockham/src/main.rs` (passes the flag) and
-  the four test calls. The other `run_bench` callers belong to
-  `additivity::bench` and are unaffected.
-- `cargo test -p neat_ai_ockham --test strata_bench`: 11 passed.
-  `cargo test -p neat_ai_ockham --test readme_contract`: 10 passed. Clippy
-  with `-D warnings`, `cargo fmt --check` and rustdoc with `-D warnings` were
-  clean.
-- Review round on head `789977e`: the duplicate `refuse_unless_frozen` was
-  removed from `strata/bench.rs` and `preservation.rs` and kept once in
-  `ockham/src/incumbent.rs`. `main.rs`, `run_bench` and `run_audit` call it.
-  No test changed: the `strata_bench.rs` tests and the inline `preservation.rs`
-  tests cover it through both commands.
-- `./quality.sh < /dev/null` on the working tree after that change:
-  `All quality checks passed!` (exit 0).
-- Docs sweep: I read `docs/strata-experiment.md` ("Manifest", "Report",
-  "Status") and the README section. The pilot `report.md` is a historical
-  record and is unchanged.
-
-## Merge verification
-
-CI and pull-request review have not been observed yet.
-
-Not done, and still a risk:
-
-- the paper method is not pinned;
-- no representative run has been made, and none is frozen;
-- the removal decision is still open;
-- the committed pilot `report.json` has no `manifestFrozen` field;
-- macOS was not checked.
+- **Added** `ockham/tests/strata_archive.rs`:
+  - `every_evidence_file_exists_and_matches_its_recorded_sha256` checks the
+    11 digests: the manifest, the parent, the report and the 8 `records.bin`
+    files.
+  - `archived_report_has_no_representative_coverage_and_tied_informed_arms`
+    checks that both treatment criteria have `met: false` with
+    `regressionReduction` 0, that there are 40 runs, and that the informed
+    arms select `["d0","d1","d2","d3"]` on seeds 1–10.
+  - `retired_command_is_absent_from_the_installed_binary` checks that
+    `--help` lacks `bench-strata`, with `audit-preservation` present as a
+    positive control.
+  - `replay_names_the_pinned_commit_and_the_retired_command_is_gone_from_head`
+    checks the literal pinned commit, that the replay command names
+    `bench-strata`, and that `ockham/src/strata` is absent.
+- **Edited** `ockham/tests/readme_contract.rs`: dropped `bench-strata` from
+  `SUBCOMMANDS`.
+  - Why: the subcommand no longer exists, so its flags are no longer part of
+    the README contract. Keeping the entry would not have failed the test:
+    `bench-strata --help` exits 0 at head and prints output byte-identical to
+    the top-level `--help`, because clap takes `bench-strata` as the
+    positional CREATURE. With the entry temporarily put back at head,
+    `cargo test --test readme_contract` passed 10 of 10.
+  - Still protected: the flag-contract tests still cover the top-level command
+    and the three remaining subcommands. The retired command's absence is
+    covered only by `strata_archive.rs` as above.
+- **Removed with the code:** `ockham/tests/strata_bench.rs` and the
+  `strata_pilot` example tests.
+  - Evidence that the behaviour and its callers are gone: no
+    `strata::`, `bench_strata` or `BenchStrata` reference remains under
+    `ockham/`.
+  - The shared freeze check keeps its coverage in `ockham/src/preservation.rs`:
+    `frozen_audit_with_the_predeclared_digest_records_it`,
+    `mismatched_digest_is_refused_before_anything_is_read_or_written` and
+    `malformed_digest_is_refused`.
+- **Results:**
+  - `./quality.sh < /dev/null` passed on `7f08ecf` with "All quality checks
+    passed!", and passed again on the final head `dd3ddd5`, after the review
+    fixes.
+  - `cargo test --test strata_archive --test readme_contract` passed: 4 and 10
+    tests.

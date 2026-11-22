@@ -1,0 +1,90 @@
+{
+  "formatVersion": 1,
+  "issue": 263,
+  "experimentSourceCommit": "29781c784dc35cf6fc23ab404ee928c8fce49171",
+  "scientificVerdict": "inconclusive-synthetic-only",
+  "maintenanceDecision": "remove-optional-research-harness",
+  "maintenanceReason": "The opt-in stratum-guided research harness (the bench-strata subcommand, the ockham/src/strata module and the strata_pilot example) has not earned ongoing maintenance. Its one synthetic real-scorer pilot was inconclusive: the aggregate, worst-stratum and pareto arms selected the same bundle on every seed, and the success criterion was not met for either treatment. No representative corpus was available. The predeclared rule in docs/strata-experiment.md tied removal to a representative run. That run has never been possible, so this record departs from the rule. The code was kept for it after the pilot. Replay at the pinned commit keeps the representative comparison runnable without maintaining the code. The removal is a maintenance decision, not evidence that the method fails on representative data.",
+  "representativeStrata": 0,
+  "pilots": [
+    {
+      "path": "docs/research/strata-pilot-v1/report.json",
+      "verdict": "inconclusive"
+    }
+  ],
+  "negativeFindings": [
+    "Synthetic real-scorer pilot, seeds 1 to 10: the aggregate, worst-stratum and pareto arms selected {d0, d1, d2, d3} on every seed. The arms are tied.",
+    "Worst-stratum minus aggregate, and pareto minus aggregate: every per-seed difference is 0 for validation delta, minority regressions and hidden neurons removed. The 95% interval is [0, 0] for each.",
+    "The criteria for worst-stratum and pareto are both met: false, with regressionReduction 0 against a required minimum of 1.",
+    "Every arm had 0 minority regressions.",
+    "Worst-stratum minus random, validation delta: mean 4.755e-7, 95% interval [3.862e-7, 5.649e-7]. This is a comparison with a random control, not a benefit over aggregate.",
+    "No representative creature or corpus was available. The synthetic fixture cannot establish optimisation benefit."
+  ],
+  "availability": {
+    "checkedOn": "2026-11-22",
+    "paper": "arXiv:2610.27812 could not be retrieved. curl to arxiv.org/abs/2610.27812, export.arxiv.org/abs/2610.27812, arxiv.org/pdf/2610.27812v1 and the Semantic Scholar API returned 000 (no connection). WebFetch of arxiv.org/html/2610.27812v1, openreview.net/forum?id=KkPVejhpML and paperswithcode.co/paper/129664 was refused by the proxy. gh api repos/AMD-AGI/SliMOO returned 404. The full paper method therefore stays unpinned, as in the 2026-11-14 attempts recorded in docs/strata-experiment.md.",
+    "scorer": "A filesystem-wide find found no rust_scorer binary.",
+    "corpora": "No representative corpus is available, so representativeStrata is 0."
+  },
+  "removed": [
+    "The bench-strata CLI subcommand and its handler in ockham/src/main.rs",
+    "The pub mod strata declaration in ockham/src/lib.rs, and the ockham/src/strata/ module (mod.rs, manifest.rs, sampler.rs, pareto.rs, report.rs and bench.rs)",
+    "ockham/examples/strata_pilot.rs, and its [[example]] entry in ockham/Cargo.toml",
+    "ockham/tests/strata_bench.rs"
+  ],
+  "retained": [
+    "refuse_unless_frozen in ockham/src/incumbent.rs, which is still used by audit-preservation",
+    "The pilot archive docs/research/strata-pilot-v1, with its report.json, manifest.json, parent.json and records",
+    "docs/strata-experiment.md as the historical protocol, with a banner that points to this record",
+    "The ordinary pruning path, which is unchanged",
+    "ockham/tests/strata_archive.rs, which checks this record against the archived evidence"
+  ],
+  "replayCommand": "git worktree add --detach /tmp/strata-replay-source 29781c784dc35cf6fc23ab404ee928c8fce49171 < /dev/null, then cargo build --release --locked < /dev/null in /tmp/strata-replay-source, then the Reproduce commands of docs/research/strata-pilot-v1/report.md, run from /tmp/strata-replay-source, each with < /dev/null, using target/release/neat_ai_ockham for neat_ai_ockham. Those commands run bench-strata, which exists only at the pinned commit.",
+  "outstanding": "A representative stratum-guided comparison remains unperformed. This removal is a maintenance decision, not evidence that the method fails on representative data.",
+  "evidence": [
+    {
+      "path": "docs/research/strata-pilot-v1/manifest.json",
+      "sha256": "054522f1447fea20ded7868285754d3a1487b5f378f224bf4f759a7092407259"
+    },
+    {
+      "path": "docs/research/strata-pilot-v1/parent.json",
+      "sha256": "f6ddc1d650bbc1a2e9d5180bdc8446117c0b06737035d62748041e3f3c3f2013"
+    },
+    {
+      "path": "docs/research/strata-pilot-v1/report.json",
+      "sha256": "72a49801b90ff8e0f63de912cfc72a65fb47700d63d52349c5fdf0c2b150f369"
+    },
+    {
+      "path": "docs/research/strata-pilot-v1/cal/alpha/records.bin",
+      "sha256": "dc1b60e0b43372c1425c410b69e342e649a441deed5784a55be154cfaa60e616"
+    },
+    {
+      "path": "docs/research/strata-pilot-v1/cal/beta/records.bin",
+      "sha256": "4c7403101ffdb388dfd53b33b288a9e3a34d0694b95b6c25a4b97d383c255b02"
+    },
+    {
+      "path": "docs/research/strata-pilot-v1/cal/gamma/records.bin",
+      "sha256": "bc0967497c2a0ee468aac2a8c302e0f4e5e25b2412555cb23f75e8df9e0980c8"
+    },
+    {
+      "path": "docs/research/strata-pilot-v1/cal/rare/records.bin",
+      "sha256": "b071b229ed872ecfcf3fe85da8114db944db0247525573b63512b29db57083b7"
+    },
+    {
+      "path": "docs/research/strata-pilot-v1/val/alpha/records.bin",
+      "sha256": "5f9157127628cdf2a91d2b4d1a6e9912fc9bf0d087c6b8c7478fff2a997a069a"
+    },
+    {
+      "path": "docs/research/strata-pilot-v1/val/beta/records.bin",
+      "sha256": "d072205ab82ad8b48d93000aec62cf13487c78c8bef15d6b97eb59cb3fa79c2b"
+    },
+    {
+      "path": "docs/research/strata-pilot-v1/val/gamma/records.bin",
+      "sha256": "119ff741ad4d63d1537044a61c59165ea2ce61b991e2fde01c566008622a7099"
+    },
+    {
+      "path": "docs/research/strata-pilot-v1/val/rare/records.bin",
+      "sha256": "f37659fb95b57cbbdccd55fae68e2caaeeb625263b8d1591da485fbd75f1dfb6"
+    }
+  ]
+}

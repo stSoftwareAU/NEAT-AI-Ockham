@@ -48,11 +48,11 @@ use neat_core::training_data::TrainingDataConfig;
 use neat_core::{CreatureExport, compile_creature};
 use serde::{Deserialize, Serialize};
 
+use crate::additivity::manifest::MAX_MANIFEST_BYTES;
 use crate::corpus::{CorpusInfo, RecordRange, corpus_info, for_each_selected_chunk};
 use crate::incumbent::{load_incumbent, refuse_unless_frozen};
 use crate::ordering::SplitMix64;
 use crate::output_guard;
-use crate::strata::manifest::MAX_MANIFEST_BYTES;
 
 /// Identifier written into every report.
 pub const SCHEMA: &str = "ockham-preservation-audit/1";

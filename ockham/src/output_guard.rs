@@ -1,5 +1,5 @@
 //! Shared output-path safety and atomic report writing for the report-only
-//! subcommands (`bench-strata`, `audit-preservation`, `bench-additivity`).
+//! subcommands (`audit-preservation`, `bench-additivity`).
 //!
 //! Each subcommand renames its report into place, so a `--out` that names
 //! the supplied creature would overwrite it, breaking the rule that the
