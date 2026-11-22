@@ -1,5 +1,10 @@
 # Stratum-guided pruning pilot v1: inconclusive
 
+**Retired harness.** `bench-strata` and the `strata_pilot` example were retired
+on 2026-11-22. See [the retirement record](../../experiments/strata-retirement-v1.json).
+The Reproduce commands below run from a worktree of the pinned commit
+`29781c784dc35cf6fc23ab404ee928c8fce49171`, not from head.
+
 This is a synthetic pilot run with the real scorer, not evidence of a benefit
 on evolved creatures. The fixture is application-agnostic and deliberately
 simple, and no representative creature or corpus was available. It claims no
@@ -127,17 +132,22 @@ claimed, and no representative negative result is claimed.
 The eight `records.bin` files are committed beside this report, about 25 KB
 in total, so this directory is the complete set of pilot inputs. The test
 `committed_corpora_match_the_record_and_regenerated_targets` in
-`ockham/examples/strata_pilot.rs` checks them in two ways:
+`ockham/examples/strata_pilot.rs` no longer exists at head. Its two checks are
+now split:
 
-- **Committed bytes:** each committed file's sha256 must equal the value
-  above, and its corpus identity and record count must equal `report.json`.
-- **Regeneration:** inputs must match the example's output exactly, because
+- **Committed bytes:** `ockham/tests/strata_archive.rs` checks that each
+  committed file's sha256 equals the value recorded in
+  [the retirement record](../../experiments/strata-retirement-v1.json). The
+  original test also compared each corpus's identity and record count with
+  `report.json`; that comparison runs only at the pinned commit.
+- **Regeneration:** the regeneration check runs at the pinned commit, not at
+  head. Inputs must match the example's output exactly, because
   they use only SHA-256 and f64 arithmetic. Targets may differ by up to `3e-7`,
   because they pass through the host libm `tanhf`, whose last bits differ
   between libm builds. On the host that made the record (aarch64, Debian 13,
   glibc 2.41), the example writes all eight files byte for byte. With an older
   glibc libm preloaded, targets moved by at most `1.2e-7` (about two ulps), and the
-  checksums of fresh output no longer match. The test still passes on both.
+  checksums of fresh output no longer match. At the pinned commit, the test passes on both.
 
 ## Reproduce
 
@@ -174,7 +184,9 @@ cargo run --release --manifest-path ../Cargo.toml --example strata_pilot -- pilo
 
 The generated `manifest.json` and `parent.json` are byte-identical to the
 committed copies on any host, because they involve no libm call. The test
-`two_fresh_directories_are_byte_identical_and_load` checks this. The generated
+`two_fresh_directories_are_byte_identical_and_load` in
+`ockham/examples/strata_pilot.rs` checked this. It no longer exists at head and
+runs at the pinned commit. The generated
 `.bin` targets match the committed ones only to within the tolerance described
 under "Input checksums".
 

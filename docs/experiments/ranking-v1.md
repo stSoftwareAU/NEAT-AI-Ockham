@@ -158,8 +158,8 @@ in protocol v2.
   for, and whose `partialDelta` column the pairwise arms already read
   (`ockham/examples/priority_ordering_bench/evaluation.rs`). It is therefore not
   a cheap proxy here and is not added.
-- Compiled latency: the existing probe, `wall_clock_probe` in
-  `ockham/src/strata/bench.rs`, compiles the creature and times a pass over
+- Compiled latency: the existing probe, `wall_clock_probe`, which was in
+  `ockham/src/strata/bench.rs` until #263 retired it, compiles the creature and times a pass over
   `latency_records` records in each of three repetitions. Each candidate thus
   costs three compiles and three timed passes. Its wall-clock figures differ
   between runs on a shared host, so a ranking built from them could not be

@@ -2519,34 +2519,19 @@ report records `versions.manifestSha256` and `versions.manifestFrozen`. The
 hypothesis, formulas, limits and success rule are in
 [docs/preservation-audit.md](docs/preservation-audit.md).
 
-## Stratum-guided pruning experiment (opt-in)
+## Stratum-guided pruning experiment (retired)
 
-`bench-strata` is an offline benchmark of one hypothesis: that ordering
-hidden-neuron cuts by their worst-stratum importance protects the weakest
-calibration stratum better than ordering by aggregate importance, Pareto
-trade-offs or uniform random draws. It is a hypothesis under test, not an
-established improvement. It is opt-in and changes no default.
-
-Nothing it does reaches the ordinary pruning path. It never accepts, publishes
-or journals a creature, and it never writes the learnings or statistics cache.
-Its only output is a report JSON, plus a scratch `<REPORT>.work` directory that
-is removed when the run ends. The fixtures do not demonstrate a benefit, so
-treat the report as data, not a claim. A synthetic real-scorer pilot
-([report](docs/research/strata-pilot-v1/report.md)) was also inconclusive.
-
-```sh
-neat_ai_ockham bench-strata manifest.json --out report.json --scorer rust_scorer
-```
-
-The manifest names a parent creature, three to five calibration strata with
-matching validation strata, the seeds and the compute limits. `--scorer`
-selects the scorer binary (default `rust_scorer`), and `--scorer-arg` passes
-further arguments to it verbatim. To show that a representative manifest was
-predeclared, record its `sha256sum` before the run and pass it as
-`--manifest-sha256 <digest>`; the run is then refused before any scoring if the
-manifest bytes differ. The method, controls, success rule and
-report fields are described in
-[docs/strata-experiment.md](docs/strata-experiment.md).
+The opt-in research mode for worst-stratum, aggregate and Pareto pruning order,
+`bench-strata`, was retired after one synthetic real-scorer pilot
+([report](docs/research/strata-pilot-v1/report.md)) returned `inconclusive`.
+Its three informed arms selected the same bundle on every seed, and no
+representative corpus has been available. The retirement was a maintenance
+decision, not evidence that the method fails on representative data. The mode is
+replayable from the pinned commit `29781c784dc35cf6fc23ab404ee928c8fce49171`.
+See [the historical protocol](docs/strata-experiment.md) for the predeclared
+method, controls and success rule, and [the retirement
+record](docs/experiments/strata-retirement-v1.json) for what was removed and how
+to replay it. Ordinary pruning is unchanged.
 
 ## Reporting
 
@@ -2814,13 +2799,6 @@ NEAT-AI-Ockham/
 │       ├── neighbourhood.rs   # bounded chain/branch group-cut proposals
 │       ├── telemetry.rs       # candidate feature/outcome training rows
 │       ├── throughput.rs      # screening funnel, per-hour rates, rescan ETAs
-│       ├── strata/
-│       │   ├── mod.rs         # opt-in stratum-guided experiment: purpose and arms
-│       │   ├── manifest.rs    # bench-strata manifest parsing and validation
-│       │   ├── sampler.rs     # scales, statistics, seeded sampler, temperature fit
-│       │   ├── pareto.rs      # non-dominated archive for Pareto candidates
-│       │   ├── report.rs      # report types, distributions, bootstrap, criteria
-│       │   └── bench.rs       # run_bench and the latency probe
 │       ├── fixtures.rs
 │       ├── run.rs
 │       ├── clock.rs           # injected run-budget time source (real or manual)
@@ -2836,7 +2814,7 @@ NEAT-AI-Ockham/
 │   ├── additivity-experiment.md # opt-in offline experiment (#260): manifest, arms, report
 │   ├── preservation-audit.md # report-only preservation audit: method and limits
 │   ├── experiments/         # protocols, manifests and public smoke evidence
-│   └── strata-experiment.md # opt-in worst-stratum vs aggregate vs Pareto bench
+│   └── strata-experiment.md # retired bench's historical protocol (worst-stratum vs aggregate vs Pareto)
 ├── scripts/
 │   ├── runlib.sh          # canonical build → install → clean (owned by core)
 │   ├── family-pins.sh     # canonical neat-core pin mover (owned by core)

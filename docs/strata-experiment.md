@@ -1,5 +1,15 @@
 # Stratum-guided pruning experiment (opt-in)
 
+**Status: the harness was retired.** The opt-in research harness described in
+this document (the `bench-strata` subcommand, the `ockham/src/strata` module and
+the `strata_pilot` example) was removed from head after one synthetic
+real-scorer pilot, which returned `inconclusive`. The record is [the retirement
+record](experiments/strata-retirement-v1.json). The commands in this document
+run from a worktree of the pinned commit
+`29781c784dc35cf6fc23ab404ee928c8fce49171`, and the text below is kept as the
+historical record. The removal departs from the predeclared rule in the Status
+section, which tied removal to a representative run.
+
 `bench-strata` is an offline benchmark of a pruning-order hypothesis. It is
 not a pruning mode: it is opt-in, changes no default, and never accepts or
 publishes a creature.
@@ -389,37 +399,49 @@ inconclusive, and that report gives the results and their limits.
 
 ## Status
 
+The harness was retired on 2026-11-22. The
+[retirement record](experiments/strata-retirement-v1.json) lists what was
+removed: the `bench-strata` subcommand, the `ockham/src/strata` module,
+`ockham/examples/strata_pilot.rs` and `ockham/tests/strata_bench.rs`. The last
+two existed at the pinned commit `29781c784dc35cf6fc23ab404ee928c8fce49171`,
+where the commands in this document replay.
+
+The retirement departs from the predeclared rule. That rule tied removal to a
+representative run, and no representative run has ever been possible. The
+removal is a maintenance decision, not evidence that the method fails on
+representative data.
+
 No representative run has been made. The fixtures do not demonstrate a
 benefit, and the report's `evidence` field says so. A synthetic real-scorer
 pilot has since been run; see [Synthetic pilot](#synthetic-pilot). Any
 optimisation claim needs representative corpora, which this repository does not
 hold.
 
-Findings so far, from the implementation and pilot runs on 2026-11-14:
+Findings so far, from the implementation and pilot runs on 2026-11-14, and the
+availability check on 2026-11-22:
 
 - **A real-scorer synthetic pilot was run.** The
   [pilot report](research/strata-pilot-v1/report.md) finds tied arms: aggregate,
   worst-stratum and pareto selected the same bundle on every seed. The success
   criterion is not met for either treatment, so the result is inconclusive.
 - **Representative runs still need private corpora,** which are not in this
-  repository.
-- **Representative runs should be frozen.** Record the manifest's SHA-256
-  before the run and pass it with `--manifest-sha256`, so that predeclaration
-  can be shown (see [Freezing the manifest](#freezing-the-manifest)). The
+  repository. None was available on 2026-11-22.
+- **Availability on 2026-11-22.** The full paper text was still not retrieved.
+  `arxiv.org`, `export.arxiv.org` and the Semantic Scholar API gave no
+  connection, and the proxy refused the connection for the arXiv HTML page,
+  OpenReview and Papers with Code. `gh api repos/AMD-AGI/SliMOO` returned 404. A
+  filesystem-wide search found no `rust_scorer` binary. The method therefore
+  stays unpinned.
+- **Representative runs should be frozen.** At the pinned commit,
+  `--manifest-sha256` refused a run whose manifest bytes differed from a digest
+  recorded beforehand (see [Freezing the manifest](#freezing-the-manifest)). The
   committed synthetic pilot was not frozen: its manifest was committed with its
   results.
 - **No benefit is shown.** The fixture-scorer runs in
-  `ockham/tests/strata_bench.rs` and the synthetic pilot test the mechanics
-  only. The trap fixture is built so that worst-stratum wins, and with uniform
-  costs the criterion is not met. The pilot's criterion is also not met. None
-  of these is evidence of a benefit.
+  `ockham/tests/strata_bench.rs`, which existed at the pinned commit, and the
+  synthetic pilot test the mechanics only. The trap fixture is built so that
+  worst-stratum wins, and with uniform costs the criterion is not met. The
+  pilot's criterion is also not met. None of these is evidence of a benefit.
 - **The method is not pinned.** The source paper's full text could not be
   fetched (see "Source paper" above). The bench reproduces the issue's
   formula, and several parts differ from the paper's excerpts.
-
-Removal is still undecided. The synthetic pilot neither shows a benefit nor a
-representative negative result. It shows that on a fixture where dead wood is
-cheap on every stratum, the worst-stratum statistic makes no difference. The
-code stays opt-in. If a representative run shows that worst-stratum ordering
-does not earn its keep, remove the code rather than keep it as an option, and
-record that result in this section.
