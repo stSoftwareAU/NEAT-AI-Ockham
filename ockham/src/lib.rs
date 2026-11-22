@@ -44,7 +44,6 @@
 //! | injected run-budget clock | [`clock`] | #214 |
 //! | cached-output bundle-ranking experiment (opt-in benchmark) | [`additivity`] | #260 |
 //! | report-only preservation audit (opt-in, never changes acceptance) | [`preservation`] | #264 |
-//! | worst-stratum / Pareto pruning experiment (opt-in) | [`strata`] | #263 |
 
 #![warn(missing_docs)]
 
@@ -83,7 +82,6 @@ pub mod screening;
 pub mod sensitivity;
 pub mod signature;
 pub mod stats;
-pub mod strata;
 pub mod substitute;
 pub mod sweep;
 pub mod tags;

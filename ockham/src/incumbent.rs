@@ -36,10 +36,8 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// Refuse unless `expected` is 64 hex digits (any ASCII case) equal to the
 /// manifest's `actual` SHA-256.
 ///
-/// Shared by `audit-preservation` and `bench-strata`, so both commands accept
-/// the same digests and report the same errors. Callers run it before parsing
-/// or acting on the manifest, so a mismatch reads no creature or corpus and
-/// writes nothing.
+/// Used by `audit-preservation`. Callers run it before parsing or acting on the
+/// manifest, so a mismatch reads no creature or corpus and writes nothing.
 ///
 /// # Errors
 ///
